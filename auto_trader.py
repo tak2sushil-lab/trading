@@ -566,7 +566,7 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
 # ─────────────────────────────────────────────────────────
 # MONITOR OPEN TRADES — ATR trailing, partial exit, time stop
 # ─────────────────────────────────────────────────────────
-def monitor_open_trades():
+def monitor_open_trades(regime='NORMAL'):
     trades = get_open_trades()
     if not trades:
         return []
@@ -599,13 +599,16 @@ def monitor_open_trades():
         atr      = get_atr(sym) or (entry * 0.02)
 
         # ── ATR trailing stop ──────────────────────────────
-        # Trail 1.5×ATR below session high (only moves up, never down)
-        if price > entry:
-            atr_trail = round(session_high[tid] - ATR_TRAIL_MULT * atr, 2)
+        # In WEAK market use tighter 1.0×ATR trail, else 1.5×ATR
+        # Only start trailing once position has 1 ATR of breathing room
+        trail_mult      = 1.0 if regime == 'WEAK' else ATR_TRAIL_MULT
+        trail_threshold = entry + atr   # must be 1 ATR in profit before trail activates
+        if price >= trail_threshold:
+            atr_trail = round(session_high[tid] - trail_mult * atr, 2)
             if atr_trail > sl:
                 sl = atr_trail
                 update_trade_stop(tid, sl)
-                log(f"  {sym}: ATR trail stop → ${sl} ({pnl_pct:+.1f}%)")
+                log(f"  {sym}: ATR trail stop → ${sl} ({pnl_pct:+.1f}%) [{regime}]")
 
         # ── Exit decisions ─────────────────────────────────
         exit_reason = None
@@ -615,10 +618,21 @@ def monitor_open_trades():
         if price <= sl:
             exit_reason = f'Stop loss ${sl} hit ({pnl_pct:+.1f}%)'
 
+        # 1b. WEAK regime early loss cut — exit at half the normal stop distance
+        elif regime == 'WEAK' and pnl_pct < -(MAX_RISK_PCT / 2):
+            exit_reason = f'WEAK regime — early loss cut ({pnl_pct:+.1f}%)'
+
         # 2. Partial exit at target (50%) — first time only
         elif price >= target and tid not in partial_done:
             half = max(1, shares // 2)
             try:
+                ibkr_pos = get_ibkr_positions()
+                ibkr_qty = ibkr_pos.get(sym, {}).get('qty', 0) or 0
+                if ibkr_qty <= 0:
+                    log(f"  {sym}: SKIP partial exit — no IBKR position")
+                    partial_done.add(tid)
+                    continue
+                half = min(half, int(ibkr_qty))
                 requests.post(f"{BRIDGE}/order", json={
                     'symbol': sym, 'qty': half,
                     'side': 'SELL', 'order_type': 'MARKET'
@@ -667,8 +681,17 @@ def monitor_open_trades():
 
         if exit_reason:
             try:
+                # Verify IBKR actually holds this position before selling
+                ibkr_pos = get_ibkr_positions()
+                ibkr_qty = ibkr_pos.get(sym, {}).get('qty', 0) or 0
+                if ibkr_qty <= 0:
+                    log(f"  {sym}: SKIP exit — no IBKR position (qty={ibkr_qty}), closing DB only")
+                    log_trade_exit(tid, price, f'DB cleanup — no IBKR position')
+                    open_positions.pop(sym, None)
+                    continue
+                sell_qty = min(shares, int(ibkr_qty))
                 requests.post(f"{BRIDGE}/order", json={
-                    'symbol': sym, 'qty': shares,
+                    'symbol': sym, 'qty': sell_qty,
                     'side': 'SELL', 'order_type': 'MARKET'
                 }, timeout=10)
                 pnl = log_trade_exit(tid, price, exit_reason)
@@ -781,19 +804,19 @@ def run_scan():
     exits = []
     if not is_entry_window():
         log("After 3pm — monitoring only")
-        exits = monitor_open_trades()
+        exits = monitor_open_trades(regime)
     elif is_trading_blocked()[0]:
         log(f"Trading blocked — monitoring only")
-        exits = monitor_open_trades()
-    elif regime == 'CHOPPY':
-        log("CHOPPY — monitoring only")
-        exits = monitor_open_trades()
+        exits = monitor_open_trades(regime)
+    elif regime in ('CHOPPY', 'WEAK'):
+        log(f"{regime} market — monitoring only, no new entries")
+        exits = monitor_open_trades(regime)
     elif len(open_trades) >= MAX_OPEN_TRADES:
         log(f"Max open trades ({MAX_OPEN_TRADES}) — monitoring only")
-        exits = monitor_open_trades()
+        exits = monitor_open_trades(regime)
     elif daily_trade_count >= MAX_DAILY_TRADES:
         log(f"Max daily trades ({MAX_DAILY_TRADES}) reached")
-        exits = monitor_open_trades()
+        exits = monitor_open_trades(regime)
     else:
         exits = _scan_and_enter(regime, spy_chg, open_trades)
 
@@ -844,6 +867,9 @@ def _scan_and_enter(regime, spy_chg, open_trades):
         grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr)
 
         if grade in ('SKIP', 'C'):
+            continue
+        # SPY negative intraday → only take A+ setups
+        if spy_chg < 0 and grade != 'A+':
             continue
 
         is_catalyst = symbol in catalyst_priority
