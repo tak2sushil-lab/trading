@@ -1,0 +1,286 @@
+{
+  "run_date": "2026-04-17",
+  "version": "v6_optimised",
+  "parameters": {
+    "stop_pct": 0.03,
+    "target_pct": 0.045,
+    "min_confidence": 75,
+    "min_volume_ratio": 1.8,
+    "max_hold_days": 5,
+    "tech_boost": 12
+  },
+  "results": {
+    "total_trades": 259,
+    "win_rate": 64.5,
+    "avg_pnl": 3.46,
+    "expectancy": 3.46,
+    "total_pnl": 896.49,
+    "risk_reward": 1.34
+  },
+  "proceed": true,
+  "stock_results": {
+    "AAPL": {
+      "trades": 4,
+      "wins": 4,
+      "win_rate": 100.0,
+      "avg_pnl": 7.24,
+      "total_pnl": 28.95,
+      "is_tech": false,
+      "sector": "MEGA_TECH"
+    },
+    "PLTR": {
+      "trades": 7,
+      "wins": 6,
+      "win_rate": 85.7,
+      "avg_pnl": 7.78,
+      "total_pnl": 54.49,
+      "is_tech": true,
+      "sector": "AI_TECH"
+    },
+    "COHR": {
+      "trades": 11,
+      "wins": 9,
+      "win_rate": 81.8,
+      "avg_pnl": 6.66,
+      "total_pnl": 73.3,
+      "is_tech": true,
+      "sector": "SEMI"
+    },
+    "IONQ": {
+      "trades": 10,
+      "wins": 8,
+      "win_rate": 80.0,
+      "avg_pnl": 5.96,
+      "total_pnl": 59.65,
+      "is_tech": false,
+      "sector": "QUANTUM"
+    },
+    "HOOD": {
+      "trades": 8,
+      "wins": 6,
+      "win_rate": 75.0,
+      "avg_pnl": 5.38,
+      "total_pnl": 43.06,
+      "is_tech": false,
+      "sector": "FINTECH"
+    },
+    "JPM": {
+      "trades": 4,
+      "wins": 3,
+      "win_rate": 75.0,
+      "avg_pnl": 3.18,
+      "total_pnl": 12.73,
+      "is_tech": false,
+      "sector": "FINANCIAL"
+    },
+    "IREN": {
+      "trades": 8,
+      "wins": 6,
+      "win_rate": 75.0,
+      "avg_pnl": 6.3,
+      "total_pnl": 50.38,
+      "is_tech": false,
+      "sector": "CRYPTO"
+    },
+    "NUTX": {
+      "trades": 15,
+      "wins": 11,
+      "win_rate": 73.3,
+      "avg_pnl": 4.65,
+      "total_pnl": 69.71,
+      "is_tech": false,
+      "sector": "BIOTECH"
+    },
+    "LITE": {
+      "trades": 15,
+      "wins": 10,
+      "win_rate": 66.7,
+      "avg_pnl": 4.69,
+      "total_pnl": 70.42,
+      "is_tech": true,
+      "sector": "SEMI"
+    },
+    "VST": {
+      "trades": 9,
+      "wins": 6,
+      "win_rate": 66.7,
+      "avg_pnl": 2.52,
+      "total_pnl": 22.65,
+      "is_tech": false,
+      "sector": "ENERGY"
+    },
+    "ITA": {
+      "trades": 6,
+      "wins": 4,
+      "win_rate": 66.7,
+      "avg_pnl": 0.95,
+      "total_pnl": 5.72,
+      "is_tech": false,
+      "sector": "DEFENCE"
+    },
+    "NFLX": {
+      "trades": 3,
+      "wins": 2,
+      "win_rate": 66.7,
+      "avg_pnl": 1.83,
+      "total_pnl": 5.5,
+      "is_tech": false,
+      "sector": "CONSUMER"
+    },
+    "ORCL": {
+      "trades": 11,
+      "wins": 7,
+      "win_rate": 63.6,
+      "avg_pnl": 3.04,
+      "total_pnl": 33.45,
+      "is_tech": true,
+      "sector": "CLOUD"
+    },
+    "OKLO": {
+      "trades": 27,
+      "wins": 17,
+      "win_rate": 63.0,
+      "avg_pnl": 3.35,
+      "total_pnl": 90.34,
+      "is_tech": false,
+      "sector": "NUCLEAR"
+    },
+    "AMZN": {
+      "trades": 8,
+      "wins": 5,
+      "win_rate": 62.5,
+      "avg_pnl": 1.4,
+      "total_pnl": 11.2,
+      "is_tech": false,
+      "sector": "MEGA_TECH"
+    },
+    "GOOGL": {
+      "trades": 8,
+      "wins": 5,
+      "win_rate": 62.5,
+      "avg_pnl": 2.34,
+      "total_pnl": 18.75,
+      "is_tech": false,
+      "sector": "MEGA_TECH"
+    },
+    "CRM": {
+      "trades": 8,
+      "wins": 5,
+      "win_rate": 62.5,
+      "avg_pnl": 2.71,
+      "total_pnl": 21.71,
+      "is_tech": true,
+      "sector": "CLOUD"
+    },
+    "QBTS": {
+      "trades": 10,
+      "wins": 6,
+      "win_rate": 60.0,
+      "avg_pnl": 2.66,
+      "total_pnl": 26.58,
+      "is_tech": false,
+      "sector": "QUANTUM"
+    },
+    "TOST": {
+      "trades": 7,
+      "wins": 4,
+      "win_rate": 57.1,
+      "avg_pnl": 2.7,
+      "total_pnl": 18.91,
+      "is_tech": false,
+      "sector": "FINTECH"
+    },
+    "AVGO": {
+      "trades": 9,
+      "wins": 5,
+      "win_rate": 55.6,
+      "avg_pnl": 2.55,
+      "total_pnl": 22.95,
+      "is_tech": true,
+      "sector": "SEMI"
+    },
+    "NBIS": {
+      "trades": 20,
+      "wins": 11,
+      "win_rate": 55.0,
+      "avg_pnl": 3.0,
+      "total_pnl": 60.1,
+      "is_tech": true,
+      "sector": "AI_TECH"
+    },
+    "CLS": {
+      "trades": 11,
+      "wins": 6,
+      "win_rate": 54.5,
+      "avg_pnl": 1.91,
+      "total_pnl": 21.02,
+      "is_tech": true,
+      "sector": "SEMI"
+    },
+    "RKLB": {
+      "trades": 13,
+      "wins": 7,
+      "win_rate": 53.8,
+      "avg_pnl": 2.49,
+      "total_pnl": 32.41,
+      "is_tech": false,
+      "sector": "DEFENCE"
+    },
+    "CNQ": {
+      "trades": 1,
+      "wins": 1,
+      "win_rate": 100.0,
+      "avg_pnl": 7.6,
+      "total_pnl": 7.6,
+      "is_tech": false,
+      "sector": "ENERGY"
+    },
+    "AMD": {
+      "trades": 10,
+      "wins": 5,
+      "win_rate": 50.0,
+      "avg_pnl": 0.92,
+      "total_pnl": 9.16,
+      "is_tech": true,
+      "sector": "AI_TECH"
+    },
+    "RKT": {
+      "trades": 16,
+      "wins": 8,
+      "win_rate": 50.0,
+      "avg_pnl": 1.61,
+      "total_pnl": 25.75,
+      "is_tech": false,
+      "sector": "FINTECH"
+    }
+  },
+  "focus_stocks": [
+    "AAPL",
+    "CNQ",
+    "PLTR",
+    "COHR",
+    "IONQ",
+    "HOOD",
+    "JPM",
+    "IREN",
+    "NUTX",
+    "LITE",
+    "VST",
+    "ITA",
+    "NFLX",
+    "ORCL",
+    "OKLO",
+    "AMZN",
+    "GOOGL",
+    "CRM",
+    "QBTS",
+    "TOST"
+  ],
+  "avoid_stocks": [],
+  "top_sectors": [
+    "SEMI",
+    "CONSUMER",
+    "BIOTECH",
+    "AI_TECH"
+  ]
+}

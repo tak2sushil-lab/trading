@@ -1,0 +1,28 @@
+# ── Secrets ───────────────────────────────────────────────
+.env
+
+# ── Python ────────────────────────────────────────────────
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# ── Runtime state (regenerated each session) ──────────────
+trades.db
+traded_today.json
+guardian_state.json
+pending_CNC.json
+processed_msgs.json
+catalyst_picks.json
+trading_blocked.json
+
+# ── Logs ──────────────────────────────────────────────────
+logs/
+*.log
+
+# ── macOS ─────────────────────────────────────────────────
+.DS_Store

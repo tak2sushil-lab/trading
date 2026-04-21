@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(venv/bin/python bridge.py)",
+      "Bash(venv/bin/python auto_trader.py)",
+      "Bash(venv/bin/python day_guardian.py)",
+      "Bash(venv/bin/python tunnel.py)",
+      "Bash(venv/bin/python test_connection.py)",
+      "Bash(bash start_trading.sh)",
+      "Bash(bash stop_trading.sh)"
+    ]
+  }
+}

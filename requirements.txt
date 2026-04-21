@@ -1,0 +1,39 @@
+# Trading System Dependencies
+# Install with: pip install -r requirements.txt
+
+# IBKR
+ib_async
+
+# Web framework
+fastapi
+uvicorn
+pydantic
+
+# AI
+anthropic
+
+# Messaging
+twilio
+requests
+
+# Tunnel
+pyngrok
+
+# Market data & analysis
+yfinance
+pandas
+numpy
+ta
+backtesting
+matplotlib
+
+# Scheduling
+apscheduler
+
+# Utilities
+python-dotenv
+pytz
+
+# Voice (optional — may need system audio setup on Mac)
+pyttsx3
+SpeechRecognition

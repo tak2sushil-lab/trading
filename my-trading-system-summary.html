@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Trading System</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Inconsolata:wght@400;500;600&display=swap');
+
+  :root {
+    --bg:      #f8f4ee;
+    --ink:     #1a1410;
+    --gold:    #c9922a;
+    --green:   #2a7a4b;
+    --red:     #c0392b;
+    --blue:    #1a4a7a;
+    --muted:   #8a7a6a;
+    --line:    #d8cfc4;
+    --card:    #ffffff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inconsolata', monospace;
+    padding: 32px 16px 48px;
+    min-height: 100vh;
+  }
+
+  .page { max-width: 860px; margin: 0 auto; }
+
+  /* ── HEADER ── */
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
+    padding-bottom: 24px;
+    border-bottom: 2px solid var(--ink);
+    position: relative;
+  }
+
+  .header::after {
+    content: '';
+    position: absolute;
+    bottom: 4px; left: 0; right: 0;
+    height: 1px;
+    background: var(--ink);
+  }
+
+  .header h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: 2.2rem;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+
+  .header h1 span { color: var(--gold); }
+
+  .header p {
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* ── FLOW DIAGRAM ── */
+  .flow-section {
+    margin-bottom: 36px;
+  }
+
+  .section-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  /* Main flow */
+  .main-flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: wrap;
+    margin-bottom: 28px;
+  }
+
+  .flow-node {
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 4px;
+    padding: 14px 16px;
+    text-align: center;
+    min-width: 110px;
+    box-shadow: 3px 3px 0 var(--ink);
+    flex-shrink: 0;
+  }
+
+  .flow-node .icon { font-size: 1.4rem; margin-bottom: 4px; }
+
+  .flow-node .label {
+    font-family: 'Playfair Display', serif;
+    font-size: 0.78rem;
+    font-weight: 700;
+    margin-bottom: 3px;
+  }
+
+  .flow-node .sublabel {
+    font-size: 0.58rem;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  .flow-node.gold   { border-color: var(--gold);  box-shadow: 3px 3px 0 var(--gold); }
+  .flow-node.green  { border-color: var(--green); box-shadow: 3px 3px 0 var(--green); }
+  .flow-node.blue   { border-color: var(--blue);  box-shadow: 3px 3px 0 var(--blue); }
+  .flow-node.red    { border-color: var(--red);   box-shadow: 3px 3px 0 var(--red); }
+
+  .flow-arrow {
+    font-size: 1.2rem;
+    color: var(--muted);
+    padding: 0 6px;
+    flex-shrink: 0;
+  }
+
+  /* ── TWO COLUMNS ── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 28px;
+  }
+
+  @media(max-width: 560px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+
+  .card-header {
+    padding: 10px 14px;
+    background: var(--ink);
+    color: white;
+    font-family: 'Playfair Display', serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-header.gold  { background: var(--gold); }
+  .card-header.green { background: var(--green); }
+  .card-header.blue  { background: var(--blue); }
+  .card-header.red   { background: var(--red); }
+
+  .card-body { padding: 12px 14px; }
+
+  .item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 0.67rem;
+    line-height: 1.5;
+  }
+
+  .item:last-child { border-bottom: none; }
+
+  .item-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--ink);
+    flex-shrink: 0;
+    margin-top: 5px;
+  }
+
+  .item-dot.gold  { background: var(--gold); }
+  .item-dot.green { background: var(--green); }
+  .item-dot.blue  { background: var(--blue); }
+  .item-dot.red   { background: var(--red); }
+
+  .item-text { flex: 1; color: var(--ink); }
+  .item-sub  { font-size: 0.58rem; color: var(--muted); }
+
+  /* ── COMMANDS TABLE ── */
+  .commands {
+    background: #1a1410;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 28px;
+    border: 1.5px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+
+  .commands-header {
+    padding: 10px 16px;
+    background: var(--gold);
+    font-family: 'Playfair Display', serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: white;
+  }
+
+  .cmd-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+  }
+
+  @media(max-width:560px) { .cmd-grid { grid-template-columns: 1fr; } }
+
+  .cmd-col {
+    padding: 14px 16px;
+    border-right: 1px solid #2a2420;
+  }
+
+  .cmd-col:last-child { border-right: none; }
+
+  .cmd-col-title {
+    font-size: 0.6rem;
+    color: var(--gold);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+
+  .cmd-item {
+    font-size: 0.62rem;
+    color: #a8d8a8;
+    margin-bottom: 6px;
+    line-height: 1.5;
+  }
+
+  .cmd-item .cmd-label {
+    color: #6a9a6a;
+    font-size: 0.55rem;
+    display: block;
+  }
+
+  /* ── RULES TABLE ── */
+  .rules {
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 3px 3px 0 var(--ink);
+    margin-bottom: 28px;
+  }
+
+  .rules-header {
+    padding: 10px 14px;
+    background: var(--green);
+    color: white;
+    font-family: 'Playfair Display', serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .rule-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px dashed var(--line);
+    font-size: 0.67rem;
+  }
+
+  .rule-row:last-child { border-bottom: none; }
+
+  .rule-num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--green);
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .rule-title { font-weight: 600; margin-bottom: 2px; }
+  .rule-detail { font-size: 0.6rem; color: var(--muted); }
+
+  .rule-time {
+    margin-left: auto;
+    font-size: 0.6rem;
+    color: var(--green);
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── COST TABLE ── */
+  .cost-table {
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 3px 3px 0 var(--ink);
+    margin-bottom: 28px;
+  }
+
+  .cost-header {
+    padding: 10px 14px;
+    background: var(--blue);
+    color: white;
+    font-family: 'Playfair Display', serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .cost-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px dashed var(--line);
+    font-size: 0.67rem;
+  }
+
+  .cost-row:last-child { border-bottom: none; font-weight: 700; }
+  .cost-free  { color: var(--green); font-weight: 600; }
+  .cost-paid  { color: var(--gold);  font-weight: 600; }
+
+  /* ── FOOTER ── */
+  .footer {
+    text-align: center;
+    padding-top: 24px;
+    border-top: 2px solid var(--ink);
+    position: relative;
+  }
+
+  .footer::before {
+    content: '';
+    position: absolute;
+    top: 4px; left: 0; right: 0;
+    height: 1px;
+    background: var(--ink);
+  }
+
+  .footer p {
+    font-family: 'Playfair Display', serif;
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+
+  .footer .highlight {
+    color: var(--gold);
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  /* whatsapp example */
+  .wa-example {
+    background: #075e54;
+    border-radius: 4px;
+    padding: 14px 16px;
+    margin-bottom: 28px;
+    border: 1.5px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+
+  .wa-title {
+    font-size: 0.6rem;
+    color: #a8d8a8;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+
+  .wa-msgs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .wa-msg {
+    font-size: 0.65rem;
+    padding: 6px 10px;
+    border-radius: 8px;
+    max-width: 80%;
+    line-height: 1.5;
+  }
+
+  .wa-msg.sent {
+    background: #dcf8c6;
+    color: #1a1410;
+    align-self: flex-end;
+    border-bottom-right-radius: 2px;
+  }
+
+  .wa-msg.recv {
+    background: white;
+    color: #1a1410;
+    align-self: flex-start;
+    border-bottom-left-radius: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>My <span>AI Trading</span> System</h1>
+    <p>Built in one session · April 2026 · Brampton, Canada</p>
+  </div>
+
+  <!-- How it all connects -->
+  <div class="flow-section">
+    <div class="section-title">How everything connects</div>
+
+    <div class="main-flow">
+      <div class="flow-node gold">
+        <div class="icon">📱</div>
+        <div class="label">You</div>
+        <div class="sublabel">WhatsApp<br>message</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="icon">🔗</div>
+        <div class="label">Twilio</div>
+        <div class="sublabel">WhatsApp<br>gateway</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="icon">🌐</div>
+        <div class="label">ngrok</div>
+        <div class="sublabel">public<br>tunnel</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node blue">
+        <div class="icon">🐍</div>
+        <div class="label">bridge.py</div>
+        <div class="sublabel">your laptop<br>port 8000</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="icon">🤖</div>
+        <div class="label">Claude</div>
+        <div class="sublabel">Anthropic<br>API</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="icon">⚙️</div>
+        <div class="label">IB Gateway</div>
+        <div class="sublabel">port 4002<br>paper</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node green">
+        <div class="icon">📈</div>
+        <div class="label">IBKR</div>
+        <div class="sublabel">US stocks<br>paper acct</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WhatsApp example -->
+  <div class="section-title">Talk to trade — WhatsApp examples</div>
+  <div class="wa-example">
+    <div class="wa-title">📱 Your WhatsApp → +1-415-523-8886 (Twilio sandbox)</div>
+    <div class="wa-msgs">
+      <div class="wa-msg sent">What is my account balance?</div>
+      <div class="wa-msg recv">Your account: Net Liquidation $1,052,893 · Cash $1,052,151 · Buying Power $3,509,280 · P&L -$0.18 (paper trading)</div>
+      <div class="wa-msg sent">Buy 5 shares of Microsoft</div>
+      <div class="wa-msg recv">✅ Bought 5 shares of MSFT at market price. Order ID: 1234. This is a paper trade.</div>
+      <div class="wa-msg sent">Show me my positions</div>
+      <div class="wa-msg recv">You hold: AMZN × 1 @ $239.95 · MSFT × 5 @ market price</div>
+    </div>
+  </div>
+
+  <!-- Files + Accounts -->
+  <div class="section-title">Your files & accounts</div>
+  <div class="two-col">
+
+    <div class="card">
+      <div class="card-header blue">📁 Files in C:\trading\</div>
+      <div class="card-body">
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">
+            bridge.py
+            <div class="item-sub">Trading server + Claude + WhatsApp webhook</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">
+            scheduler.py
+            <div class="item-sub">Automated trading rules — runs 24/7</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot gold"></div>
+          <div class="item-text">
+            tunnel.py
+            <div class="item-sub">ngrok tunnel — keeps WhatsApp connected</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot"></div>
+          <div class="item-text">
+            trading_ui.html
+            <div class="item-sub">Web chat UI — optional, WhatsApp is enough</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot"></div>
+          <div class="item-text">
+            test_connection.py
+            <div class="item-sub">Run to verify IB Gateway is working</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header gold">🔑 Accounts & Credentials</div>
+      <div class="card-body">
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">
+            IBKR Canada
+            <div class="item-sub">TFSA + Paper account · interactivebrokers.ca</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot gold"></div>
+          <div class="item-text">
+            Anthropic API Key
+            <div class="item-sub">console.anthropic.com · in bridge.py</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">
+            Twilio
+            <div class="item-sub">SID + Token · WhatsApp sandbox · set & forget</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot"></div>
+          <div class="item-text">
+            ngrok
+            <div class="item-sub">Auth token · in tunnel.py · set & forget</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Scheduled rules -->
+  <div class="section-title">Automated rules running right now</div>
+  <div class="rules">
+    <div class="rules-header">⏰ scheduler.py — always watching</div>
+    <div class="rule-row">
+      <div class="rule-num">1</div>
+      <div>
+        <div class="rule-title">Weekly Buy — MSFT $250</div>
+        <div class="rule-detail">Automatically buys $250 of Microsoft every Monday</div>
+      </div>
+      <div class="rule-time">Mon 9:31am ET</div>
+    </div>
+    <div class="rule-row">
+      <div class="rule-num">2</div>
+      <div>
+        <div class="rule-title">Morning Portfolio Summary</div>
+        <div class="rule-detail">Speaks your portfolio out loud every weekday morning</div>
+      </div>
+      <div class="rule-time">Mon-Fri 9:00am ET</div>
+    </div>
+    <div class="rule-row">
+      <div class="rule-num">3</div>
+      <div>
+        <div class="rule-title">Stop Loss — Sell if down 5%</div>
+        <div class="rule-detail">Auto-sells any position that drops 5% from purchase price</div>
+      </div>
+      <div class="rule-time">Every 30 min</div>
+    </div>
+  </div>
+
+  <!-- Daily startup commands -->
+  <div class="section-title">Daily startup — 3 commands</div>
+  <div class="commands">
+    <div class="commands-header">Open 3 terminal windows, run one command each</div>
+    <div class="cmd-grid">
+      <div class="cmd-col">
+        <div class="cmd-col-title">Window 1 — Bridge</div>
+        <div class="cmd-item">
+          <span class="cmd-label">cd C:\trading</span>
+          python bridge.py
+        </div>
+        <div class="cmd-item" style="color:#6a9a6a;font-size:0.58rem">
+          Connects IBKR + Claude + WhatsApp
+        </div>
+      </div>
+      <div class="cmd-col">
+        <div class="cmd-col-title">Window 2 — Scheduler</div>
+        <div class="cmd-item">
+          <span class="cmd-label">cd C:\trading</span>
+          python scheduler.py
+        </div>
+        <div class="cmd-item" style="color:#6a9a6a;font-size:0.58rem">
+          Runs your automated rules
+        </div>
+      </div>
+      <div class="cmd-col">
+        <div class="cmd-col-title">Window 3 — Tunnel</div>
+        <div class="cmd-item">
+          <span class="cmd-label">cd C:\trading</span>
+          python tunnel.py
+        </div>
+        <div class="cmd-item" style="color:#6a9a6a;font-size:0.58rem">
+          Keeps WhatsApp connected
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cost summary -->
+  <div class="section-title">Monthly cost</div>
+  <div class="cost-table">
+    <div class="cost-header">💰 What this costs to run</div>
+    <div class="cost-row">
+      <span>IBKR Canada account</span>
+      <span class="cost-free">FREE</span>
+    </div>
+    <div class="cost-row">
+      <span>IB Gateway software</span>
+      <span class="cost-free">FREE</span>
+    </div>
+    <div class="cost-row">
+      <span>Python + all libraries</span>
+      <span class="cost-free">FREE</span>
+    </div>
+    <div class="cost-row">
+      <span>ngrok tunnel</span>
+      <span class="cost-free">FREE</span>
+    </div>
+    <div class="cost-row">
+      <span>Twilio WhatsApp sandbox</span>
+      <span class="cost-free">FREE</span>
+    </div>
+    <div class="cost-row">
+      <span>Anthropic API (Claude)</span>
+      <span class="cost-paid">~$3-5 CAD/mo</span>
+    </div>
+    <div class="cost-row">
+      <span>Stock commissions (US stocks)</span>
+      <span class="cost-free">FREE (IBKR Lite)</span>
+    </div>
+    <div class="cost-row">
+      <span style="font-family:'Playfair Display',serif">Total right now (paper trading)</span>
+      <span class="cost-free">~$0</span>
+    </div>
+    <div class="cost-row">
+      <span style="font-family:'Playfair Display',serif">Total when live trading</span>
+      <span class="cost-paid">~$3-5 CAD/mo</span>
+    </div>
+  </div>
+
+  <!-- Key rules to remember -->
+  <div class="section-title">Key things to remember</div>
+  <div class="two-col">
+    <div class="card">
+      <div class="card-header red">⚠ Important rules</div>
+      <div class="card-body">
+        <div class="item">
+          <div class="item-dot red"></div>
+          <div class="item-text">Canadian stocks (TSX) cannot be traded via API — CIRO regulation</div>
+        </div>
+        <div class="item">
+          <div class="item-dot red"></div>
+          <div class="item-text">If WhatsApp stops working → check tunnel.py is still running</div>
+        </div>
+        <div class="item">
+          <div class="item-dot red"></div>
+          <div class="item-text">If tunnel.py restarts → update URL in Twilio sandbox settings</div>
+        </div>
+        <div class="item">
+          <div class="item-dot red"></div>
+          <div class="item-text">Always test with paper account before going live</div>
+        </div>
+        <div class="item">
+          <div class="item-dot red"></div>
+          <div class="item-text">US market hours: Mon-Fri 9:30am-4:00pm ET (10:30am-5pm Brampton)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header green">✅ What works great</div>
+      <div class="card-body">
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">US stocks + ETFs — buy, sell, check prices via WhatsApp</div>
+        </div>
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">Canadian companies on NYSE — SHOP, TD, RY, GOLD etc.</div>
+        </div>
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">Automated rules — buy, sell, alerts on schedule</div>
+        </div>
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">Voice trading — speak to trade via terminal</div>
+        </div>
+        <div class="item">
+          <div class="item-dot green"></div>
+          <div class="item-text">Trade from anywhere — just send a WhatsApp message</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Next steps -->
+  <div class="section-title">What's next</div>
+  <div class="two-col">
+    <div class="card">
+      <div class="card-header">🔜 Coming soon</div>
+      <div class="card-body">
+        <div class="item">
+          <div class="item-dot gold"></div>
+          <div class="item-text">
+            Backtesting strategies
+            <div class="item-sub">Test strategies on historical data before risking money</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot gold"></div>
+          <div class="item-text">
+            start.bat — one click startup
+            <div class="item-sub">Double-click to start all 3 windows automatically</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot gold"></div>
+          <div class="item-text">
+            VS Code setup
+            <div class="item-sub">Professional editor — all files in one place</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="item-dot gold"></div>
+          <div class="item-text">
+            More trading rules
+            <div class="item-sub">Price alerts, take profit, sector rotation</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">🛠 Tech stack used</div>
+      <div class="card-body">
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">Python 3.11 — all backend code</div>
+        </div>
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">ib_async — talks to IB Gateway</div>
+        </div>
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">FastAPI + uvicorn — web server</div>
+        </div>
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">anthropic — Claude AI SDK</div>
+        </div>
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">twilio — WhatsApp messaging</div>
+        </div>
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">APScheduler — automated rules</div>
+        </div>
+        <div class="item">
+          <div class="item-dot blue"></div>
+          <div class="item-text">pyngrok — public tunnel</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>Built from scratch in one session with Claude</p>
+    <p class="highlight">You → WhatsApp → Claude → IBKR → Markets 🚀</p>
+  </div>
+
+</div>
+</body>
+</html>
