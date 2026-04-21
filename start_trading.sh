@@ -15,7 +15,7 @@ echo ""
 # ── Terminal 1: bridge.py (IBKR connection) ──────────────
 osascript -e "
 tell application \"Terminal\"
-    do script \"cd $TRADING_DIR && $PYTHON bridge.py\"
+    do script \"cd $TRADING_DIR && PYTHONUNBUFFERED=1 $PYTHON -u bridge.py\"
     set custom title of front window to \"BRIDGE — IBKR\"
 end tell"
 sleep 5
@@ -23,7 +23,7 @@ sleep 5
 # ── Terminal 2: auto_trader.py (scanner + monitor + scheduler) ──
 osascript -e "
 tell application \"Terminal\"
-    do script \"cd $TRADING_DIR && $PYTHON auto_trader.py\"
+    do script \"cd $TRADING_DIR && PYTHONUNBUFFERED=1 $PYTHON -u auto_trader.py\"
     set custom title of front window to \"AUTO TRADER\"
 end tell"
 
