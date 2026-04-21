@@ -52,11 +52,12 @@ app.add_middleware(
 # ── Connect to IB Gateway on startup ─────────────────────
 @app.on_event("startup")
 async def startup():
-    await ib.connectAsync(
-        host=IBKR_HOST,
-        port=IBKR_PORT,
-        clientId=1
-    )
+    for cid in range(10, 20):
+        try:
+            await ib.connectAsync(host=IBKR_HOST, port=IBKR_PORT, clientId=cid)
+            break
+        except Exception:
+            continue
     print(f"✅ Connected to IB Gateway ({'paper' if IBKR_PORT == 4002 else 'LIVE'} trading)")
     print("✅ Telegram alerts ready (no tunnel needed)")
 
