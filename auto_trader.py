@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
-    update_trade_stop, update_trade_shares, get_trade_entry_date
+    update_trade_stop, get_trade_entry_date
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -29,21 +29,32 @@ TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ── Settings ──────────────────────────────────────────────
 SCAN_INTERVAL     = 300      # 5 min
-MAX_OPEN_TRADES   = 50       # paper testing — collect data
-MAX_DAILY_TRADES  = 100
-CAPITAL_PER_TRADE = 400
-MAX_RISK_PCT      = 3.5      # slightly wider for ATR-based stops
-MIN_RR            = 2.5      # relaxed slightly since stops are wider
-MAX_RSI_ENTRY     = 80
+TOTAL_CAPITAL     = 10000    # max capital deployed across all positions
+MAX_OPEN_TRADES   = 10       # swing trading — up to 10 concurrent positions
+MAX_DAILY_TRADES  = 10       # allow up to 10 entries per day
+MAX_RISK_PCT        = 8.0    # hard ATR cap — removed 2% floor, trust the ATR fully
+MIN_RR              = 2.5    # min reward:risk for entry qualification
+MAX_LOSS_PER_TRADE  = 200    # dollar circuit breaker: close trade if loss exceeds $200
+DAILY_PROFIT_TARGET = 400    # at +$400 session P&L: protect gains, no new entries
+EOD_CLOSE_HOUR      = 15     # 3:45pm ET EOD close — exit unless conviction to hold overnight
+EOD_CLOSE_MINUTE    = 45
+MAX_RSI_5M        = 85   # skip entry if 5-min RSI >85 — intraday candle is exhausted
 MIN_VOLUME_RATIO  = 1.3
 MAX_PER_SECTOR    = 5        # max open positions per sector
 TG_POLL_OFFSET    = 0        # tracks last processed Telegram update
 ATR_PERIOD        = 14
-ATR_STOP_MULT     = 1.5      # initial stop: entry - 1.5×ATR
+ATR_STOP_MULT     = 2.0      # initial stop: entry - 2×ATR (swing needs breathing room)
 ATR_TRAIL_MULT    = 1.5      # trail: 1.5×ATR below rolling session high
 ATR_FADE_MULT     = 1.0      # momentum fade: drop > 1×ATR from session high
-TIME_STOP_DAYS    = 3        # exit flat trades after 3 days
+MAX_HOLD_DAYS     = 1        # hard max hold: exit any position after 1 business day (~24h)
+NO_ENTRY_BEFORE   = 10       # wait until 10:00am — let opening range establish
 NO_ENTRY_AFTER    = 15       # no new entries at/after 3:00pm ET
+MIN_REGIME_SCANS  = 2        # regime must be confirmed for N consecutive scans before entry
+MIN_TODAY_GAIN    = 1.5      # stock must be up ≥1.5% today before we enter
+MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
+LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
+LUNCH_AVOID_END   = (13, 30) # resume entries at 1:30pm ET
+ORB_ENTRY_CUTOFF  = (11, 30) # ORB signal only valid before 11:30am — late breaks are just resistance
 
 # ── Persistence ───────────────────────────────────────────
 _DIR              = os.path.dirname(os.path.abspath(__file__))
@@ -55,10 +66,15 @@ open_positions    = {}       # sym → trade_id
 price_history     = {}       # trade_id → [prices]
 session_high      = {}       # trade_id → highest price seen this session
 atr_cache         = {}       # sym → (date_str, atr_value)
-partial_done      = set()    # trade_ids where 50% already exited
 daily_trade_count = 0
-catalyst_priority = []       # symbols from today's catalyst scan
-tg_update_id      = 0        # Telegram polling offset
+catalyst_priority  = []       # symbols from today's catalyst scan
+tg_update_id       = 0        # Telegram polling offset
+regime_history     = []       # last N regime readings for confirmation
+spy_open_price     = None     # SPY price at market open (set on first post-open scan)
+sector_strength    = {}       # ETF ticker → % change today, updated each scan
+key_levels         = {}       # sym → {pm_high, pm_low, prior_close, orb_high, orb_low}
+trade_entry_times  = {}       # trade_id → datetime of entry (for no-move exit)
+earnings_cache     = {}       # symbol → (date_str, days_to_next_earnings)
 
 # ── Universe ──────────────────────────────────────────────
 FULL_UNIVERSE = list(dict.fromkeys([
@@ -77,9 +93,21 @@ FULL_UNIVERSE = list(dict.fromkeys([
     'USAR', 'FSLR', 'CCJ', 'UUUU', 'DNN',
     'LLY', 'NTLA', 'BEAM',
     'APLD', 'SOUN', 'BBAI',
-    # DROPPED — confirmed underperformers:
-    # NVDA(0%), SMR(24%), MSTR(17%), SNOW(33%), CRWD(33%)
-    # TSLA(33%), UBER(33%), JOBY(38%), PANW(43%), MS(43%)
+    # ── Gap-and-go confirmed (5Y backtest: 56-60% WR) ────────
+    'ON',   # 59% WR gap plays, $8.40 avg — semi leader
+    'LRCX', # 59% WR gap plays, $7.79 avg — semi equipment
+    'DDOG', # 58% WR gap plays, $8.08 avg — cloud monitoring
+    'MDB',  # 56% WR gap plays, $17.41 avg — database
+    # ── Momentum / sector-leader additions ───────────────────
+    'POET', # photonic semiconductors — strong gap momentum
+    'EOSE', # energy storage — catalyst mover, gap plays
+    'INDI', # automotive semis — catalyst mover
+    'NVDA', # AI/semi leader — strong sector days (dropped from gap backtest but valid swing)
+    'INTC', # Intel — earnings catalyst, large-cap semi
+    'TSLA', # high beta — big moves on strong days
+    # DROPPED — confirmed underperformers (gap-and-go backtest):
+    # SMR(24%), MSTR(17%), SNOW(33%), CRWD(33%)
+    # UBER(33%), JOBY(38%), PANW(43%), MS(43%)
     # AFRM(43%), ACHR(44%), SOFI(50% neg avg), HPE(50% neg avg)
 ]))
 
@@ -88,7 +116,7 @@ FULL_UNIVERSE = list(dict.fromkeys([
 SECTOR_MAP = {
     # TECH: AI chips, semis, cloud, mega-cap
     'AAPL':'TECH','MSFT':'TECH','AMZN':'TECH','GOOGL':'TECH','META':'TECH',
-    'AMD':'TECH','AVGO':'TECH','NFLX':'TECH',
+    'AMD':'TECH','AVGO':'TECH','NFLX':'TECH','NVDA':'TECH','INTC':'TECH','TSLA':'TECH',
     'COHR':'TECH','LITE':'TECH','CLS':'TECH','SMCI':'TECH','CRWV':'TECH',
     'PLTR':'TECH','NBIS':'TECH','AI':'TECH','CRM':'TECH',
     'ORCL':'TECH','RBRK':'TECH',
@@ -105,6 +133,18 @@ SECTOR_MAP = {
     # Remainder → OTHER (still tradeable, just uncapped)
 }
 
+# ── Sector ETF proxies for relative strength ─────────────────
+SECTOR_ETF_MAP = {
+    'TECH':          'XLK',
+    'FINTECH':       'XLF',
+    'ENERGY':        'XLE',
+    'BIOTECH':       'XBI',
+    'NUCLEAR':       'NLR',
+    'DEFENCE':       'ITA',
+    'QUANTUM_CRYPTO':'QQQ',
+    'OTHER':         'SPY',
+}
+
 def get_symbol_sector(symbol):
     return SECTOR_MAP.get(symbol, 'OTHER')
 
@@ -115,6 +155,25 @@ def get_open_sector_counts():
         sec = get_symbol_sector(t['symbol'])
         counts[sec] = counts.get(sec, 0) + 1
     return counts
+
+def update_sector_strength():
+    """Fetch sector ETF % changes once per scan — identifies which sectors lead today."""
+    global sector_strength
+    etfs = list(set(SECTOR_ETF_MAP.values()))
+    try:
+        raw = yf.download(etfs, period='2d', interval='1d', progress=False, auto_adjust=True)
+        closes = raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw
+        strength = {}
+        for etf in etfs:
+            try:
+                col = closes[etf].dropna() if etf in closes.columns else pd.Series()
+                if len(col) >= 2:
+                    strength[etf] = round((float(col.iloc[-1]) - float(col.iloc[-2])) / float(col.iloc[-2]) * 100, 2)
+            except Exception:
+                pass
+        sector_strength = strength
+    except Exception as e:
+        log(f"Sector strength error: {e}")
 
 # ─────────────────────────────────────────────────────────
 # PERSISTENCE HELPERS
@@ -176,7 +235,17 @@ def is_market_open():
 
 def is_entry_window():
     now = datetime.now(ET)
-    return is_market_open() and now.hour < NO_ENTRY_AFTER
+    if not is_market_open():
+        return False
+    if now.hour < NO_ENTRY_BEFORE:
+        return False
+    if now.hour >= NO_ENTRY_AFTER:
+        return False
+    # Avoid lunch chop — institutions step away, price action is noise
+    t = (now.hour, now.minute)
+    if LUNCH_AVOID_START <= t < LUNCH_AVOID_END:
+        return False
+    return True
 
 # ─────────────────────────────────────────────────────────
 # IB HISTORICAL DATA — bridge first, yfinance fallback
@@ -304,9 +373,62 @@ def get_regime():
             if not qqq_leading and regime == 'STRONG':
                 regime = 'NORMAL'
 
+        # ES/NQ futures direction — opening bias signal
+        es_chg = nq_chg = 0.0
+        try:
+            today_d = datetime.now(ET).date()
+            es_raw  = yf.Ticker('ES=F').history(period='2d', interval='5m')
+            nq_raw  = yf.Ticker('NQ=F').history(period='2d', interval='5m')
+            if not es_raw.empty:
+                es_raw.index = es_raw.index.tz_convert(ET)
+                es_prev = es_raw[es_raw.index.date < today_d]['Close']
+                if not es_prev.empty:
+                    es_chg = round((float(es_raw['Close'].iloc[-1]) - float(es_prev.iloc[-1])) / float(es_prev.iloc[-1]) * 100, 2)
+            if not nq_raw.empty:
+                nq_raw.index = nq_raw.index.tz_convert(ET)
+                nq_prev = nq_raw[nq_raw.index.date < today_d]['Close']
+                if not nq_prev.empty:
+                    nq_chg = round((float(nq_raw['Close'].iloc[-1]) - float(nq_prev.iloc[-1])) / float(nq_prev.iloc[-1]) * 100, 2)
+        except Exception:
+            pass
+
+        # Market breadth — IWM (small caps) + MDY (mid caps) advancing = broad market
+        broad_advance = True
+        breadth_weak  = False
+        try:
+            iwm = yf.Ticker('IWM').history(period='2d')
+            mdy = yf.Ticker('MDY').history(period='2d')
+            iwm_chg = (float(iwm['Close'].iloc[-1]) - float(iwm['Close'].iloc[-2])) / float(iwm['Close'].iloc[-2]) * 100
+            mdy_chg = (float(mdy['Close'].iloc[-1]) - float(mdy['Close'].iloc[-2])) / float(mdy['Close'].iloc[-2]) * 100
+            broad_advance = iwm_chg > 0 and mdy_chg > 0
+            breadth_weak  = iwm_chg < -0.5 and mdy_chg < -0.5
+        except Exception:
+            pass
+
+        # CBOE equity put/call ratio — elevated = institutional fear
+        pcr = None
+        pcr_bearish = False
+        try:
+            pcr_data = yf.Ticker('^CPCE').history(period='2d')
+            if not pcr_data.empty:
+                pcr = round(float(pcr_data['Close'].iloc[-1]), 2)
+                pcr_bearish = pcr > 0.9   # >0.9 = heavy put buying = fear
+        except Exception:
+            pass
+
+        # Downgrade regime on weak breadth or bearish P/C
+        if regime not in ('CHOPPY', 'WEAK'):
+            if breadth_weak:
+                regime = order[min(order.index(regime) + 1, len(order) - 1)]
+            if pcr_bearish and regime == 'STRONG':
+                regime = 'NORMAL'
+
         extra = {
             'vwap': round(vwap, 2), 'spy_above_vwap': spy_above_vwap,
             'vix_rising': vix_rising, 'qqq_leading': qqq_leading,
+            'es_chg': es_chg, 'nq_chg': nq_chg,
+            'broad_advance': broad_advance, 'breadth_weak': breadth_weak,
+            'pcr': pcr, 'pcr_bearish': pcr_bearish,
         }
         return regime, round(spy_chg, 2), round(vix_val, 2), extra
 
@@ -378,7 +500,7 @@ def get_live_price(symbol):
 # ─────────────────────────────────────────────────────────
 # INTRADAY SIGNALS
 # ─────────────────────────────────────────────────────────
-def get_intraday_signals(symbol):
+def get_intraday_signals(symbol, spy_chg=0):
     try:
         # 5-min intraday: yfinance (IB rate limits prevent scanning 60+ stocks every 5 min)
         df5 = yf.Ticker(symbol).history(period='5d', interval='5m')
@@ -413,6 +535,12 @@ def get_intraday_signals(symbol):
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
         rsi   = round(float(100 - (100 / (1 + gain.iloc[-1] / loss.iloc[-1]))), 1)
 
+        # 5-min RSI — intraday exhaustion check (resets each session, much more sensitive)
+        d5    = df5['Close'].diff()
+        g5    = d5.clip(lower=0).rolling(14).mean()
+        l5    = (-d5.clip(upper=0)).rolling(14).mean()
+        rsi_5m = round(float(100 - (100 / (1 + g5.iloc[-1] / l5.iloc[-1]))), 1) if l5.iloc[-1] != 0 else 50.0
+
         fvg_count = 0
         h = df5['High'].values
         l = df5['Low'].values
@@ -428,12 +556,115 @@ def get_intraday_signals(symbol):
         is_tight  = range_pct < 5
         prev_chg  = (float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
 
+        # ── VWAP (intraday, resets each session) ─────────────
+        df5['typical'] = (df5['High'] + df5['Low'] + df5['Close']) / 3
+        df5['vwap']    = (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum()
+        vwap           = round(float(df5['vwap'].iloc[-1]), 2)
+        above_vwap     = price > vwap
+        # VWAP reclaim: last bar crossed above VWAP from below
+        vwap_reclaim   = (len(df5) >= 2 and
+                          float(df5['Close'].iloc[-1]) > float(df5['vwap'].iloc[-1]) and
+                          float(df5['Close'].iloc[-2]) <= float(df5['vwap'].iloc[-2]))
+
+        # ── Bull flag: surge → tight consolidation → breakout ─
+        is_bull_flag = False
+        if len(df5) >= 15:
+            pole  = df5.iloc[-14:-5]   # flagpole bars
+            base  = df5.iloc[-5:]      # consolidation bars
+            pole_move    = (float(pole['High'].max()) - float(pole['Open'].iloc[0])) \
+                           / max(float(pole['Open'].iloc[0]), 0.01) * 100
+            base_high    = float(base['High'].max())
+            base_low     = float(base['Low'].min())
+            base_range   = (base_high - base_low) / max(float(base['Close'].mean()), 0.01) * 100
+            # Pole ≥2%, base tight <2%, price near/breaking base high
+            is_bull_flag = (pole_move >= 2.0 and base_range < 2.0
+                            and price >= base_high * 0.998)
+
+        # ── High of day break ─────────────────────────────────
+        hod        = float(df5['High'].max())
+        prior_hod  = float(df5['High'].iloc[:-2].max()) if len(df5) > 2 else hod
+        hod_break  = price >= prior_hod * 0.999 and price >= hod * 0.995
+
+        # ── Opening Range Breakout (ORB) ──────────────────────
+        # Opening range = first 15 minutes (9:30–9:44am ET)
+        # After 10am we check if price has broken above that range
+        orb_high = orb_low = None
+        orb_break = False
+        try:
+            df5_tz = df5.copy()
+            df5_tz.index = df5_tz.index.tz_convert(ET)
+            today_bars = df5_tz[df5_tz.index.date == datetime.now(ET).date()]
+            orb_bars   = today_bars[
+                (today_bars.index.hour == 9) & (today_bars.index.minute >= 30) |
+                (today_bars.index.hour == 9) & (today_bars.index.minute <= 44)
+            ]
+            # Use first 15-min window: 9:30–9:44
+            orb_window = today_bars[
+                (today_bars.index.hour == 9) &
+                (today_bars.index.minute >= 30) &
+                (today_bars.index.minute < 45)
+            ]
+            if len(orb_window) >= 2:
+                orb_high  = round(float(orb_window['High'].max()), 2)
+                orb_low   = round(float(orb_window['Low'].min()), 2)
+                # ORB signal only valid before 11:30am — after that it's just resistance
+                now_t     = (datetime.now(ET).hour, datetime.now(ET).minute)
+                orb_break = (price > orb_high and price >= orb_high * 0.998
+                             and now_t < ORB_ENTRY_CUTOFF)
+                # Store in global key_levels
+                if symbol not in key_levels:
+                    key_levels[symbol] = {}
+                key_levels[symbol].update({'orb_high': orb_high, 'orb_low': orb_low})
+        except Exception:
+            pass
+
+        # ── Relative strength vs SPY ──────────────────────────
+        rs_vs_spy  = round(prev_chg - spy_chg, 2)   # positive = beating SPY today
+
+        # ── Last 5m candle quality ────────────────────────────
+        last_o = float(df5['Open'].iloc[-1])
+        last_c = float(df5['Close'].iloc[-1])
+        last_h = float(df5['High'].iloc[-1])
+        last_l = float(df5['Low'].iloc[-1])
+        candle_range  = last_h - last_l
+        candle_body   = abs(last_c - last_o)
+        body_ratio    = candle_body / candle_range if candle_range > 0 else 0
+        is_bullish_candle = last_c > last_o and body_ratio >= 0.6
+        is_doji           = body_ratio < 0.2
+        is_hammer         = (last_c > last_o and candle_range > 0 and
+                             (last_o - last_l) > candle_body * 2 and
+                             (last_h - last_c) < candle_body * 0.5)
+
+        # ── 15-min timeframe alignment ────────────────────────
+        # All three must agree before entering on 5m signal
+        aligned_15m = True   # default True — don't penalise if data unavailable
+        try:
+            df15 = yf.Ticker(symbol).history(period='5d', interval='15m')
+            if not df15.empty:
+                df15.index = df15.index.tz_convert(ET)
+                df15_today = df15[df15.index.date == datetime.now(ET).date()].copy()
+                if len(df15_today) >= 3:
+                    df15_today['tp']   = (df15_today['High'] + df15_today['Low'] + df15_today['Close']) / 3
+                    df15_today['vwap'] = (df15_today['tp'] * df15_today['Volume']).cumsum() / df15_today['Volume'].cumsum()
+                    p15   = float(df15_today['Close'].iloc[-1])
+                    v15   = float(df15_today['vwap'].iloc[-1])
+                    e20_15 = float(df15_today['Close'].ewm(span=20).mean().iloc[-1])
+                    aligned_15m = p15 > v15 and p15 > e20_15
+        except Exception:
+            pass
+
         return {
             'price': round(price, 2), 'intra_chg': round(intra_chg, 2),
             'prev_chg': round(prev_chg, 2), 'vol_ratio': round(vol_ratio, 2),
             'above_ma': above_ma, 'uptrend': uptrend, 'ema_touch': ema_touch,
-            'rsi': rsi, 'fvg_count': fvg_count,
+            'rsi': rsi, 'rsi_5m': rsi_5m, 'fvg_count': fvg_count,
             'is_tight': is_tight, 'range_pct': round(range_pct, 2),
+            'vwap': vwap, 'above_vwap': above_vwap, 'vwap_reclaim': vwap_reclaim,
+            'is_bull_flag': is_bull_flag, 'hod_break': hod_break,
+            'orb_break': orb_break, 'orb_high': orb_high, 'orb_low': orb_low,
+            'rs_vs_spy': rs_vs_spy,
+            'is_bullish_candle': is_bullish_candle, 'is_hammer': is_hammer,
+            'is_doji': is_doji, 'aligned_15m': aligned_15m,
         }
     except:
         return None
@@ -454,10 +685,11 @@ def calc_sl_target(symbol, price, side='LONG'):
             atr_stop     = price - (ATR_STOP_MULT * atr)
             sl           = round(max(support_stop, atr_stop), 2)
             risk_pct     = (price - sl) / price * 100
+            # Cap: never wider than MAX_RISK_PCT
             if risk_pct > MAX_RISK_PCT:
                 sl       = round(price * (1 - MAX_RISK_PCT / 100), 2)
                 risk_pct = MAX_RISK_PCT
-            reward       = min(risk_pct * MIN_RR, 10.0)
+            reward       = risk_pct * MIN_RR   # no cap — strategy rides momentum, target is display-only
             target       = round(price * (1 + reward / 100), 2)
         else:
             resists  = sorted([h for h in df['High'].values if h > price])
@@ -468,7 +700,7 @@ def calc_sl_target(symbol, price, side='LONG'):
             if risk_pct > MAX_RISK_PCT:
                 sl       = round(price * (1 + MAX_RISK_PCT / 100), 2)
                 risk_pct = MAX_RISK_PCT
-            reward   = min(risk_pct * MIN_RR, 10.0)
+            reward   = risk_pct * MIN_RR   # no cap
             target   = round(price * (1 - reward / 100), 2)
 
         rr = round(reward / risk_pct, 1) if risk_pct > 0 else 0
@@ -481,22 +713,71 @@ def calc_sl_target(symbol, price, side='LONG'):
             return round(price * 1.035, 2), round(price * 0.912, 2), 3.5, 8.75, 2.5
 
 # ─────────────────────────────────────────────────────────
+# EARNINGS HELPER
+# ─────────────────────────────────────────────────────────
+def get_days_to_earnings(symbol):
+    today_str = date.today().isoformat()
+    if symbol in earnings_cache and earnings_cache[symbol][0] == today_str:
+        return earnings_cache[symbol][1]
+    days = None
+    try:
+        cal = yf.Ticker(symbol).calendar
+        if isinstance(cal, pd.DataFrame) and not cal.empty:
+            for col in cal.columns:
+                try:
+                    ed = pd.Timestamp(col).date()
+                    d  = (ed - date.today()).days
+                    if d >= -1:
+                        days = d
+                        break
+                except Exception:
+                    continue
+        elif isinstance(cal, dict):
+            for key in ('Earnings Date', 'earningsDate'):
+                val = cal.get(key)
+                if val:
+                    try:
+                        ed = pd.Timestamp(val[0] if isinstance(val, list) else val).date()
+                        d  = (ed - date.today()).days
+                        if d >= -1:
+                            days = d
+                    except Exception:
+                        pass
+                    break
+    except Exception:
+        pass
+    earnings_cache[symbol] = (today_str, days)
+    return days
+
+# ─────────────────────────────────────────────────────────
 # GRADE SETUP
 # ─────────────────────────────────────────────────────────
-def grade_setup(sig, regime, sl, target, price, rr):
+def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     score   = 0
     reasons = []
 
+    # Earnings gate — hard skip within 3 days: IV crush, gap risk, binary event
+    if symbol:
+        dte = get_days_to_earnings(symbol)
+        if dte is not None and 0 <= dte <= 3:
+            return 'SKIP', [f'Earnings in {dte}d — skip binary event'], 0
+
     if not sig['above_ma']:
         return 'SKIP', ['Below MA'], 0
-    if sig['rsi'] > MAX_RSI_ENTRY:
-        return 'SKIP', [f'RSI {sig["rsi"]} too high'], 0
-    if sig['vol_ratio'] < MIN_VOLUME_RATIO:
+    # 5m RSI — scoring only, not a hard gate (same principle as daily RSI)
+    # High 5m RSI = late to the party but can still run; penalise rather than block
+    # Large-caps (>$100) are liquid even at 1x volume — lower threshold
+    vol_threshold = 1.0 if sig.get('price', 0) > 100 else MIN_VOLUME_RATIO
+    if sig['vol_ratio'] < vol_threshold:
         return 'SKIP', [f'Volume {sig["vol_ratio"]:.1f}x too low'], 0
     if rr < MIN_RR:
         return 'SKIP', [f'R:R 1:{rr} below min 1:{MIN_RR}'], 0
     if regime == 'CHOPPY':
         return 'SKIP', ['Choppy — no trades'], 0
+    # Must be moving today — no entering flat or declining stocks
+    today_gain = sig.get('prev_chg', 0)
+    if today_gain < MIN_TODAY_GAIN:
+        return 'SKIP', [f'Only +{today_gain:.1f}% today (need ≥{MIN_TODAY_GAIN}%)'], 0
 
     if sig['fvg_count'] >= 10:
         score += 30; reasons.append(f'{sig["fvg_count"]} FVGs')
@@ -517,15 +798,87 @@ def grade_setup(sig, regime, sl, target, price, rr):
     elif sig['uptrend']:
         score += 10; reasons.append('Uptrend')
 
+    # Daily RSI — scoring only, no longer a hard gate (high RSI = momentum, not overbought)
     if 45 <= sig['rsi'] <= 65:
         score += 20; reasons.append(f'RSI {sig["rsi"]} ideal')
-    elif 65 < sig['rsi'] <= 75:
-        score += 10; reasons.append(f'RSI {sig["rsi"]} elevated')
+    elif 65 < sig['rsi'] <= 80:
+        score += 10; reasons.append(f'RSI {sig["rsi"]} elevated (momentum)')
     else:
-        score += 5;  reasons.append(f'RSI {sig["rsi"]}')
+        score += 5;  reasons.append(f'RSI {sig["rsi"]} (trending)')
+
+    # 5m RSI — scoring only, penalise exhaustion but don't block
+    rsi5m = sig.get('rsi_5m', 50)
+    if rsi5m > MAX_RSI_5M:
+        score -= 20; reasons.append(f'5m RSI {rsi5m} exhausted (-20)')
+    elif rsi5m > 75:
+        score -= 10; reasons.append(f'5m RSI {rsi5m} elevated (-10)')
 
     if sig['is_tight']:
         score += 10; reasons.append(f'Tight range {sig["range_pct"]:.1f}%')
+
+    # Reward stocks already moving strongly today
+    if today_gain >= 5.0:
+        score += 30; reasons.append(f'+{today_gain:.1f}% today')
+    elif today_gain >= 3.0:
+        score += 20; reasons.append(f'+{today_gain:.1f}% today')
+    elif today_gain >= 1.5:
+        score += 10; reasons.append(f'+{today_gain:.1f}% today')
+
+    # ── Price action gate — must have at least one pro pattern ──
+    # Exception: strong momentum (up 5%+ AND beating SPY by 3%+) is itself the signal
+    rs          = sig.get('rs_vs_spy', 0)
+    strong_momo = today_gain >= 5.0 and rs >= 3.0
+    has_pattern = (sig.get('vwap_reclaim') or sig.get('is_bull_flag')
+                   or sig.get('hod_break') or sig.get('orb_break') or strong_momo)
+    if not has_pattern:
+        return 'SKIP', ['No pattern — wait for ORB/VWAP reclaim/bull flag/HOD break'], 0
+
+    # ── Score the pattern ──────────────────────────────────────
+    if sig.get('orb_break'):
+        score += 30; reasons.append('ORB breakout ✓')   # most reliable — scored highest
+
+    if sig.get('vwap_reclaim'):
+        score += 25; reasons.append('VWAP reclaim ✓')
+    elif sig.get('above_vwap'):
+        score += 10; reasons.append('Above VWAP')
+
+    if sig.get('is_bull_flag'):
+        score += 25; reasons.append('Bull flag ✓')
+
+    if sig.get('hod_break'):
+        score += 20; reasons.append('HOD break ✓')
+
+    # ── Relative strength vs SPY ──────────────────────────────
+    rs = sig.get('rs_vs_spy', 0)
+    if rs >= 5:
+        score += 20; reasons.append(f'RS +{rs:.1f}% vs SPY')
+    elif rs >= 2:
+        score += 10; reasons.append(f'RS +{rs:.1f}% vs SPY')
+    elif rs < 0:
+        score -= 10; reasons.append(f'RS {rs:.1f}% vs SPY (lagging)')
+
+    # ── Pre-market high — cleared = overnight resistance gone, strong confirmation ──
+    if symbol and symbol in key_levels:
+        pm_high = key_levels[symbol].get('pm_high')
+        if pm_high:
+            if price >= pm_high * 1.001:
+                score += 15; reasons.append(f'Above PM high ${pm_high} ✓')
+            elif price >= pm_high * 0.998:
+                score += 5;  reasons.append(f'Testing PM high ${pm_high}')
+            else:
+                score -= 5;  reasons.append(f'Below PM high ${pm_high} (resistance)')
+
+    # ── Sector ETF strength ───────────────────────────────────
+    if symbol and sector_strength:
+        sec = get_symbol_sector(symbol)
+        etf = SECTOR_ETF_MAP.get(sec, 'SPY')
+        etf_chg = sector_strength.get(etf, 0)
+        if etf_chg >= 1.5:
+            score += 15; reasons.append(f'{etf} +{etf_chg:.1f}% leading')
+        elif etf_chg >= 0.5:
+            score += 5;  reasons.append(f'{etf} +{etf_chg:.1f}%')
+        elif etf_chg <= -1.0:
+            score -= 10; reasons.append(f'{etf} {etf_chg:.1f}% weak sector')
 
     if regime == 'STRONG':
         score += 15; reasons.append('Strong market')
@@ -536,6 +889,20 @@ def grade_setup(sig, regime, sl, target, price, rr):
         score += 10; reasons.append(f'R:R 1:{rr} excellent')
     elif rr >= MIN_RR:
         score += 5;  reasons.append(f'R:R 1:{rr}')
+
+    # ── Candlestick quality ───────────────────────────────────
+    if sig.get('is_hammer'):
+        score += 15; reasons.append('Hammer candle — reversal confirmation ✓')
+    elif sig.get('is_bullish_candle'):
+        score += 10; reasons.append('Strong bullish candle ✓')
+    elif sig.get('is_doji') and sig.get('above_vwap'):
+        score -= 5;  reasons.append('Doji at key level — indecision (-5)')
+
+    # ── 15-minute timeframe alignment ────────────────────────
+    if sig.get('aligned_15m') is True:
+        score += 10; reasons.append('15m aligned (price > 15m VWAP & EMA20) ✓')
+    elif sig.get('aligned_15m') is False:
+        score -= 15; reasons.append('15m counter-trend (-15)')
 
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
     return grade, reasons, score
@@ -550,21 +917,55 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
             'symbol': symbol, 'qty': shares,
             'side': 'BUY', 'order_type': 'MARKET'
         }, timeout=10)
-        order_id = str(r.json().get('orderId', ''))
+        order_id = r.json().get('orderId')
+        if not order_id:
+            log(f"  {symbol}: No orderId returned — order submission failed")
+            return None
+
+        # Poll for fill confirmation (3 attempts × 2s = 6s max)
+        filled = False
+        for _ in range(3):
+            time.sleep(2)
+            try:
+                r2 = requests.get(f"{BRIDGE}/order/{order_id}/status", timeout=5)
+                d  = r2.json()
+                if d.get('status') == 'Filled':
+                    filled = True
+                    break
+                if d.get('status') in ('Cancelled', 'Inactive'):
+                    log(f"  {symbol}: Order {order_id} {d['status']} — not recording")
+                    return None
+            except Exception:
+                pass
+        if not filled:
+            log(f"  {symbol}: Fill not confirmed after 6s — skipping DB entry")
+            return None
 
         trade_id = log_trade_entry(
             symbol=symbol, entry_price=price, shares=shares,
             target_price=target, stop_price=sl, setup_type=strategy,
             rsi=rsi, volume_ratio=vol_ratio, sector=sector,
-            earnings_days=999, confidence=confidence, order_id=order_id
+            earnings_days=999, confidence=confidence, order_id=str(order_id)
         )
+        if trade_id:
+            trade_entry_times[trade_id] = datetime.now(ET)
         return trade_id
     except Exception as e:
         log(f"Place trade error {symbol}: {e}")
         return None
 
 # ─────────────────────────────────────────────────────────
-# MONITOR OPEN TRADES — ATR trailing, partial exit, time stop
+# MONITOR OPEN TRADES — signal-based exits, no fixed % targets
+# Exit signals (priority order):
+#   1. ATR trailing stop (always active once 1 ATR in profit)
+#   2. 5-min trailing stop when 3%+ profit (tighter, intraday lock-in)
+#   3. Hard stop at SL level
+#   4. Per-trade dollar circuit breaker ($200 max loss)
+#   5. No-move exit — flat (−0.3% to +0.8%) after 60 min: capital stuck
+#   6. VWAP cross below — momentum shift signal
+#   7. Momentum fade — drop > 1×ATR from session high while in profit
+#   8. EOD conviction close — 3:45pm, exit unless profitable AND above VWAP
+#   9. Hard time stop — MAX_HOLD_DAYS backstop
 # ─────────────────────────────────────────────────────────
 def monitor_open_trades(regime='NORMAL'):
     trades = get_open_trades()
@@ -572,6 +973,7 @@ def monitor_open_trades(regime='NORMAL'):
         return []
 
     exits = []
+    now   = datetime.now(ET)
 
     for trade in trades:
         tid    = trade['id']
@@ -579,13 +981,11 @@ def monitor_open_trades(regime='NORMAL'):
         shares = trade['shares']
         entry  = trade['entry_price']
         sl     = trade['stop_price']
-        target = trade['target_price']
 
         price = get_live_price(sym)
         if not price:
             continue
 
-        # Price + session-high history
         if tid not in price_history:
             price_history[tid] = []
         price_history[tid].append(price)
@@ -594,99 +994,113 @@ def monitor_open_trades(regime='NORMAL'):
 
         session_high[tid] = max(session_high.get(tid, price), price)
 
-        pnl_pct  = (price - entry) / entry * 100
-        hist     = price_history[tid]
-        atr      = get_atr(sym) or (entry * 0.02)
+        pnl_pct = (price - entry) / entry * 100
+        pnl_usd = (price - entry) * shares
+        atr     = get_atr(sym) or (entry * 0.02)
 
-        # ── ATR trailing stop ──────────────────────────────
-        # In WEAK market use tighter 1.0×ATR trail, else 1.5×ATR
-        # Only start trailing once position has 1 ATR of breathing room
+        # ── ATR trailing stop — only activates once 1 ATR in profit ──
         trail_mult      = 1.0 if regime == 'WEAK' else ATR_TRAIL_MULT
-        trail_threshold = entry + atr   # must be 1 ATR in profit before trail activates
+        trail_threshold = entry + atr
         if price >= trail_threshold:
             atr_trail = round(session_high[tid] - trail_mult * atr, 2)
             if atr_trail > sl:
                 sl = atr_trail
                 update_trade_stop(tid, sl)
-                log(f"  {sym}: ATR trail stop → ${sl} ({pnl_pct:+.1f}%) [{regime}]")
+                log(f"  {sym}: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
 
-        # ── Exit decisions ─────────────────────────────────
-        exit_reason = None
-        now = datetime.now(ET)
+        # ── Break-even stop: once +0.5% profit, lock SL at entry + $0.05 ──
+        if pnl_pct >= 0.5 and sl < entry:
+            be_sl = round(entry + 0.05, 2)
+            if be_sl > sl:
+                sl = be_sl
+                update_trade_stop(tid, sl)
+                log(f"  {sym}: Break-even stop → ${sl} ({pnl_pct:+.1f}%)")
 
-        # 1. Hard stop
-        if price <= sl:
-            exit_reason = f'Stop loss ${sl} hit ({pnl_pct:+.1f}%)'
-
-        # 1b. WEAK regime early loss cut — exit at half the normal stop distance
-        elif regime == 'WEAK' and pnl_pct < -(MAX_RISK_PCT / 2):
-            exit_reason = f'WEAK regime — early loss cut ({pnl_pct:+.1f}%)'
-
-        # 2. Partial exit at target (50%) — first time only
-        elif price >= target and tid not in partial_done:
-            half = max(1, shares // 2)
+        # ── Fetch 5-min bars once — used for intraday trailing + VWAP signals ──
+        df5             = None
+        vwap_val        = None
+        above_vwap      = None
+        prev_above_vwap = None
+        if is_market_open():
             try:
-                ibkr_pos = get_ibkr_positions()
-                ibkr_qty = ibkr_pos.get(sym, {}).get('qty', 0) or 0
-                if ibkr_qty <= 0:
-                    log(f"  {sym}: SKIP partial exit — no IBKR position")
-                    partial_done.add(tid)
-                    continue
-                half = min(half, int(ibkr_qty))
-                requests.post(f"{BRIDGE}/order", json={
-                    'symbol': sym, 'qty': half,
-                    'side': 'SELL', 'order_type': 'MARKET'
-                }, timeout=10)
-                partial_pnl = round((price - entry) * half, 2)
-                partial_done.add(tid)
-                remaining = shares - half
-                update_trade_shares(tid, remaining)
-                # Move stop to entry (lock in breakeven on remainder)
-                update_trade_stop(tid, entry)
-                sl = entry
-                log(f"  {sym}: 50% exit at target ${target} | P&L ${partial_pnl:+.2f} | {remaining} shares remain")
-                exits.append({
-                    'sym': sym, 'price': price, 'entry': entry,
-                    'pnl': partial_pnl, 'pnl_pct': pnl_pct,
-                    'reason': f'Partial exit 50% at target ({pnl_pct:+.1f}%)'
-                })
-                continue
-            except Exception as e:
-                log(f"  {sym}: partial exit error: {e}")
+                df5 = yf.Ticker(sym).history(period='1d', interval='5m')
+                if len(df5) >= 3:
+                    df5['typical'] = (df5['High'] + df5['Low'] + df5['Close']) / 3
+                    df5['vwap']    = (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum()
+                    vwap_val        = round(float(df5['vwap'].iloc[-1]), 2)
+                    above_vwap      = float(df5['Close'].iloc[-1]) > float(df5['vwap'].iloc[-1])
+                    prev_above_vwap = float(df5['Close'].iloc[-2]) > float(df5['vwap'].iloc[-2])
+            except Exception:
+                pass
 
-        # 3. Full exit when remaining half hits new ATR-based target or stop
-        elif price >= target and tid in partial_done:
-            exit_reason = f'Final exit — target extended ({pnl_pct:+.1f}%)'
+        # ── 5-min trailing stop — kicks in at 3%+ profit, trail to 2-bar low ──
+        if is_market_open() and pnl_pct >= 3.0 and df5 is not None and len(df5) >= 3:
+            try:
+                intra_trail = round(float(df5['Low'].iloc[-3:-1].min()), 2)
+                if intra_trail > sl:
+                    sl = intra_trail
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym}: 5m trail → ${sl} ({pnl_pct:+.1f}%)")
+            except Exception:
+                pass
+
+        # ── Exit decisions (priority order) ───────────────────
+        exit_reason = None
+
+        # 1. Hard stop — ATR-based SL hit
+        if price <= sl:
+            exit_reason = f'Stop ${sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+
+        # 2. Per-trade dollar circuit breaker — gap risk defence between scans
+        elif pnl_usd <= -MAX_LOSS_PER_TRADE:
+            exit_reason = f'Circuit breaker: -${MAX_LOSS_PER_TRADE} hit (${pnl_usd:+.0f})'
+
+        # 3. VWAP cross below — momentum has shifted; only exit if was profitable
+        elif (is_market_open() and pnl_pct > 0.5
+              and above_vwap is not None
+              and not above_vwap and prev_above_vwap is True):
+            exit_reason = f'VWAP cross below ${vwap_val} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
         # 4. Momentum fade — drop > 1×ATR from session high while in profit
         elif price < session_high.get(tid, price):
             drop = session_high[tid] - price
             if drop > ATR_FADE_MULT * atr and pnl_pct > 0.3:
-                exit_reason = f'Momentum fade >{ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}%)'
+                exit_reason = f'Momentum fade {ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 5. Time stop — exit flat trade after TIME_STOP_DAYS
+        # 5. No-move exit — flat after 60 min: capital stuck, opportunity cost
+        if not exit_reason and is_market_open():
+            entry_dt = trade_entry_times.get(tid)
+            if entry_dt:
+                mins_held = (now - entry_dt).total_seconds() / 60
+                if mins_held >= 60 and -0.3 <= pnl_pct <= 0.8:
+                    exit_reason = f'No-move exit: flat {mins_held:.0f}min ({pnl_pct:+.1f}%)'
+
+        # 6. EOD conviction close — 3:45pm, hold overnight only if still strong
+        if not exit_reason and is_market_open() and (now.hour, now.minute) >= (EOD_CLOSE_HOUR, EOD_CLOSE_MINUTE):
+            conviction = pnl_pct > 1.5 and above_vwap is True
+            if not conviction:
+                vwap_tag   = 'above VWAP' if above_vwap else 'below VWAP'
+                exit_reason = f'EOD: no overnight conviction ({pnl_pct:+.1f}% {vwap_tag})'
+
+        # 7. Hard time stop — backstop, rarely fires with EOD close active
         if not exit_reason:
             entry_date = get_trade_entry_date(tid)
             if entry_date:
-                days_held = (date.today() - date.fromisoformat(entry_date)).days
-                if days_held >= TIME_STOP_DAYS and abs(pnl_pct) < 1.0:
-                    exit_reason = f'Time stop — {days_held}d held, flat ({pnl_pct:+.1f}%)'
+                bdays_held = int(np.busday_count(entry_date, date.today().isoformat()))
+                if bdays_held >= MAX_HOLD_DAYS:
+                    exit_reason = f'Max hold {bdays_held}bd — time exit ({pnl_pct:+.1f}%)'
 
-        # 6. EOD close
-        if not exit_reason and now.hour == 15 and now.minute >= 45:
-            exit_reason = f'EOD close ({pnl_pct:+.1f}%)'
-
-        log(f"  {sym}: ${price} ({pnl_pct:+.1f}%) SL=${sl} TGT=${target} ATR=${atr:.2f} "
+        vwap_tag = f' VWAP${vwap_val}' if vwap_val else ''
+        log(f"  {sym}: ${price} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f}) SL=${sl}{vwap_tag} ATR=${atr:.2f} "
             f"→ {'EXIT' if exit_reason else 'HOLD'}")
 
         if exit_reason:
             try:
-                # Verify IBKR actually holds this position before selling
                 ibkr_pos = get_ibkr_positions()
                 ibkr_qty = ibkr_pos.get(sym, {}).get('qty', 0) or 0
                 if ibkr_qty <= 0:
-                    log(f"  {sym}: SKIP exit — no IBKR position (qty={ibkr_qty}), closing DB only")
-                    log_trade_exit(tid, price, f'DB cleanup — no IBKR position')
+                    log(f"  {sym}: SKIP exit — no IBKR position, closing DB only")
+                    log_trade_exit(tid, price, 'DB cleanup — no IBKR position')
                     open_positions.pop(sym, None)
                     continue
                 sell_qty = min(shares, int(ibkr_qty))
@@ -697,11 +1111,11 @@ def monitor_open_trades(regime='NORMAL'):
                 pnl = log_trade_exit(tid, price, exit_reason)
                 exits.append({
                     'sym': sym, 'price': price, 'entry': entry,
-                    'pnl': pnl, 'pnl_pct': pnl_pct, 'reason': exit_reason
+                    'pnl': pnl, 'pnl_pct': pnl_pct, 'pnl_usd': round(pnl_usd, 2),
+                    'reason': exit_reason
                 })
                 for d in (price_history, session_high, open_positions):
                     d.pop(tid if isinstance(d, dict) and tid in d else sym, None)
-                partial_done.discard(tid)
             except Exception as e:
                 log(f"Exit error {sym}: {e}")
 
@@ -784,32 +1198,85 @@ def is_trading_blocked():
 # MAIN SCAN
 # ─────────────────────────────────────────────────────────
 def run_scan():
-    global daily_trade_count, traded_today
+    global daily_trade_count, traded_today, regime_history, spy_open_price
 
     # Reconcile DB with IBKR first
     reconcile_with_ibkr()
+
+    # Update sector ETF strengths once per scan cycle
+    update_sector_strength()
 
     regime, spy_chg, vix, extra = get_regime()
     open_trades = get_open_trades()
     daily       = get_daily_pnl()
 
-    vwap_str = f"VWAP {'↑' if extra.get('spy_above_vwap') else '↓'}"
-    vix_str  = f"VIX {vix:.1f}{'↑' if extra.get('vix_rising') else '↓'}"
-    qqq_str  = f"QQQ {'lead' if extra.get('qqq_leading') else 'lag'}"
+    # Track regime stability — rolling window of last N readings
+    regime_history.append(regime)
+    if len(regime_history) > 6:
+        regime_history.pop(0)
+    confirmed_scans = sum(1 for r in reversed(regime_history) if r == regime)
+
+    # Track SPY price from market open — set once on first post-open scan
+    now = datetime.now(ET)
+    if is_market_open() and spy_open_price is None:
+        try:
+            spy_data = yf.Ticker('SPY').history(period='1d', interval='1m')
+            if not spy_data.empty:
+                first_bar_date = spy_data.index[0].date()
+                if first_bar_date == now.date():
+                    spy_open_price = round(float(spy_data['Open'].iloc[0]), 2)
+                    log(f"SPY open price locked: ${spy_open_price}")
+                else:
+                    log(f"SPY open: skipped — data is from {first_bar_date}, not today")
+        except Exception:
+            pass
+
+    spy_above_open = True
+    if spy_open_price:
+        try:
+            spy_now = yf.Ticker('SPY').history(period='1d', interval='1m')['Close'].iloc[-1]
+            spy_above_open = float(spy_now) >= spy_open_price * 0.998  # allow 0.2% noise
+        except Exception:
+            pass
+
+    vwap_str   = f"VWAP {'↑' if extra.get('spy_above_vwap') else '↓'}"
+    vix_str    = f"VIX {vix:.1f}{'↑' if extra.get('vix_rising') else '↓'}"
+    qqq_str    = f"QQQ {'lead' if extra.get('qqq_leading') else 'lag'}"
+    es_chg     = extra.get('es_chg', 0)
+    nq_chg     = extra.get('nq_chg', 0)
+    fut_str    = f"ES {es_chg:+.1f}% NQ {nq_chg:+.1f}%"
+    breadth_str = 'breadth ✓' if extra.get('broad_advance') else ('breadth WEAK' if extra.get('breadth_weak') else 'breadth ~')
+    pcr        = extra.get('pcr')
+    pcr_str    = f"PCR {pcr:.2f}{'⚠' if extra.get('pcr_bearish') else ''}" if pcr else "PCR n/a"
     log(f"\n{'='*55}")
-    log(f"SCAN | Regime: {regime} | SPY {spy_chg:+.1f}% | {vwap_str} | {vix_str} | {qqq_str}")
-    log(f"Open: {len(open_trades)} | Trades today: {daily_trade_count} | P&L: ${daily['pnl']:+.2f}")
+    log(f"SCAN | Regime: {regime} (x{confirmed_scans}) | SPY {spy_chg:+.1f}% {'↑open' if spy_above_open else '↓open'} | {vwap_str} | {vix_str} | {qqq_str}")
+    log(f"      Futures: {fut_str} | {breadth_str} | {pcr_str}")
+    # Live session P&L = realized today + current unrealized
+    try:
+        portfolio_snap = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
+        unrealized_now = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio_snap)
+    except Exception:
+        unrealized_now = 0
+    session_pnl = daily['pnl'] + unrealized_now
+
+    log(f"Open: {len(open_trades)} | Trades today: {daily_trade_count} | Realized: ${daily['pnl']:+.2f} | Session: ${session_pnl:+.2f}")
 
     # Always monitor open trades
     exits = []
     if not is_entry_window():
-        log("After 3pm — monitoring only")
+        log("Outside entry window — monitoring only")
         exits = monitor_open_trades(regime)
     elif is_trading_blocked()[0]:
         log(f"Trading blocked — monitoring only")
         exits = monitor_open_trades(regime)
-    elif regime in ('CHOPPY', 'WEAK'):
-        log(f"{regime} market — monitoring only, no new entries")
+    elif regime == 'CHOPPY':
+        log(f"CHOPPY market — monitoring only, no new entries")
+        exits = monitor_open_trades(regime)
+    elif regime == 'WEAK':
+        log(f"WEAK market — monitoring only (gap plays on WEAK days: 13% WR, avoid)")
+        exits = monitor_open_trades(regime)
+    elif not spy_above_open:
+        log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
         exits = monitor_open_trades(regime)
     elif len(open_trades) >= MAX_OPEN_TRADES:
         log(f"Max open trades ({MAX_OPEN_TRADES}) — monitoring only")
@@ -817,8 +1284,14 @@ def run_scan():
     elif daily_trade_count >= MAX_DAILY_TRADES:
         log(f"Max daily trades ({MAX_DAILY_TRADES}) reached")
         exits = monitor_open_trades(regime)
+    elif session_pnl >= DAILY_PROFIT_TARGET:
+        log(f"✅ Daily target +${session_pnl:.0f} hit — protecting gains, no new entries")
+        exits = monitor_open_trades(regime)
+    elif confirmed_scans < MIN_REGIME_SCANS:
+        log(f"Regime {regime} only confirmed {confirmed_scans}x — waiting for stability")
+        exits = monitor_open_trades(regime)
     else:
-        exits = _scan_and_enter(regime, spy_chg, open_trades)
+        exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
     # Batched WhatsApp exit message
     if exits:
@@ -838,8 +1311,141 @@ def run_scan():
                 lines.append(f"  ✅ {x['sym']} 50% @ ${x['price']} P&L ${x['pnl']:+.2f}")
             send_telegram('\n'.join(lines))
 
-def _scan_and_enter(regime, spy_chg, open_trades):
+def get_deployed_capital():
+    """Sum of capital currently locked in open positions."""
+    return sum(t['shares'] * t['entry_price'] for t in get_open_trades())
+
+def get_position_capital(grade, is_catalyst, deployed):
+    """Dynamic allocation — best setups ride larger; never exceed TOTAL_CAPITAL."""
+    remaining = TOTAL_CAPITAL - deployed
+    if remaining < 200:
+        return 0
+    if is_catalyst and grade == 'A+':
+        alloc = TOTAL_CAPITAL * 0.30   # $1,500 — top catalyst
+    elif grade == 'A+':
+        alloc = TOTAL_CAPITAL * 0.25   # $1,250 — strong momentum
+    elif is_catalyst and grade == 'A':
+        alloc = TOTAL_CAPITAL * 0.22   # $1,100 — catalyst, decent grade
+    else:
+        alloc = TOTAL_CAPITAL * 0.18   # $900   — solid A setup
+    return round(min(alloc, remaining), 2)
+
+def _scan_catalyst_override(open_trades):
+    """
+    Scan for isolated catalyst plays (earnings/news gap-and-go) on WEAK market days.
+    These are market-independent: a stock up 6%+ on earnings goes up regardless of SPY.
+    Rules: gap 6%+ from prev close, still above open price now, volume 2x+, A+ grade only.
+    Position size is halved since market backdrop is not supportive.
+    """
     global daily_trade_count, traded_today
+
+    now = datetime.now(ET)
+    # Only run in entry window and after opening range
+    if not is_entry_window():
+        return []
+
+    # Build scan list: dynamic (momentum scanner) picks first, then full universe
+    scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    entries = []
+
+    for symbol in scan_order:
+        if symbol in traded_today:
+            continue
+        if any(t['symbol'] == symbol for t in open_trades):
+            continue
+        if daily_trade_count >= MAX_DAILY_TRADES:
+            break
+        if len(open_trades) + len(entries) >= MAX_OPEN_TRADES:
+            break
+
+        try:
+            # Quick check: is this stock gapping 6%+ with 2x+ volume?
+            hist = yf.Ticker(symbol).history(period='2d', interval='1d')
+            if len(hist) < 2:
+                continue
+            prev_close  = float(hist['Close'].iloc[-2])
+            today_open  = float(hist['Open'].iloc[-1])
+            today_vol   = float(hist['Volume'].iloc[-1])
+            avg_vol     = float(yf.Ticker(symbol).history(period='30d')['Volume'].mean())
+            gap_pct     = (today_open - prev_close) / prev_close * 100
+            vol_ratio   = today_vol / avg_vol if avg_vol > 0 else 1
+
+            # Must be gapping 6%+ with at least 2x volume — confirmed catalyst
+            if gap_pct < 6.0 or vol_ratio < 2.0:
+                continue
+
+            sig = get_intraday_signals(symbol)
+            if sig is None:
+                continue
+
+            price = sig['price']
+            # Stock must still be above its open price (gap not fading)
+            if price < today_open * 0.99:
+                continue
+
+            sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, 'LONG')
+            grade, reasons, score = grade_setup(sig, 'NORMAL', sl, target, price, rr, symbol=symbol)
+
+            # Catalyst override requires A+ only
+            if grade != 'A+':
+                continue
+
+            sector  = get_symbol_sector(symbol)
+            # Half position size on WEAK market day
+            deployed = get_deployed_capital()   # entries already in DB via log_trade_entry
+            capital  = get_position_capital(grade, True, deployed) * 0.5
+            if capital < 100:
+                continue
+            # ATR-normalized: size so actual stop risk ≤ MAX_LOSS_PER_TRADE (halved for WEAK day)
+            risk_per_share = round(price - sl, 4)
+            atr_shares     = int((MAX_LOSS_PER_TRADE * 0.5) / risk_per_share) if risk_per_share > 0 else int(capital / price)
+            shares         = max(1, min(int(capital / price), atr_shares))
+
+            log(f"  ⚡ CATALYST OVERRIDE {symbol} gap {gap_pct:+.1f}% vol {vol_ratio:.1f}x — entering despite WEAK market")
+
+            trade_id = place_trade(
+                symbol, price, shares, sl, target,
+                'CATALYST_OVERRIDE', grade,
+                rsi=sig['rsi'], vol_ratio=sig['vol_ratio'],
+                confidence=score, sector=sector,
+            )
+            if trade_id:
+                traded_today.add(symbol)
+                save_traded_today()
+                open_positions[symbol] = trade_id
+                daily_trade_count += 1
+                entries.append({'symbol': symbol, 'price': price, 'shares': shares,
+                                'sl': sl, 'target': target, 'gap_pct': gap_pct,
+                                'vol_ratio': vol_ratio})
+
+        except Exception as e:
+            log(f"  Catalyst override error {symbol}: {e}")
+
+    if entries:
+        lines = [f"⚡ CATALYST OVERRIDE — {len(entries)} isolated plays (WEAK mkt)"]
+        for e in entries:
+            lines.append(f"  {e['symbol']} gap {e['gap_pct']:+.1f}% | {e['shares']}sh @ ${e['price']} | SL${e['sl']} T${e['target']}")
+        send_telegram('\n'.join(lines))
+
+    return []
+
+def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
+    global daily_trade_count, traded_today
+
+    # ── Daily max loss brake ───────────────────────────────────
+    try:
+        portfolio = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
+        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio)
+    except Exception:
+        unrealized = 0
+    realized    = get_daily_pnl()
+    daily_total = realized.get('pnl', 0) + unrealized
+    if daily_total <= -MAX_DAILY_LOSS:
+        log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
+        return monitor_open_trades(regime)
+
+    # Dynamic picks = symbols in catalyst_priority but NOT in fixed FULL_UNIVERSE
+    dynamic_picks = [s for s in catalyst_priority if s not in FULL_UNIVERSE]
 
     # Build scan order: catalyst picks first, then rest of universe
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
@@ -851,7 +1457,12 @@ def _scan_and_enter(regime, spy_chg, open_trades):
         if any(t['symbol'] == symbol for t in open_trades):
             continue
 
-        sig = get_intraday_signals(symbol)
+        # Dynamic (unknown) stocks need strong confirmation — volatile at open
+        is_dynamic = symbol in dynamic_picks
+        if is_dynamic and regime != 'STRONG' and not (regime == 'NORMAL' and confirmed_scans >= 3):
+            continue
+
+        sig = get_intraday_signals(symbol, spy_chg=spy_chg)
         if sig is None:
             continue
 
@@ -864,12 +1475,16 @@ def _scan_and_enter(regime, spy_chg, open_trades):
             continue
 
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
-        grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr)
+        grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr, symbol=symbol)
 
         if grade in ('SKIP', 'C'):
             continue
         # SPY negative intraday → only take A+ setups
         if spy_chg < 0 and grade != 'A+':
+            continue
+
+        # Dynamic (unknown) stocks require A+ regardless — too risky at lower grades
+        if symbol in dynamic_picks and grade != 'A+':
             continue
 
         is_catalyst = symbol in catalyst_priority
@@ -912,7 +1527,15 @@ def _scan_and_enter(regime, spy_chg, open_trades):
             continue
 
         price    = pick['price']
-        shares   = max(1, int(CAPITAL_PER_TRADE / price))
+        deployed = get_deployed_capital()   # entries already in DB via log_trade_entry
+        capital  = get_position_capital(pick['grade'], pick['is_catalyst'], deployed)
+        if capital <= 0:
+            log(f"  Capital cap reached (${deployed:,.0f}/${TOTAL_CAPITAL:,} deployed)")
+            break
+        # ATR-normalized: size so actual stop risk ≤ MAX_LOSS_PER_TRADE
+        risk_per_share = round(price - pick['sl'], 4)
+        atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
+        shares         = max(1, min(int(capital / price), atr_shares))
         strategy = 'CATALYST' if pick['is_catalyst'] else ('FVG_FILL' if pick['fvg_count'] > 5 else 'MOMENTUM')
 
         log(f"  {'⚡' if pick['is_catalyst'] else '🎯'} {pick['grade']} {sym} [{sector}] ${price} | "
@@ -935,7 +1558,7 @@ def _scan_and_enter(regime, spy_chg, open_trades):
             time.sleep(2)
 
     # Monitor existing trades too
-    exits = monitor_open_trades()
+    exits = monitor_open_trades(regime)
 
     # Batched WhatsApp entry message
     if entries:
@@ -951,17 +1574,177 @@ def _scan_and_enter(regime, spy_chg, open_trades):
 # ─────────────────────────────────────────────────────────
 # SCHEDULED TASKS
 # ─────────────────────────────────────────────────────────
+def get_premarket_pct(sym):
+    """Returns pre-market % change vs previous close, or None if unavailable."""
+    try:
+        data = yf.Ticker(sym).history(period='1d', interval='1m', prepost=True)
+        if data.empty:
+            return None
+        # tz-aware filter: only today's pre-market bars (before 9:30am ET)
+        data.index = data.index.tz_convert(ET)
+        today = datetime.now(ET).date()
+        pm = data[(data.index.date == today) & (data.index.hour < 9) |
+                  ((data.index.date == today) & (data.index.hour == 9) & (data.index.minute < 30))]
+        if pm.empty:
+            return None
+        pm_last = float(pm['Close'].iloc[-1])
+        hist = yf.Ticker(sym).history(period='5d', interval='1d')
+        if len(hist) < 2:
+            return None
+        prev_close = float(hist['Close'].iloc[-2])
+        return round((pm_last - prev_close) / prev_close * 100, 2)
+    except Exception:
+        return None
+
+def premarket_early_scan():
+    """4:30am ET — first look at pre-market movers. Pros scan here."""
+    global catalyst_priority
+    log("PRE-MARKET SCAN (4:30am) — identifying overnight movers...")
+    scan_universe = list(dict.fromkeys(FULL_UNIVERSE))
+    pm_results = []
+    for sym in scan_universe:
+        pct = get_premarket_pct(sym)
+        if pct is not None and pct >= 2.0:
+            pm_results.append((sym, pct))
+    pm_results.sort(key=lambda x: -x[1])
+
+    if pm_results:
+        # Seed catalyst_priority with pre-market leaders
+        pm_syms = [s for s, _ in pm_results]
+        catalyst_priority = pm_syms + [s for s in catalyst_priority if s not in pm_syms]
+        lines = []
+        for i, (s, p) in enumerate(pm_results[:8]):
+            tag = '' if s in FULL_UNIVERSE else ' 🆕'
+            si_str = ''
+            if i < 5:
+                try:
+                    info = yf.Ticker(s).info
+                    si = info.get('shortPercentOfFloat')
+                    if si:
+                        si_str = f" | SI {si*100:.0f}%"
+                except Exception:
+                    pass
+            lines.append(f"  {s}: +{p:.1f}% pre-mkt{tag}{si_str}")
+        msg = f"🌅 Pre-market watchlist ({len(pm_results)} movers):\n" + '\n'.join(lines)
+        log(msg)
+        send_telegram(msg)
+    else:
+        log("  No significant pre-market movers (all <2%)")
+        send_telegram("🌅 Pre-market: quiet — no movers >2% yet")
+
 def morning_catalyst_scan():
     global catalyst_priority
-    log("CATALYST SCAN — scanning for events...")
+    log("CATALYST SCAN (8:15am) — refreshing watchlist before open...")
+
+    # ── 0. Refresh pre-market (now closer to open, more accurate) ─
+    premarket_lines = []
+    premarket_syms  = []
+    scan_universe   = list(dict.fromkeys(FULL_UNIVERSE + list(set(
+        s for s in catalyst_priority if s not in FULL_UNIVERSE
+    ))))
+    log(f"  Pre-market refresh: checking {len(scan_universe)} stocks...")
+    pm_results = []
+    for sym in scan_universe:
+        pct = get_premarket_pct(sym)
+        if pct is not None and pct >= 2.0:
+            pm_results.append((sym, pct))
+    pm_results.sort(key=lambda x: -x[1])
+    for sym, pct in pm_results[:10]:
+        tag = '' if sym in FULL_UNIVERSE else ' 🆕'
+        premarket_syms.append(sym)
+        premarket_lines.append(f"  {sym}: +{pct:.1f}% pre-mkt{tag}")
+    if premarket_syms:
+        log(f"  Pre-market movers ({len(premarket_syms)}): {premarket_syms}")
+
+    # ── Key levels for top 5 pre-market movers ────────────────
+    key_level_lines = []
+    for sym_kl, pct_kl in pm_results[:5]:
+        try:
+            kl_data = yf.Ticker(sym_kl).history(period='1d', interval='1m', prepost=True)
+            if not kl_data.empty:
+                kl_data.index = kl_data.index.tz_convert(ET)
+                today_kl = datetime.now(ET).date()
+                pm_bars = kl_data[
+                    ((kl_data.index.date == today_kl) & (kl_data.index.hour < 9)) |
+                    ((kl_data.index.date == today_kl) & (kl_data.index.hour == 9) & (kl_data.index.minute < 30))
+                ]
+                if not pm_bars.empty:
+                    pm_high_kl = round(float(pm_bars['High'].max()), 2)
+                    hist_kl = yf.Ticker(sym_kl).history(period='5d', interval='1d')
+                    prior_close_kl = round(float(hist_kl['Close'].iloc[-2]), 2) if len(hist_kl) >= 2 else None
+                    if sym_kl not in key_levels:
+                        key_levels[sym_kl] = {}
+                    key_levels[sym_kl].update({
+                        'pm_high': pm_high_kl,
+                        'prior_close': prior_close_kl or pm_high_kl,
+                    })
+                    prior_str = f" | Prev ${prior_close_kl}" if prior_close_kl else ""
+                    key_level_lines.append(f"  {sym_kl}: PM high ${pm_high_kl}{prior_str} → ORB entry above ${pm_high_kl}")
+        except Exception:
+            pass
+
+    # ── 1. Dynamic IBKR momentum scan ─────────────────────
+    dynamic_syms  = []
+    dynamic_lines = []
     try:
-        picks = run_catalyst_scan()
-        catalyst_priority = [p['symbol'] for p in picks if isinstance(p, dict) and 'symbol' in p]
-        log(f"Catalyst scan done: {len(catalyst_priority)} priority symbols → {catalyst_priority[:10]}")
-        if catalyst_priority:
-            send_telegram(f"⚡ Catalyst signals: {', '.join(catalyst_priority[:8])}\nAuto-trading A-grade setups first.")
+        r = requests.get(f"{BRIDGE}/scan/momentum", timeout=45)
+        if r.status_code == 200:
+            movers = r.json()
+            for m in movers:
+                sym = m['symbol']
+                pct = m['pct_change']
+                dynamic_syms.append(sym)
+                tag = '' if sym in FULL_UNIVERSE else ' 🆕'
+                dynamic_lines.append(f"  {sym}: +{pct}%{tag}")
+            log(f"  Dynamic movers ({len(dynamic_syms)}): {dynamic_syms[:10]}")
+        else:
+            log(f"  Dynamic scan HTTP {r.status_code}")
     except Exception as e:
-        log(f"Catalyst scan error: {e}")
+        log(f"  Dynamic scan error: {e}")
+
+    # ── 2. Fixed catalyst scan (earnings, gap-up, volume surge) ──
+    static_syms = []
+    try:
+        picks       = run_catalyst_scan()
+        static_syms = [p['symbol'] for p in picks if isinstance(p, dict) and 'symbol' in p]
+        log(f"  Static catalyst picks ({len(static_syms)}): {static_syms[:10]}")
+    except Exception as e:
+        log(f"  Static catalyst scan error: {e}")
+
+    # ── 3. Merge: pre-market first → dynamic → static ────────
+    # Pre-market movers get top priority (known before open = best setups)
+    seen = set()
+    combined = []
+    for sym in premarket_syms + dynamic_syms + static_syms:
+        if sym not in seen:
+            seen.add(sym)
+            combined.append(sym)
+    catalyst_priority = combined
+
+    log(f"Priority list ({len(catalyst_priority)}): {catalyst_priority[:12]}")
+
+    # ── 4. Telegram alert ─────────────────────────────────
+    msg_parts = []
+    if premarket_syms:
+        msg_parts.append(
+            f"🌅 Pre-market movers ({len(premarket_syms)}):\n"
+            + '\n'.join(premarket_lines[:6])
+        )
+    if dynamic_syms:
+        new_syms = [s for s in dynamic_syms if s not in FULL_UNIVERSE]
+        msg_parts.append(
+            f"🔥 Momentum scan: {len(dynamic_syms)} movers"
+            + (f" ({len(new_syms)} new)\n" if new_syms else "\n")
+            + '\n'.join(dynamic_lines[:6])
+        )
+    if static_syms:
+        msg_parts.append(f"⚡ Catalyst signals: {', '.join(static_syms[:6])}")
+    if key_level_lines:
+        msg_parts.append("📐 Key levels for top picks:\n" + '\n'.join(key_level_lines))
+    if not msg_parts:
+        msg_parts.append("📭 No pre-market or catalyst signals today")
+
+    send_telegram('\n\n'.join(msg_parts))
 
 def morning_voice_summary():
     log("Morning voice summary")
@@ -988,15 +1771,19 @@ def morning_voice_summary():
 
 def evening_summary():
     log("Evening summary")
-    daily  = get_daily_pnl()
-    wr_30  = get_win_rate(days=30)
-    wr_day = (daily['wins'] / daily['trades'] * 100) if daily['trades'] > 0 else 0
-    emoji  = '✅' if daily['pnl'] > 0 else '❌'
+    daily      = get_daily_pnl()
+    wr_30      = get_win_rate(days=30)
+    wr_day     = (daily['wins'] / daily['trades'] * 100) if daily['trades'] > 0 else 0
+    emoji      = '✅' if daily['pnl'] > 0 else '❌'
+    open_trades = get_open_trades()
+    deployed   = get_deployed_capital()
+    hold_msg   = f"\n📦 {len(open_trades)} positions held overnight (${deployed:,.0f} deployed)" if open_trades else ""
     send_telegram(
         f"{emoji} EOD Summary\n"
         f"Trades: {daily['trades']} | Wins: {daily['wins']} | WR: {wr_day:.0f}%\n"
-        f"P&L: ${daily['pnl']:+.2f}\n"
+        f"P&L today: ${daily['pnl']:+.2f}\n"
         f"30d win rate: {wr_30:.0f}%"
+        f"{hold_msg}"
     )
 
 def nightly_learning():
@@ -1009,10 +1796,15 @@ def nightly_learning():
 
 def reset_daily_state():
     """Midnight reset — clears per-day counters so next session starts clean."""
-    global traded_today, daily_trade_count, atr_cache
-    traded_today      = set()
-    daily_trade_count = 0
-    atr_cache         = {}
+    global traded_today, daily_trade_count, atr_cache, regime_history, spy_open_price
+    global trade_entry_times, earnings_cache
+    traded_today       = set()
+    daily_trade_count  = 0
+    atr_cache          = {}
+    regime_history     = []
+    spy_open_price     = None
+    trade_entry_times  = {}
+    earnings_cache     = {}
     save_traded_today()
     log("Daily state reset for new trading day")
 
@@ -1030,21 +1822,26 @@ if __name__ == '__main__':
     print(f"Scan interval:    Every {SCAN_INTERVAL//60} min")
     print(f"Max open trades:  {MAX_OPEN_TRADES}")
     print(f"Max daily trades: {MAX_DAILY_TRADES}")
-    print(f"Capital/trade:    ${CAPITAL_PER_TRADE}")
-    print(f"Stop method:      ATR × {ATR_STOP_MULT} (adaptive)")
-    print(f"Trailing stop:    ATR × {ATR_TRAIL_MULT} below session high")
-    print(f"Momentum fade:    ATR × {ATR_FADE_MULT} drop from high")
-    print(f"Partial exit:     50% at target, trail remainder")
-    print(f"Time stop:        {TIME_STOP_DAYS} days if flat")
-    print(f"Entry cutoff:     {NO_ENTRY_AFTER}:00 ET")
-    print(f"Min R:R:          1:{MIN_RR}")
+    print(f"Total capital:    ${TOTAL_CAPITAL:,} (dynamic per position)")
+    print(f"Stop method:      ATR × {ATR_STOP_MULT} initial | no % floor — ATR breathes freely")
+    print(f"Trail method:     ATR × {ATR_TRAIL_MULT} + 5m bar low at 3%+ profit")
+    print(f"Exit signals:     VWAP cross ↓ | ATR fade | EOD 3:45pm conviction | circuit breaker")
+    print(f"No fixed target:  ride winners until signal fires — no capped % exits")
+    print(f"EOD close:        {EOD_CLOSE_HOUR}:{EOD_CLOSE_MINUTE:02d} ET — close unless profit>1.5% AND above VWAP")
+    print(f"Circuit breaker:  ${MAX_LOSS_PER_TRADE}/trade | ${MAX_DAILY_LOSS}/day loss | +${DAILY_PROFIT_TARGET}/day profit")
+    print(f"Max hold:         {MAX_HOLD_DAYS} business day backstop (EOD close fires first)")
+    print(f"Min today gain:   {MIN_TODAY_GAIN}% (only enter stocks moving today)")
+    print(f"Lunch avoid:      {LUNCH_AVOID_START[0]}:{LUNCH_AVOID_START[1]:02d}–{LUNCH_AVOID_END[0]}:{LUNCH_AVOID_END[1]:02d} ET (no entries during chop)")
+    print(f"Entry patterns:   ORB | VWAP reclaim | Bull flag | HOD break | RS vs SPY")
+    print(f"Entry cutoff:     {NO_ENTRY_AFTER}:00 ET | Min R:R 1:{MIN_RR}")
     print("=" * 55)
-    print("Scheduled: catalyst 8:15am | voice 9am | EOD 4:30pm | learning 11pm | reset midnight")
+    print("Scheduled: pre-mkt 4:30am | catalyst 8:15am | voice 9am | EOD 4:30pm | learning 11pm | reset midnight")
     print("Telegram:  STATUS | CANCEL | RESUME")
     print("Press CTRL+C to stop\n")
 
     # Background scheduler for timed tasks
     sched = BackgroundScheduler(timezone=ET)
+    sched.add_job(premarket_early_scan,   'cron',     day_of_week='mon-fri', hour=4,  minute=30)
     sched.add_job(morning_catalyst_scan,  'cron',     day_of_week='mon-fri', hour=8,  minute=15)
     sched.add_job(morning_voice_summary,  'cron',     day_of_week='mon-fri', hour=9,  minute=0)
     sched.add_job(evening_summary,        'cron',     day_of_week='mon-fri', hour=16, minute=30)
@@ -1053,7 +1850,7 @@ if __name__ == '__main__':
     sched.add_job(poll_telegram_commands, 'interval', seconds=15)
     sched.start()
 
-    send_telegram(f"🤖 Auto Trader v2 ON | ATR stops | {len(FULL_UNIVERSE)} stocks | ${CAPITAL_PER_TRADE}/trade")
+    send_telegram(f"🤖 Auto Trader v2 ON | Swing mode | ${TOTAL_CAPITAL:,} cap | max {MAX_OPEN_TRADES} positions")
 
     while True:
         try:

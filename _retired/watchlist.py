@@ -117,6 +117,15 @@ CATALYST_UNIVERSE = [
     'HOOD', 'HPE', 'HBM', 'PONY', 'UMAC', 'SERV',
     'APLD', 'BMNR', 'IREN', 'DNA', 'SOUN', 'BBAI',
     'ACHR', 'JOBY', 'RDW', 'ONDS',
+
+    # Gap-and-go confirmed (5Y backtest)
+    'ON', 'LRCX', 'DDOG', 'MDB',
+
+    # Photonics / optical semiconductors — POET momentum
+    'POET', 'VIAV', 'IIVI',
+
+    # Semiconductor mid-cap — INDI
+    'INDI', 'WOLF', 'ALGM',
 ]
 
 # Remove duplicates

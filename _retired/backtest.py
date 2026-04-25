@@ -64,17 +64,29 @@ def get_historical_data(symbol, start_date, end_date=None):
         df.columns = df.columns.get_level_values(0)
     return df
 
-# ── V4 Config — same as v3 (proven parameters) ───────────
+# ── V7 Config — matches live auto_trader strategy ─────────
 START_DATE       = '2024-01-01'
 END_DATE         = date.today().isoformat()
 CAPITAL          = 1000
-MAX_PER_TRADE    = 300
-TARGET_PCT       = 0.045   # 4.5%
-STOP_PCT         = 0.030   # 3.0%
-MAX_HOLD_DAYS    = 5
+MAX_PER_TRADE    = 400
+TARGET_PCT       = 0.045   # 4.5% initial target (partial exit here)
+MAX_HOLD_DAYS    = 3       # time stop (was 5)
 MIN_CONFIDENCE   = 75
 MIN_VOLUME_RATIO = 1.8
 TECH_BOOST       = 12
+
+# ATR-based stops (matches live strategy)
+ATR_PERIOD       = 14
+ATR_STOP_MULT    = 1.5     # initial stop: entry - 1.5×ATR
+ATR_TRAIL_MULT   = 1.5     # trail: 1.5×ATR below session high
+ATR_TRAIL_START  = 1.0     # only trail after 1×ATR profit (breathing room)
+ATR_FADE_MULT    = 1.0     # exit if drops 1×ATR from high while in profit
+PARTIAL_EXIT     = True    # exit 50% at target, trail remainder
+MAX_RISK_PCT     = 3.5     # cap stop at 3.5%
+
+# Regime filter (matches live strategy)
+SKIP_WEAK        = True    # no entries when SPY day < -0.5%
+SKIP_CHOPPY      = True    # no entries on choppy days (reversal-heavy)
 
 TECH_STOCKS = AI_CHIPS + CLOUD_SOFTWARE
 
@@ -140,7 +152,7 @@ FOCUS_UNIVERSE = list(dict.fromkeys(FOCUS_UNIVERSE))
 # HPE   50%  win, negative avg
 
 print(f"\n{'='*60}")
-print(f"  STRATEGY BACKTEST v6 — OPTIMISED UNIVERSE")
+print(f"  STRATEGY BACKTEST v7 — ATR STOPS + REGIME FILTER")
 print(f"  Period:     {START_DATE} to {END_DATE}")
 print(f"  Universe:   {len(FOCUS_UNIVERSE)} stocks")
 print(f"  Added:      IONQ,IREN,JPM,OKLO,AMZN,GOOGL,CRM,QBTS,NFLX")
@@ -308,41 +320,101 @@ for i, symbol in enumerate(FOCUS_UNIVERSE):
         high   = df['High'].squeeze()
         low    = df['Low'].squeeze()
 
-        trades     = []
-        in_trade   = False
-        entry_price= 0
-        entry_idx  = 0
-        shares     = 0
-        target     = 0
-        stop       = 0
+        # Pre-compute ATR series for this stock
+        def calc_atr_series(h, l, c):
+            tr = pd.concat([
+                h - l,
+                (h - c.shift(1)).abs(),
+                (l - c.shift(1)).abs()
+            ], axis=1).max(axis=1)
+            return tr.rolling(ATR_PERIOD).mean()
+
+        atr_series = calc_atr_series(high, low, close)
+
+        trades      = []
+        in_trade    = False
+        entry_price = 0
+        entry_idx   = 0
+        shares      = 0
+        full_shares = 0
+        target      = 0
+        stop        = 0
+        atr_entry   = 0
+        session_high= 0
+        partial_done= False
 
         for idx in range(50, len(df)-1):
-            price = float(close.iloc[idx])
-            if price < 8 or price > 400:
+            price     = float(close.iloc[idx])
+            day_high  = float(high.iloc[idx])
+            day_low   = float(low.iloc[idx])
+            if price < 8 or price > 800:
                 continue
 
+            # Regime filter — skip weak days
+            spy_day_chg = float(spy_chg.iloc[spy_chg.index.get_indexer([df.index[idx]], method='nearest')[0]]) if df.index[idx] in spy_chg.index else 0
+            is_weak   = SKIP_WEAK   and spy_day_chg < -0.005
+            is_choppy = SKIP_CHOPPY and abs(spy_day_chg) < 0.002
+
             if in_trade:
-                hold_days  = idx - entry_idx
-                next_price = float(close.iloc[idx+1])
-                exit_price = next_price
+                hold_days   = idx - entry_idx
+                session_high= max(session_high, day_high)
+                exit_price  = None
                 exit_reason = None
 
-                if next_price >= target:
-                    exit_reason = 'TARGET'
-                    exit_price  = target
-                elif next_price <= stop:
-                    exit_reason = 'STOP'
-                    exit_price  = stop
-                elif hold_days >= MAX_HOLD_DAYS:
-                    exit_reason = f'EOD_{MAX_HOLD_DAYS}'
+                # ATR trail activates after 1×ATR breathing room
+                trail_active = session_high >= entry_price + atr_entry * ATR_TRAIL_START
+                trail_stop   = round(session_high - ATR_TRAIL_MULT * atr_entry, 2) if trail_active else stop
+                effective_stop = max(stop, trail_stop)
 
-                if exit_reason:
+                # Tighten in WEAK regime (1.0×ATR trail)
+                if is_weak and trail_active:
+                    effective_stop = max(effective_stop,
+                                        round(session_high - 1.0 * atr_entry, 2))
+
+                # WEAK early loss cut at half stop distance
+                if is_weak and price < entry_price - (entry_price - stop) * 0.5:
+                    exit_price  = price
+                    exit_reason = 'WEAK_CUT'
+
+                # Stop hit (use daily low to check)
+                elif day_low <= effective_stop:
+                    exit_price  = effective_stop
+                    exit_reason = 'STOP'
+
+                # Partial exit at target — 50% out
+                elif not partial_done and day_high >= target:
+                    half = max(1, full_shares // 2)
+                    pnl_partial = (target - entry_price) * half
+                    trades.append({
+                        'symbol': symbol, 'entry_date': str(df.index[entry_idx].date()),
+                        'exit_date': str(df.index[idx].date()),
+                        'entry_price': round(entry_price, 2), 'exit_price': round(target, 2),
+                        'shares': half, 'pnl': round(pnl_partial, 2),
+                        'pnl_pct': round(TARGET_PCT * 100, 2),
+                        'exit_reason': 'PARTIAL_TARGET', 'sector': get_sector(symbol),
+                        'is_tech': symbol in TECH_STOCKS, 'hold_days': hold_days, 'win': True
+                    })
+                    shares       = full_shares - half
+                    stop         = entry_price   # move stop to breakeven on remainder
+                    partial_done = True
+
+                # Momentum fade — drops 1×ATR from session high while profitable
+                elif trail_active and (session_high - price) > ATR_FADE_MULT * atr_entry and price > entry_price:
+                    exit_price  = price
+                    exit_reason = 'FADE'
+
+                # Time stop
+                elif hold_days >= MAX_HOLD_DAYS:
+                    exit_price  = price
+                    exit_reason = f'TIME_{MAX_HOLD_DAYS}D'
+
+                if exit_reason and exit_price is not None:
                     pnl     = (exit_price - entry_price) * shares
                     pnl_pct = (exit_price - entry_price) / entry_price * 100
                     trades.append({
                         'symbol':      symbol,
                         'entry_date':  str(df.index[entry_idx].date()),
-                        'exit_date':   str(df.index[idx+1].date()),
+                        'exit_date':   str(df.index[idx].date()),
                         'entry_price': round(entry_price, 2),
                         'exit_price':  round(exit_price, 2),
                         'shares':      shares,
@@ -354,9 +426,12 @@ for i, symbol in enumerate(FOCUS_UNIVERSE):
                         'hold_days':   hold_days,
                         'win':         pnl > 0
                     })
-                    in_trade = False
+                    in_trade     = False
+                    partial_done = False
 
             else:
+                if is_weak or is_choppy:
+                    continue
                 if not is_market_green(idx, df.index):
                     continue
 
@@ -369,18 +444,23 @@ for i, symbol in enumerate(FOCUS_UNIVERSE):
                     score = min(100, score + TECH_BOOST)
 
                 if score >= MIN_CONFIDENCE:
-                    if score >= 85:
-                        pos_val = min(MAX_PER_TRADE, CAPITAL * 0.30)
-                    elif score >= 75:
-                        pos_val = min(MAX_PER_TRADE, CAPITAL * 0.20)
-                    else:
-                        pos_val = min(MAX_PER_TRADE, CAPITAL * 0.15)
+                    atr_val = float(atr_series.iloc[idx])
+                    if np.isnan(atr_val) or atr_val <= 0:
+                        continue
 
-                    shares      = max(1, int(pos_val / price))
+                    pos_val     = MAX_PER_TRADE
+                    full_shares = max(1, int(pos_val / price))
+                    shares      = full_shares
                     entry_price = price
-                    target      = price * (1 + TARGET_PCT)
-                    stop        = price * (1 - STOP_PCT)
+                    atr_entry   = atr_val
+                    # ATR-based stop (capped at MAX_RISK_PCT)
+                    raw_stop    = price - ATR_STOP_MULT * atr_val
+                    risk_pct    = (price - raw_stop) / price * 100
+                    stop        = raw_stop if risk_pct <= MAX_RISK_PCT else round(price * (1 - MAX_RISK_PCT / 100), 2)
+                    target      = round(price * (1 + TARGET_PCT), 2)
                     entry_idx   = idx
+                    session_high= price
+                    partial_done= False
                     in_trade    = True
 
         if trades:
@@ -411,7 +491,7 @@ for i, symbol in enumerate(FOCUS_UNIVERSE):
 
 # ── Results ───────────────────────────────────────────────
 print(f"\n{'='*60}")
-print(f"  V4 FINAL RESULTS")
+print(f"  V7 RESULTS — ATR STOPS + REGIME FILTER")
 print(f"{'='*60}")
 
 if not all_trades:
@@ -430,6 +510,36 @@ else:
     rr      = abs(avg_win / avg_los) if avg_los != 0 else 0
     exp     = (wr/100 * avg_win) + ((1-wr/100) * avg_los)
 
+    # ── Professional metrics ──────────────────────────────
+    gross_profit  = df_t[df_t['pnl'] > 0]['pnl'].sum()
+    gross_loss    = abs(df_t[df_t['pnl'] < 0]['pnl'].sum())
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 999
+
+    # Equity curve + daily returns for Sharpe / drawdown
+    df_t['exit_date'] = pd.to_datetime(df_t['exit_date'])
+    daily_pnl = df_t.groupby('exit_date')['pnl'].sum().reindex(
+        pd.bdate_range(START_DATE, END_DATE), fill_value=0)
+    equity    = CAPITAL + daily_pnl.cumsum()
+    d_returns = daily_pnl / CAPITAL
+    sharpe    = round(d_returns.mean() / d_returns.std() * np.sqrt(252), 2) if d_returns.std() > 0 else 0
+
+    roll_max   = equity.cummax()
+    drawdown   = (equity - roll_max) / roll_max * 100
+    max_dd     = round(drawdown.min(), 1)
+    final_eq   = equity.iloc[-1]
+    total_ret  = round((final_eq - CAPITAL) / CAPITAL * 100, 1)
+    days_total = (pd.Timestamp(END_DATE) - pd.Timestamp(START_DATE)).days
+    ann_ret    = round(total_ret * 365 / days_total, 1)
+    calmar     = round(ann_ret / abs(max_dd), 2) if max_dd != 0 else 0
+
+    # SPY buy-and-hold benchmark
+    spy_start  = float(spy_df['Close'].iloc[0])
+    spy_end    = float(spy_df['Close'].iloc[-1])
+    spy_ret    = round((spy_end - spy_start) / spy_start * 100, 1)
+    spy_ann    = round(spy_ret * 365 / days_total, 1)
+    spy_daily  = spy_df['Close'].pct_change().dropna()
+    spy_sharpe = round(spy_daily.mean() / spy_daily.std() * np.sqrt(252), 2)
+
     print(f"\n  Period:          {START_DATE} to {END_DATE}")
     print(f"  Stocks:          {len(stock_results)}")
     print(f"  Total trades:    {total}")
@@ -442,6 +552,11 @@ else:
     print(f"  Avg hold days:   {avg_hld:.1f}")
     print(f"  Risk/Reward:     1:{rr:.2f}")
     print(f"  Expectancy:      ${exp:.2f} per trade")
+    print(f"  Profit factor:   {profit_factor}x")
+    print(f"  Total return:    {total_ret}%  (annualised {ann_ret}%)")
+    print(f"  Max drawdown:    {max_dd}%")
+    print(f"  Sharpe ratio:    {sharpe}")
+    print(f"  Calmar ratio:    {calmar}")
 
     # Progress
     print(f"\n  PROGRESS")
@@ -449,8 +564,35 @@ else:
     print(f"  v2: 52.6% | exp $1.04 | 3719 trades")
     print(f"  v3: 58.9% | exp $2.75 |  168 trades")
     print(f"  v4: 62.4% | exp $3.18 |  173 trades  (19 stocks)")
-    print(f"  v5: 56.9% | exp $2.19 |  357 trades  (39 stocks — full universe test)")
-    print(f"  v6: {wr:.1f}% | exp ${exp:.2f} | {total:>4} trades  ({len(stock_results)} stocks)")
+    print(f"  v5: 56.9% | exp $2.19 |  357 trades  (39 stocks)")
+    print(f"  v7: {wr:.1f}% | exp ${exp:.2f} | {total:>4} trades  (ATR stops + regime filter)")
+
+    # vs SPY benchmark
+    print(f"\n  VS BENCHMARKS")
+    print(f"  {'='*50}")
+    print(f"  {'Metric':<22} {'Our System':>12} {'SPY B&H':>10}")
+    print(f"  {'-'*50}")
+    print(f"  {'Ann. Return':<22} {ann_ret:>11}% {spy_ann:>9}%")
+    print(f"  {'Sharpe Ratio':<22} {sharpe:>12} {spy_sharpe:>10}")
+    print(f"  {'Max Drawdown':<22} {max_dd:>11}% {'~-25%':>10}")
+    print(f"  {'Win Rate':<22} {wr:>11.1f}% {'n/a':>10}")
+    print(f"  {'Profit Factor':<22} {profit_factor:>12} {'n/a':>10}")
+
+    print(f"\n  VS PROFESSIONAL BENCHMARKS")
+    print(f"  {'='*50}")
+    benchmarks = [
+        ("Retail buy & hold",   "~10% ann", "~0.6", "~-25%"),
+        ("Retail algo (avg)",   "~15% ann", "~0.8", "~-20%"),
+        ("Small hedge fund",    "~20% ann", "~1.0", "~-15%"),
+        ("Good quant fund",     "~30% ann", "~1.5", "~-10%"),
+        ("Top tier (RenTech)",  "~60% ann", "~2.5", "~-5%"),
+    ]
+    print(f"  {'Level':<24} {'Ann Ret':>8} {'Sharpe':>8} {'MaxDD':>8}")
+    print(f"  {'-'*50}")
+    for name, ret, sh, dd in benchmarks:
+        print(f"  {name:<24} {ret:>8} {sh:>8} {dd:>8}")
+    print(f"  {'-'*50}")
+    print(f"  {'>>> OUR SYSTEM <<<':<24} {ann_ret:>7}% {sharpe:>8} {max_dd:>7}%")
 
     # Exit breakdown
     print(f"\n  EXIT BREAKDOWN")
@@ -530,14 +672,16 @@ else:
     # Save final results
     save = {
         'run_date':        date.today().isoformat(),
-        'version':         'v6_optimised',
+        'version':         'v7_atr_regime',
         'parameters': {
-            'stop_pct':          STOP_PCT,
+            'atr_stop_mult':     ATR_STOP_MULT,
+            'atr_trail_mult':    ATR_TRAIL_MULT,
+            'atr_trail_start':   ATR_TRAIL_START,
             'target_pct':        TARGET_PCT,
             'min_confidence':    MIN_CONFIDENCE,
             'min_volume_ratio':  MIN_VOLUME_RATIO,
             'max_hold_days':     MAX_HOLD_DAYS,
-            'tech_boost':        TECH_BOOST
+            'skip_weak':         SKIP_WEAK,
         },
         'results': {
             'total_trades': total,

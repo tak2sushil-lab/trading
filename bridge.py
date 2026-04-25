@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env file from same folder
 
 import os
-from ib_async import IB, Stock, MarketOrder, LimitOrder
+from ib_async import IB, Stock, MarketOrder, LimitOrder, ScannerSubscription
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,6 +16,8 @@ import math
 import anthropic
 import json
 import requests as http_requests
+import yfinance as yf
+import pandas as pd
 from datetime import datetime, timedelta
 
 # ── Load credentials from .env ────────────────────────────
@@ -226,11 +228,119 @@ async def place_order(req: OrderRequest):
         "orderType": req.order_type
     }
 
+# ── Order fill status ────────────────────────────────────
+@app.get("/order/{order_id}/status")
+async def get_order_status(order_id: int):
+    for trade in ib.trades():
+        if trade.order.orderId == order_id:
+            return {
+                "orderId":       order_id,
+                "status":        trade.orderStatus.status,
+                "filled":        trade.orderStatus.filled,
+                "remaining":     trade.orderStatus.remaining,
+                "avgFillPrice":  clean(trade.orderStatus.avgFillPrice),
+            }
+    return {"orderId": order_id, "status": "Unknown", "filled": 0}
+
 # ── Cancel all orders ─────────────────────────────────────
 @app.post("/cancel_all")
 async def cancel_all():
     ib.reqGlobalCancel()
     return {"status": "all orders cancelled"}
+
+# ── Dynamic momentum scanner ─────────────────────────────
+@app.get("/scan/momentum")
+async def scan_momentum(
+    min_price: float = Query(default=5.0,   description="Min stock price"),
+    max_price: float = Query(default=200.0, description="Max stock price"),
+    min_pct:   float = Query(default=3.0,   description="Min % gain to qualify"),
+    rows:      int   = Query(default=50,    description="Candidates per scan"),
+):
+    """
+    Scan IBKR universe for top pre-market/intraday momentum movers.
+    Uses IBKR scanner to rank symbols, yfinance to compute actual % change
+    (IBKR's distance field returns empty strings — yfinance is the reliable fallback).
+    """
+    seen_syms = {}   # sym → {rank, scan}
+    errors    = []
+
+    for scan_code in ['TOP_PERC_GAIN', 'HOT_BY_VOLUME']:
+        try:
+            sub  = ScannerSubscription(
+                numberOfRows=rows,
+                instrument='STK',
+                locationCode='STK.US.MAJOR',
+                scanCode=scan_code,
+                abovePrice=min_price,
+                belowPrice=max_price,
+                aboveVolume=100000,
+                stockTypeFilter='CORP',   # exclude ETFs, REITs, CEFs — stocks only
+            )
+            data = await ib.reqScannerDataAsync(sub)
+            for item in data:
+                sym = item.contractDetails.contract.symbol
+                if not sym.isalpha() or len(sym) > 5:
+                    continue
+                rank = item.rank if item.rank is not None else 999
+                if sym not in seen_syms or rank < seen_syms[sym]['rank']:
+                    seen_syms[sym] = {'rank': rank, 'scan': scan_code}
+        except Exception as e:
+            errors.append(f"{scan_code}: {e}")
+
+    if not seen_syms:
+        if errors:
+            print(f"⚠️  Momentum scan errors: {errors}")
+        return []
+
+    # Compute actual % change via yfinance (period='2d' gives yesterday + today's current bar)
+    symbols = list(seen_syms.keys())
+    results = []
+    try:
+        loop = asyncio.get_event_loop()
+        raw  = await loop.run_in_executor(
+            None,
+            lambda: yf.download(symbols, period='2d', interval='1d',
+                                 progress=False, auto_adjust=True)
+        )
+        if isinstance(raw.columns, pd.MultiIndex):
+            closes = raw['Close']
+            opens  = raw['Open']
+        else:
+            # Single ticker returns flat columns
+            closes = raw[['Close']].rename(columns={'Close': symbols[0]})
+            opens  = raw[['Open']].rename(columns={'Open': symbols[0]})
+
+        for sym in symbols:
+            try:
+                col = closes[sym].dropna() if sym in closes.columns else pd.Series()
+                if len(col) < 2:
+                    continue
+                prev_close = float(col.iloc[-2])
+                last_price = float(col.iloc[-1])
+                if prev_close <= 0 or last_price < min_price or last_price > max_price:
+                    continue
+                pct = round((last_price - prev_close) / prev_close * 100, 2)
+                if pct < min_pct:
+                    continue
+                results.append({
+                    'symbol':     sym,
+                    'pct_change': pct,
+                    'price':      round(last_price, 2),
+                    'scan':       seen_syms[sym]['scan'],
+                    'rank':       seen_syms[sym]['rank'],
+                })
+            except Exception:
+                pass
+    except Exception as e:
+        errors.append(f"yfinance batch: {e}")
+
+    results.sort(key=lambda x: -x['pct_change'])
+
+    if errors:
+        print(f"⚠️  Momentum scan errors: {errors}")
+
+    print(f"📊 Momentum scan: {len(seen_syms)} IBKR symbols → {len(results)} qualify (≥{min_pct}%)")
+    return results[:25]
 
 # ── Tools for Claude ──────────────────────────────────────
 TOOLS = [
