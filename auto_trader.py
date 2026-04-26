@@ -31,7 +31,7 @@ TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 SCAN_INTERVAL     = 300      # 5 min
 TOTAL_CAPITAL     = 10000    # max capital deployed across all positions
 MAX_OPEN_TRADES   = 10       # swing trading — up to 10 concurrent positions
-MAX_DAILY_TRADES  = 10       # allow up to 10 entries per day
+MAX_DAILY_TRADES  = 5        # top-5 daily entry cap — only best setups by score
 MAX_RISK_PCT        = 8.0    # hard ATR cap — removed 2% floor, trust the ATR fully
 MIN_RR              = 2.5    # min reward:risk for entry qualification
 MAX_LOSS_PER_TRADE  = 200    # dollar circuit breaker: close trade if loss exceeds $200
@@ -1499,12 +1499,12 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
         })
 
-    # Sort: catalyst A+ first, then by grade + volume
+    # Sort: catalyst A+ first, then by grade, then by raw score (highest score wins within grade)
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
     candidates.sort(key=lambda x: (
         0 if x['is_catalyst'] and x['grade'] in ('A+', 'A') else 1,
         grade_order.get(x['grade'], 3),
-        -x['vol_ratio']
+        -x['score']
     ))
 
     log(f"Found {len(candidates)} valid setups ({sum(1 for c in candidates if c['is_catalyst'])} catalyst)")

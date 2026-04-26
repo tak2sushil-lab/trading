@@ -1,5 +1,6 @@
 # sim_tune.py — test parameter tweaks across 3 consecutive weeks
-# Shows Baseline vs Optimized vs Optimized+Cap for weeks Apr 7-11, Apr 14-18, Apr 20-24
+# Shows Baseline vs Optimized vs Optimized+Cap
+# Update WEEKS below to choose which weeks to analyze.
 #
 # Command: venv/bin/python sim_tune.py
 #          venv/bin/python sim_tune.py NVDA PLTR AMD   (custom symbols)
@@ -26,19 +27,19 @@ SYMBOLS = sys.argv[1:] if len(sys.argv) > 1 else DEFAULT_SYMBOLS
 
 WEEKS = [
     {
-        'label': 'Week 1  Apr 07–11',
-        'days':  [date(2026, 4, 7), date(2026, 4, 8), date(2026, 4, 9),
-                  date(2026, 4, 10), date(2026, 4, 11)],
+        'label': 'Week 1  Mar 09–13  (pre-tariff)',
+        'days':  [date(2026, 3, 9), date(2026, 3, 10), date(2026, 3, 11),
+                  date(2026, 3, 12), date(2026, 3, 13)],
     },
     {
-        'label': 'Week 2  Apr 14–18',
-        'days':  [date(2026, 4, 14), date(2026, 4, 15), date(2026, 4, 16),
-                  date(2026, 4, 17), date(2026, 4, 18)],
+        'label': 'Week 2  Mar 16–20  (pre-tariff)',
+        'days':  [date(2026, 3, 16), date(2026, 3, 17), date(2026, 3, 18),
+                  date(2026, 3, 19), date(2026, 3, 20)],
     },
     {
-        'label': 'Week 3  Apr 20–24',
-        'days':  [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22),
-                  date(2026, 4, 23), date(2026, 4, 24)],
+        'label': 'Week 3  Mar 23–27  (pre-tariff)',
+        'days':  [date(2026, 3, 23), date(2026, 3, 24), date(2026, 3, 25),
+                  date(2026, 3, 26), date(2026, 3, 27)],
     },
 ]
 
@@ -63,13 +64,13 @@ CONFIGS = [
         'PARTIAL_EXIT':      False,
     },
     {
-        'name':              'Opt + top-4 cap',
+        'name':              'Opt + top-5 cap',
         'BLOCK_CAUTIOUS':    True,
         'NO_MOVE_MINUTES':   150,
         'NO_MOVE_UPPER_PCT': 2.0,
         'BE_TRIGGER_PCT':    2.5,
         'PARTIAL_EXIT':      False,
-        '_MAX_DAILY':        4,
+        '_MAX_DAILY':        5,
     },
 ]
 
