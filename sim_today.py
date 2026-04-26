@@ -32,6 +32,13 @@ EOD_CLOSE_MINUTE  = 45
 CAPITAL_PER_TRADE = 1000   # base; grade_capital() overrides per-trade
 MAX_LOSS_PER_TRADE = 200   # mirror auto_trader — ATR-normalized sizing target
 
+# ── Tunable exit parameters (patched by sim_tune.py for A/B testing) ─────────
+# Validated Apr 26 via 3-week A/B: these beat baseline in every week
+NO_MOVE_MINUTES   = 150    # min hold before no-move exit fires (was 60)
+NO_MOVE_UPPER_PCT = 2.0    # no-move fires if pnl ≤ this % (was 0.8%)
+BE_TRIGGER_PCT    = 2.5    # set break-even stop once profit reaches this % (was 0.5%)
+PARTIAL_EXIT      = False  # take 50% off at 1R, ride rest with trail
+
 def grade_capital(grade, has_catalyst=False):
     """Mirror auto_trader get_position_capital — dynamic sizing by grade."""
     if grade == 'A+' and has_catalyst: return 1500
@@ -40,6 +47,9 @@ def grade_capital(grade, has_catalyst=False):
     return 900
 
 SYMBOLS = sys.argv[1:] if len(sys.argv) > 1 else ['MSFT', 'NVDA']
+
+# ── Tunable constants (also patched by sim_tune.py) ──────────────────────────
+BLOCK_CAUTIOUS = True    # treat CAUTIOUS like WEAK — block new entries (validated Apr 26)
 
 # Use last available trading day (handles weekends / holidays transparently)
 def last_trading_date():
@@ -51,18 +61,27 @@ def last_trading_date():
 
 SIM_DATE = last_trading_date()
 
+def _intraday_period():
+    """Shortest yfinance period string that reaches SIM_DATE's 5m bars.
+    yfinance max for 5m interval is 60 days."""
+    days_back = (date.today() - SIM_DATE).days + 4   # +4 safety margin
+    if days_back <= 5:  return '5d'
+    if days_back <= 30: return '30d'
+    return '60d'
+
 
 def get_regime():
     try:
-        spy_raw = yf.Ticker('SPY').history(period='5d', interval='5m')
+        p = _intraday_period()
+        spy_raw = yf.Ticker('SPY').history(period=p, interval='5m')
         spy_raw.index = spy_raw.index.tz_convert(ET)
         spy5 = spy_raw[spy_raw.index.date == SIM_DATE]
 
-        spyd = yf.Ticker('SPY').history(period='7d')
-        vix_raw = yf.Ticker('^VIX').history(period='5d', interval='5m')
+        spyd = yf.Ticker('SPY').history(period='60d')
+        vix_raw = yf.Ticker('^VIX').history(period=p, interval='5m')
         vix_raw.index = vix_raw.index.tz_convert(ET)
         vix5 = vix_raw[vix_raw.index.date == SIM_DATE]
-        qqq_raw = yf.Ticker('QQQ').history(period='5d', interval='5m')
+        qqq_raw = yf.Ticker('QQQ').history(period=p, interval='5m')
         qqq_raw.index = qqq_raw.index.tz_convert(ET)
         qqq5 = qqq_raw[qqq_raw.index.date == SIM_DATE]
 
@@ -151,7 +170,7 @@ def simulate(symbol, regime, spy_chg):
 
     try:
         daily = yf.Ticker(symbol).history(period='60d', interval='1d')
-        intra = yf.Ticker(symbol).history(period='5d',  interval='5m')
+        intra = yf.Ticker(symbol).history(period=_intraday_period(), interval='5m')
     except Exception as e:
         print(f"  Data error: {e}")
         return
@@ -218,7 +237,7 @@ def simulate(symbol, regime, spy_chg):
     # Pre-market high (4:00–9:29am) — key overnight resistance level
     pm_high = None
     try:
-        pm_raw = yf.Ticker(symbol).history(period='2d', interval='5m', prepost=True)
+        pm_raw = yf.Ticker(symbol).history(period=_intraday_period(), interval='5m', prepost=True)
         pm_raw.index = pm_raw.index.tz_convert(ET)
         pm_bars = pm_raw[
             (pm_raw.index.date == today_date) &
@@ -256,7 +275,11 @@ def simulate(symbol, regime, spy_chg):
     in_trade     = False
     exited_today = False   # one trade per symbol per day — no re-entry after stop
     entry_price  = sl = target = session_high = entry_time = None
+    risk_held    = 0.0     # risk_per_share at entry — for BE stop and partial exit
     shares       = 0
+    shares_orig  = 0       # original share count before any partial exits
+    partial_done = False
+    partial_locked_usd = 0.0
     capital      = CAPITAL_PER_TRADE   # updated at entry with dynamic sizing
     events       = []
     skip_counts  = {}
@@ -279,12 +302,25 @@ def simulate(symbol, regime, spy_chg):
                     events.append(f"    → {tstr}  ATR trail raised to ${new_trail:.2f}  ({pnl_pct:+.1f}%)")
                     sl = new_trail
 
-            # Break-even stop: once +0.5% profit, lock SL at entry + $0.05
-            if pnl_pct >= 0.5 and sl < entry_price:
-                be_sl = round(entry_price + 0.05, 2)
+            # Break-even stop — trigger at BE_TRIGGER_PCT; offset scales with trigger
+            if pnl_pct >= BE_TRIGGER_PCT and sl < entry_price:
+                # Tight trigger (0.5%): minimal $0.05 buffer — just noise avoidance
+                # Relaxed trigger (1.5%+): use half the risk distance — meaningful lock
+                be_offset = risk_held * 0.5 if BE_TRIGGER_PCT >= 1.0 else 0.05
+                be_sl = round(entry_price + max(be_offset, 0.05), 2)
                 if be_sl > sl:
                     events.append(f"    → {tstr}  Break-even stop → ${be_sl:.2f}  ({pnl_pct:+.1f}%)")
                     sl = be_sl
+
+            # Partial exit at 1R — lock 50% of position, trail the rest
+            if PARTIAL_EXIT and not partial_done and risk_held > 0 and shares >= 2:
+                if price >= entry_price + risk_held:
+                    half   = shares // 2
+                    locked = round(risk_held * half, 2)
+                    events.append(f"    → {tstr}  PARTIAL EXIT {half}/{shares_orig}sh @ ${price:.2f}  +${locked:.2f} locked (1R)")
+                    partial_locked_usd += locked
+                    shares      -= half
+                    partial_done = True
 
             # 5-min trail — kicks in at 3%+ profit
             if pnl_pct >= 3.0 and i >= 2:
@@ -313,8 +349,8 @@ def simulate(symbol, regime, spy_chg):
             elif (session_high - price) > ATR_FADE_MULT * atr and pnl_pct > 0.3:
                 reason = f'Momentum fade from session high ${session_high:.2f}'
             elif (entry_time is not None and
-                  (ts - entry_time).total_seconds() / 60 >= 60 and
-                  -0.3 <= pnl_pct <= 0.8):
+                  (ts - entry_time).total_seconds() / 60 >= NO_MOVE_MINUTES and
+                  -0.3 <= pnl_pct <= NO_MOVE_UPPER_PCT):
                 mins_held = int((ts - entry_time).total_seconds() / 60)
                 reason = f'No-move exit: flat {mins_held}min ({pnl_pct:+.1f}%)'
             elif t >= (EOD_CLOSE_HOUR, EOD_CLOSE_MINUTE):
@@ -322,12 +358,13 @@ def simulate(symbol, regime, spy_chg):
                     reason = 'EOD — no overnight conviction'
 
             if reason:
-                pnl_f = (ep_out - entry_price) / entry_price * 100
-                usd_f = (ep_out - entry_price) * shares
-                tag   = '✅ WIN' if pnl_f > 0 else '❌ LOSS'
+                usd_f = (ep_out - entry_price) * shares + partial_locked_usd
+                pnl_f = usd_f / capital * 100
+                tag   = '✅ WIN' if usd_f > 0 else '❌ LOSS'
                 events.append(f"  ■ {tstr}  ${ep_out:.2f}  EXIT   {reason}")
-                events.append(f"           → {tag}  {pnl_f:+.2f}%  ${usd_f:+.2f}")
-                in_trade    = False
+                lock_str = f'  (incl. ${partial_locked_usd:+.2f} partial)' if partial_done else ''
+                events.append(f"           → {tag}  {pnl_f:+.2f}%  ${usd_f:+.2f}{lock_str}")
+                in_trade     = False
                 exited_today = True
             continue
 
@@ -336,7 +373,8 @@ def simulate(symbol, regime, spy_chg):
             continue
         in_window = (NO_ENTRY_BEFORE <= ts.hour < NO_ENTRY_AFTER and
                      not (LUNCH_AVOID_START <= t < LUNCH_AVOID_END))
-        if not in_window or regime in ('CHOPPY', 'WEAK') or i < 15:
+        blocked = {'CHOPPY', 'WEAK'} | ({'CAUTIOUS'} if BLOCK_CAUTIOUS else set())
+        if not in_window or regime in blocked or i < 15:
             continue
 
         sub         = df5.iloc[:i+1].copy()
@@ -516,7 +554,7 @@ def simulate(symbol, regime, spy_chg):
 
         # ── 15m alignment ────────────────────────────────────────────────────
         try:
-            df15        = yf.Ticker(symbol).history(period='5d', interval='15m')
+            df15        = yf.Ticker(symbol).history(period=_intraday_period(), interval='15m')
             df15.index  = df15.index.tz_convert(ET)
             df15_today  = df15[df15.index.date == today_date]
             df15_now    = df15_today[df15_today.index <= ts]
@@ -561,6 +599,10 @@ def simulate(symbol, regime, spy_chg):
         risk_per_share = round(price - sl_val, 4)
         atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
         shares         = max(1, min(int(capital / price), atr_shares))
+        risk_held      = risk_per_share
+        shares_orig    = shares
+        partial_done   = False
+        partial_locked_usd = 0.0
         cat_tag      = ' ⚡CATALYST' if is_catalyst else ''
 
         events.append(f"  ▶ {tstr}  ${price:.2f}  ENTER  Grade {grade}{cat_tag}  score={score}  capital=${capital:,}")
@@ -586,8 +628,8 @@ def simulate(symbol, regime, spy_chg):
     # Final state
     if in_trade:
         last_price = float(df5['Close'].iloc[-1])
-        pnl_p = (last_price - entry_price) / entry_price * 100
-        pnl_u = (last_price - entry_price) * shares
+        pnl_u = (last_price - entry_price) * shares + partial_locked_usd
+        pnl_p = pnl_u / capital * 100
         tag   = '📈' if pnl_p > 0 else '📉'
         print(f"\n  ⏳ STILL OPEN (no exit signal fired)")
         print(f"     Entry ${entry_price:.2f} | Last ${last_price:.2f} | {tag} {pnl_p:+.2f}% | ${pnl_u:+.2f}")

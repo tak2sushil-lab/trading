@@ -772,8 +772,8 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         return 'SKIP', [f'Volume {sig["vol_ratio"]:.1f}x too low'], 0
     if rr < MIN_RR:
         return 'SKIP', [f'R:R 1:{rr} below min 1:{MIN_RR}'], 0
-    if regime == 'CHOPPY':
-        return 'SKIP', ['Choppy — no trades'], 0
+    if regime in ('CHOPPY', 'CAUTIOUS'):
+        return 'SKIP', [f'{regime} — no trades'], 0
     # Must be moving today — no entering flat or declining stocks
     today_gain = sig.get('prev_chg', 0)
     if today_gain < MIN_TODAY_GAIN:
@@ -1008,9 +1008,11 @@ def monitor_open_trades(regime='NORMAL'):
                 update_trade_stop(tid, sl)
                 log(f"  {sym}: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
 
-        # ── Break-even stop: once +0.5% profit, lock SL at entry + $0.05 ──
-        if pnl_pct >= 0.5 and sl < entry:
-            be_sl = round(entry + 0.05, 2)
+        # ── Break-even stop: once +2.5% profit, lock SL at entry + 0.5×risk ──
+        # Trigger raised from 0.5% → 2.5% so winners aren't clipped in normal noise range
+        if pnl_pct >= 2.5 and sl < entry:
+            risk_dist = entry - sl
+            be_sl = round(entry + max(risk_dist * 0.5, 0.05), 2)
             if be_sl > sl:
                 sl = be_sl
                 update_trade_stop(tid, sl)
@@ -1067,12 +1069,13 @@ def monitor_open_trades(regime='NORMAL'):
             if drop > ATR_FADE_MULT * atr and pnl_pct > 0.3:
                 exit_reason = f'Momentum fade {ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 5. No-move exit — flat after 60 min: capital stuck, opportunity cost
+        # 5. No-move exit — flat after 150 min: capital truly stuck, opportunity cost
+        # Window raised 60→150 min and ceiling 0.8→2.0% so consolidating movers get room
         if not exit_reason and is_market_open():
             entry_dt = trade_entry_times.get(tid)
             if entry_dt:
                 mins_held = (now - entry_dt).total_seconds() / 60
-                if mins_held >= 60 and -0.3 <= pnl_pct <= 0.8:
+                if mins_held >= 150 and -0.3 <= pnl_pct <= 2.0:
                     exit_reason = f'No-move exit: flat {mins_held:.0f}min ({pnl_pct:+.1f}%)'
 
         # 6. EOD conviction close — 3:45pm, hold overnight only if still strong
