@@ -30,23 +30,31 @@ ORB_ENTRY_CUTOFF  = (11, 30)
 EOD_CLOSE_HOUR    = 15
 EOD_CLOSE_MINUTE  = 45
 CAPITAL_PER_TRADE = 1000   # base; grade_capital() overrides per-trade
-MAX_LOSS_PER_TRADE = 200   # mirror auto_trader — ATR-normalized sizing target
+MAX_LOSS_PER_TRADE = 100   # $100 risk per trade (5% of $2000 position)
 
 # ── Tunable exit parameters (patched by sim_tune.py for A/B testing) ─────────
 # Validated Apr 26 via 3-week A/B: these beat baseline in every week
 NO_MOVE_MINUTES   = 150    # min hold before no-move exit fires (was 60)
 NO_MOVE_UPPER_PCT = 2.0    # no-move fires if pnl ≤ this % (was 0.8%)
 BE_TRIGGER_PCT    = 2.5    # set break-even stop once profit reaches this % (was 0.5%)
-PARTIAL_EXIT      = False  # take 50% off at 1R, ride rest with trail
+PARTIAL_EXIT      = True   # take 50% off at 1R (5% gain), ride rest with trail
 
 def grade_capital(grade, has_catalyst=False):
     """Mirror auto_trader get_position_capital — dynamic sizing by grade."""
-    if grade == 'A+' and has_catalyst: return 1500
-    if grade == 'A+':                  return 1250
-    if grade == 'A'  and has_catalyst: return 1100
-    return 900
+    if grade == 'A+' and has_catalyst: return 2000
+    if grade == 'A+':                  return 1800
+    if grade == 'A'  and has_catalyst: return 1600
+    return 1400
 
 SYMBOLS = sys.argv[1:] if len(sys.argv) > 1 else ['MSFT', 'NVDA']
+
+# ── Sector ETF map for scoring ────────────────────────────────────────────────
+SECTOR_ETF_MAP = {
+    'NVDA': 'XLK', 'MSFT': 'XLK', 'AAPL': 'XLK', 'AMD':  'XLK', 'AVGO': 'XLK',
+    'CRM':  'XLK', 'SMCI': 'XLK', 'CRWV': 'XLK', 'BBAI': 'XLK', 'POET': 'XLK',
+    'IONQ': 'XLK', 'SOUN': 'XLK', 'PLTR': 'XLK', 'META': 'XLC', 'AMZN': 'XLY',
+    'TSLA': 'XLY', 'HOOD': 'XLF', 'EOSE': 'XLE', 'RKLB': 'XLI', 'OKLO': 'XLU',
+}
 
 # ── Tunable constants (also patched by sim_tune.py) ──────────────────────────
 BLOCK_CAUTIOUS = True    # treat CAUTIOUS like WEAK — block new entries (validated Apr 26)
@@ -146,21 +154,11 @@ def atr_from_daily(df):
 
 
 def calc_sl_target(price, daily_df, atr):
-    try:
-        lows         = sorted([v for v in daily_df['Low'].values if v < price], reverse=True)
-        support_stop = lows[0] * 0.998 if lows else price * 0.97
-        atr_stop     = price - ATR_STOP_MULT * atr
-        sl           = round(max(support_stop, atr_stop), 2)
-        risk_pct     = (price - sl) / price * 100
-        if risk_pct > MAX_RISK_PCT:
-            sl       = round(price * (1 - MAX_RISK_PCT / 100), 2)
-            risk_pct = MAX_RISK_PCT
-        reward = risk_pct * MIN_RR   # no cap — strategy rides momentum, target is display-only
-        target = round(price * (1 + reward / 100), 2)
-        rr     = round(reward / risk_pct, 1) if risk_pct > 0 else 0
-        return sl, target, round(risk_pct, 2), rr
-    except:
-        return round(price * 0.965, 2), round(price * 1.088, 2), 3.5, 2.5
+    sl      = round(price * 0.95, 2)          # 5% fixed stop — $100 risk on $2000 position
+    risk_pct = 5.0
+    target  = round(price * (1 + risk_pct * MIN_RR / 100), 2)   # 12.5% at 2.5R (display only)
+    rr      = MIN_RR
+    return sl, target, risk_pct, rr
 
 
 def simulate(symbol, regime, spy_chg):
@@ -178,6 +176,23 @@ def simulate(symbol, regime, spy_chg):
     if daily.empty or intra.empty or len(daily) < ATR_PERIOD + 5:
         print(f"  Insufficient data")
         return
+
+    # Sector ETF intraday % change at each bar — for scoring
+    sector_etf  = SECTOR_ETF_MAP.get(symbol, 'SPY')
+    etf_pct     = {}   # ts → % change from day open
+    etf_times   = []
+    try:
+        etf_raw = yf.Ticker(sector_etf).history(period=_intraday_period(), interval='5m')
+        etf_raw.index = etf_raw.index.tz_convert(ET)
+        etf_day = etf_raw[etf_raw.index.date == SIM_DATE]
+        if not etf_day.empty:
+            etf_open = float(etf_day['Open'].iloc[0])
+            if etf_open > 0:
+                for ts_e, row_e in etf_day.iterrows():
+                    etf_pct[ts_e] = (float(row_e['Close']) - etf_open) / etf_open * 100
+                etf_times = sorted(etf_pct.keys())
+    except Exception:
+        pass
 
     # Earnings gate — skip if earnings within 3 days
     try:
@@ -570,6 +585,19 @@ def simulate(symbol, regime, spy_chg):
         except Exception:
             pass  # no 15m data — don't penalise
 
+        # ── Sector ETF strength ───────────────────────────────────────────────
+        etf_chg = 0.0
+        if etf_times:
+            valid = [t for t in etf_times if t <= ts]
+            if valid:
+                etf_chg = etf_pct[valid[-1]]
+        if etf_chg >= 1.5:
+            score += 15; patterns.append(f'{sector_etf} +{etf_chg:.1f}% leading ✓')
+        elif etf_chg >= 0.5:
+            score += 5;  patterns.append(f'{sector_etf} +{etf_chg:.1f}% sector up')
+        elif etf_chg < -0.5:
+            score -= 10; patterns.append(f'{sector_etf} {etf_chg:.1f}% weak sector (-10)')
+
         grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
         if grade in ('B', 'C'):
@@ -641,7 +669,7 @@ def main():
     print(f"\n{'='*62}")
     print(f"  SIMULATION — {SIM_DATE}  {'(last trading day)' if SIM_DATE != date.today() else ''}")
     print(f"  Symbols : {', '.join(SYMBOLS)}")
-    print(f"  Capital : ${CAPITAL_PER_TRADE:,} per trade")
+    print(f"  Capital : up to $2,000/trade | Stop: 5% fixed | Partial exit at 1R")
     print(f"{'='*62}")
 
     print("\nFetching market regime...")

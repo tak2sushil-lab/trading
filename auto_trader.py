@@ -30,11 +30,11 @@ TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 # ── Settings ──────────────────────────────────────────────
 SCAN_INTERVAL     = 300      # 5 min
 TOTAL_CAPITAL     = 10000    # max capital deployed across all positions
-MAX_OPEN_TRADES   = 10       # swing trading — up to 10 concurrent positions
+MAX_OPEN_TRADES   = 5        # 5 × $2,000 = $10K fully deployed
 MAX_DAILY_TRADES  = 5        # top-5 daily entry cap — only best setups by score
 MAX_RISK_PCT        = 8.0    # hard ATR cap — removed 2% floor, trust the ATR fully
 MIN_RR              = 2.5    # min reward:risk for entry qualification
-MAX_LOSS_PER_TRADE  = 200    # dollar circuit breaker: close trade if loss exceeds $200
+MAX_LOSS_PER_TRADE  = 100    # dollar circuit breaker: $100 = 5% of $2,000 position
 DAILY_PROFIT_TARGET = 400    # at +$400 session P&L: protect gains, no new entries
 EOD_CLOSE_HOUR      = 15     # 3:45pm ET EOD close — exit unless conviction to hold overnight
 EOD_CLOSE_MINUTE    = 45
@@ -75,6 +75,7 @@ sector_strength    = {}       # ETF ticker → % change today, updated each scan
 key_levels         = {}       # sym → {pm_high, pm_low, prior_close, orb_high, orb_low}
 trade_entry_times  = {}       # trade_id → datetime of entry (for no-move exit)
 earnings_cache     = {}       # symbol → (date_str, days_to_next_earnings)
+partial_done_trades = {}      # trade_id → locked_pnl_usd — trades that had 50% sold at 1R
 
 # ── Universe ──────────────────────────────────────────────
 FULL_UNIVERSE = list(dict.fromkeys([
@@ -673,44 +674,15 @@ def get_intraday_signals(symbol, spy_chg=0):
 # STOP / TARGET — ATR-based, adapts to each stock's volatility
 # ─────────────────────────────────────────────────────────
 def calc_sl_target(symbol, price, side='LONG'):
-    try:
-        df  = get_ib_daily(symbol, duration='30 D') or yf.Ticker(symbol).history(period='30d')
-        atr = get_atr(symbol) or price * 0.02
-
-        if side == 'LONG':
-            # Support-based stop
-            supports     = sorted([l for l in df['Low'].values if l < price], reverse=True)
-            support_stop = supports[0] * 0.998 if supports else price * 0.97
-            # ATR-based stop — wider of the two, up to MAX_RISK_PCT
-            atr_stop     = price - (ATR_STOP_MULT * atr)
-            sl           = round(max(support_stop, atr_stop), 2)
-            risk_pct     = (price - sl) / price * 100
-            # Cap: never wider than MAX_RISK_PCT
-            if risk_pct > MAX_RISK_PCT:
-                sl       = round(price * (1 - MAX_RISK_PCT / 100), 2)
-                risk_pct = MAX_RISK_PCT
-            reward       = risk_pct * MIN_RR   # no cap — strategy rides momentum, target is display-only
-            target       = round(price * (1 + reward / 100), 2)
-        else:
-            resists  = sorted([h for h in df['High'].values if h > price])
-            resist   = resists[0] * 1.002 if resists else price * 1.03
-            atr_stop = price + (ATR_STOP_MULT * atr)
-            sl       = round(min(resist, atr_stop), 2)
-            risk_pct = (sl - price) / price * 100
-            if risk_pct > MAX_RISK_PCT:
-                sl       = round(price * (1 + MAX_RISK_PCT / 100), 2)
-                risk_pct = MAX_RISK_PCT
-            reward   = risk_pct * MIN_RR   # no cap
-            target   = round(price * (1 - reward / 100), 2)
-
-        rr = round(reward / risk_pct, 1) if risk_pct > 0 else 0
-        return sl, target, round(risk_pct, 2), round(reward, 2), rr
-
-    except:
-        if side == 'LONG':
-            return round(price * 0.965, 2), round(price * 1.088, 2), 3.5, 8.75, 2.5
-        else:
-            return round(price * 1.035, 2), round(price * 0.912, 2), 3.5, 8.75, 2.5
+    risk_pct = 5.0
+    reward   = risk_pct * MIN_RR   # 12.5% display target — no profit cap, strategy rides trail
+    if side == 'LONG':
+        sl     = round(price * 0.95, 2)
+        target = round(price * (1 + reward / 100), 2)
+    else:
+        sl     = round(price * 1.05, 2)
+        target = round(price * (1 - reward / 100), 2)
+    return sl, target, risk_pct, round(reward, 2), MIN_RR
 
 # ─────────────────────────────────────────────────────────
 # EARNINGS HELPER
@@ -1046,6 +1018,25 @@ def monitor_open_trades(regime='NORMAL'):
             except Exception:
                 pass
 
+        # ── Partial exit: sell 50% when profit reaches 1R (5% gain) ──────────
+        if (is_market_open() and pnl_pct >= 5.0
+                and tid not in partial_done_trades and shares >= 2):
+            half = shares // 2
+            try:
+                requests.post(f"{BRIDGE}/order", json={
+                    'symbol': sym, 'qty': half, 'side': 'SELL', 'order_type': 'MARKET'
+                }, timeout=10)
+                locked = round((price - entry) * half, 2)
+                partial_done_trades[tid] = locked
+                update_trade_shares(tid, shares - half)
+                log(f"  {sym}: PARTIAL EXIT {half}sh @ ${price} +${locked:.0f} locked (1R) — trailing {shares - half}sh")
+                exits.append({'sym': sym, 'price': price, 'entry': entry,
+                              'pnl': locked, 'pnl_pct': pnl_pct, 'pnl_usd': locked,
+                              'reason': f'Partial exit 50% at 1R ({pnl_pct:+.1f}%)'})
+                shares = shares - half   # use remaining shares for exit logic below
+            except Exception as e:
+                log(f"Partial exit error {sym}: {e}")
+
         # ── Exit decisions (priority order) ───────────────────
         exit_reason = None
 
@@ -1319,18 +1310,18 @@ def get_deployed_capital():
     return sum(t['shares'] * t['entry_price'] for t in get_open_trades())
 
 def get_position_capital(grade, is_catalyst, deployed):
-    """Dynamic allocation — best setups ride larger; never exceed TOTAL_CAPITAL."""
+    """Dynamic allocation — $2,000 max per trade; 5 trades = $10K fully deployed."""
     remaining = TOTAL_CAPITAL - deployed
     if remaining < 200:
         return 0
     if is_catalyst and grade == 'A+':
-        alloc = TOTAL_CAPITAL * 0.30   # $1,500 — top catalyst
+        alloc = 2000   # top catalyst
     elif grade == 'A+':
-        alloc = TOTAL_CAPITAL * 0.25   # $1,250 — strong momentum
+        alloc = 1800   # strong momentum
     elif is_catalyst and grade == 'A':
-        alloc = TOTAL_CAPITAL * 0.22   # $1,100 — catalyst, decent grade
+        alloc = 1600   # catalyst, decent grade
     else:
-        alloc = TOTAL_CAPITAL * 0.18   # $900   — solid A setup
+        alloc = 1400   # solid A setup
     return round(min(alloc, remaining), 2)
 
 def _scan_catalyst_override(open_trades):
@@ -1806,8 +1797,9 @@ def reset_daily_state():
     atr_cache          = {}
     regime_history     = []
     spy_open_price     = None
-    trade_entry_times  = {}
-    earnings_cache     = {}
+    trade_entry_times   = {}
+    earnings_cache      = {}
+    partial_done_trades = {}
     save_traded_today()
     log("Daily state reset for new trading day")
 
@@ -1826,7 +1818,7 @@ if __name__ == '__main__':
     print(f"Max open trades:  {MAX_OPEN_TRADES}")
     print(f"Max daily trades: {MAX_DAILY_TRADES}")
     print(f"Total capital:    ${TOTAL_CAPITAL:,} (dynamic per position)")
-    print(f"Stop method:      ATR × {ATR_STOP_MULT} initial | no % floor — ATR breathes freely")
+    print(f"Stop method:      5% fixed | partial exit 50% at 1R (+5%) | trail rest")
     print(f"Trail method:     ATR × {ATR_TRAIL_MULT} + 5m bar low at 3%+ profit")
     print(f"Exit signals:     VWAP cross ↓ | ATR fade | EOD 3:45pm conviction | circuit breaker")
     print(f"No fixed target:  ride winners until signal fires — no capped % exits")

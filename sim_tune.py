@@ -27,19 +27,14 @@ SYMBOLS = sys.argv[1:] if len(sys.argv) > 1 else DEFAULT_SYMBOLS
 
 WEEKS = [
     {
-        'label': 'Week 1  Mar 09–13  (pre-tariff)',
-        'days':  [date(2026, 3, 9), date(2026, 3, 10), date(2026, 3, 11),
-                  date(2026, 3, 12), date(2026, 3, 13)],
+        'label': 'Week 1  Apr 14–18  (tariff bounce)',
+        'days':  [date(2026, 4, 14), date(2026, 4, 15), date(2026, 4, 16),
+                  date(2026, 4, 17), date(2026, 4, 18)],
     },
     {
-        'label': 'Week 2  Mar 16–20  (pre-tariff)',
-        'days':  [date(2026, 3, 16), date(2026, 3, 17), date(2026, 3, 18),
-                  date(2026, 3, 19), date(2026, 3, 20)],
-    },
-    {
-        'label': 'Week 3  Mar 23–27  (pre-tariff)',
-        'days':  [date(2026, 3, 23), date(2026, 3, 24), date(2026, 3, 25),
-                  date(2026, 3, 26), date(2026, 3, 27)],
+        'label': 'Week 2  Apr 20–24  (tariff chaos)',
+        'days':  [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22),
+                  date(2026, 4, 23), date(2026, 4, 24)],
     },
 ]
 
@@ -48,28 +43,21 @@ WEEKS = [
 
 CONFIGS = [
     {
-        'name':              'Baseline',
-        'BLOCK_CAUTIOUS':    False,
-        'NO_MOVE_MINUTES':   60,
-        'NO_MOVE_UPPER_PCT': 0.8,
-        'BE_TRIGGER_PCT':    0.5,
-        'PARTIAL_EXIT':      False,
-    },
-    {
-        'name':              'Optimized  (CAUTIOUS+BE2.5%+NM150m)',
+        'name':              'No partial  (5% SL / $2K capital)',
         'BLOCK_CAUTIOUS':    True,
         'NO_MOVE_MINUTES':   150,
         'NO_MOVE_UPPER_PCT': 2.0,
         'BE_TRIGGER_PCT':    2.5,
         'PARTIAL_EXIT':      False,
+        '_MAX_DAILY':        5,
     },
     {
-        'name':              'Opt + top-5 cap',
+        'name':              'Partial 50% at 1R',
         'BLOCK_CAUTIOUS':    True,
         'NO_MOVE_MINUTES':   150,
         'NO_MOVE_UPPER_PCT': 2.0,
         'BE_TRIGGER_PCT':    2.5,
-        'PARTIAL_EXIT':      False,
+        'PARTIAL_EXIT':      True,
         '_MAX_DAILY':        5,
     },
 ]
@@ -196,7 +184,7 @@ def bar(v, scale=1.5):
 
 def main():
     print(f"\n{'='*80}")
-    print(f"  3-WEEK TUNING COMPARISON  |  Baseline vs Optimized")
+    print(f"  {len(WEEKS)}-WEEK SIMULATION  |  No Partial vs Partial 50% at 1R  |  5% SL / $2K capital")
     print(f"  Universe ({len(SYMBOLS)}): {', '.join(SYMBOLS)}")
     print(f"{'='*80}\n")
 
@@ -204,7 +192,7 @@ def main():
     all_days = [d for w in WEEKS for d in w['days']]
     regimes  = {}
 
-    print("Pre-fetching regimes for all 15 trading days...")
+    print(f"Pre-fetching regimes for all {len(all_days)} trading days...")
     for d in all_days:
         sim_today.SIM_DATE = d
         try:
@@ -274,10 +262,12 @@ def main():
             print(delta_str)
 
     # ── 3-week aggregate summary ──────────────────────────────────────────────
+    wk_hdrs = '  '.join(f"{'W'+str(i+1):>9}" for i in range(len(WEEKS)))
+    total_lbl = f"{len(WEEKS)}-Week"
     print(f"\n\n{'='*80}")
-    print(f"  3-WEEK AGGREGATE SUMMARY")
+    print(f"  {len(WEEKS)}-WEEK AGGREGATE SUMMARY")
     print(f"{'='*80}")
-    print(f"  {'Config':<36}  {'W1':>9}  {'W2':>9}  {'W3':>9}  {'3-Week':>10}  {'Tr':>4}  {'WR':>5}")
+    print(f"  {'Config':<36}  {wk_hdrs}  {total_lbl:>10}  {'Tr':>4}  {'WR':>5}")
     print(f"  {'-'*74}")
 
     for cfg in CONFIGS:
@@ -293,14 +283,14 @@ def main():
             t_losses  += r['losses']
         total_pnl = sum(w_pnls)
         wr_pct = t_wins / max(t_wins + t_losses, 1) * 100
-        print(f"  {cfg['name']:<36}  "
-              + '  '.join(fp2(p, 9) for p in w_pnls)
-              + f"  {fp2(total_pnl, 10)}  {t_trades:>4}  {wr_pct:>4.0f}%")
+        week_cols = '  '.join(fp2(p, 9) for p in w_pnls)
+        print(f"  {cfg['name']:<36}  {week_cols}  {fp2(total_pnl, 10)}  {t_trades:>4}  {wr_pct:>4.0f}%")
 
         if cfg['name'] == CONFIGS[0]['name']:
             w_pnls_base = w_pnls[:]
 
-    # Delta row
+    # Delta row vs first config
+    n_weeks = len(WEEKS)
     for cfg in CONFIGS[1:]:
         deltas = []
         for week in WEEKS:
@@ -311,15 +301,15 @@ def main():
             deltas.append(opt_pnl - base_pnl)
         total_delta = sum(deltas)
         sign = '+' if total_delta >= 0 else ''
-        print(f"\n  Δ {cfg['name']}: "
-              + '  '.join(f"{'+' if d>=0 else ''}{d:,.0f}".rjust(9) for d in deltas)
-              + f"  {sign}{total_delta:,.2f}".rjust(12) + " vs Baseline")
+        delta_cols = '  '.join(f"{'+' if d>=0 else ''}{d:,.0f}".rjust(9) for d in deltas)
+        print(f"\n  Δ {cfg['name']}: {delta_cols}  {sign}{total_delta:,.2f}".rjust(12) + f" vs {CONFIGS[0]['name']}")
 
         consistent = all(d >= 0 for d in deltas)
+        n_pos = sum(1 for d in deltas if d >= 0)
         if consistent:
             print(f"    ✅ Consistent improvement every week — safe to commit")
-        elif sum(1 for d in deltas if d >= 0) >= 2:
-            print(f"    ⚠️  Improvement in {sum(1 for d in deltas if d >= 0)}/3 weeks — review losing week")
+        elif n_pos >= n_weeks - 1:
+            print(f"    ⚠️  Improvement in {n_pos}/{n_weeks} weeks — review losing week")
         else:
             print(f"    ❌ Inconsistent — do not commit yet")
 

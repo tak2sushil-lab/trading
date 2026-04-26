@@ -29,12 +29,12 @@ warnings.filterwarnings('ignore')
 START_DATE         = '2020-01-01'
 END_DATE           = date.today().isoformat()
 SYMBOLS            = sys.argv[1:] if len(sys.argv) > 1 else ['NVDA', 'PLTR', 'MSFT']
-CAPITAL_PER_TRADE  = 1500        # $ deployed per trade
+CAPITAL_PER_TRADE  = 2000        # $ deployed per trade
 ATR_PERIOD         = 14
-STOP_PCT           = 3.0         # intraday stop: 3% below open (day-hold, not swing)
+STOP_PCT           = 5.0         # 5% fixed stop — $100 risk on $2,000 position
 ATR_TRAIL_MULT     = 1.5         # trail = HOD - 1.5×ATR
 ATR_FADE_MULT      = 1.0         # fade exit = HOD - 1.0×ATR (when in profit)
-MIN_RR             = 2.0         # reward:risk — 3% stop × 2 = 6% target
+MIN_RR             = 2.5         # 5% stop × 2.5 = 12.5% display target
 MIN_VOLUME_RATIO   = 1.3
 MIN_TODAY_GAIN     = 1.5         # stock must close ≥1.5% above prev close
 SKIP_WEAK_DAYS     = True        # no trades on WEAK SPY days
@@ -166,32 +166,46 @@ def grade_day(i, df, spy_chg, regime):
 
 # ── Simulate a single trade from entry at Open ───────────────────────────
 def simulate_trade(row, atr):
-    entry  = row['Open']
-    sl     = round(entry * (1 - STOP_PCT / 100), 2)
-    shares = max(1, int(CAPITAL_PER_TRADE / entry))
+    entry   = row['Open']
+    sl      = round(entry * (1 - STOP_PCT / 100), 2)
+    one_r   = entry * (1 + STOP_PCT / 100)    # +5% = 1R target for partial exit
+    hit_1r  = row['High'] >= one_r             # did price reach 1R intraday?
 
-    # Stop hit?
+    # Partial exit sizing: if 1R hit, sell half at 1R then trail the rest
+    half_cap = CAPITAL_PER_TRADE / 2
+    partial_locked = STOP_PCT / 100 * half_cap if hit_1r else 0.0  # $50 locked at 1R
+    rem_cap  = half_cap if hit_1r else CAPITAL_PER_TRADE
+
+    # Stop hit
     if row['Low'] <= sl:
+        if hit_1r:
+            # Spike-and-reverse: partial locked at 1R, remainder stops out → near breakeven
+            rest_loss = -STOP_PCT / 100 * rem_cap
+            total_pnl = round(partial_locked + rest_loss, 2)
+            return 'PARTIAL_STOP', round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, sl
         return 'STOP', round(-STOP_PCT, 2), round(-STOP_PCT * CAPITAL_PER_TRADE / 100, 2), sl
 
     # ATR trail hit — price faded from HOD by > 1.5×ATR
     trail_stop = row['High'] - ATR_TRAIL_MULT * atr
     if row['Close'] < trail_stop:
-        pnl_pct = (row['Close'] - entry) / entry * 100
-        result  = 'WIN' if pnl_pct > 0 else 'FADE'
-        return result, round(pnl_pct, 2), round(pnl_pct * CAPITAL_PER_TRADE / 100, 2), row['Close']
+        rest_pnl = (trail_stop - entry) / entry * rem_cap
+        total_pnl = round(partial_locked + rest_pnl, 2)
+        result    = 'WIN' if total_pnl > 0 else 'FADE'
+        return result, round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, trail_stop
 
     # ATR fade — drop > 1×ATR from HOD while profitable
     fade_stop = row['High'] - ATR_FADE_MULT * atr
     if row['Close'] < fade_stop:
-        pnl_pct = (row['Close'] - entry) / entry * 100
-        if pnl_pct > 0.5:
-            return 'FADE_EXIT', round(pnl_pct, 2), round(pnl_pct * CAPITAL_PER_TRADE / 100, 2), row['Close']
+        rest_pnl  = (row['Close'] - entry) / entry * rem_cap
+        total_pnl = partial_locked + rest_pnl
+        if total_pnl > 0:
+            return 'FADE_EXIT', round(total_pnl / CAPITAL_PER_TRADE * 100, 2), round(total_pnl, 2), row['Close']
 
     # EOD exit at close
-    pnl_pct = (row['Close'] - entry) / entry * 100
-    result  = 'WIN' if pnl_pct > 0 else 'LOSS'
-    return result, round(pnl_pct, 2), round(pnl_pct * CAPITAL_PER_TRADE / 100, 2), row['Close']
+    rest_pnl  = (row['Close'] - entry) / entry * rem_cap
+    total_pnl = round(partial_locked + rest_pnl, 2)
+    result    = 'WIN' if total_pnl > 0 else 'LOSS'
+    return result, round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, row['Close']
 
 # ── Backtest one symbol ──────────────────────────────────────────────────
 def backtest_symbol(symbol, spy_regime):
