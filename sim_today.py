@@ -34,7 +34,7 @@ MAX_LOSS_PER_TRADE = 100   # $100 risk per trade (5% of $2000 position)
 
 # ── Tunable exit parameters (patched by sim_tune.py for A/B testing) ─────────
 # Validated Apr 26 via 3-week A/B: these beat baseline in every week
-NO_MOVE_MINUTES   = 150    # min hold before no-move exit fires (was 60)
+NO_MOVE_MINUTES   = 240    # min hold before no-move exit fires (150→240 validated Apr 26 A/B: +$81/2wk)
 NO_MOVE_UPPER_PCT = 2.0    # no-move fires if pnl ≤ this % (was 0.8%)
 BE_TRIGGER_PCT    = 2.5    # set break-even stop once profit reaches this % (was 0.5%)
 PARTIAL_EXIT      = True   # take 50% off at 1R (5% gain), ride rest with trail
@@ -58,6 +58,11 @@ SECTOR_ETF_MAP = {
 
 # ── Tunable constants (also patched by sim_tune.py) ──────────────────────────
 BLOCK_CAUTIOUS = True    # treat CAUTIOUS like WEAK — block new entries (validated Apr 26)
+
+# Early catalyst entry — bypass 10am / 75-bar guards for high-conviction gap plays
+EARLY_ENTRY_ENABLED = False  # allow entry from 9:35am on catalyst gap stocks (tested Apr 26 — failed, gap-and-crap risk outweighs upside)
+EARLY_ENTRY_GAP_PCT = 6.0    # minimum pre-market gap % to qualify
+EARLY_ENTRY_VOL_MIN = 3.0    # minimum annualized volume ratio at time of entry
 
 # Use last available trading day (handles weekends / holidays transparently)
 def last_trading_date():
@@ -386,10 +391,25 @@ def simulate(symbol, regime, spy_chg):
         # ── Not in trade: scan for entry ───────────────────────────────────────
         if exited_today:
             continue
+
+        blocked = {'CHOPPY', 'WEAK'} | ({'CAUTIOUS'} if BLOCK_CAUTIOUS else set())
+        if regime in blocked:
+            continue
+
+        # Early catalyst: gap ≥6% + vol ≥3x at 9:35–9:59am → bypass 10am + 75-bar guards
+        gap_pct_now   = (price - prev_close) / prev_close * 100
+        mins_open_now = max(1, (ts.hour - 9) * 60 + ts.minute - 30)
+        vol_early     = round(df5.iloc[:i+1]['Volume'].sum() * (390 / mins_open_now) / avg_vol, 2) if avg_vol else 0.0
+        is_early_catalyst = (EARLY_ENTRY_ENABLED and i >= 1 and
+                              t[0] == 9 and t[1] >= 35 and
+                              gap_pct_now >= EARLY_ENTRY_GAP_PCT and
+                              vol_early >= EARLY_ENTRY_VOL_MIN)
+
         in_window = (NO_ENTRY_BEFORE <= ts.hour < NO_ENTRY_AFTER and
                      not (LUNCH_AVOID_START <= t < LUNCH_AVOID_END))
-        blocked = {'CHOPPY', 'WEAK'} | ({'CAUTIOUS'} if BLOCK_CAUTIOUS else set())
-        if not in_window or regime in blocked or i < 15:
+        if not in_window and not is_early_catalyst:
+            continue
+        if not is_early_catalyst and i < 15:
             continue
 
         sub         = df5.iloc[:i+1].copy()
@@ -600,6 +620,12 @@ def simulate(symbol, regime, spy_chg):
 
         grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
+        if is_early_catalyst and grade != 'A+':
+            skip = f'Early entry: need A+ (score {score} < 80) — too risky pre-10am'
+            skip_counts[skip] = skip_counts.get(skip, 0) + 1
+            if skip not in first_skip:
+                first_skip[skip] = (tstr, price)
+            continue
         if grade in ('B', 'C'):
             skip = f'Grade {grade} (score {score}) — need A or A+'
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
@@ -632,8 +658,9 @@ def simulate(symbol, regime, spy_chg):
         partial_done   = False
         partial_locked_usd = 0.0
         cat_tag      = ' ⚡CATALYST' if is_catalyst else ''
+        early_tag    = ' 🌅EARLY-9AM' if is_early_catalyst else ''
 
-        events.append(f"  ▶ {tstr}  ${price:.2f}  ENTER  Grade {grade}{cat_tag}  score={score}  capital=${capital:,}")
+        events.append(f"  ▶ {tstr}  ${price:.2f}  ENTER  Grade {grade}{cat_tag}{early_tag}  score={score}  capital=${capital:,}")
         events.append(f"       Patterns : {' | '.join(patterns)}")
         events.append(f"       SL ${sl:.2f} | Target ${target:.2f} | R:R 1:{rr:.1f} | {shares} sh × ${capital:,}")
 

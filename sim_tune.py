@@ -43,22 +43,24 @@ WEEKS = [
 
 CONFIGS = [
     {
-        'name':              'No partial  (5% SL / $2K capital)',
-        'BLOCK_CAUTIOUS':    True,
-        'NO_MOVE_MINUTES':   150,
-        'NO_MOVE_UPPER_PCT': 2.0,
-        'BE_TRIGGER_PCT':    2.5,
-        'PARTIAL_EXIT':      False,
-        '_MAX_DAILY':        5,
+        'name':                 'Current  (240min no-move)',
+        'BLOCK_CAUTIOUS':       True,
+        'NO_MOVE_MINUTES':      240,
+        'NO_MOVE_UPPER_PCT':    2.0,
+        'BE_TRIGGER_PCT':       2.5,
+        'PARTIAL_EXIT':         True,
+        'EARLY_ENTRY_ENABLED':  False,
+        '_MAX_DAILY':           5,
     },
     {
-        'name':              'Partial 50% at 1R',
-        'BLOCK_CAUTIOUS':    True,
-        'NO_MOVE_MINUTES':   150,
-        'NO_MOVE_UPPER_PCT': 2.0,
-        'BE_TRIGGER_PCT':    2.5,
-        'PARTIAL_EXIT':      True,
-        '_MAX_DAILY':        5,
+        'name':                 'Test next param here',
+        'BLOCK_CAUTIOUS':       True,
+        'NO_MOVE_MINUTES':      240,
+        'NO_MOVE_UPPER_PCT':    2.0,
+        'BE_TRIGGER_PCT':       2.5,
+        'PARTIAL_EXIT':         True,
+        'EARLY_ENTRY_ENABLED':  False,
+        '_MAX_DAILY':           5,
     },
 ]
 
@@ -184,7 +186,7 @@ def bar(v, scale=1.5):
 
 def main():
     print(f"\n{'='*80}")
-    print(f"  {len(WEEKS)}-WEEK SIMULATION  |  No Partial vs Partial 50% at 1R  |  5% SL / $2K capital")
+    print(f"  {len(WEEKS)}-WEEK SIMULATION  |  A/B parameter test  |  5% SL / $2K capital / Partial exits / 240min no-move")
     print(f"  Universe ({len(SYMBOLS)}): {', '.join(SYMBOLS)}")
     print(f"{'='*80}\n")
 

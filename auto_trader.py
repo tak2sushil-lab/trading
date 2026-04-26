@@ -1060,13 +1060,13 @@ def monitor_open_trades(regime='NORMAL'):
             if drop > ATR_FADE_MULT * atr and pnl_pct > 0.3:
                 exit_reason = f'Momentum fade {ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 5. No-move exit — flat after 150 min: capital truly stuck, opportunity cost
-        # Window raised 60→150 min and ceiling 0.8→2.0% so consolidating movers get room
+        # 5. No-move exit — flat after 240 min: capital truly stuck, opportunity cost
+        # Window raised 60→150→240 min so consolidating movers get more room for second leg
         if not exit_reason and is_market_open():
             entry_dt = trade_entry_times.get(tid)
             if entry_dt:
                 mins_held = (now - entry_dt).total_seconds() / 60
-                if mins_held >= 150 and -0.3 <= pnl_pct <= 2.0:
+                if mins_held >= 240 and -0.3 <= pnl_pct <= 2.0:
                     exit_reason = f'No-move exit: flat {mins_held:.0f}min ({pnl_pct:+.1f}%)'
 
         # 6. EOD conviction close — 3:45pm, hold overnight only if still strong
