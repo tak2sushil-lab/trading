@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env file from same folder
 
 import os
-from ib_async import IB, Stock, MarketOrder, LimitOrder, ScannerSubscription
+from ib_async import IB, Stock, Index, MarketOrder, LimitOrder, ScannerSubscription
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -154,7 +154,11 @@ async def get_history(
         if age < ttl:
             return _hist_cache[cache_key]['bars']
 
-    contract = Stock(sym, 'SMART', 'USD')
+    # VIX is a CBOE index — requires Index contract, not Stock
+    if sym == 'VIX':
+        contract = Index('VIX', 'CBOE', 'USD')
+    else:
+        contract = Stock(sym, 'SMART', 'USD')
     await ib.qualifyContractsAsync(contract)
 
     def _bar_to_dict(b):

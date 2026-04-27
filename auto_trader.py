@@ -316,17 +316,47 @@ def get_atr(symbol):
 # ─────────────────────────────────────────────────────────
 # REGIME — VWAP + VIX direction + QQQ breadth
 # ─────────────────────────────────────────────────────────
+def _bridge_df(symbol, duration='1 D', bar_size='5 mins'):
+    """Fetch IBKR bars from bridge → DataFrame with DatetimeIndex."""
+    r = requests.get(f"{BRIDGE}/history/{symbol}",
+                     params={'duration': duration, 'bar_size': bar_size},
+                     timeout=15)
+    r.raise_for_status()
+    bars = r.json()
+    if not bars:
+        return pd.DataFrame()
+    df = pd.DataFrame(bars)
+    df.rename(columns={c: c.capitalize() for c in df.columns}, inplace=True)
+    if bar_size == '1 day':
+        df['Date'] = pd.to_datetime(df['Date'])
+    else:
+        df['Date'] = pd.to_datetime(df['Date'], utc=True).dt.tz_convert(ET)
+    return df.set_index('Date').sort_index()
+
+
 def get_regime():
     try:
-        spy_intra = yf.Ticker('SPY').history(period='1d', interval='5m')
-        qqq_intra = yf.Ticker('QQQ').history(period='1d', interval='5m')
-        vix_intra = yf.Ticker('^VIX').history(period='1d', interval='5m')
-        spy_daily = yf.Ticker('SPY').history(period='2d')
+        # ── Primary signals — real-time IBKR data via bridge ─────────────────
+        spy_intra = _bridge_df('SPY', '1 D', '5 mins')
+        qqq_intra = _bridge_df('QQQ', '1 D', '5 mins')
+        spy_daily = _bridge_df('SPY', '5 D', '1 day')
+
+        # VIX — bridge (Index contract) with yfinance fallback if no CBOE subscription
+        try:
+            vix_intra = _bridge_df('VIX', '1 D', '5 mins')
+            if vix_intra.empty:
+                raise ValueError('empty')
+        except Exception:
+            vix_raw = yf.Ticker('^VIX').history(period='1d', interval='5m')
+            vix_raw.index = vix_raw.index.tz_convert(ET)
+            vix_intra = vix_raw
 
         spy_price = float(spy_intra['Close'].iloc[-1])
-        spy_prev  = float(spy_daily['Close'].iloc[-2])
-        spy_chg   = (spy_price - spy_prev) / spy_prev * 100
-        vix_val   = float(vix_intra['Close'].iloc[-1])
+
+        # Prev close: IBKR daily bars exclude the incomplete current-day bar
+        spy_prev = float(spy_daily['Close'].iloc[-1]) if not spy_daily.empty else float(spy_intra['Open'].iloc[0])
+        spy_chg  = (spy_price - spy_prev) / spy_prev * 100
+        vix_val  = float(vix_intra['Close'].iloc[-1])
 
         # SPY VWAP
         tp   = (spy_intra['High'] + spy_intra['Low'] + spy_intra['Close']) / 3
@@ -334,25 +364,25 @@ def get_regime():
                      spy_intra['Volume'].cumsum().iloc[-1])
         spy_above_vwap = spy_price > vwap
 
-        # VIX direction (30 min)
+        # VIX direction (last 30 min = 6 bars)
         vix_rising = (len(vix_intra) >= 6 and
                       float(vix_intra['Close'].iloc[-1]) > float(vix_intra['Close'].iloc[-6]))
 
-        # QQQ vs SPY breadth
+        # QQQ vs SPY — tech leading or lagging
         qqq_leading = True
         if not qqq_intra.empty and len(qqq_intra) >= 2:
             qqq_chg       = (float(qqq_intra['Close'].iloc[-1]) - float(qqq_intra['Open'].iloc[0])) / float(qqq_intra['Open'].iloc[0]) * 100
             spy_intra_chg = (spy_price - float(spy_intra['Open'].iloc[0])) / float(spy_intra['Open'].iloc[0]) * 100
             qqq_leading   = qqq_chg >= spy_intra_chg - 0.3
 
-        # Choppiness
+        # Choppiness — >40% bar reversals on a flat tape
         chop = False
         if len(spy_intra) >= 6:
             diffs   = spy_intra['Close'].diff().dropna()
             changes = sum(1 for i in range(1, len(diffs)) if diffs.iloc[i] * diffs.iloc[i-1] < 0)
             chop    = changes / len(diffs) > 0.4 and abs(spy_chg) < 0.3
 
-        # Base regime — thresholds calibrated to post-2022 VIX baseline (18-22 is now normal)
+        # Base regime
         if chop:
             regime = 'CHOPPY'
         elif spy_chg < -0.5 or vix_val > 28:
@@ -364,7 +394,7 @@ def get_regime():
         else:
             regime = 'CAUTIOUS'
 
-        # Downgrade one level per negative institutional signal
+        # Downgrade one level per negative signal
         order = ['STRONG', 'NORMAL', 'CAUTIOUS', 'WEAK']
         if regime not in ('CHOPPY', 'WEAK'):
             if not spy_above_vwap:
@@ -374,7 +404,7 @@ def get_regime():
             if not qqq_leading and regime == 'STRONG':
                 regime = 'NORMAL'
 
-        # ES/NQ futures direction — opening bias signal
+        # ── ES/NQ futures — informational only, yfinance ok (not a regime gate) ──
         es_chg = nq_chg = 0.0
         try:
             today_d = datetime.now(ET).date()
@@ -393,43 +423,32 @@ def get_regime():
         except Exception:
             pass
 
-        # Market breadth — IWM (small caps) + MDY (mid caps) advancing = broad market
+        # ── Market breadth — IWM + MDY via bridge ─────────────────────────────
         broad_advance = True
         breadth_weak  = False
         try:
-            iwm = yf.Ticker('IWM').history(period='2d')
-            mdy = yf.Ticker('MDY').history(period='2d')
-            iwm_chg = (float(iwm['Close'].iloc[-1]) - float(iwm['Close'].iloc[-2])) / float(iwm['Close'].iloc[-2]) * 100
-            mdy_chg = (float(mdy['Close'].iloc[-1]) - float(mdy['Close'].iloc[-2])) / float(mdy['Close'].iloc[-2]) * 100
+            iwm_5m    = _bridge_df('IWM', '1 D', '5 mins')
+            mdy_5m    = _bridge_df('MDY', '1 D', '5 mins')
+            iwm_daily = _bridge_df('IWM', '3 D', '1 day')
+            mdy_daily = _bridge_df('MDY', '3 D', '1 day')
+            iwm_now   = float(iwm_5m['Close'].iloc[-1])
+            mdy_now   = float(mdy_5m['Close'].iloc[-1])
+            iwm_prev  = float(iwm_daily['Close'].iloc[-1])
+            mdy_prev  = float(mdy_daily['Close'].iloc[-1])
+            iwm_chg   = (iwm_now - iwm_prev) / iwm_prev * 100
+            mdy_chg   = (mdy_now - mdy_prev) / mdy_prev * 100
             broad_advance = iwm_chg > 0 and mdy_chg > 0
             breadth_weak  = iwm_chg < -0.5 and mdy_chg < -0.5
-        except Exception:
-            pass
-
-        # CBOE equity put/call ratio — elevated = institutional fear
-        pcr = None
-        pcr_bearish = False
-        try:
-            pcr_data = yf.Ticker('^CPCE').history(period='2d')
-            if not pcr_data.empty:
-                pcr = round(float(pcr_data['Close'].iloc[-1]), 2)
-                pcr_bearish = pcr > 0.9   # >0.9 = heavy put buying = fear
-        except Exception:
-            pass
-
-        # Downgrade regime on weak breadth or bearish P/C
-        if regime not in ('CHOPPY', 'WEAK'):
-            if breadth_weak:
+            if breadth_weak and regime not in ('CHOPPY', 'WEAK'):
                 regime = order[min(order.index(regime) + 1, len(order) - 1)]
-            if pcr_bearish and regime == 'STRONG':
-                regime = 'NORMAL'
+        except Exception:
+            pass
 
         extra = {
             'vwap': round(vwap, 2), 'spy_above_vwap': spy_above_vwap,
             'vix_rising': vix_rising, 'qqq_leading': qqq_leading,
             'es_chg': es_chg, 'nq_chg': nq_chg,
             'broad_advance': broad_advance, 'breadth_weak': breadth_weak,
-            'pcr': pcr, 'pcr_bearish': pcr_bearish,
         }
         return regime, round(spy_chg, 2), round(vix_val, 2), extra
 
@@ -1240,11 +1259,9 @@ def run_scan():
     nq_chg     = extra.get('nq_chg', 0)
     fut_str    = f"ES {es_chg:+.1f}% NQ {nq_chg:+.1f}%"
     breadth_str = 'breadth ✓' if extra.get('broad_advance') else ('breadth WEAK' if extra.get('breadth_weak') else 'breadth ~')
-    pcr        = extra.get('pcr')
-    pcr_str    = f"PCR {pcr:.2f}{'⚠' if extra.get('pcr_bearish') else ''}" if pcr else "PCR n/a"
     log(f"\n{'='*55}")
     log(f"SCAN | Regime: {regime} (x{confirmed_scans}) | SPY {spy_chg:+.1f}% {'↑open' if spy_above_open else '↓open'} | {vwap_str} | {vix_str} | {qqq_str}")
-    log(f"      Futures: {fut_str} | {breadth_str} | {pcr_str}")
+    log(f"      Futures: {fut_str} | {breadth_str}")
     # Live session P&L = realized today + current unrealized
     try:
         portfolio_snap = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
