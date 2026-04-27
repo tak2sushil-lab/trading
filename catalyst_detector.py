@@ -35,6 +35,12 @@ CATALYST_UNIVERSE = list(dict.fromkeys([
     'POET', 'VIAV', 'IIVI',
     'INDI', 'WOLF', 'ALGM',
     'EOSE', 'OKLO', 'RKLB',
+    # Added Apr 27 from Yahoo watchlist review
+    'SHOP',   # Shopify — e-commerce/fintech momentum
+    'S',      # SentinelOne — cybersecurity (same tier as CRWD/PANW)
+    'PL',     # Planet Labs — space/satellite
+    'PLUG',   # Plug Power — hydrogen/green energy, 17M avg vol
+    'XE',     # new IPO — high vol, discovery only until 20d history forms
 ]))
 
 SECTORS = {

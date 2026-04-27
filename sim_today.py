@@ -54,6 +54,7 @@ SECTOR_ETF_MAP = {
     'CRM':  'XLK', 'SMCI': 'XLK', 'CRWV': 'XLK', 'BBAI': 'XLK', 'POET': 'XLK',
     'IONQ': 'XLK', 'SOUN': 'XLK', 'PLTR': 'XLK', 'META': 'XLC', 'AMZN': 'XLY',
     'TSLA': 'XLY', 'HOOD': 'XLF', 'EOSE': 'XLE', 'RKLB': 'XLI', 'OKLO': 'XLU',
+    'SHOP': 'XLY', 'S': 'XLK', 'PL': 'XLI', 'PLUG': 'XLE', 'XE': 'XLK',
 }
 
 # ── Tunable constants (also patched by sim_tune.py) ──────────────────────────
