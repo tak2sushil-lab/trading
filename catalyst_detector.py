@@ -15,7 +15,50 @@ from datetime import datetime, date, timedelta
 import pytz
 import requests
 from twilio.rest import Client
-from watchlist import CATALYST_UNIVERSE, SECTORS, FINAL_UNIVERSE
+# Inlined from retired watchlist.py — watchlist module no longer exists
+CATALYST_UNIVERSE = list(dict.fromkeys([
+    'NVDA', 'AMD', 'MSFT', 'AAPL', 'AVGO', 'ORCL',
+    'PLTR', 'NBIS', 'CRWV', 'SMCI', 'CLS', 'COHR',
+    'LITE', 'PANW', 'CRWD', 'SNOW', 'CRM', 'RBRK',
+    'PATH', 'AI', 'IONQ', 'QBTS', 'RGTI',
+    'HOOD', 'SOFI', 'AFRM', 'TOST', 'NU', 'RKT',
+    'ITA', 'RKLB', 'USAR', 'RDW', 'UMAC',
+    'VST', 'CNQ', 'CVE', 'ENB', 'FSLR', 'NEE',
+    'SMR', 'OKLO', 'CCJ', 'UUUU', 'DNN', 'URA',
+    'LLY', 'NTLA', 'BEAM', 'TMDX', 'NPCE', 'NUTX',
+    'MSTR', 'IREN', 'APLD', 'HIVE',
+    'AMZN', 'TSLA', 'META', 'GOOGL', 'NFLX', 'UBER',
+    'JPM', 'GS', 'MS',
+    'HPE', 'HBM', 'PONY', 'SERV', 'BMNR', 'DNA', 'SOUN', 'BBAI',
+    'ACHR', 'JOBY', 'RDW', 'ONDS',
+    'ON', 'LRCX', 'DDOG', 'MDB',
+    'POET', 'VIAV', 'IIVI',
+    'INDI', 'WOLF', 'ALGM',
+    'EOSE', 'OKLO', 'RKLB',
+]))
+
+SECTORS = {
+    'AI_TECH':   ['NVDA', 'AMD', 'PLTR', 'CRWV', 'NBIS', 'SMCI', 'PATH', 'AI'],
+    'MEGA_TECH': ['MSFT', 'AAPL', 'AMZN', 'GOOGL', 'META', 'TSLA'],
+    'SEMI':      ['AVGO', 'COHR', 'LITE', 'ON', 'CLS', 'NVDA', 'AMD'],
+    'CLOUD':     ['SNOW', 'CRM', 'ORCL', 'RBRK', 'PANW', 'CRWD'],
+    'DEFENCE':   ['ITA', 'USAR', 'RKLB', 'RDW', 'UMAC'],
+    'ENERGY':    ['CNQ', 'CVE', 'ENB', 'VST', 'FSLR', 'NEE', 'EOSE'],
+    'NUCLEAR':   ['SMR', 'OKLO', 'CCJ', 'UUUU', 'DNN', 'URA'],
+    'QUANTUM':   ['IONQ', 'QBTS', 'RGTI'],
+    'BIOTECH':   ['LLY', 'NTLA', 'BEAM', 'TMDX', 'NPCE', 'NUTX'],
+    'FINTECH':   ['HOOD', 'SOFI', 'AFRM', 'TOST', 'NU', 'RKT'],
+    'CRYPTO':    ['MSTR', 'IREN', 'APLD', 'HIVE', 'BMNR'],
+    'SPACE':     ['RKLB', 'JOBY', 'ACHR', 'PONY'],
+    'FINANCIAL': ['JPM', 'GS', 'MS'],
+}
+
+FINAL_UNIVERSE = list(dict.fromkeys([
+    'AAPL', 'PLTR', 'COHR', 'IONQ', 'HOOD', 'JPM', 'IREN', 'NUTX',
+    'LITE', 'VST', 'ITA', 'NFLX', 'ORCL', 'OKLO', 'AMZN', 'GOOGL',
+    'CRM', 'QBTS', 'TOST', 'AVGO', 'NBIS', 'CLS', 'RKLB',
+    'MSFT', 'META', 'AMD', 'CNQ', 'RKT',
+]))
 
 # ── Config ────────────────────────────────────────────────
 TWILIO_SID      = os.getenv('TWILIO_SID')
