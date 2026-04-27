@@ -53,7 +53,7 @@ MIN_REGIME_SCANS  = 2        # regime must be confirmed for N consecutive scans 
 MIN_TODAY_GAIN    = 1.5      # stock must be up ≥1.5% today before we enter
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
-LUNCH_AVOID_END   = (13, 30) # resume entries at 1:30pm ET
+LUNCH_AVOID_END   = (12, 45) # resume entries at 12:45pm ET
 ORB_ENTRY_CUTOFF  = (11, 30) # ORB signal only valid before 11:30am — late breaks are just resistance
 
 # ── Persistence ───────────────────────────────────────────
