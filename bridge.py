@@ -238,6 +238,7 @@ class OrderRequest(BaseModel):
     side:        str
     order_type:  str   = "MARKET"
     limit_price: float = None
+    outside_rth: bool  = False   # True for pre/after-market limit orders
 
 @app.post("/order")
 async def place_order(req: OrderRequest):
@@ -248,6 +249,9 @@ async def place_order(req: OrderRequest):
         order = LimitOrder(req.side.upper(), req.qty, req.limit_price)
     else:
         order = MarketOrder(req.side.upper(), req.qty)
+
+    if req.outside_rth:
+        order.outsideRth = True   # IBKR extended-hours flag
 
     trade = ib.placeOrder(contract, order)
     await asyncio.sleep(1)

@@ -31,7 +31,14 @@ TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 SCAN_INTERVAL     = 300      # 5 min
 TOTAL_CAPITAL     = 10000    # max capital deployed across all positions
 MAX_OPEN_TRADES   = 5        # 5 × $2,000 = $10K fully deployed
-MAX_DAILY_TRADES  = 5        # top-5 daily entry cap — only best setups by score
+MAX_DAILY_BULL_TRADES  = 5   # bull entries per day (independent of bear count)
+MAX_DAILY_BEAR_TRADES  = 5   # bear entries per day (independent of bull count)
+MAX_PREMARKET_TRADES   = 2       # pre-market earnings gap entries (sub-cap inside bull daily count)
+PREMARKET_GAP_LARGE    = 6.0    # large-cap (price ≥ $150): mega/large caps rarely move more — 6% is a real surprise
+PREMARKET_GAP_MID      = 8.0    # mid-cap  ($50–$149):  more volatile, need stronger signal to avoid gap-and-crap
+PREMARKET_GAP_SMALL    = 10.0   # small-cap (< $50):     highest bar — these can gap 20%+ on noise
+PREMARKET_VOL_MIN      = 200_000  # pre-market volume floor — liquidity gate
+PREMARKET_HOLD_PCT     = 0.97   # gap must hold ≥ 97% of its pre-market high (not fading)
 MAX_RISK_PCT        = 8.0    # hard ATR cap — removed 2% floor, trust the ATR fully
 MIN_RR              = 2.5    # min reward:risk for entry qualification
 MAX_LOSS_PER_TRADE  = 100    # dollar circuit breaker: $100 = 5% of $2,000 position
@@ -50,7 +57,7 @@ MAX_HOLD_DAYS     = 1        # hard max hold: exit any position after 1 business
 NO_ENTRY_BEFORE   = 10       # wait until 10:00am — let opening range establish
 NO_ENTRY_AFTER    = 15       # no new entries at/after 3:00pm ET
 MIN_REGIME_SCANS  = 2        # regime must be confirmed for N consecutive scans before entry
-MIN_TODAY_GAIN    = 1.5      # stock must be up ≥1.5% today before we enter
+MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
 LUNCH_AVOID_END   = (12, 45) # resume entries at 12:45pm ET
@@ -67,7 +74,9 @@ price_history     = {}       # trade_id → [prices]
 session_high      = {}       # trade_id → highest price seen (LONG trades)
 session_low       = {}       # trade_id → lowest price seen (SHORT trades)
 atr_cache         = {}       # sym → (date_str, atr_value)
-daily_trade_count = 0
+daily_bull_count  = 0
+daily_bear_count  = 0
+pm_scan_done      = False    # pre-market scan fires once per day
 catalyst_priority  = []       # symbols from today's catalyst scan
 tg_update_id       = 0        # Telegram polling offset
 regime_history     = []       # last N regime readings for confirmation
@@ -88,62 +97,97 @@ FULL_UNIVERSE = list(dict.fromkeys([
     'TOST', 'AVGO', 'NBIS', 'CLS', 'RKLB', 'CNQ',
     # ── Borderline: 50%, positive avg, good sample ───────
     'AMD', 'RKT', 'NU',
-    # ── Mega cap (price filter may apply in backtest) ─────
+    # ── Mega cap ──────────────────────────────────────────
     'MSFT', 'META', 'GS',
-    # ── Catalyst-only (not in proven list but scan for events) ──
+    # ── Catalyst-only (scan for events) ──────────────────
     'CRWV', 'SMCI', 'RBRK', 'AI', 'RGTI',
     'USAR', 'FSLR', 'CCJ', 'UUUU', 'DNN',
     'LLY', 'NTLA', 'BEAM',
     'APLD', 'SOUN', 'BBAI',
-    # ── Gap-and-go confirmed (5Y backtest: 56-60% WR) ────────
-    'ON',   # 59% WR gap plays, $8.40 avg — semi leader
-    'LRCX', # 59% WR gap plays, $7.79 avg — semi equipment
-    'DDOG', # 58% WR gap plays, $8.08 avg — cloud monitoring
-    'MDB',  # 56% WR gap plays, $17.41 avg — database
-    # ── Momentum / sector-leader additions ───────────────────
-    'POET', # photonic semiconductors — strong gap momentum
-    'EOSE', # energy storage — catalyst mover, gap plays
-    'INDI', # automotive semis — catalyst mover
-    'NVDA', # AI/semi leader — strong sector days (dropped from gap backtest but valid swing)
-    'INTC', # Intel — earnings catalyst, large-cap semi
-    'TSLA', # high beta — big moves on strong days
+    # ── Gap-and-go confirmed (5Y backtest: 56-60% WR) ────
+    'ON', 'LRCX', 'DDOG', 'MDB',
+    # ── Momentum / sector-leader ──────────────────────────
+    'POET', 'EOSE', 'INDI', 'NVDA', 'INTC', 'TSLA',
+    # ── Energy: oil/gas/pipelines — macro + sector ETF days ──
+    'CVX', 'XOM', 'OXY', 'SLB', 'HAL', 'DVN', 'MRO', 'XLE',
+    # ── Healthcare / Pharma: catalyst + FDA days ─────────
+    'UNH', 'MRNA', 'PFE', 'ABBV', 'ISRG', 'DXCM', 'HIMS', 'XBI',
+    # ── Consumer Discretionary: sentiment + retail days ──
+    'COST', 'NKE', 'SBUX', 'CMG', 'UBER',
+    # ── Financials expanded: rate-sensitive + crypto ─────
+    'BAC', 'C', 'WFC', 'V', 'MA', 'COIN',
+    # ── Defence / Industrial: geopolitical + infra ───────
+    'RTX', 'LMT', 'NOC', 'CAT', 'DE',
+    # ── Semiconductor expansion ───────────────────────────
+    'QCOM', 'MRVL', 'KLAC', 'AMAT', 'MU', 'SMH',
+    # ── Clean Energy / EV / Battery materials ────────────
+    'LAC', 'RIVN', 'NIO', 'CHPT',
+    # ── Commodities / Mining ─────────────────────────────
+    'FCX', 'NEM', 'MP',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
     # SMR(24%), MSTR(17%), SNOW(33%), CRWD(33%)
-    # UBER(33%), JOBY(38%), PANW(43%), MS(43%)
-    # AFRM(43%), ACHR(44%), SOFI(50% neg avg), HPE(50% neg avg)
+    # JOBY(38%), PANW(43%), MS(43%), AFRM(43%), ACHR(44%)
+    # SOFI(50% neg avg), HPE(50% neg avg)
 ]))
 
-# ── Top 5 sectors + symbol map ────────────────────────────
-# Consolidates watchlist SECTORS into 5 tradeable groups
+# ── Sector map ────────────────────────────────────────────
 SECTOR_MAP = {
     # TECH: AI chips, semis, cloud, mega-cap
     'AAPL':'TECH','MSFT':'TECH','AMZN':'TECH','GOOGL':'TECH','META':'TECH',
     'AMD':'TECH','AVGO':'TECH','NFLX':'TECH','NVDA':'TECH','INTC':'TECH','TSLA':'TECH',
     'COHR':'TECH','LITE':'TECH','CLS':'TECH','SMCI':'TECH','CRWV':'TECH',
-    'PLTR':'TECH','NBIS':'TECH','AI':'TECH','CRM':'TECH',
-    'ORCL':'TECH','RBRK':'TECH',
+    'PLTR':'TECH','NBIS':'TECH','AI':'TECH','CRM':'TECH','ORCL':'TECH','RBRK':'TECH',
+    'DDOG':'TECH','MDB':'TECH','ON':'TECH','SOUN':'TECH','BBAI':'TECH',
+    # SEMIS: semiconductor equipment and design
+    'LRCX':'SEMIS','QCOM':'SEMIS','MRVL':'SEMIS','KLAC':'SEMIS',
+    'AMAT':'SEMIS','MU':'SEMIS','SMH':'SEMIS','INDI':'SEMIS','POET':'SEMIS',
     # NUCLEAR: small modular reactors, uranium
     'OKLO':'NUCLEAR','CCJ':'NUCLEAR','UUUU':'NUCLEAR','DNN':'NUCLEAR',
-    # FINTECH: neo-banks, payments, trading apps, financials
+    # FINTECH: neo-banks, payments, trading apps, financials, crypto exchange
     'NU':'FINTECH','RKT':'FINTECH','JPM':'FINTECH','GS':'FINTECH',
-    'HOOD':'FINTECH','TOST':'FINTECH',
-    # BIOTECH: pharma, gene editing
+    'HOOD':'FINTECH','TOST':'FINTECH','BAC':'FINTECH','C':'FINTECH',
+    'WFC':'FINTECH','V':'FINTECH','MA':'FINTECH','COIN':'FINTECH',
+    # BIOTECH: pharma, gene editing, healthcare
     'LLY':'BIOTECH','NTLA':'BIOTECH','BEAM':'BIOTECH','NUTX':'BIOTECH',
+    'UNH':'BIOTECH','MRNA':'BIOTECH','PFE':'BIOTECH','ABBV':'BIOTECH',
+    'ISRG':'BIOTECH','DXCM':'BIOTECH','HIMS':'BIOTECH','XBI':'BIOTECH',
     # QUANTUM_CRYPTO: quantum computing + crypto infrastructure
     'IONQ':'QUANTUM_CRYPTO','QBTS':'QUANTUM_CRYPTO','RGTI':'QUANTUM_CRYPTO',
     'IREN':'QUANTUM_CRYPTO','APLD':'QUANTUM_CRYPTO',
+    # ENERGY: oil, gas, oilfield services
+    'CVX':'ENERGY','XOM':'ENERGY','OXY':'ENERGY','SLB':'ENERGY',
+    'HAL':'ENERGY','DVN':'ENERGY','MRO':'ENERGY','XLE':'ENERGY',
+    'FSLR':'ENERGY','EOSE':'ENERGY','VST':'ENERGY','CNQ':'ENERGY',
+    # DEFENCE: aerospace, defence, industrials
+    'RTX':'DEFENCE','LMT':'DEFENCE','NOC':'DEFENCE','CAT':'DEFENCE',
+    'DE':'DEFENCE','ITA':'DEFENCE',
+    # CONSUMER: discretionary + staples
+    'COST':'CONSUMER','NKE':'CONSUMER','SBUX':'CONSUMER','CMG':'CONSUMER',
+    'UBER':'CONSUMER','TOST':'CONSUMER',
+    # DEFENCE: aerospace, defence, industrials (extended)
+    'RKLB':'DEFENCE',
+    # CONSUMER: discretionary + travel
+    'USAR':'CONSUMER',
+    # CLEAN_ENERGY: EV, battery materials, charging
+    'LAC':'CLEAN_ENERGY','RIVN':'CLEAN_ENERGY','NIO':'CLEAN_ENERGY','CHPT':'CLEAN_ENERGY',
+    # COMMODITIES: mining, metals, gold
+    'FCX':'COMMODITIES','NEM':'COMMODITIES','MP':'COMMODITIES',
     # Remainder → OTHER (still tradeable, just uncapped)
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────
 SECTOR_ETF_MAP = {
     'TECH':          'XLK',
+    'SEMIS':         'SMH',
     'FINTECH':       'XLF',
     'ENERGY':        'XLE',
     'BIOTECH':       'XBI',
     'NUCLEAR':       'NLR',
     'DEFENCE':       'ITA',
     'QUANTUM_CRYPTO':'QQQ',
+    'CONSUMER':      'XLY',
+    'CLEAN_ENERGY':  'ICLN',
+    'COMMODITIES':   'GLD',
     'OTHER':         'SPY',
 }
 
@@ -234,6 +278,13 @@ def is_market_open():
     if now.hour >= 16:
         return False
     return True
+
+def is_premarket_window():
+    """True 9:20–9:29am ET — final pre-open window for earnings gap entries."""
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    return now.hour == 9 and 20 <= now.minute <= 29
 
 def is_entry_window():
     now = datetime.now(ET)
@@ -1064,21 +1115,26 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
 # PLACE TRADE
 # ─────────────────────────────────────────────────────────
 def place_trade(symbol, price, shares, sl, target, strategy, grade,
-                rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG'):
+                rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG',
+                limit_price=None, outside_rth=False):
     try:
         order_side = 'BUY' if side == 'LONG' else 'SELL'
-        r = requests.post(f"{BRIDGE}/order", json={
-            'symbol': symbol, 'qty': shares,
-            'side': order_side, 'order_type': 'MARKET'
-        }, timeout=10)
+        payload = {'symbol': symbol, 'qty': shares, 'side': order_side, 'order_type': 'MARKET'}
+        if limit_price:
+            payload['order_type']  = 'LIMIT'
+            payload['limit_price'] = limit_price
+        if outside_rth:
+            payload['outside_rth'] = True
+        r = requests.post(f"{BRIDGE}/order", json=payload, timeout=10)
         order_id = r.json().get('orderId')
         if not order_id:
             log(f"  {symbol}: No orderId returned — order submission failed")
             return None
 
-        # Poll for fill confirmation (3 attempts × 2s = 6s max)
+        # Poll for fill confirmation: limit orders get more attempts (fills can take longer)
+        poll_attempts = 8 if limit_price else 3
         filled = False
-        for _ in range(3):
+        for _ in range(poll_attempts):
             time.sleep(2)
             try:
                 r2 = requests.get(f"{BRIDGE}/order/{order_id}/status", timeout=5)
@@ -1112,7 +1168,7 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
 # ─────────────────────────────────────────────────────────
 # MONITOR OPEN TRADES — handles both LONG and SHORT positions
 # ─────────────────────────────────────────────────────────
-def monitor_open_trades(regime='NORMAL'):
+def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
     trades = get_open_trades()
     if not trades:
         return []
@@ -1245,6 +1301,12 @@ def monitor_open_trades(regime='NORMAL'):
 
         # ── Exit decisions ────────────────────────────────────
         exit_reason = None
+
+        # 0. Regime flip exit: cover losing shorts when market turns NORMAL/STRONG
+        if (is_short and regime in ('NORMAL', 'STRONG')
+                and confirmed_scans >= 2 and pnl_pct < 0):
+            exit_reason = (f'Regime flip {regime} (x{confirmed_scans}) — '
+                           f'covering losing short ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
 
         # 1. Hard stop
         if is_short:
@@ -1409,10 +1471,212 @@ def is_trading_blocked():
     return False, None
 
 # ─────────────────────────────────────────────────────────
+# PRE-MARKET CATALYST SCAN — earnings gap plays only, 9:20–9:29am
+# ─────────────────────────────────────────────────────────
+def _scan_premarket_catalyst(open_trades):
+    """
+    Scan for stocks gapping ≥10% on earnings (released previous evening).
+    Enter via LIMIT order before 9:30am open. Max 2 positions, half size, 6% stop.
+    3 gates must all pass: gap size, volume, gap-hold.
+    """
+    global daily_bull_count, traded_today, pm_scan_done
+    pm_scan_done = True
+
+    log(f"\n{'='*55}")
+    log(f"PRE-MARKET SCAN 9:20am — earnings gap plays (LIMIT orders, outsideRth)")
+
+    today     = date.today()
+    scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    candidates = []
+
+    for symbol in scan_order:
+        if symbol in traded_today:
+            continue
+        if any(t['symbol'] == symbol for t in open_trades):
+            continue
+        if daily_bull_count >= MAX_DAILY_BULL_TRADES:
+            break
+        if len(open_trades) + len(candidates) >= MAX_OPEN_TRADES:
+            break
+
+        try:
+            # ── Fetch pre-market 1-min bars from IBKR (live, no delay) ───
+            # Fallback to yfinance if bridge unavailable
+            pm_price = pm_high = pm_vol = prev_close = None
+            try:
+                r = requests.get(
+                    f"{BRIDGE}/history/{symbol}",
+                    params={'duration': '1 D', 'bar_size': '1 min', 'rth': 'false'},
+                    timeout=12
+                )
+                bars = r.json()
+                if bars and len(bars) >= 5:
+                    df = pd.DataFrame(bars)
+                    df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert(ET)
+                    df = df.set_index('date').sort_index()
+                    df.columns = [c.capitalize() for c in df.columns]
+
+                    reg = df[(df.index.hour >= 9) & (df.index.hour < 16)
+                             & (df.index.date < today)]
+                    pm  = df[(df.index.date == today) & (
+                        (df.index.hour < 9) | ((df.index.hour == 9) & (df.index.minute < 30))
+                    )]
+                    if not reg.empty and not pm.empty and len(pm) >= 3:
+                        prev_close = float(reg['Close'].iloc[-1])
+                        pm_price   = float(pm['Close'].iloc[-1])
+                        pm_high    = float(pm['High'].max())
+                        pm_vol     = int(pm['Volume'].sum())
+            except Exception:
+                pass
+
+            # Fallback: yfinance (15-min delayed but better than nothing)
+            if pm_price is None:
+                raw = yf.Ticker(symbol).history(period='2d', interval='1m', prepost=True)
+                if raw.empty or len(raw) < 10:
+                    continue
+                raw.index = raw.index.tz_convert(ET)
+                reg_bars  = raw[(raw.index.date < today) & (raw.index.hour >= 9) & (raw.index.hour < 16)]
+                pm_bars   = raw[(raw.index.date == today) & (
+                    (raw.index.hour < 9) | ((raw.index.hour == 9) & (raw.index.minute < 30))
+                )]
+                if reg_bars.empty or pm_bars.empty or len(pm_bars) < 3:
+                    continue
+                prev_close = float(reg_bars['Close'].iloc[-1])
+                pm_price   = float(pm_bars['Close'].iloc[-1])
+                pm_high    = float(pm_bars['High'].max())
+                pm_vol     = int(pm_bars['Volume'].sum())
+
+            if None in (pm_price, pm_high, pm_vol, prev_close):
+                continue
+
+            # Price range
+            if pm_price < 5 or pm_price > 800:
+                continue
+
+            # ── Gate 1: gap threshold — 3-tier by price ──────────────────
+            # Large-cap ≥$150: 6%  |  Mid-cap $50-149: 8%  |  Small-cap <$50: 10%
+            if   pm_price >= 150: gap_min = PREMARKET_GAP_LARGE
+            elif pm_price >= 50:  gap_min = PREMARKET_GAP_MID
+            else:                 gap_min = PREMARKET_GAP_SMALL
+            gap_pct = (pm_price - prev_close) / prev_close * 100
+            if gap_pct < gap_min:
+                continue
+
+            # ── Gate 2: pre-market volume ≥ floor ────────────────────────
+            if pm_vol < PREMARKET_VOL_MIN:
+                continue
+
+            # ── Gate 3: price holding near PM high (not fading) ──────────
+            if pm_high > 0 and pm_price < pm_high * PREMARKET_HOLD_PCT:
+                continue
+
+            # Scoring
+            score = 0
+            reasons = []
+
+            if gap_pct >= 20:
+                score += 40; reasons.append(f'Gap +{gap_pct:.1f}% massive')
+            elif gap_pct >= 15:
+                score += 30; reasons.append(f'Gap +{gap_pct:.1f}% strong')
+            else:
+                score += 20; reasons.append(f'Gap +{gap_pct:.1f}%')
+
+            if pm_vol >= 500_000:
+                score += 20; reasons.append(f'{pm_vol/1e6:.1f}M PM vol')
+            elif pm_vol >= 200_000:
+                score += 15; reasons.append(f'{pm_vol/1000:.0f}K PM vol')
+            else:
+                score += 10; reasons.append(f'{pm_vol/1000:.0f}K PM vol')
+
+            hold_pct = pm_price / pm_high * 100
+            if hold_pct >= 99:
+                score += 25; reasons.append('Gap at PM high ✓')
+            elif hold_pct >= 97:
+                score += 15; reasons.append(f'Gap holding {hold_pct:.0f}% of PM high')
+
+            # Sector ETF tailwind (reuse sector_strength from last update)
+            sector = get_symbol_sector(symbol)
+            etf    = SECTOR_ETF_MAP.get(sector, 'SPY')
+            etf_chg = sector_strength.get(etf, 0)
+            if etf_chg >= 1.0:
+                score += 10; reasons.append(f'{etf} +{etf_chg:.1f}% sector up')
+
+            grade = 'A+' if score >= 55 else 'A' if score >= 40 else 'SKIP'
+            if grade == 'SKIP':
+                log(f"  {symbol}: PM gap {gap_pct:+.1f}% (gate {gap_min}%) score={score} — below threshold")
+                continue
+
+            candidates.append({
+                'symbol': symbol, 'price': pm_price, 'pm_high': pm_high,
+                'pm_vol': pm_vol, 'gap_pct': gap_pct, 'prev_close': prev_close,
+                'grade': grade, 'score': score, 'reasons': reasons, 'sector': sector,
+            })
+
+        except Exception as e:
+            log(f"  PM scan {symbol}: {e}")
+
+    candidates.sort(key=lambda x: -x['score'])
+    log(f"Pre-market: {len(candidates)} qualified gap candidates")
+
+    entries    = []
+    open_count = len(open_trades)
+
+    for pick in candidates:
+        if len(entries) >= MAX_PREMARKET_TRADES:
+            break
+        if open_count + len(entries) >= MAX_OPEN_TRADES:
+            break
+        if daily_bull_count >= MAX_DAILY_BULL_TRADES:
+            break
+
+        sym   = pick['symbol']
+        price = pick['price']
+
+        # 6% stop (wider than regular 5% — PM price wicks on thin volume)
+        sl          = round(price * 0.94, 2)
+        target      = round(price * 1.15, 2)   # 15% target on gap plays
+        rr          = round((target - price) / (price - sl), 1)
+        # Half position size: $1,000 cap, also ATR-bounded by $100 max risk
+        risk_ps     = round(price - sl, 4)
+        atr_shares  = int(MAX_LOSS_PER_TRADE / risk_ps) if risk_ps > 0 else 0
+        shares      = max(1, min(int(1000 / price), atr_shares))
+        limit_price = round(price * 1.005, 2)   # 0.5% above PM price — fills before 9:30am
+
+        log(f"  ⭐ {pick['grade']} {sym} [{pick['sector']}] PM ${price} gap {pick['gap_pct']:+.1f}% "
+            f"vol {pick['pm_vol']/1000:.0f}K | LIMIT ${limit_price} SL ${sl} T ${target} "
+            f"R:R 1:{rr} | {', '.join(pick['reasons'])}")
+
+        trade_id = place_trade(
+            sym, price, shares, sl, target,
+            'EARNINGS_GAP', pick['grade'],
+            vol_ratio=round(pick['pm_vol'] / 100_000, 1),
+            confidence=pick['score'], sector=pick['sector'],
+            limit_price=limit_price, outside_rth=True,
+        )
+
+        if trade_id:
+            traded_today.add(sym)
+            save_traded_today()
+            open_positions[sym] = trade_id
+            daily_bull_count += 1
+            entries.append(pick | {'shares': shares, 'limit_price': limit_price, 'sl': sl})
+            time.sleep(1)
+
+    if entries:
+        lines = [f"⭐ PRE-MARKET {len(entries)} — earnings gaps (LIMIT outsideRth)"]
+        for e in entries:
+            lines.append(f"  {e['grade']} {e['symbol']} gap {e['gap_pct']:+.1f}% "
+                         f"x{e['shares']} LIMIT ${e['limit_price']} SL ${e['sl']}")
+        send_telegram('\n'.join(lines))
+
+    return []
+
+
+# ─────────────────────────────────────────────────────────
 # MAIN SCAN
 # ─────────────────────────────────────────────────────────
 def run_scan():
-    global daily_trade_count, traded_today, regime_history, spy_open_price
+    global daily_bull_count, daily_bear_count, traded_today, regime_history, spy_open_price
 
     # Reconcile DB with IBKR first
     reconcile_with_ibkr()
@@ -1471,37 +1735,43 @@ def run_scan():
         unrealized_now = 0
     session_pnl = daily['pnl'] + unrealized_now
 
-    log(f"Open: {len(open_trades)} | Trades today: {daily_trade_count} | Realized: ${daily['pnl']:+.2f} | Session: ${session_pnl:+.2f}")
+    log(f"Open: {len(open_trades)} | Bull {daily_bull_count}/{MAX_DAILY_BULL_TRADES} Bear {daily_bear_count}/{MAX_DAILY_BEAR_TRADES} today | Realized: ${daily['pnl']:+.2f} | Session: ${session_pnl:+.2f}")
 
     # Always monitor open trades
     exits = []
+
+    # Pre-market window: fire once per day at 9:20–9:29am for earnings gap entries
+    if is_premarket_window() and not pm_scan_done:
+        _scan_premarket_catalyst(open_trades)
+        return  # no monitoring needed — no open positions pre-market
+
     if not is_entry_window():
         log("Outside entry window — monitoring only")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
     elif is_trading_blocked()[0]:
         log(f"Trading blocked — monitoring only")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'CHOPPY':
         log(f"CHOPPY market — monitoring only, no new entries")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'WEAK':
         log(f"WEAK market — routing to bear strategy (short scan)")
         exits = _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
     elif not spy_above_open:
         log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
     elif len(open_trades) >= MAX_OPEN_TRADES:
         log(f"Max open trades ({MAX_OPEN_TRADES}) — monitoring only")
-        exits = monitor_open_trades(regime)
-    elif daily_trade_count >= MAX_DAILY_TRADES:
-        log(f"Max daily trades ({MAX_DAILY_TRADES}) reached")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
+    elif daily_bull_count >= MAX_DAILY_BULL_TRADES:
+        log(f"Max bull trades ({MAX_DAILY_BULL_TRADES}) reached")
+        exits = monitor_open_trades(regime, confirmed_scans)
     elif session_pnl >= DAILY_PROFIT_TARGET:
         log(f"✅ Daily target +${session_pnl:.0f} hit — protecting gains, no new entries")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
     elif confirmed_scans < MIN_REGIME_SCANS:
         log(f"Regime {regime} only confirmed {confirmed_scans}x — waiting for stability")
-        exits = monitor_open_trades(regime)
+        exits = monitor_open_trades(regime, confirmed_scans)
     else:
         exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
@@ -1549,7 +1819,7 @@ def _scan_catalyst_override(open_trades):
     Rules: gap 6%+ from prev close, still above open price now, volume 2x+, A+ grade only.
     Position size is halved since market backdrop is not supportive.
     """
-    global daily_trade_count, traded_today
+    global daily_bull_count, traded_today
 
     now = datetime.now(ET)
     # Only run in entry window and after opening range
@@ -1565,7 +1835,7 @@ def _scan_catalyst_override(open_trades):
             continue
         if any(t['symbol'] == symbol for t in open_trades):
             continue
-        if daily_trade_count >= MAX_DAILY_TRADES:
+        if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
         if len(open_trades) + len(entries) >= MAX_OPEN_TRADES:
             break
@@ -1625,7 +1895,7 @@ def _scan_catalyst_override(open_trades):
                 traded_today.add(symbol)
                 save_traded_today()
                 open_positions[symbol] = trade_id
-                daily_trade_count += 1
+                daily_bull_count += 1
                 entries.append({'symbol': symbol, 'price': price, 'shares': shares,
                                 'sl': sl, 'target': target, 'gap_pct': gap_pct,
                                 'vol_ratio': vol_ratio})
@@ -1642,7 +1912,7 @@ def _scan_catalyst_override(open_trades):
     return []
 
 def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
-    global daily_trade_count, traded_today
+    global daily_bull_count, traded_today
 
     # ── Daily max loss brake ───────────────────────────────────
     try:
@@ -1654,7 +1924,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     daily_total = realized.get('pnl', 0) + unrealized
     if daily_total <= -MAX_DAILY_LOSS:
         log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
-        return monitor_open_trades(regime)
+        return monitor_open_trades(regime, confirmed_scans)
 
     # Dynamic picks = symbols in catalyst_priority but NOT in fixed FULL_UNIVERSE
     dynamic_picks = [s for s in catalyst_priority if s not in FULL_UNIVERSE]
@@ -1725,7 +1995,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     for pick in candidates:
         if open_count + len(entries) >= MAX_OPEN_TRADES:
             break
-        if daily_trade_count >= MAX_DAILY_TRADES:
+        if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
         if pick['grade'] not in ('A+', 'A'):
             break
@@ -1764,17 +2034,17 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             traded_today.add(sym)
             save_traded_today()
             open_positions[sym] = trade_id
-            daily_trade_count  += 1
+            daily_bull_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
             time.sleep(2)
 
     # Monitor existing trades too
-    exits = monitor_open_trades(regime)
+    exits = monitor_open_trades(regime, confirmed_scans)
 
     # Batched WhatsApp entry message
     if entries:
-        lines = [f"NEW TRADES {len(entries)} | Daily {daily_trade_count}/{MAX_DAILY_TRADES}"]
+        lines = [f"NEW TRADES {len(entries)} | Bull {daily_bull_count}/{MAX_DAILY_BULL_TRADES}"]
         for e in entries:
             tag = '⚡' if e['is_catalyst'] else '🤖'
             lines.append(f"  {tag}{e['grade']} {e['symbol']} [{e.get('sector','?')}] x{e['shares']} @${e['price']} "
@@ -1787,7 +2057,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
 # BEAR SCAN — WEAK days: scan for short setups
 # ─────────────────────────────────────────────────────────
 def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
-    global daily_trade_count, traded_today
+    global daily_bear_count, traded_today
 
     # ── Daily max loss brake ───────────────────────────────────
     try:
@@ -1799,7 +2069,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     daily_total = realized.get('pnl', 0) + unrealized
     if daily_total <= -MAX_DAILY_LOSS:
         log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
-        return monitor_open_trades(regime)
+        return monitor_open_trades(regime, confirmed_scans)
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
     candidates = []
@@ -1852,7 +2122,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     for pick in candidates:
         if open_count + len(entries) >= MAX_OPEN_TRADES:
             break
-        if daily_trade_count >= MAX_DAILY_TRADES:
+        if daily_bear_count >= MAX_DAILY_BEAR_TRADES:
             break
         if pick['grade'] not in ('A+', 'A'):
             break
@@ -1890,15 +2160,15 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             traded_today.add(sym)
             save_traded_today()
             open_positions[sym] = trade_id
-            daily_trade_count  += 1
+            daily_bear_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
             time.sleep(2)
 
-    exits = monitor_open_trades(regime)
+    exits = monitor_open_trades(regime, confirmed_scans)
 
     if entries:
-        lines = [f"↓ BEAR TRADES {len(entries)} | Daily {daily_trade_count}/{MAX_DAILY_TRADES}"]
+        lines = [f"↓ BEAR TRADES {len(entries)} | Bear {daily_bear_count}/{MAX_DAILY_BEAR_TRADES}"]
         for e in entries:
             lines.append(f"  ↓{e['grade']} {e['symbol']} [{e.get('sector','?')}] x{e['shares']} @${e['price']} "
                          f"SL${e['sl']} T${e['target']} R:R 1:{e['rr']}")
@@ -2131,10 +2401,12 @@ def nightly_learning():
 
 def reset_daily_state():
     """Midnight reset — clears per-day counters so next session starts clean."""
-    global traded_today, daily_trade_count, atr_cache, regime_history, spy_open_price
-    global trade_entry_times, earnings_cache
+    global traded_today, daily_bull_count, daily_bear_count, pm_scan_done
+    global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
     traded_today       = set()
-    daily_trade_count  = 0
+    daily_bull_count   = 0
+    daily_bear_count   = 0
+    pm_scan_done       = False
     atr_cache          = {}
     regime_history     = []
     spy_open_price     = None
@@ -2157,7 +2429,7 @@ if __name__ == '__main__':
     print("=" * 55)
     print(f"Scan interval:    Every {SCAN_INTERVAL//60} min")
     print(f"Max open trades:  {MAX_OPEN_TRADES}")
-    print(f"Max daily trades: {MAX_DAILY_TRADES}")
+    print(f"Max daily trades: Bull {MAX_DAILY_BULL_TRADES} / Bear {MAX_DAILY_BEAR_TRADES} (independent)")
     print(f"Total capital:    ${TOTAL_CAPITAL:,} (dynamic per position)")
     print(f"Stop method:      5% fixed | partial exit 50% at 1R (+5%) | trail rest")
     print(f"Trail method:     ATR × {ATR_TRAIL_MULT} + 5m bar low at 3%+ profit")
@@ -2196,13 +2468,13 @@ if __name__ == '__main__':
                 now = datetime.now(ET)
                 if now.hour >= 16:
                     daily = get_daily_pnl()
-                    log(f"Market closed. Trades: {daily_trade_count} | P&L ${daily['pnl']:+.2f} | sleeping until tomorrow...")
+                    log(f"Market closed. Bull: {daily_bull_count} Bear: {daily_bear_count} | P&L ${daily['pnl']:+.2f} | sleeping until tomorrow...")
                 elif now.hour < 9 or (now.hour == 9 and now.minute < 31):
                     log("Pre-market — waiting for open...")
             time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
             daily = get_daily_pnl()
-            send_telegram(f"🤖 Auto Trader stopped\nTrades: {daily_trade_count} | P&L: ${daily['pnl']:+.2f}")
+            send_telegram(f"🤖 Auto Trader stopped\nBull: {daily_bull_count} Bear: {daily_bear_count} | P&L: ${daily['pnl']:+.2f}")
             sched.shutdown()
             break
         except Exception as e:
