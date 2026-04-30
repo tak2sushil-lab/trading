@@ -13,14 +13,24 @@ if pgrep -f "bridge.py" > /dev/null; then
     exit 1
 fi
 
-echo "Starting bridge..."
+# Step 1: Start IB Gateway via IBC (if not already up)
+echo "Step 1/3: Launching IB Gateway..."
+bash "$TRADING_DIR/launch_gateway.sh"
+echo "Waiting 40s for Gateway to log in..."
+sleep 40
+
+# Step 2: Start bridge (auto-reconnect handles any remaining delay)
+echo "Step 2/3: Starting bridge..."
 PYTHONUNBUFFERED=1 "$PYTHON" -u "$TRADING_DIR/bridge.py" >> "$LOGS/bridge.log" 2>&1 &
 sleep 5
 
-echo "Starting auto_trader..."
+# Step 3: Start auto trader
+echo "Step 3/3: Starting auto_trader..."
 PYTHONUNBUFFERED=1 "$PYTHON" -u "$TRADING_DIR/auto_trader.py" >> "$LOGS/auto_trader.log" 2>&1 &
 sleep 3
 
-echo "Done. Both running in background."
-echo "  Logs: tail -f $LOGS/bridge.log"
-echo "        tail -f $LOGS/auto_trader.log"
+echo ""
+echo "✅ All systems running."
+echo "   Gateway log:  tail -f $HOME/ibc/logs/ibc.log"
+echo "   Bridge log:   tail -f $LOGS/bridge.log"
+echo "   Trader log:   tail -f $LOGS/auto_trader.log"

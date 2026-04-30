@@ -105,18 +105,18 @@ def init_db():
 # ── Trade operations ──────────────────────────────────────
 def log_trade_entry(symbol, entry_price, shares, target_price,
                     stop_price, setup_type, rsi, volume_ratio,
-                    sector, earnings_days, confidence, order_id=''):
+                    sector, earnings_days, confidence, order_id='', side='LONG'):
     conn = get_connection()
     c    = conn.cursor()
     now  = datetime.now()
     c.execute('''INSERT INTO trades
         (symbol, entry_date, entry_time, entry_price, shares,
          target_price, stop_price, setup_type, rsi_at_entry,
-         volume_ratio, sector, earnings_days, confidence, order_id, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')''',
+         volume_ratio, sector, earnings_days, confidence, order_id, status, side)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?)''',
         (symbol, now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S'),
          entry_price, shares, target_price, stop_price, setup_type,
-         rsi, volume_ratio, sector, earnings_days, confidence, order_id))
+         rsi, volume_ratio, sector, earnings_days, confidence, order_id, side))
     trade_id = c.lastrowid
     conn.commit()
     conn.close()
@@ -127,16 +127,20 @@ def log_trade_exit(trade_id, exit_price, exit_reason):
     c    = conn.cursor()
     now  = datetime.now()
 
-    # Get entry details
-    c.execute('SELECT entry_price, shares FROM trades WHERE id=?', (trade_id,))
+    # Get entry details including side for correct PnL direction
+    c.execute('SELECT entry_price, shares, side FROM trades WHERE id=?', (trade_id,))
     row = c.fetchone()
     if not row:
         conn.close()
         return None
 
-    entry_price, shares = row
-    pnl     = (exit_price - entry_price) * shares
-    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+    entry_price, shares, side = row[0], row[1], (row[2] or 'LONG')
+    if side == 'SHORT':
+        pnl     = (entry_price - exit_price) * shares
+        pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+    else:
+        pnl     = (exit_price - entry_price) * shares
+        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
 
     c.execute('''UPDATE trades SET
         exit_date=?, exit_time=?, exit_price=?,
@@ -153,7 +157,7 @@ def get_open_trades():
     conn   = get_connection()
     c      = conn.cursor()
     c.execute('''SELECT id, symbol, entry_price, shares, target_price,
-                        stop_price, setup_type, confidence
+                        stop_price, setup_type, confidence, side
                  FROM trades WHERE status='OPEN' ''')
     rows   = c.fetchall()
     conn.close()
@@ -162,7 +166,8 @@ def get_open_trades():
         trades.append({
             'id': r[0], 'symbol': r[1], 'entry_price': r[2],
             'shares': r[3], 'target_price': r[4], 'stop_price': r[5],
-            'setup_type': r[6], 'confidence': r[7]
+            'setup_type': r[6], 'confidence': r[7],
+            'side': r[8] or 'LONG'
         })
     return trades
 

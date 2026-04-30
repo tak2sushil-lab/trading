@@ -51,17 +51,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Connect to IB Gateway on startup ─────────────────────
-@app.on_event("startup")
-async def startup():
+# ── Connect to IB Gateway ────────────────────────────────
+async def _connect_ibkr() -> bool:
+    """Try each clientId until one connects. Returns True on success."""
     for cid in range(10, 20):
         try:
             await ib.connectAsync(host=IBKR_HOST, port=IBKR_PORT, clientId=cid)
-            break
+            return True
         except Exception:
             continue
-    print(f"✅ Connected to IB Gateway ({'paper' if IBKR_PORT == 4002 else 'LIVE'} trading)")
+    return False
+
+async def _reconnect_loop():
+    """Background task: re-connects whenever IBKR drops the link."""
+    await asyncio.sleep(15)          # give startup a head-start
+    while True:
+        await asyncio.sleep(30)
+        if not ib.isConnected():
+            print("[RECONNECT] IBKR disconnected — flushing cache and reconnecting...")
+            _hist_cache.clear()      # stale prices must not be served after reconnect
+            ok = await _connect_ibkr()
+            if ok:
+                print("[RECONNECT] ✅ Reconnected to IB Gateway")
+            else:
+                print("[RECONNECT] ⚠️  Still not connected — will retry in 30s")
+
+@app.on_event("startup")
+async def startup():
+    ok = await _connect_ibkr()
+    mode = 'paper' if IBKR_PORT == 4002 else 'LIVE'
+    if ok:
+        print(f"✅ Connected to IB Gateway ({mode} trading)")
+    else:
+        print(f"⚠️  Could not connect to IB Gateway ({mode}) — will retry automatically")
     print("✅ Telegram alerts ready (no tunnel needed)")
+    asyncio.create_task(_reconnect_loop())
 
 # ── Helper: clean float values ────────────────────────────
 def clean(value):
@@ -83,6 +107,10 @@ async def health():
         "account":   ib.wrapper.accounts[0] if ib.isConnected() else "none",
         "mode":      "paper" if IBKR_PORT == 4002 else "LIVE"
     }
+
+@app.get("/connected")
+async def connected():
+    return {"connected": ib.isConnected()}
 
 # ── Get live quote ────────────────────────────────────────
 @app.get("/quote/{symbol}")

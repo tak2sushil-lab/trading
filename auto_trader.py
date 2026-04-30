@@ -64,7 +64,8 @@ TRADED_TODAY_FILE = os.path.join(_DIR, 'traded_today.json')
 traded_today      = set()
 open_positions    = {}       # sym → trade_id
 price_history     = {}       # trade_id → [prices]
-session_high      = {}       # trade_id → highest price seen this session
+session_high      = {}       # trade_id → highest price seen (LONG trades)
+session_low       = {}       # trade_id → lowest price seen (SHORT trades)
 atr_cache         = {}       # sym → (date_str, atr_value)
 daily_trade_count = 0
 catalyst_priority  = []       # symbols from today's catalyst scan
@@ -655,9 +656,43 @@ def get_intraday_signals(symbol, spy_chg=0):
                              (last_o - last_l) > candle_body * 2 and
                              (last_h - last_c) < candle_body * 0.5)
 
+        # ── Low of day break (bear) ───────────────────────────
+        lod           = float(df5['Low'].min())
+        prior_lod     = float(df5['Low'].iloc[:-2].min()) if len(df5) > 2 else lod
+        lod_break     = price <= prior_lod * 1.001 and price <= lod * 1.005
+
+        # ── ORB break downward (bear) ─────────────────────────
+        orb_break_down = False
+        if orb_low:
+            now_t2 = (datetime.now(ET).hour, datetime.now(ET).minute)
+            orb_break_down = (price < orb_low and price >= orb_low * 0.998
+                              and now_t2 < ORB_ENTRY_CUTOFF)
+
+        # ── VWAP rejection (bear): rallied to VWAP then failed ─
+        vwap_rejection = (len(df5) >= 2 and
+                          float(df5['Close'].iloc[-1]) < float(df5['vwap'].iloc[-1]) and
+                          float(df5['Close'].iloc[-2]) >= float(df5['vwap'].iloc[-2]))
+
+        # ── Bear flag: pole down → tight consolidation → breakdown
+        is_bear_flag = False
+        if len(df5) >= 15:
+            bpole     = df5.iloc[-14:-5]
+            bbase     = df5.iloc[-5:]
+            pole_drop = (float(bpole['Open'].iloc[0]) - float(bpole['Low'].min())) \
+                        / max(float(bpole['Open'].iloc[0]), 0.01) * 100
+            bbase_hi  = float(bbase['High'].max())
+            bbase_lo  = float(bbase['Low'].min())
+            bbase_rng = (bbase_hi - bbase_lo) / max(float(bbase['Close'].mean()), 0.01) * 100
+            is_bear_flag = (pole_drop >= 2.0 and bbase_rng < 2.0
+                            and price <= bbase_lo * 1.002)
+
+        # ── Bearish candle ────────────────────────────────────
+        is_bearish_candle = last_c < last_o and body_ratio >= 0.6
+
         # ── 15-min timeframe alignment ────────────────────────
         # All three must agree before entering on 5m signal
-        aligned_15m = True   # default True — don't penalise if data unavailable
+        aligned_15m      = True   # default True — don't penalise if data unavailable
+        aligned_15m_bear = True
         try:
             df15 = yf.Ticker(symbol).history(period='5d', interval='15m')
             if not df15.empty:
@@ -666,10 +701,11 @@ def get_intraday_signals(symbol, spy_chg=0):
                 if len(df15_today) >= 3:
                     df15_today['tp']   = (df15_today['High'] + df15_today['Low'] + df15_today['Close']) / 3
                     df15_today['vwap'] = (df15_today['tp'] * df15_today['Volume']).cumsum() / df15_today['Volume'].cumsum()
-                    p15   = float(df15_today['Close'].iloc[-1])
-                    v15   = float(df15_today['vwap'].iloc[-1])
+                    p15    = float(df15_today['Close'].iloc[-1])
+                    v15    = float(df15_today['vwap'].iloc[-1])
                     e20_15 = float(df15_today['Close'].ewm(span=20).mean().iloc[-1])
-                    aligned_15m = p15 > v15 and p15 > e20_15
+                    aligned_15m      = p15 > v15 and p15 > e20_15
+                    aligned_15m_bear = p15 < v15 and p15 < e20_15
         except Exception:
             pass
 
@@ -682,9 +718,13 @@ def get_intraday_signals(symbol, spy_chg=0):
             'vwap': vwap, 'above_vwap': above_vwap, 'vwap_reclaim': vwap_reclaim,
             'is_bull_flag': is_bull_flag, 'hod_break': hod_break,
             'orb_break': orb_break, 'orb_high': orb_high, 'orb_low': orb_low,
+            'lod_break': lod_break, 'orb_break_down': orb_break_down,
+            'vwap_rejection': vwap_rejection, 'is_bear_flag': is_bear_flag,
             'rs_vs_spy': rs_vs_spy,
             'is_bullish_candle': is_bullish_candle, 'is_hammer': is_hammer,
+            'is_bearish_candle': is_bearish_candle,
             'is_doji': is_doji, 'aligned_15m': aligned_15m,
+            'aligned_15m_bear': aligned_15m_bear,
         }
     except:
         return None
@@ -899,14 +939,137 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     return grade, reasons, score
 
 # ─────────────────────────────────────────────────────────
+# GRADE BEAR SETUP — inverted signal stack for shorts
+# ─────────────────────────────────────────────────────────
+def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
+    score   = 0
+    reasons = []
+
+    # Earnings gate — same hard skip (earnings = binary event, both directions)
+    if symbol:
+        dte = get_days_to_earnings(symbol)
+        if dte is not None and 0 <= dte <= 3:
+            return 'SKIP', [f'Earnings in {dte}d — skip binary event'], 0
+
+    # Hard gates (inverted from bull)
+    if sig['above_ma']:
+        return 'SKIP', ['Above MA20 — not a short candidate'], 0
+    vol_threshold = 1.0 if sig.get('price', 0) > 100 else MIN_VOLUME_RATIO
+    if sig['vol_ratio'] < vol_threshold:
+        return 'SKIP', [f'Volume {sig["vol_ratio"]:.1f}x too low'], 0
+    if rr < MIN_RR:
+        return 'SKIP', [f'R:R 1:{rr} below min 1:{MIN_RR}'], 0
+    if regime != 'WEAK':
+        return 'SKIP', [f'{regime} — bear engine only runs on WEAK days'], 0
+    today_chg = sig.get('prev_chg', 0)
+    if today_chg > -MIN_TODAY_GAIN:
+        return 'SKIP', [f'Only {today_chg:.1f}% today (need ≤-{MIN_TODAY_GAIN}%)'], 0
+
+    # ── Entry signal scoring ──────────────────────────────
+    if sig.get('orb_break_down'):
+        score += 25; reasons.append('ORB break down')
+    if sig.get('vwap_rejection'):
+        score += 25; reasons.append('VWAP rejection')
+    elif not sig['above_vwap']:
+        score += 10; reasons.append('Below VWAP')
+    if sig.get('lod_break'):
+        score += 20; reasons.append('LOD break')
+    if sig.get('is_bear_flag'):
+        score += 20; reasons.append('Bear flag')
+
+    # FVG count (gaps down = air pockets to fill)
+    if sig['fvg_count'] >= 10:
+        score += 20; reasons.append(f'{sig["fvg_count"]} FVGs (downside)')
+    elif sig['fvg_count'] >= 5:
+        score += 10; reasons.append(f'{sig["fvg_count"]} FVGs')
+
+    # Daily RSI — weak RSI supports short
+    rsi = sig['rsi']
+    if rsi < 30:
+        score += 15; reasons.append(f'RSI {rsi} (deeply oversold momentum)')
+    elif rsi < 45:
+        score += 10; reasons.append(f'RSI {rsi} (weak)')
+    elif rsi > 60:
+        score -= 15; reasons.append(f'RSI {rsi} (too strong — avoid short)')
+
+    # 5m RSI: if < 20, bounce risk is high
+    rsi_5m = sig.get('rsi_5m', 50)
+    if rsi_5m < 20:
+        score -= 15; reasons.append(f'5m RSI {rsi_5m} (oversold — bounce risk)')
+    elif rsi_5m < 35:
+        score += 5;  reasons.append(f'5m RSI {rsi_5m} (weak intraday)')
+
+    # Volume — selling pressure confirmation
+    vol = sig['vol_ratio']
+    if vol >= 5:
+        score += 20; reasons.append(f'Vol {vol:.1f}x surge (distribution)')
+    elif vol >= 3:
+        score += 12; reasons.append(f'Vol {vol:.1f}x')
+    elif vol >= 2:
+        score += 6;  reasons.append(f'Vol {vol:.1f}x')
+
+    # Today's decline magnitude
+    if today_chg <= -5:
+        score += 20; reasons.append(f'{today_chg:.1f}% strong distribution')
+    elif today_chg <= -3:
+        score += 12; reasons.append(f'{today_chg:.1f}% declining')
+    elif today_chg <= -1.5:
+        score += 6;  reasons.append(f'{today_chg:.1f}% declining')
+
+    # Relative weakness vs SPY (negative = weaker than market = better short)
+    rs = sig.get('rs_vs_spy', 0)
+    if rs <= -2:
+        score += 15; reasons.append(f'RS {rs:+.1f}% (weak vs SPY)')
+    elif rs <= -1:
+        score += 8;  reasons.append(f'RS {rs:+.1f}%')
+    elif rs >= 2:
+        score -= 10; reasons.append(f'RS {rs:+.1f}% (outperforming — avoid short)')
+
+    # Sector weakness (ETF down = tailwind for short)
+    if symbol and sector_strength:
+        sec     = get_symbol_sector(symbol)
+        etf     = SECTOR_ETF_MAP.get(sec, 'SPY')
+        etf_chg = sector_strength.get(etf, 0)
+        if etf_chg <= -1.5:
+            score += 15; reasons.append(f'{etf} {etf_chg:.1f}% weak sector')
+        elif etf_chg <= -0.5:
+            score += 5;  reasons.append(f'{etf} {etf_chg:.1f}%')
+        elif etf_chg >= 1.0:
+            score -= 10; reasons.append(f'{etf} +{etf_chg:.1f}% strong sector (risk)')
+
+    # WEAK regime confirmation
+    score += 15; reasons.append('WEAK regime confirmed')
+
+    # Bearish candle
+    if sig.get('is_bearish_candle'):
+        score += 10; reasons.append('Bearish candle')
+    elif sig.get('is_doji') and not sig.get('above_vwap'):
+        score -= 5;  reasons.append('Doji — indecision')
+
+    # 15m bear alignment (price < 15m VWAP and < EMA20)
+    if sig.get('aligned_15m_bear') is True:
+        score += 10; reasons.append('15m bear-aligned (below VWAP & EMA20) ✓')
+    elif sig.get('aligned_15m_bear') is False:
+        score -= 10; reasons.append('15m not bear-aligned')
+
+    if rr >= 4:
+        score += 10; reasons.append(f'R:R 1:{rr} excellent')
+    elif rr >= MIN_RR:
+        score += 5;  reasons.append(f'R:R 1:{rr}')
+
+    grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
+    return grade, reasons, score
+
+# ─────────────────────────────────────────────────────────
 # PLACE TRADE
 # ─────────────────────────────────────────────────────────
 def place_trade(symbol, price, shares, sl, target, strategy, grade,
-                rsi=0, vol_ratio=0, confidence=75, sector='OTHER'):
+                rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG'):
     try:
+        order_side = 'BUY' if side == 'LONG' else 'SELL'
         r = requests.post(f"{BRIDGE}/order", json={
             'symbol': symbol, 'qty': shares,
-            'side': 'BUY', 'order_type': 'MARKET'
+            'side': order_side, 'order_type': 'MARKET'
         }, timeout=10)
         order_id = r.json().get('orderId')
         if not order_id:
@@ -936,7 +1099,8 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
             symbol=symbol, entry_price=price, shares=shares,
             target_price=target, stop_price=sl, setup_type=strategy,
             rsi=rsi, volume_ratio=vol_ratio, sector=sector,
-            earnings_days=999, confidence=confidence, order_id=str(order_id)
+            earnings_days=999, confidence=confidence, order_id=str(order_id),
+            side=side
         )
         if trade_id:
             trade_entry_times[trade_id] = datetime.now(ET)
@@ -946,17 +1110,7 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
         return None
 
 # ─────────────────────────────────────────────────────────
-# MONITOR OPEN TRADES — signal-based exits, no fixed % targets
-# Exit signals (priority order):
-#   1. ATR trailing stop (always active once 1 ATR in profit)
-#   2. 5-min trailing stop when 3%+ profit (tighter, intraday lock-in)
-#   3. Hard stop at SL level
-#   4. Per-trade dollar circuit breaker ($200 max loss)
-#   5. No-move exit — flat (−0.3% to +0.8%) after 60 min: capital stuck
-#   6. VWAP cross below — momentum shift signal
-#   7. Momentum fade — drop > 1×ATR from session high while in profit
-#   8. EOD conviction close — 3:45pm, exit unless profitable AND above VWAP
-#   9. Hard time stop — MAX_HOLD_DAYS backstop
+# MONITOR OPEN TRADES — handles both LONG and SHORT positions
 # ─────────────────────────────────────────────────────────
 def monitor_open_trades(regime='NORMAL'):
     trades = get_open_trades()
@@ -972,6 +1126,8 @@ def monitor_open_trades(regime='NORMAL'):
         shares = trade['shares']
         entry  = trade['entry_price']
         sl     = trade['stop_price']
+        side   = trade.get('side', 'LONG')
+        is_short = (side == 'SHORT')
 
         price = get_live_price(sym)
         if not price:
@@ -983,33 +1139,54 @@ def monitor_open_trades(regime='NORMAL'):
         if len(price_history[tid]) > 20:
             price_history[tid].pop(0)
 
-        session_high[tid] = max(session_high.get(tid, price), price)
+        if is_short:
+            session_low[tid] = min(session_low.get(tid, price), price)
+            pnl_pct = (entry - price) / entry * 100   # positive when price drops
+            pnl_usd = (entry - price) * shares
+        else:
+            session_high[tid] = max(session_high.get(tid, price), price)
+            pnl_pct = (price - entry) / entry * 100
+            pnl_usd = (price - entry) * shares
 
-        pnl_pct = (price - entry) / entry * 100
-        pnl_usd = (price - entry) * shares
-        atr     = get_atr(sym) or (entry * 0.02)
+        atr = get_atr(sym) or (entry * 0.02)
 
-        # ── ATR trailing stop — only activates once 1 ATR in profit ──
-        trail_mult      = 1.0 if regime == 'WEAK' else ATR_TRAIL_MULT
-        trail_threshold = entry + atr
-        if price >= trail_threshold:
-            atr_trail = round(session_high[tid] - trail_mult * atr, 2)
-            if atr_trail > sl:
-                sl = atr_trail
-                update_trade_stop(tid, sl)
-                log(f"  {sym}: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
+        # ── ATR trailing stop ─────────────────────────────────
+        trail_mult = ATR_TRAIL_MULT
+        if is_short:
+            trail_threshold = entry - atr              # 1 ATR of profit on short
+            if price <= trail_threshold:
+                atr_trail = round(session_low[tid] + trail_mult * atr, 2)
+                if atr_trail < sl:                     # SL moves down for shorts
+                    sl = atr_trail
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym} ↓SHORT: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
+        else:
+            trail_threshold = entry + atr
+            if price >= trail_threshold:
+                atr_trail = round(session_high[tid] - trail_mult * atr, 2)
+                if atr_trail > sl:
+                    sl = atr_trail
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym}: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
 
-        # ── Break-even stop: once +2.5% profit, lock SL at entry + 0.5×risk ──
-        # Trigger raised from 0.5% → 2.5% so winners aren't clipped in normal noise range
-        if pnl_pct >= 2.5 and sl < entry:
-            risk_dist = entry - sl
-            be_sl = round(entry + max(risk_dist * 0.5, 0.05), 2)
-            if be_sl > sl:
-                sl = be_sl
-                update_trade_stop(tid, sl)
-                log(f"  {sym}: Break-even stop → ${sl} ({pnl_pct:+.1f}%)")
+        # ── Break-even stop: once +2.5% profit ───────────────
+        if pnl_pct >= 2.5:
+            if is_short and sl > entry:                # SL already above entry = ok
+                risk_dist = sl - entry
+                be_sl = round(entry - max(risk_dist * 0.5, 0.05), 2)
+                if be_sl < sl:
+                    sl = be_sl
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym} ↓SHORT: Break-even → ${sl} ({pnl_pct:+.1f}%)")
+            elif not is_short and sl < entry:
+                risk_dist = entry - sl
+                be_sl = round(entry + max(risk_dist * 0.5, 0.05), 2)
+                if be_sl > sl:
+                    sl = be_sl
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym}: Break-even stop → ${sl} ({pnl_pct:+.1f}%)")
 
-        # ── Fetch 5-min bars once — used for intraday trailing + VWAP signals ──
+        # ── Fetch 5-min bars ──────────────────────────────────
         df5             = None
         vwap_val        = None
         above_vwap      = None
@@ -1026,61 +1203,80 @@ def monitor_open_trades(regime='NORMAL'):
             except Exception:
                 pass
 
-        # ── 5-min trailing stop — kicks in at 3%+ profit, trail to 2-bar low ──
+        # ── 5-min trailing stop ───────────────────────────────
         if is_market_open() and pnl_pct >= 3.0 and df5 is not None and len(df5) >= 3:
             try:
-                intra_trail = round(float(df5['Low'].iloc[-3:-1].min()), 2)
-                if intra_trail > sl:
-                    sl = intra_trail
-                    update_trade_stop(tid, sl)
-                    log(f"  {sym}: 5m trail → ${sl} ({pnl_pct:+.1f}%)")
+                if is_short:
+                    intra_trail = round(float(df5['High'].iloc[-3:-1].max()), 2)
+                    if intra_trail < sl:
+                        sl = intra_trail
+                        update_trade_stop(tid, sl)
+                        log(f"  {sym} ↓SHORT: 5m trail → ${sl} ({pnl_pct:+.1f}%)")
+                else:
+                    intra_trail = round(float(df5['Low'].iloc[-3:-1].min()), 2)
+                    if intra_trail > sl:
+                        sl = intra_trail
+                        update_trade_stop(tid, sl)
+                        log(f"  {sym}: 5m trail → ${sl} ({pnl_pct:+.1f}%)")
             except Exception:
                 pass
 
-        # ── Partial exit: sell 50% when profit reaches 1R (5% gain) ──────────
+        # ── Partial exit at 1R (5% gain) ─────────────────────
         if (is_market_open() and pnl_pct >= 5.0
                 and tid not in partial_done_trades and shares >= 2):
             half = shares // 2
+            cover_side = 'BUY' if is_short else 'SELL'
             try:
                 requests.post(f"{BRIDGE}/order", json={
-                    'symbol': sym, 'qty': half, 'side': 'SELL', 'order_type': 'MARKET'
+                    'symbol': sym, 'qty': half,
+                    'side': cover_side, 'order_type': 'MARKET'
                 }, timeout=10)
-                locked = round((price - entry) * half, 2)
+                locked = round(pnl_usd / shares * half, 2)
                 partial_done_trades[tid] = locked
                 update_trade_shares(tid, shares - half)
-                log(f"  {sym}: PARTIAL EXIT {half}sh @ ${price} +${locked:.0f} locked (1R) — trailing {shares - half}sh")
+                tag = '↓SHORT' if is_short else ''
+                log(f"  {sym} {tag}: PARTIAL EXIT {half}sh @ ${price} +${locked:.0f} locked — trailing {shares - half}sh")
                 exits.append({'sym': sym, 'price': price, 'entry': entry,
                               'pnl': locked, 'pnl_pct': pnl_pct, 'pnl_usd': locked,
-                              'reason': f'Partial exit 50% at 1R ({pnl_pct:+.1f}%)'})
-                shares = shares - half   # use remaining shares for exit logic below
+                              'reason': f'Partial exit 50% at 1R ({pnl_pct:+.1f}%)', 'side': side})
+                shares = shares - half
             except Exception as e:
                 log(f"Partial exit error {sym}: {e}")
 
-        # ── Exit decisions (priority order) ───────────────────
+        # ── Exit decisions ────────────────────────────────────
         exit_reason = None
 
-        # 1. Hard stop — ATR-based SL hit
-        if price <= sl:
-            exit_reason = f'Stop ${sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+        # 1. Hard stop
+        if is_short:
+            if price >= sl:
+                exit_reason = f'Short stop ${sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+        else:
+            if price <= sl:
+                exit_reason = f'Stop ${sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 2. Per-trade dollar circuit breaker — gap risk defence between scans
-        elif pnl_usd <= -MAX_LOSS_PER_TRADE:
+        # 2. Circuit breaker
+        if not exit_reason and pnl_usd <= -MAX_LOSS_PER_TRADE:
             exit_reason = f'Circuit breaker: -${MAX_LOSS_PER_TRADE} hit (${pnl_usd:+.0f})'
 
-        # 3. VWAP cross below — momentum has shifted; only exit if was profitable
-        elif (is_market_open() and pnl_pct > 0.5
-              and above_vwap is not None
-              and not above_vwap and prev_above_vwap is True):
-            exit_reason = f'VWAP cross below ${vwap_val} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+        # 3. VWAP signal: cross above = cover short / cross below = exit long
+        if not exit_reason and is_market_open() and pnl_pct > 0.5 and above_vwap is not None:
+            if is_short and above_vwap and prev_above_vwap is False:
+                exit_reason = f'VWAP cross above ${vwap_val} — short momentum gone ({pnl_pct:+.1f}%)'
+            elif not is_short and not above_vwap and prev_above_vwap is True:
+                exit_reason = f'VWAP cross below ${vwap_val} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 4. Momentum fade — drop > 1×ATR from session high while in profit
-        elif price < session_high.get(tid, price):
-            drop = session_high[tid] - price
-            if drop > ATR_FADE_MULT * atr and pnl_pct > 0.3:
-                exit_reason = f'Momentum fade {ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+        # 4. Momentum fade (bounce for shorts, drop for longs)
+        if not exit_reason and pnl_pct > 0.3:
+            if is_short:
+                rise = price - session_low.get(tid, price)
+                if rise > ATR_FADE_MULT * atr:
+                    exit_reason = f'Short fade {ATR_FADE_MULT}×ATR bounce ({pnl_pct:+.1f}%)'
+            else:
+                drop = session_high.get(tid, price) - price
+                if drop > ATR_FADE_MULT * atr:
+                    exit_reason = f'Momentum fade {ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}%)'
 
-        # 5. No-move exit — flat after 240 min: capital truly stuck, opportunity cost
-        # Window raised 60→150→240 min so consolidating movers get more room for second leg
+        # 5. No-move exit (same 240min window both directions)
         if not exit_reason and is_market_open():
             entry_dt = trade_entry_times.get(tid)
             if entry_dt:
@@ -1088,47 +1284,52 @@ def monitor_open_trades(regime='NORMAL'):
                 if mins_held >= 240 and -0.3 <= pnl_pct <= 2.0:
                     exit_reason = f'No-move exit: flat {mins_held:.0f}min ({pnl_pct:+.1f}%)'
 
-        # 6. EOD conviction close — 3:45pm, hold overnight only if still strong
+        # 6. EOD close — shorts ALWAYS cover (no overnight shorts)
         if not exit_reason and is_market_open() and (now.hour, now.minute) >= (EOD_CLOSE_HOUR, EOD_CLOSE_MINUTE):
-            conviction = pnl_pct > 1.5 and above_vwap is True
-            if not conviction:
-                vwap_tag   = 'above VWAP' if above_vwap else 'below VWAP'
-                exit_reason = f'EOD: no overnight conviction ({pnl_pct:+.1f}% {vwap_tag})'
+            if is_short:
+                exit_reason = f'EOD: cover short — no overnight shorts ({pnl_pct:+.1f}%)'
+            else:
+                conviction = pnl_pct > 1.5 and above_vwap is True
+                if not conviction:
+                    vwap_tag   = 'above VWAP' if above_vwap else 'below VWAP'
+                    exit_reason = f'EOD: no overnight conviction ({pnl_pct:+.1f}% {vwap_tag})'
 
-        # 7. Hard time stop — backstop, rarely fires with EOD close active
-        if not exit_reason:
+        # 7. Hard time stop (longs only — shorts already covered EOD)
+        if not exit_reason and not is_short:
             entry_date = get_trade_entry_date(tid)
             if entry_date:
                 bdays_held = int(np.busday_count(entry_date, date.today().isoformat()))
                 if bdays_held >= MAX_HOLD_DAYS:
                     exit_reason = f'Max hold {bdays_held}bd — time exit ({pnl_pct:+.1f}%)'
 
+        direction_tag = ' ↓SHORT' if is_short else ''
         vwap_tag = f' VWAP${vwap_val}' if vwap_val else ''
-        log(f"  {sym}: ${price} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f}) SL=${sl}{vwap_tag} ATR=${atr:.2f} "
+        log(f"  {sym}{direction_tag}: ${price} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f}) SL=${sl}{vwap_tag} ATR=${atr:.2f} "
             f"→ {'EXIT' if exit_reason else 'HOLD'}")
 
         if exit_reason:
             try:
                 ibkr_pos = get_ibkr_positions()
-                ibkr_qty = ibkr_pos.get(sym, {}).get('qty', 0) or 0
+                ibkr_qty = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
                 if ibkr_qty <= 0:
                     log(f"  {sym}: SKIP exit — no IBKR position, closing DB only")
                     log_trade_exit(tid, price, 'DB cleanup — no IBKR position')
                     open_positions.pop(sym, None)
                     continue
-                sell_qty = min(shares, int(ibkr_qty))
+                close_side = 'BUY' if is_short else 'SELL'
+                close_qty  = min(shares, int(ibkr_qty))
                 requests.post(f"{BRIDGE}/order", json={
-                    'symbol': sym, 'qty': sell_qty,
-                    'side': 'SELL', 'order_type': 'MARKET'
+                    'symbol': sym, 'qty': close_qty,
+                    'side': close_side, 'order_type': 'MARKET'
                 }, timeout=10)
                 pnl = log_trade_exit(tid, price, exit_reason)
                 exits.append({
                     'sym': sym, 'price': price, 'entry': entry,
                     'pnl': pnl, 'pnl_pct': pnl_pct, 'pnl_usd': round(pnl_usd, 2),
-                    'reason': exit_reason
+                    'reason': exit_reason, 'side': side
                 })
-                for d in (price_history, session_high, open_positions):
-                    d.pop(tid if isinstance(d, dict) and tid in d else sym, None)
+                for d in (price_history, session_high, session_low, open_positions):
+                    d.pop(tid if tid in d else sym, None)
             except Exception as e:
                 log(f"Exit error {sym}: {e}")
 
@@ -1284,8 +1485,8 @@ def run_scan():
         log(f"CHOPPY market — monitoring only, no new entries")
         exits = monitor_open_trades(regime)
     elif regime == 'WEAK':
-        log(f"WEAK market — monitoring only (gap plays on WEAK days: 13% WR, avoid)")
-        exits = monitor_open_trades(regime)
+        log(f"WEAK market — routing to bear strategy (short scan)")
+        exits = _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
     elif not spy_above_open:
         log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
         exits = monitor_open_trades(regime)
@@ -1481,7 +1682,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         if price < 5 or price > 800:
             continue
 
-        side = 'LONG'  # SHORT selling deferred to Phase 2 — monitor assumes LONG
+        side = 'LONG'
         if side == 'LONG' and sig['intra_chg'] < -5:
             continue
 
@@ -1577,6 +1778,129 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         for e in entries:
             tag = '⚡' if e['is_catalyst'] else '🤖'
             lines.append(f"  {tag}{e['grade']} {e['symbol']} [{e.get('sector','?')}] x{e['shares']} @${e['price']} "
+                         f"SL${e['sl']} T${e['target']} R:R 1:{e['rr']}")
+        send_telegram('\n'.join(lines))
+
+    return exits
+
+# ─────────────────────────────────────────────────────────
+# BEAR SCAN — WEAK days: scan for short setups
+# ─────────────────────────────────────────────────────────
+def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
+    global daily_trade_count, traded_today
+
+    # ── Daily max loss brake ───────────────────────────────────
+    try:
+        portfolio = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
+        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio)
+    except Exception:
+        unrealized = 0
+    realized    = get_daily_pnl()
+    daily_total = realized.get('pnl', 0) + unrealized
+    if daily_total <= -MAX_DAILY_LOSS:
+        log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
+        return monitor_open_trades(regime)
+
+    scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    candidates = []
+
+    for symbol in scan_order:
+        if symbol in traded_today:
+            continue
+        if any(t['symbol'] == symbol for t in open_trades):
+            continue
+
+        sig = get_intraday_signals(symbol, spy_chg=spy_chg)
+        if sig is None:
+            continue
+
+        price = sig['price']
+        if price < 5 or price > 800:
+            continue
+
+        # Skip stocks already surging — not short candidates
+        if sig['intra_chg'] > 5:
+            continue
+
+        sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, 'SHORT')
+        grade, reasons, score = grade_bear_setup(sig, regime, sl, target, price, rr, symbol=symbol)
+
+        if grade in ('SKIP', 'C'):
+            continue
+        # SPY recovering intraday → only highest-conviction shorts
+        if spy_chg > 0 and grade != 'A+':
+            continue
+
+        is_catalyst = symbol in catalyst_priority
+        candidates.append({
+            'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
+            'side': 'SHORT', 'sl': sl, 'target': target, 'risk_pct': risk_pct, 'rr': rr,
+            'reasons': reasons, 'fvg_count': sig['fvg_count'],
+            'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
+            'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
+        })
+
+    grade_order = {'A+': 0, 'A': 1, 'B': 2}
+    candidates.sort(key=lambda x: (grade_order.get(x['grade'], 3), -x['score']))
+
+    log(f"Bear scan: {len(candidates)} short candidates")
+
+    entries       = []
+    open_count    = len(open_trades)
+    sector_counts = get_open_sector_counts()
+
+    for pick in candidates:
+        if open_count + len(entries) >= MAX_OPEN_TRADES:
+            break
+        if daily_trade_count >= MAX_DAILY_TRADES:
+            break
+        if pick['grade'] not in ('A+', 'A'):
+            break
+
+        sym    = pick['symbol']
+        sector = get_symbol_sector(sym)
+
+        if sector != 'OTHER' and sector_counts.get(sector, 0) >= MAX_PER_SECTOR:
+            log(f"  SKIP {sym} — {sector} sector full ({MAX_PER_SECTOR} positions)")
+            continue
+
+        price    = pick['price']
+        deployed = get_deployed_capital()
+        capital  = get_position_capital(pick['grade'], pick['is_catalyst'], deployed)
+        if capital <= 0:
+            log(f"  Capital cap reached (${deployed:,.0f}/${TOTAL_CAPITAL:,} deployed)")
+            break
+        # For shorts: SL is above entry, so risk per share = sl - price
+        risk_per_share = round(pick['sl'] - price, 4)
+        atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
+        shares         = max(1, min(int(capital / price), atr_shares))
+
+        log(f"  ↓ {pick['grade']} {sym} [{sector}] ${price} | "
+            f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | "
+            f"SL${pick['sl']} | {', '.join(pick['reasons'][:3])}")
+
+        trade_id = place_trade(
+            sym, price, shares, pick['sl'], pick['target'],
+            'BEAR_MOMENTUM', pick['grade'],
+            rsi=pick['rsi'], vol_ratio=pick['vol_ratio'],
+            confidence=pick['score'], sector=sector, side='SHORT'
+        )
+
+        if trade_id:
+            traded_today.add(sym)
+            save_traded_today()
+            open_positions[sym] = trade_id
+            daily_trade_count  += 1
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+            entries.append(pick | {'shares': shares, 'sector': sector})
+            time.sleep(2)
+
+    exits = monitor_open_trades(regime)
+
+    if entries:
+        lines = [f"↓ BEAR TRADES {len(entries)} | Daily {daily_trade_count}/{MAX_DAILY_TRADES}"]
+        for e in entries:
+            lines.append(f"  ↓{e['grade']} {e['symbol']} [{e.get('sector','?')}] x{e['shares']} @${e['price']} "
                          f"SL${e['sl']} T${e['target']} R:R 1:{e['rr']}")
         send_telegram('\n'.join(lines))
 
