@@ -209,6 +209,19 @@ def get_win_rate(symbol=None, days=30):
     wins  = row[1] or 0
     return (wins / total * 100) if total > 0 else 0
 
+def get_today_trades():
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''SELECT symbol, entry_price, exit_price, shares, pnl, status, exit_reason, side
+                 FROM trades
+                 WHERE entry_date=date('now') AND status IN ('WIN','LOSS')
+                 ORDER BY id''')
+    rows = c.fetchall()
+    conn.close()
+    return [{'symbol': r[0], 'entry': r[1], 'exit': r[2], 'shares': r[3],
+             'pnl': r[4] or 0, 'status': r[5], 'reason': r[6], 'side': r[7] or 'LONG'}
+            for r in rows]
+
 def get_daily_pnl():
     conn = get_connection()
     c    = conn.cursor()

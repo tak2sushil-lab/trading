@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
-    update_trade_stop, get_trade_entry_date
+    update_trade_stop, get_trade_entry_date, get_today_trades
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -1423,12 +1423,19 @@ def poll_telegram_commands():
             if text == 'HELP':
                 send_telegram('\n'.join([
                     "Commands:",
-                    "STATUS          — P&L, open positions, 30d WR",
+                    "STATUS            — P&L, open positions, 30d WR",
+                    "REGIME            — current regime + SPY/VIX snapshot",
+                    "TODAY             — today's closed trades + per-trade P&L",
                     "PAUSE/STOP/CANCEL — halt new entries (monitor stays on)",
-                    "RESUME          — re-enable entries",
-                    "BUY <SYMBOL> [%] — market buy, auto-exit at profit target",
-                    "                  e.g.  BUY TSLA       (default 1%)",
-                    "                        BUY TSLA 2.5   (+2.5% target)",
+                    "RESUME            — re-enable entries",
+                    "BUY <SYMBOL> [%]  — market buy, auto-exit at profit target",
+                    "                    e.g.  BUY TSLA       (default 1%)",
+                    "                          BUY TSLA 2.5   (+2.5% target)",
+                    "SELL <SYMBOL>     — close specific position at market",
+                    "                    e.g.  SELL TSLA",
+                    "CLOSEALL          — close ALL open positions now",
+                    "BLOCK <SYMBOL>    — skip symbol for rest of day",
+                    "                    e.g.  BLOCK TSLA",
                 ]))
 
             elif text == 'STATUS':
@@ -1503,6 +1510,114 @@ def poll_telegram_commands():
                         )
                     else:
                         send_telegram(f"BUY {sym}: order placed but fill not confirmed — check IBKR.")
+
+            elif text.startswith('SELL '):
+                sym    = text.split()[1].upper()
+                trades = get_open_trades()
+                match  = [t for t in trades if t['symbol'] == sym]
+                if not match:
+                    send_telegram(f"SELL {sym}: no open position found.")
+                else:
+                    t     = match[0]
+                    price = get_live_price(sym)
+                    if not price:
+                        send_telegram(f"SELL {sym}: could not get live price.")
+                    else:
+                        is_short   = t.get('side', 'LONG') == 'SHORT'
+                        close_side = 'BUY' if is_short else 'SELL'
+                        ibkr_pos   = get_ibkr_positions()
+                        ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
+                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty else t['shares']
+                        try:
+                            requests.post(f"{BRIDGE}/order",
+                                          json={'symbol': sym, 'qty': qty,
+                                                'side': close_side, 'order_type': 'MARKET'},
+                                          timeout=10)
+                            pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
+                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
+                            for d in (price_history, session_high, session_low):
+                                d.pop(t['id'], None)
+                            open_positions.pop(sym, None)
+                            send_telegram(
+                                f"SOLD {sym} | {qty}sh @ ${price}\n"
+                                f"Entry: ${t['entry_price']} | P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)"
+                            )
+                        except Exception as ex:
+                            send_telegram(f"SELL {sym}: error — {ex}")
+
+            elif text == 'CLOSEALL':
+                trades = get_open_trades()
+                if not trades:
+                    send_telegram("No open positions to close.")
+                else:
+                    ibkr_pos = get_ibkr_positions()
+                    lines    = ["CLOSEALL"]
+                    total_pnl = 0.0
+                    for t in trades:
+                        sym   = t['symbol']
+                        price = get_live_price(sym)
+                        if not price:
+                            lines.append(f"  {sym}: skip (no price)")
+                            continue
+                        is_short   = t.get('side', 'LONG') == 'SHORT'
+                        close_side = 'BUY' if is_short else 'SELL'
+                        ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
+                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty else t['shares']
+                        try:
+                            requests.post(f"{BRIDGE}/order",
+                                          json={'symbol': sym, 'qty': qty,
+                                                'side': close_side, 'order_type': 'MARKET'},
+                                          timeout=10)
+                            pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
+                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
+                            for d in (price_history, session_high, session_low):
+                                d.pop(t['id'], None)
+                            open_positions.pop(sym, None)
+                            total_pnl += pnl or 0
+                            lines.append(f"  {sym}: ${price} | ${pnl:+.2f} ({pnl_pct:+.1f}%)")
+                        except Exception as ex:
+                            lines.append(f"  {sym}: ERROR {ex}")
+                    lines.append(f"Total P&L: ${total_pnl:+.2f}")
+                    send_telegram('\n'.join(lines))
+
+            elif text == 'REGIME':
+                try:
+                    regime, spy_chg, vix_val, extra = get_regime()
+                    breadth = ('broad advance' if extra['broad_advance']
+                               else 'broad weakness' if extra['breadth_weak'] else 'mixed')
+                    send_telegram('\n'.join([
+                        f"Regime: {regime} | {datetime.now(ET).strftime('%H:%M ET')}",
+                        f"SPY: {spy_chg:+.2f}% | VIX: {vix_val:.1f} {'rising' if extra['vix_rising'] else 'falling'}",
+                        f"SPY {'above' if extra['spy_above_vwap'] else 'below'} VWAP | QQQ {'leading' if extra['qqq_leading'] else 'lagging'}",
+                        f"ES: {extra['es_chg']:+.2f}% | NQ: {extra['nq_chg']:+.2f}%",
+                        f"Breadth: {breadth}",
+                    ]))
+                except Exception as ex:
+                    send_telegram(f"Regime fetch error: {ex}")
+
+            elif text == 'TODAY':
+                closed = get_today_trades()
+                if not closed:
+                    send_telegram("No closed trades today yet.")
+                else:
+                    lines = [f"Today's trades ({len(closed)}):"]
+                    for t in closed:
+                        tag     = '↓' if t['side'] == 'SHORT' else '↑'
+                        outcome = 'W' if t['status'] == 'WIN' else 'L'
+                        lines.append(
+                            f"  {tag}{t['symbol']} {outcome} ${t['pnl']:+.2f} "
+                            f"({t['entry']}→{t['exit']})"
+                        )
+                    total = sum(t['pnl'] for t in closed)
+                    wins  = sum(1 for t in closed if t['status'] == 'WIN')
+                    lines.append(f"Total: ${total:+.2f} | {wins}/{len(closed)} wins")
+                    send_telegram('\n'.join(lines))
+
+            elif text.startswith('BLOCK '):
+                sym = text.split()[1].upper()
+                traded_today.add(sym)
+                save_traded_today()
+                send_telegram(f"BLOCK {sym}: skipping for rest of today. Resets at midnight.")
 
     except Exception as e:
         log(f"TG poll error: {e}")
