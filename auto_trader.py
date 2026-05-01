@@ -2690,6 +2690,67 @@ def nightly_learning():
     except Exception as e:
         log(f"Learning error: {e}")
 
+def chart_gate_weekly_review():
+    """Every Friday 4:30pm — parse CHART GATE LOG lines, cross-ref DB outcomes,
+    send Telegram checkpoint so we don't forget to evaluate the gate."""
+    try:
+        log_file = os.path.join(_DIR, 'logs', 'auto_trader.log')
+        if not os.path.exists(log_file):
+            return
+
+        # Parse all CHART GATE LOG lines from the log file
+        yes_trades, no_trades = [], []
+        with open(log_file, 'r') as f:
+            for line in f:
+                if '[CHART GATE LOG]' not in line or '1h aligned:' not in line:
+                    continue
+                try:
+                    # Format: [CHART GATE LOG] TSLA | 1h aligned: ✅/❌ | <reason>
+                    parts  = line.split('[CHART GATE LOG]')[1].strip()
+                    sym    = parts.split('|')[0].strip()
+                    aligned = '✅' in parts
+                    reason  = parts.split('|')[2].strip() if '|' in parts else ''
+                    (yes_trades if aligned else no_trades).append((sym, reason))
+                except Exception:
+                    continue
+
+        total = len(yes_trades) + len(no_trades)
+        if total == 0:
+            send_telegram("📊 Chart Gate Weekly Review\nNo gate log entries yet — no bull entries this week had chart checks.")
+            return
+
+        # Cross-ref NO trades with DB outcomes
+        conn   = __import__('sqlite3').connect(os.path.join(_DIR, 'trades.db'))
+        c      = conn.cursor()
+        no_outcomes = []
+        for sym, reason in no_trades:
+            c.execute('''SELECT status, pnl FROM trades
+                         WHERE symbol=? AND setup_type NOT IN ('MANUAL','RECONCILED')
+                         AND status IN ('WIN','LOSS')
+                         ORDER BY id DESC LIMIT 1''', (sym,))
+            row = c.fetchone()
+            outcome = f"{row[0]} ${row[1]:+.2f}" if row else "open/unknown"
+            no_outcomes.append(f"  ❌ {sym}: {outcome} — {reason[:60]}")
+        conn.close()
+
+        no_loss_count = sum(1 for s in no_outcomes if 'LOSS' in s)
+        lines = [
+            f"📊 Chart Gate Weekly Review | {datetime.now(ET).strftime('%b %d')}",
+            f"Total gate checks: {total} | YES: {len(yes_trades)} | NO: {len(no_trades)}",
+            f"",
+            f"NO calls ({len(no_trades)}) — were they right to flag?",
+        ] + (no_outcomes if no_outcomes else ["  None this week"]) + [
+            f"",
+            f"NO calls that were losses: {no_loss_count}/{len(no_trades)}",
+            f"",
+            f"{'⚠️ Sample too small — extend review 1 more week.' if total < 25 else '✅ Enough data — consider activating gate if NO→LOSS rate >60%.'}",
+            f"Reply GATE ON to activate or ignore to extend."
+        ]
+        send_telegram('\n'.join(lines))
+        log(f"Chart gate weekly review sent: {total} checks, {len(no_trades)} NO calls")
+    except Exception as e:
+        log(f"Chart gate review error: {e}")
+
 def reset_daily_state():
     """Midnight reset — clears per-day counters so next session starts clean."""
     global traded_today, daily_bull_count, daily_bear_count, pm_scan_done
@@ -2744,6 +2805,7 @@ if __name__ == '__main__':
     sched.add_job(morning_catalyst_scan,  'cron',     day_of_week='mon-fri', hour=8,  minute=15)
     sched.add_job(morning_voice_summary,  'cron',     day_of_week='mon-fri', hour=9,  minute=0)
     sched.add_job(evening_summary,        'cron',     day_of_week='mon-fri', hour=16, minute=30)
+    sched.add_job(chart_gate_weekly_review, 'cron',   day_of_week='fri',     hour=16, minute=35)
     sched.add_job(nightly_learning,       'cron',     day_of_week='mon-fri', hour=23, minute=0)
     sched.add_job(reset_daily_state,      'cron',                            hour=0,  minute=1)
     sched.add_job(poll_telegram_commands, 'interval', seconds=15)
