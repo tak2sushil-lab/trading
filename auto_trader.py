@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
-    update_trade_stop, get_trade_entry_date, get_today_trades
+    update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
