@@ -2609,7 +2609,7 @@ if __name__ == '__main__':
     print(f"Entry cutoff:     {NO_ENTRY_AFTER}:00 ET | Min R:R 1:{MIN_RR}")
     print("=" * 55)
     print("Scheduled: pre-mkt 4:30am | catalyst 8:15am | voice 9am | EOD 4:30pm | learning 11pm | reset midnight")
-    print("Telegram:  STATUS | CANCEL | RESUME")
+    print("Telegram:  HELP | STATUS | REGIME | TODAY | BUY <SYM> [%] | SELL <SYM> | CLOSEALL | PAUSE | RESUME | BLOCK <SYM>")
     print("Press CTRL+C to stop\n")
 
     # Background scheduler for timed tasks
