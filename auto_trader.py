@@ -1316,6 +1316,11 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             if price <= sl:
                 exit_reason = f'Stop ${sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
+        # 1b. Manual trade: exit at 1% profit target
+        if not exit_reason and trade.get('setup_type') == 'MANUAL' and not is_short:
+            if pnl_pct >= 1.0:
+                exit_reason = f'Manual target +1% reached (${price} / {pnl_pct:+.1f}%)'
+
         # 2. Circuit breaker
         if not exit_reason and pnl_usd <= -MAX_LOSS_PER_TRADE:
             exit_reason = f'Circuit breaker: -${MAX_LOSS_PER_TRADE} hit (${pnl_usd:+.0f})'
@@ -1414,7 +1419,17 @@ def poll_telegram_commands():
                 continue
             log(f"TG command: {text}")
 
-            if text == 'STATUS':
+            if text == 'HELP':
+                send_telegram('\n'.join([
+                    "Commands:",
+                    "STATUS          — P&L, open positions, 30d WR",
+                    "PAUSE/STOP/CANCEL — halt new entries (monitor stays on)",
+                    "RESUME          — re-enable entries",
+                    "BUY <SYMBOL>    — market buy, auto-exit at +1% profit",
+                    "                  e.g.  BUY TSLA",
+                ]))
+
+            elif text == 'STATUS':
                 ibkr    = get_ibkr_positions()
                 wr      = get_win_rate(days=30)
                 # Live P&L: sum unrealised from IBKR + realised from DB today
@@ -1453,6 +1468,30 @@ def poll_telegram_commands():
                 if os.path.exists(block_file):
                     os.remove(block_file)
                 send_telegram("Trading resumed. Scanning for setups.")
+
+            elif text.startswith('BUY '):
+                sym = text.split()[1].upper()
+                price = get_live_price(sym)
+                if not price:
+                    send_telegram(f"BUY {sym}: could not get live price — order not placed.")
+                else:
+                    sl     = round(price * 0.95, 2)          # 5% stop, consistent with system
+                    target = round(price * 1.01, 2)          # 1% profit target
+                    shares = max(1, int(100 / (price * 0.05)))  # $100 max risk, same as system
+                    tid = place_trade(sym, price, shares, sl, target,
+                                      strategy='MANUAL', grade='B',
+                                      confidence=99, sector='OTHER', side='LONG')
+                    if tid:
+                        traded_today.add(sym)
+                        save_traded_today()
+                        daily_bull_count += 1
+                        send_telegram(
+                            f"MANUAL BUY {sym} | {shares}sh @ ${price}\n"
+                            f"Target: ${target} (+1%) | Stop: ${sl} (-5%)\n"
+                            f"Will auto-exit at +1% profit."
+                        )
+                    else:
+                        send_telegram(f"BUY {sym}: order placed but fill not confirmed — check IBKR.")
 
     except Exception as e:
         log(f"TG poll error: {e}")
