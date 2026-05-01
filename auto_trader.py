@@ -1503,7 +1503,39 @@ def poll_telegram_commands():
         updates = r.json().get('result', [])
         for update in updates:
             tg_update_id = update['update_id'] + 1
-            text = update.get('message', {}).get('text', '').strip().upper()
+            msg  = update.get('message', {})
+            text = msg.get('text', '').strip().upper()
+
+            # ── Photo messages: handle before the text guard ──────
+            photo = msg.get('photo')
+            if photo:
+                try:
+                    file_id   = photo[-1]['file_id']
+                    r_file    = requests.get(f"{TG_API}/getFile",
+                                             params={'file_id': file_id}, timeout=10)
+                    file_path = r_file.json()['result']['file_path']
+                    img_bytes = requests.get(
+                        f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}",
+                        timeout=15).content
+                    b64       = base64.b64encode(img_bytes).decode('utf-8')
+                    ext       = file_path.rsplit('.', 1)[-1].lower()
+                    media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
+                    send_telegram("Analysing chart...")
+                    caption = msg.get('caption', '')
+                    prompt  = (
+                        "You are an expert technical trading analyst. Analyse this trading chart. "
+                        "Identify: (1) trend direction and strength, (2) key support/resistance levels, "
+                        "(3) volume story — confirming or diverging, (4) chart pattern if any "
+                        "(ORB, flag, VWAP reclaim, breakout, etc.), (5) is this a clean setup to trade "
+                        "or one to avoid, and why. Be concise — 5 bullet points max."
+                        + (f"\n\nContext from user: {caption}" if caption else "")
+                    )
+                    analysis = _claude_analyse_image(b64, prompt, media_type=media_type)
+                    send_telegram(analysis or "Could not analyse chart — try again.")
+                except Exception as ex:
+                    send_telegram(f"Chart analysis error: {ex}")
+                continue   # photo handled — skip text command processing
+
             if not text:
                 continue
             log(f"TG command: {text}")
@@ -1706,35 +1738,6 @@ def poll_telegram_commands():
                 traded_today.add(sym)
                 save_traded_today()
                 send_telegram(f"BLOCK {sym}: skipping for rest of today. Resets at midnight.")
-
-            # ── Photo: analyse chart image via Claude vision ──────
-            photo = update.get('message', {}).get('photo')
-            if photo:
-                try:
-                    file_id = photo[-1]['file_id']   # last = highest resolution
-                    r_file  = requests.get(f"{TG_API}/getFile",
-                                           params={'file_id': file_id}, timeout=10)
-                    file_path = r_file.json()['result']['file_path']
-                    img_bytes = requests.get(
-                        f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}",
-                        timeout=15).content
-                    b64 = base64.b64encode(img_bytes).decode('utf-8')
-                    ext = file_path.rsplit('.', 1)[-1].lower()
-                    media_type = 'image/jpeg' if ext == 'jpg' else f'image/{ext}'
-                    send_telegram("Analysing chart...")
-                    caption = update.get('message', {}).get('caption', '')
-                    prompt = (
-                        "You are an expert technical trading analyst. Analyse this trading chart. "
-                        "Identify: (1) trend direction and strength, (2) key support/resistance levels, "
-                        "(3) volume story — confirming or diverging, (4) chart pattern if any "
-                        "(ORB, flag, VWAP reclaim, breakout, etc.), (5) is this a clean setup to trade "
-                        "or one to avoid, and why. Be concise — 5 bullet points max."
-                        + (f"\n\nContext from user: {caption}" if caption else "")
-                    )
-                    analysis = _claude_analyse_image(b64, prompt, media_type=media_type)
-                    send_telegram(analysis or "Could not analyse chart — try again.")
-                except Exception as ex:
-                    send_telegram(f"Chart analysis error: {ex}")
 
     except Exception as e:
         log(f"TG poll error: {e}")
