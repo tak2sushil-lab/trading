@@ -668,6 +668,8 @@ def get_intraday_signals(symbol, spy_chg=0):
         # After 10am we check if price has broken above that range
         orb_high = orb_low = None
         orb_break = False
+        today_open_price = None
+        today_lod        = None
         try:
             df5_tz = df5.copy()
             df5_tz.index = df5_tz.index.tz_convert(ET)
@@ -693,6 +695,10 @@ def get_intraday_signals(symbol, spy_chg=0):
                 if symbol not in key_levels:
                     key_levels[symbol] = {}
                 key_levels[symbol].update({'orb_high': orb_high, 'orb_low': orb_low})
+            # Today's opening print + intraday low for gap-and-crap detection
+            if len(today_bars) > 0:
+                today_open_price = round(float(today_bars['Open'].iloc[0]), 2)
+                today_lod        = round(float(today_bars['Low'].min()), 2)
         except Exception:
             pass
 
@@ -782,6 +788,7 @@ def get_intraday_signals(symbol, spy_chg=0):
             'is_bearish_candle': is_bearish_candle,
             'is_doji': is_doji, 'aligned_15m': aligned_15m,
             'aligned_15m_bear': aligned_15m_bear,
+            'today_open': today_open_price, 'today_lod': today_lod,
         }
     except:
         return None
@@ -866,6 +873,24 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     today_gain = sig.get('prev_chg', 0)
     if today_gain < MIN_TODAY_GAIN:
         return 'SKIP', [f'Only +{today_gain:.1f}% today (need ≥{MIN_TODAY_GAIN}%)'], 0
+
+    # ── Gap-and-crap filter (day-1 prop rule) ─────────────────
+    # If price is 5%+ below today's opening print, the gap has been distributed.
+    # Dead-cat bounces inside this pattern look like VWAP reclaims — they fail.
+    today_open = sig.get('today_open')
+    if today_open and price < today_open * 0.95:
+        pct_below = (today_open - price) / today_open * 100
+        return 'SKIP', [f'Gap-and-crap: -{pct_below:.1f}% below today open (${today_open})'], 0
+
+    # ── Failed ORB on gap day ──────────────────────────────────
+    # Stock gapped up >5%, ORB low was breached intraday, still below open = distribution
+    today_lod = sig.get('today_lod')
+    orb_low   = sig.get('orb_low')
+    if (today_open and orb_low and today_lod
+            and today_gain > 5.0
+            and today_lod < orb_low
+            and price < today_open):
+        return 'SKIP', [f'Failed gap: ORB low ${orb_low} violated, below open ${today_open}'], 0
 
     if sig['fvg_count'] >= 10:
         score += 30; reasons.append(f'{sig["fvg_count"]} FVGs')
@@ -991,6 +1016,15 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         score += 10; reasons.append('15m aligned (price > 15m VWAP & EMA20) ✓')
     elif sig.get('aligned_15m') is False:
         score -= 15; reasons.append('15m counter-trend (-15)')
+
+    # ── Opening print respect ─────────────────────────────────
+    # Holding above today's open = gap is being sustained (institutional buying)
+    # Below today's open = gap is under pressure (selling into retail)
+    if today_open:
+        if price >= today_open:
+            score += 10; reasons.append('Holding above today open ✓')
+        elif price < today_open * 0.98:
+            score -= 10; reasons.append(f'Below today open ${today_open} (-10)')
 
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
     return grade, reasons, score

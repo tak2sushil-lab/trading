@@ -479,12 +479,22 @@ def simulate(symbol, regime, spy_chg):
 
         # Hard gates
         skip = None
+        today_open_at_bar = float(df5['Open'].iloc[0]) if len(df5) > 0 else None
+        today_lod_at_bar  = round(float(sub['Low'].min()), 2) if len(sub) > 0 else None
         if not above_ma_now:
             skip = 'Below MA20'
         elif vol_ratio < vol_thresh:
             skip = f'Volume {vol_ratio:.1f}x (need ≥{vol_thresh:.1f}x)'
         elif today_gain_now < MIN_TODAY_GAIN:
             skip = f'Only +{today_gain_now:.1f}% today (need ≥{MIN_TODAY_GAIN}%)'
+        elif today_open_at_bar and price < today_open_at_bar * 0.95:
+            pct_below = (today_open_at_bar - price) / today_open_at_bar * 100
+            skip = f'Gap-and-crap: -{pct_below:.1f}% below today open (${today_open_at_bar:.2f})'
+        elif (today_open_at_bar and orb_low and today_lod_at_bar
+              and today_gain_now > 5.0
+              and today_lod_at_bar < orb_low
+              and price < today_open_at_bar):
+            skip = f'Failed gap: ORB low ${orb_low} violated, below open ${today_open_at_bar:.2f}'
         elif not has_pattern:
             skip = 'No pattern (ORB / VWAP reclaim / bull flag / HOD break)'
 
@@ -635,6 +645,13 @@ def simulate(symbol, regime, spy_chg):
             score += 5;  patterns.append(f'{sector_etf} +{etf_chg:.1f}% sector up')
         elif etf_chg < -0.5:
             score -= 10; patterns.append(f'{sector_etf} {etf_chg:.1f}% weak sector (-10)')
+
+        # ── Opening print respect ────────────────────────────────────────────
+        if today_open_at_bar:
+            if price >= today_open_at_bar:
+                score += 10; patterns.append('Holding above today open ✓')
+            elif price < today_open_at_bar * 0.98:
+                score -= 10; patterns.append(f'Below today open ${today_open_at_bar:.2f} (-10)')
 
         grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
