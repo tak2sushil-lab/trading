@@ -9,7 +9,11 @@ load_dotenv()
 
 import os, json, time, requests, yfinance as yf, pandas as pd, numpy as np
 from datetime import datetime, date, timedelta
-import pytz, pyttsx3
+import pytz, pyttsx3, io, base64, threading
+import matplotlib
+matplotlib.use('Agg')
+import mplfinance as mpf
+import anthropic
 from apscheduler.schedulers.background import BackgroundScheduler
 from database import (
     init_db, log_trade_entry, log_trade_exit,
@@ -24,8 +28,10 @@ ET = pytz.timezone('America/New_York')
 # ── Credentials ───────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+ANTHROPIC_KEY    = os.getenv('ANTHROPIC_KEY')
 BRIDGE           = 'http://127.0.0.1:8000'
 TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+_ai              = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 # ── Settings ──────────────────────────────────────────────
 SCAN_INTERVAL     = 300      # 5 min
@@ -1404,6 +1410,88 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
     return exits
 
 # ─────────────────────────────────────────────────────────
+# CHART INTELLIGENCE — mplfinance generation + Claude vision
+# ─────────────────────────────────────────────────────────
+
+def _generate_chart_b64(df, title, vwap_series=None):
+    """Generate a candlestick chart as base64 PNG. Returns None on failure."""
+    try:
+        ap = []
+        if vwap_series is not None and len(vwap_series) == len(df):
+            ap.append(mpf.make_addplot(vwap_series, color='blue', width=1.2, label='VWAP'))
+        buf = io.BytesIO()
+        mpf.plot(df, type='candle', style='charles', title=title,
+                 volume=True, addplot=ap if ap else None,
+                 figsize=(10, 6), savefig=dict(fname=buf, format='png', dpi=100))
+        buf.seek(0)
+        return base64.b64encode(buf.read()).decode('utf-8')
+    except Exception as e:
+        log(f"Chart gen error: {e}")
+        return None
+
+def _claude_analyse_image(b64_image, prompt, media_type='image/png'):
+    """Send a base64 image to Claude and return the text response."""
+    try:
+        resp = _ai.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=512,
+            messages=[{'role': 'user', 'content': [
+                {'type': 'image', 'source': {'type': 'base64',
+                                              'media_type': media_type,
+                                              'data': b64_image}},
+                {'type': 'text', 'text': prompt}
+            ]}]
+        )
+        return resp.content[0].text.strip()
+    except Exception as e:
+        log(f"Claude vision error: {e}")
+        return None
+
+def _chart_alignment_check(sym, entry_price, sl, strategy):
+    """
+    LOG MODE: generate 5m + 1h charts for sym, ask Claude if 1h trend supports
+    the 5m entry. Logs YES/NO + reason. Does NOT block the trade.
+    Runs in a background thread — zero latency impact on scan loop.
+    """
+    try:
+        df5  = yf.Ticker(sym).history(period='1d',  interval='5m')
+        df1h = yf.Ticker(sym).history(period='10d', interval='1h')
+        if df5.empty or df1h.empty or len(df5) < 5 or len(df1h) < 5:
+            return
+
+        # Compute VWAP on 5m
+        df5 = df5.copy()
+        df5['typical'] = (df5['High'] + df5['Low'] + df5['Close']) / 3
+        vwap = (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum()
+
+        b64_5m = _generate_chart_b64(df5[['Open','High','Low','Close','Volume']],
+                                     f'{sym} 5m intraday', vwap_series=vwap)
+        b64_1h = _generate_chart_b64(df1h[['Open','High','Low','Close','Volume']],
+                                     f'{sym} 1h (10 days)')
+        if not b64_5m or not b64_1h:
+            return
+
+        # Ask Claude about 1h alignment
+        prompt_1h = (f"You are a technical trading analyst. This is a 1-hour chart of {sym} "
+                     f"over the last 10 trading days. The system just entered a LONG at ${entry_price} "
+                     f"(stop ${sl}, strategy: {strategy}). "
+                     f"Does the 1h trend and structure SUPPORT this long entry? "
+                     f"Answer with YES or NO on the first line, then one sentence of reasoning.")
+        answer_1h = _claude_analyse_image(b64_1h, prompt_1h)
+
+        # Ask Claude about 5m setup quality
+        prompt_5m = (f"This is a 5-minute intraday chart of {sym} with VWAP. "
+                     f"A LONG entry was taken at ${entry_price}. "
+                     f"Rate the setup quality 1-5 and describe the pattern in one sentence.")
+        answer_5m = _claude_analyse_image(b64_5m, prompt_5m)
+
+        aligned = 'YES' in (answer_1h or '').upper()
+        log(f"  [CHART GATE LOG] {sym} | 1h aligned: {'✅' if aligned else '❌'} | {answer_1h}")
+        log(f"  [CHART GATE LOG] {sym} | 5m quality: {answer_5m}")
+    except Exception as e:
+        log(f"Chart alignment check error {sym}: {e}")
+
+# ─────────────────────────────────────────────────────────
 # TELEGRAM COMMAND HANDLER
 # ─────────────────────────────────────────────────────────
 def poll_telegram_commands():
@@ -1618,6 +1706,35 @@ def poll_telegram_commands():
                 traded_today.add(sym)
                 save_traded_today()
                 send_telegram(f"BLOCK {sym}: skipping for rest of today. Resets at midnight.")
+
+            # ── Photo: analyse chart image via Claude vision ──────
+            photo = update.get('message', {}).get('photo')
+            if photo:
+                try:
+                    file_id = photo[-1]['file_id']   # last = highest resolution
+                    r_file  = requests.get(f"{TG_API}/getFile",
+                                           params={'file_id': file_id}, timeout=10)
+                    file_path = r_file.json()['result']['file_path']
+                    img_bytes = requests.get(
+                        f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}",
+                        timeout=15).content
+                    b64 = base64.b64encode(img_bytes).decode('utf-8')
+                    ext = file_path.rsplit('.', 1)[-1].lower()
+                    media_type = 'image/jpeg' if ext == 'jpg' else f'image/{ext}'
+                    send_telegram("Analysing chart...")
+                    caption = update.get('message', {}).get('caption', '')
+                    prompt = (
+                        "You are an expert technical trading analyst. Analyse this trading chart. "
+                        "Identify: (1) trend direction and strength, (2) key support/resistance levels, "
+                        "(3) volume story — confirming or diverging, (4) chart pattern if any "
+                        "(ORB, flag, VWAP reclaim, breakout, etc.), (5) is this a clean setup to trade "
+                        "or one to avoid, and why. Be concise — 5 bullet points max."
+                        + (f"\n\nContext from user: {caption}" if caption else "")
+                    )
+                    analysis = _claude_analyse_image(b64, prompt, media_type=media_type)
+                    send_telegram(analysis or "Could not analyse chart — try again.")
+                except Exception as ex:
+                    send_telegram(f"Chart analysis error: {ex}")
 
     except Exception as e:
         log(f"TG poll error: {e}")
@@ -2202,6 +2319,12 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             daily_bull_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
+            # LOG MODE: chart alignment check runs in background, never blocks entry
+            threading.Thread(
+                target=_chart_alignment_check,
+                args=(sym, price, pick['sl'], strategy),
+                daemon=True
+            ).start()
             time.sleep(2)
 
     # Monitor existing trades too
