@@ -2040,8 +2040,16 @@ def run_scan():
         log(f"CHOPPY market — monitoring only, no new entries")
         exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'WEAK':
-        log(f"WEAK market — routing to bear strategy (short scan)")
-        exits = _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
+        # Post-lunch WEAK signals (12:45–14:00) are often lunch noise — require 3 scans not 2
+        now_hm = (now.hour, now.minute)
+        post_lunch_window = (12, 45) <= now_hm <= (14, 0)
+        required_bear_scans = 3 if post_lunch_window else MIN_REGIME_SCANS
+        if confirmed_scans < required_bear_scans:
+            log(f"WEAK market — post-lunch window, need {required_bear_scans} scans (have {confirmed_scans}) — monitoring only")
+            exits = monitor_open_trades(regime, confirmed_scans)
+        else:
+            log(f"WEAK market — routing to bear strategy (short scan)")
+            exits = _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
     elif not spy_above_open:
         log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
         exits = monitor_open_trades(regime, confirmed_scans)
