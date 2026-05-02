@@ -131,6 +131,13 @@ FULL_UNIVERSE = list(dict.fromkeys([
     'LAC', 'RIVN', 'NIO', 'CHPT',
     # ── Commodities / Mining ─────────────────────────────
     'FCX', 'NEM', 'MP',
+    # ── May 1 2026 additions (5Y backtest validated) ──────
+    # APP  94% WR $74 EV — Applovin, AI advertising momentum
+    # MARA 75% WR $96 EV — Bitcoin miner, high variance/high EV, 15.5 trades/yr
+    # ARM  93% WR $105 EV — ARM Holdings, IPO 2023 (limited history, probation)
+    # AXON 98% WR $67 EV — textbook behaviour, cleanest setup stock tested
+    # SHOP 95% WR $84 EV — Shopify, e-commerce momentum (Canadian co.)
+    'APP', 'MARA', 'ARM', 'AXON', 'SHOP',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
     # SMR(24%), MSTR(17%), SNOW(33%), CRWD(33%)
     # JOBY(38%), PANW(43%), MS(43%), AFRM(43%), ACHR(44%)
@@ -180,6 +187,12 @@ SECTOR_MAP = {
     # COMMODITIES: mining, metals, gold
     'FCX':'COMMODITIES','NEM':'COMMODITIES','MP':'COMMODITIES',
     # Remainder → OTHER (still tradeable, just uncapped)
+    # ── May 1 2026 additions ──────────────────────────────
+    'APP':'TECH',       # Applovin — AI advertising / ad-tech
+    'MARA':'QUANTUM_CRYPTO',  # Marathon Digital — Bitcoin miner
+    'ARM':'SEMIS',      # ARM Holdings — chip architecture
+    'AXON':'DEFENCE',   # Axon Enterprise — defence/law enforcement tech
+    'SHOP':'CONSUMER',  # Shopify — e-commerce platform
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────
