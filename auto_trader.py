@@ -18,7 +18,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
-    update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades
+    update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades,
+    get_strategy_weights
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -850,6 +851,7 @@ def get_days_to_earnings(symbol):
 def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     score   = 0
     reasons = []
+    w = get_strategy_weights()  # learner-adjusted multipliers (default 1.0)
 
     # Earnings gate — hard skip within 3 days: IV crush, gap risk, binary event
     if symbol:
@@ -900,11 +902,11 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         score += 10; reasons.append(f'{sig["fvg_count"]} FVGs')
 
     if sig['vol_ratio'] >= 2.0:
-        score += 25; reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
+        score += round(25 * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
     elif sig['vol_ratio'] >= 1.5:
-        score += 15; reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
+        score += round(15 * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
     else:
-        score += 5;  reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
+        score += round(5  * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
 
     if sig['uptrend'] and sig['ema_touch']:
         score += 20; reasons.append('EMA pullback in uptrend')
@@ -913,18 +915,18 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
 
     # Daily RSI — scoring only, no longer a hard gate (high RSI = momentum, not overbought)
     if 45 <= sig['rsi'] <= 65:
-        score += 20; reasons.append(f'RSI {sig["rsi"]} ideal')
+        score += round(20 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} ideal')
     elif 65 < sig['rsi'] <= 80:
-        score += 10; reasons.append(f'RSI {sig["rsi"]} elevated (momentum)')
+        score += round(10 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} elevated (momentum)')
     else:
-        score += 5;  reasons.append(f'RSI {sig["rsi"]} (trending)')
+        score += round(5  * w['rsi']); reasons.append(f'RSI {sig["rsi"]} (trending)')
 
     # 5m RSI — scoring only, penalise exhaustion but don't block
     rsi5m = sig.get('rsi_5m', 50)
     if rsi5m > MAX_RSI_5M:
-        score -= 20; reasons.append(f'5m RSI {rsi5m} exhausted (-20)')
+        score -= round(20 * w['rsi']); reasons.append(f'5m RSI {rsi5m} exhausted (-20)')
     elif rsi5m > 75:
-        score -= 10; reasons.append(f'5m RSI {rsi5m} elevated (-10)')
+        score -= round(10 * w['rsi']); reasons.append(f'5m RSI {rsi5m} elevated (-10)')
 
     if sig['is_tight']:
         score += 10; reasons.append(f'Tight range {sig["range_pct"]:.1f}%')
@@ -964,11 +966,11 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     # ── Relative strength vs SPY ──────────────────────────────
     rs = sig.get('rs_vs_spy', 0)
     if rs >= 5:
-        score += 20; reasons.append(f'RS +{rs:.1f}% vs SPY')
+        score += round(20 * w['momentum']); reasons.append(f'RS +{rs:.1f}% vs SPY')
     elif rs >= 2:
-        score += 10; reasons.append(f'RS +{rs:.1f}% vs SPY')
+        score += round(10 * w['momentum']); reasons.append(f'RS +{rs:.1f}% vs SPY')
     elif rs < 0:
-        score -= 10; reasons.append(f'RS {rs:.1f}% vs SPY (lagging)')
+        score -= round(10 * w['momentum']); reasons.append(f'RS {rs:.1f}% vs SPY (lagging)')
 
     # ── Pre-market high — cleared = overnight resistance gone, strong confirmation ──
     if symbol and symbol in key_levels:
@@ -987,11 +989,11 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         etf = SECTOR_ETF_MAP.get(sec, 'SPY')
         etf_chg = sector_strength.get(etf, 0)
         if etf_chg >= 1.5:
-            score += 15; reasons.append(f'{etf} +{etf_chg:.1f}% leading')
+            score += round(15 * w['sector']); reasons.append(f'{etf} +{etf_chg:.1f}% leading')
         elif etf_chg >= 0.5:
-            score += 5;  reasons.append(f'{etf} +{etf_chg:.1f}%')
+            score += round(5  * w['sector']); reasons.append(f'{etf} +{etf_chg:.1f}%')
         elif etf_chg <= -1.0:
-            score -= 10; reasons.append(f'{etf} {etf_chg:.1f}% weak sector')
+            score -= round(10 * w['sector']); reasons.append(f'{etf} {etf_chg:.1f}% weak sector')
 
     if regime == 'STRONG':
         score += 15; reasons.append('Strong market')
@@ -2728,6 +2730,13 @@ def nightly_learning():
     log("NIGHTLY LEARNING — analysing trades...")
     try:
         run_learning_cycle()
+        w = get_strategy_weights()
+        msg = (
+            f"🧠 Nightly learning complete\n"
+            f"RSI: {w['rsi']:.1f}x | Vol: {w['volume']:.1f}x | "
+            f"Momentum: {w['momentum']:.1f}x | Sector: {w['sector']:.1f}x"
+        )
+        send_telegram(msg)
         log("Learning complete.")
     except Exception as e:
         log(f"Learning error: {e}")
