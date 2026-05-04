@@ -65,16 +65,26 @@ async def _connect_ibkr() -> bool:
 async def _reconnect_loop():
     """Background task: re-connects whenever IBKR drops the link."""
     await asyncio.sleep(15)          # give startup a head-start
+    _disconnect_count = 0            # consecutive 30s cycles without connection
     while True:
         await asyncio.sleep(30)
         if not ib.isConnected():
-            print("[RECONNECT] IBKR disconnected — flushing cache and reconnecting...")
             _hist_cache.clear()      # stale prices must not be served after reconnect
+            _disconnect_count += 1
+            print("[RECONNECT] IBKR disconnected — flushing cache and reconnecting...")
+            if _disconnect_count == 1:
+                send_telegram_alert("⚠️ IBKR Gateway disconnected — auto-reconnecting")
+            elif _disconnect_count == 6:   # 3 min of failed attempts
+                send_telegram_alert("🚨 IBKR reconnect failing (3min) — check Gateway/IBC immediately")
             ok = await _connect_ibkr()
             if ok:
                 print("[RECONNECT] ✅ Reconnected to IB Gateway")
+                send_telegram_alert("✅ IBKR Gateway reconnected")
+                _disconnect_count = 0
             else:
                 print("[RECONNECT] ⚠️  Still not connected — will retry in 30s")
+        else:
+            _disconnect_count = 0    # reset on each healthy check
 
 @app.on_event("startup")
 async def startup():
