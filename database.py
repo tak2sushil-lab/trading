@@ -209,6 +209,23 @@ def get_win_rate(symbol=None, days=30):
     wins  = row[1] or 0
     return (wins / total * 100) if total > 0 else 0
 
+def get_today_entry_counts():
+    """Return today's bull/bear entry counts across all statuses (for restart restore)."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''SELECT side, COUNT(*) FROM trades
+                 WHERE entry_date=date('now') AND status IN ('OPEN','WIN','LOSS')
+                 GROUP BY side''')
+    rows = c.fetchall()
+    conn.close()
+    counts = {'bull': 0, 'bear': 0}
+    for side, n in rows:
+        if (side or 'LONG') == 'LONG':
+            counts['bull'] = n
+        else:
+            counts['bear'] = n
+    return counts
+
 def get_today_trades():
     conn = get_connection()
     c    = conn.cursor()

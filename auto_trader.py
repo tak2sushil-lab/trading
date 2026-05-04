@@ -19,7 +19,7 @@ from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
     update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades,
-    get_strategy_weights
+    get_strategy_weights, get_today_entry_counts
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -29,6 +29,7 @@ ET = pytz.timezone('America/New_York')
 # ── Credentials ───────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+VIEWER_CHAT_IDS  = {5225043215}   # Ruhi — REGIME, STATUS, chart analysis only
 ANTHROPIC_KEY    = os.getenv('ANTHROPIC_KEY')
 BRIDGE           = 'http://127.0.0.1:8000'
 TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
@@ -138,8 +139,14 @@ FULL_UNIVERSE = list(dict.fromkeys([
     # AXON 98% WR $67 EV — textbook behaviour, cleanest setup stock tested
     # SHOP 95% WR $84 EV — Shopify, e-commerce momentum (Canadian co.)
     'APP', 'MARA', 'ARM', 'AXON', 'SHOP',
+    # ── May 4 2026 additions (full suite validated: bull+bear+WF+stress+MC) ──
+    # MSTR 93% WR $91 EV — MicroStrategy, BTC treasury; gap-and-go bad (17%) but full stack 93%
+    # ONDS 92% WR $106 EV — Ondas Holdings, drone/rail autonomy (4yr data, probation)
+    # RDW  87% WR $107 EV — Redwire Corp, space tech; BULL ONLY (bear 60% WR too thin)
+    # VERI 80% WR $99 EV — Veritone, AI platform; bear 90% WR — both directions
+    'MSTR', 'ONDS', 'RDW', 'VERI',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
-    # SMR(24%), MSTR(17%), SNOW(33%), CRWD(33%)
+    # SMR(24%), SNOW(33%), CRWD(33%)
     # JOBY(38%), PANW(43%), MS(43%), AFRM(43%), ACHR(44%)
     # SOFI(50% neg avg), HPE(50% neg avg)
 ]))
@@ -193,6 +200,11 @@ SECTOR_MAP = {
     'ARM':'SEMIS',      # ARM Holdings — chip architecture
     'AXON':'DEFENCE',   # Axon Enterprise — defence/law enforcement tech
     'SHOP':'CONSUMER',  # Shopify — e-commerce platform
+    # ── May 4 2026 additions ──────────────────────────────
+    'MSTR':'QUANTUM_CRYPTO',  # MicroStrategy — institutional BTC treasury
+    'ONDS':'DEFENCE',   # Ondas Holdings — drone/rail autonomy
+    'RDW':'DEFENCE',    # Redwire Corp — space tech (BULL ONLY — bear 60% WR)
+    'VERI':'TECH',      # Veritone — AI platform / voice AI
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────
@@ -276,6 +288,15 @@ def send_telegram(msg):
         log(f"TG: {msg[:60]}")
     except Exception as e:
         log(f"TG error: {e}")
+
+def send_telegram_to(chat_id, msg):
+    try:
+        requests.post(f"{TG_API}/sendMessage",
+                      json={'chat_id': chat_id, 'text': msg},
+                      timeout=10)
+        log(f"TG→{chat_id}: {msg[:80]}")
+    except Exception as e:
+        log(f"TG error (to {chat_id}): {e}")
 
 def speak(text):
     try:
@@ -1181,6 +1202,9 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
         if outside_rth:
             payload['outside_rth'] = True
         r = requests.post(f"{BRIDGE}/order", json=payload, timeout=10)
+        if r.status_code != 200:
+            log(f"  {symbol}: Order rejected — bridge {r.status_code}: {r.text[:120]}")
+            return None
         order_id = r.json().get('orderId')
         if not order_id:
             log(f"  {symbol}: No orderId returned — order submission failed")
@@ -1553,6 +1577,13 @@ def poll_telegram_commands():
         for update in updates:
             tg_update_id = update['update_id'] + 1
             msg  = update.get('message', {})
+            sender_id   = msg.get('chat', {}).get('id')
+            sender_name = msg.get('chat', {}).get('first_name', '')
+            is_owner    = str(sender_id) == str(TELEGRAM_CHAT_ID)
+            is_viewer   = sender_id in VIEWER_CHAT_IDS
+            if not is_owner and not is_viewer:
+                continue   # ignore unknown senders
+            reply_to = sender_id  # responses go back to whoever sent it
             text = msg.get('text', '').strip().upper()
 
             # ── Photo messages: handle before the text guard ──────
@@ -1569,7 +1600,7 @@ def poll_telegram_commands():
                     b64       = base64.b64encode(img_bytes).decode('utf-8')
                     ext       = file_path.rsplit('.', 1)[-1].lower()
                     media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
-                    send_telegram("Analysing chart...")
+                    send_telegram_to(reply_to, "Analysing chart...")
                     caption = msg.get('caption', '')
                     prompt  = (
                         "You are an expert technical trading analyst. Analyse this trading chart. "
@@ -1580,14 +1611,18 @@ def poll_telegram_commands():
                         + (f"\n\nContext from user: {caption}" if caption else "")
                     )
                     analysis = _claude_analyse_image(b64, prompt, media_type=media_type)
-                    send_telegram(analysis or "Could not analyse chart — try again.")
+                    send_telegram_to(reply_to, analysis or "Could not analyse chart — try again.")
                 except Exception as ex:
-                    send_telegram(f"Chart analysis error: {ex}")
+                    send_telegram_to(reply_to, f"Chart analysis error: {ex}")
                 continue   # photo handled — skip text command processing
 
             if not text:
                 continue
             log(f"TG command: {text}")
+
+            # ── Viewer gate: only REGIME and STATUS allowed ───────
+            if is_viewer and text not in ('REGIME', 'STATUS'):
+                continue
 
             if text == 'HELP':
                 send_telegram('\n'.join([
@@ -1633,7 +1668,7 @@ def poll_telegram_commands():
                     pnl_pct = ((mkt - avg) / avg * 100) if avg else 0
                     lines.append(f"  {sym}: ${mkt} ({pnl_pct:+.1f}%) "
                                  f"uPnL ${upnl:+.2f} | ${invested:,.0f} ({qty} stock)")
-                send_telegram('\n'.join(lines))
+                send_telegram_to(reply_to, '\n'.join(lines))
 
             elif text in ('CANCEL', 'STOP', 'PAUSE'):
                 send_telegram("New entries paused. Monitoring open trades only. Send RESUME to re-enable.")
@@ -1752,17 +1787,17 @@ def poll_telegram_commands():
             elif text == 'REGIME':
                 try:
                     regime, spy_chg, vix_val, extra = get_regime()
-                    breadth = ('broad advance' if extra['broad_advance']
-                               else 'broad weakness' if extra['breadth_weak'] else 'mixed')
-                    send_telegram('\n'.join([
+                    breadth = ('broad advance' if extra.get('broad_advance', True)
+                               else 'broad weakness' if extra.get('breadth_weak', False) else 'mixed')
+                    send_telegram_to(reply_to, '\n'.join([
                         f"Regime: {regime} | {datetime.now(ET).strftime('%H:%M ET')}",
-                        f"SPY: {spy_chg:+.2f}% | VIX: {vix_val:.1f} {'rising' if extra['vix_rising'] else 'falling'}",
-                        f"SPY {'above' if extra['spy_above_vwap'] else 'below'} VWAP | QQQ {'leading' if extra['qqq_leading'] else 'lagging'}",
-                        f"ES: {extra['es_chg']:+.2f}% | NQ: {extra['nq_chg']:+.2f}%",
+                        f"SPY: {spy_chg:+.2f}% | VIX: {vix_val:.1f} {'rising' if extra.get('vix_rising', False) else 'falling'}",
+                        f"SPY {'above' if extra.get('spy_above_vwap', False) else 'below'} VWAP | QQQ {'leading' if extra.get('qqq_leading', False) else 'lagging'}",
+                        f"ES: {extra.get('es_chg', 0.0):+.2f}% | NQ: {extra.get('nq_chg', 0.0):+.2f}%",
                         f"Breadth: {breadth}",
                     ]))
                 except Exception as ex:
-                    send_telegram(f"Regime fetch error: {ex}")
+                    send_telegram_to(reply_to, f"Regime fetch error: {ex}")
 
             elif text == 'TODAY':
                 closed = get_today_trades()
@@ -2840,6 +2875,11 @@ if __name__ == '__main__':
     traded_today = load_traded_today()
     if traded_today:
         log(f"Restored traded_today: {len(traded_today)} symbols")
+    counts = get_today_entry_counts()
+    daily_bull_count = counts['bull']
+    daily_bear_count = counts['bear']
+    if daily_bull_count or daily_bear_count:
+        log(f"Restored daily counts: Bull {daily_bull_count} Bear {daily_bear_count}")
 
     print("\n🤖 Auto Trader v2 — Consolidated")
     print("=" * 55)
