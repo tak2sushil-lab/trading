@@ -154,9 +154,13 @@ FULL_UNIVERSE = list(dict.fromkeys([
     # RDW  87% WR $107 EV — Redwire Corp, space tech; BULL ONLY (bear 60% WR too thin)
     # VERI 80% WR $99 EV — Veritone, AI platform; bear 90% WR — both directions
     'MSTR', 'ONDS', 'RDW', 'VERI',
+    # ── May 6 2026 re-additions (re-backtested with full signal stack) ──
+    # JOBY 87% WR $81 EV — eVTOL/aviation. Was dropped at 38% WR (gap-and-go only).
+    #      Full stack (ORB+VWAP+RS+volume): 87% WR, all 6 years profitable, 13 trades/yr
+    'JOBY',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
     # SMR(24%), SNOW(33%), CRWD(33%)
-    # JOBY(38%), PANW(43%), MS(43%), AFRM(43%), ACHR(44%)
+    # PANW(43%), MS(43%), AFRM(43%), ACHR(44%)
     # SOFI(50% neg avg), HPE(50% neg avg)
 ]))
 
@@ -195,7 +199,7 @@ SECTOR_MAP = {
     'COST':'CONSUMER','NKE':'CONSUMER','SBUX':'CONSUMER','CMG':'CONSUMER',
     'UBER':'CONSUMER',
     # DEFENCE: aerospace, defence, industrials (extended)
-    'RKLB':'DEFENCE',
+    'RKLB':'DEFENCE','JOBY':'DEFENCE',
     # CONSUMER: discretionary + travel
     'USAR':'CONSUMER',
     # CLEAN_ENERGY: EV, battery materials, charging
