@@ -95,6 +95,15 @@ trade_entry_times  = {}       # trade_id → datetime of entry (for no-move exit
 earnings_cache     = {}       # symbol → (date_str, days_to_next_earnings)
 partial_done_trades = {}      # trade_id → locked_pnl_usd — trades that had 50% sold at 1R
 
+# ── Bear exclusions — stocks with insufficient bear backtest WR ──
+BEAR_EXCLUDED = {'RDW'}   # RDW: 60% bear WR (below 80% threshold), bull-only addition
+
+# ── ETF symbols — no earnings calendar, skip earnings gate ────────
+ETF_SYMBOLS = {
+    'XLE', 'XBI', 'SMH', 'ITA', 'XLK', 'XLF', 'XLI', 'XLU', 'XLY',
+    'XME', 'XAR', 'URA', 'GDX', 'ARKK',
+}
+
 # ── Universe ──────────────────────────────────────────────
 FULL_UNIVERSE = list(dict.fromkeys([
     # ── Tier 1+2: 62%+ win rate (v6 confirmed) ───────────
@@ -117,7 +126,7 @@ FULL_UNIVERSE = list(dict.fromkeys([
     # ── Momentum / sector-leader ──────────────────────────
     'POET', 'EOSE', 'INDI', 'NVDA', 'INTC', 'TSLA',
     # ── Energy: oil/gas/pipelines — macro + sector ETF days ──
-    'CVX', 'XOM', 'OXY', 'SLB', 'HAL', 'DVN', 'MRO', 'XLE',
+    'CVX', 'XOM', 'OXY', 'SLB', 'HAL', 'DVN', 'XLE',
     # ── Healthcare / Pharma: catalyst + FDA days ─────────
     'UNH', 'MRNA', 'PFE', 'ABBV', 'ISRG', 'DXCM', 'HIMS', 'XBI',
     # ── Consumer Discretionary: sentiment + retail days ──
@@ -177,14 +186,14 @@ SECTOR_MAP = {
     'IREN':'QUANTUM_CRYPTO','APLD':'QUANTUM_CRYPTO',
     # ENERGY: oil, gas, oilfield services
     'CVX':'ENERGY','XOM':'ENERGY','OXY':'ENERGY','SLB':'ENERGY',
-    'HAL':'ENERGY','DVN':'ENERGY','MRO':'ENERGY','XLE':'ENERGY',
+    'HAL':'ENERGY','DVN':'ENERGY','XLE':'ENERGY',
     'FSLR':'ENERGY','EOSE':'ENERGY','VST':'ENERGY','CNQ':'ENERGY',
     # DEFENCE: aerospace, defence, industrials
     'RTX':'DEFENCE','LMT':'DEFENCE','NOC':'DEFENCE','CAT':'DEFENCE',
     'DE':'DEFENCE','ITA':'DEFENCE',
     # CONSUMER: discretionary + staples
     'COST':'CONSUMER','NKE':'CONSUMER','SBUX':'CONSUMER','CMG':'CONSUMER',
-    'UBER':'CONSUMER','TOST':'CONSUMER',
+    'UBER':'CONSUMER',
     # DEFENCE: aerospace, defence, industrials (extended)
     'RKLB':'DEFENCE',
     # CONSUMER: discretionary + travel
@@ -444,6 +453,8 @@ def get_regime():
             vix_raw.index = vix_raw.index.tz_convert(ET)
             vix_intra = vix_raw
 
+        if spy_intra.empty or 'Close' not in spy_intra.columns or len(spy_intra) < 2:
+            raise ValueError("SPY intraday bars empty or incomplete — market may not have opened yet")
         spy_price = float(spy_intra['Close'].iloc[-1])
 
         # Prev close: IBKR daily bars exclude the incomplete current-day bar
@@ -646,7 +657,7 @@ def get_intraday_signals(symbol, spy_chg=0):
         delta = close.diff()
         gain  = delta.clip(lower=0).rolling(14).mean()
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi   = round(float(100 - (100 / (1 + gain.iloc[-1] / loss.iloc[-1]))), 1)
+        rsi   = round(float(100 - (100 / (1 + gain.iloc[-1] / loss.iloc[-1]))), 1) if loss.iloc[-1] != 0 else 100.0
 
         # 5-min RSI — intraday exhaustion check (resets each session, much more sensitive)
         d5    = df5['Close'].diff()
@@ -888,9 +899,13 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     w = get_strategy_weights()  # learner-adjusted multipliers (default 1.0)
 
     # Earnings gate — hard skip within 3 days: IV crush, gap risk, binary event
-    if symbol:
+    # None means data unavailable — skip conservatively (AMD bypass incident May 5 2026)
+    # ETFs have no earnings calendar — skip this gate entirely for them
+    if symbol and symbol not in ETF_SYMBOLS:
         dte = get_days_to_earnings(symbol)
-        if dte is not None and 0 <= dte <= 3:
+        if dte is None:
+            return 'SKIP', ['Earnings date unknown — skipping (no data)'], 0
+        if 0 <= dte <= 3:
             return 'SKIP', [f'Earnings in {dte}d — skip binary event'], 0
 
     if not sig['above_ma']:
@@ -1073,9 +1088,12 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
     reasons = []
 
     # Earnings gate — same hard skip (earnings = binary event, both directions)
-    if symbol:
+    # ETFs have no earnings calendar — skip this gate entirely for them
+    if symbol and symbol not in ETF_SYMBOLS:
         dte = get_days_to_earnings(symbol)
-        if dte is not None and 0 <= dte <= 3:
+        if dte is None:
+            return 'SKIP', ['Earnings date unknown — skipping (no data)'], 0
+        if 0 <= dte <= 3:
             return 'SKIP', [f'Earnings in {dte}d — skip binary event'], 0
 
     # Hard gates (inverted from bull)
@@ -1205,6 +1223,9 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
         if r.status_code != 200:
             log(f"  {symbol}: Order rejected — bridge {r.status_code}: {r.text[:120]}")
             return None
+        if not r.text or not r.text.strip():
+            log(f"  {symbol}: Order failed — bridge returned empty response (200 but no body)")
+            return None
         order_id = r.json().get('orderId')
         if not order_id:
             log(f"  {symbol}: No orderId returned — order submission failed")
@@ -1308,7 +1329,7 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         if pnl_pct >= 2.5:
             if is_short and sl > entry:                # SL already above entry = ok
                 risk_dist = sl - entry
-                be_sl = round(entry - max(risk_dist * 0.5, 0.05), 2)
+                be_sl = round(entry + max(risk_dist * 0.5, 0.05), 2)  # tighten ABOVE entry
                 if be_sl < sl:
                     sl = be_sl
                     update_trade_stop(tid, sl)
@@ -1568,7 +1589,7 @@ def _chart_alignment_check(sym, entry_price, sl, strategy):
 # TELEGRAM COMMAND HANDLER
 # ─────────────────────────────────────────────────────────
 def poll_telegram_commands():
-    global tg_update_id
+    global tg_update_id, daily_bull_count
     try:
         r = requests.get(f"{TG_API}/getUpdates",
                          params={'offset': tg_update_id, 'timeout': 0},
@@ -1646,20 +1667,21 @@ def poll_telegram_commands():
                 ibkr    = get_ibkr_positions()
                 wr      = get_win_rate(days=30)
                 # Live P&L: sum unrealised from IBKR + realised from DB today
-                live_upnl   = sum(p.get('unrealizedPnL', 0) or 0 for p in ibkr.values())
+                live_positions = {s: p for s, p in ibkr.items() if (p.get('qty') or 0) != 0}
+                live_upnl   = sum(p.get('unrealizedPnL', 0) or 0 for p in live_positions.values())
                 daily_rpnl  = get_daily_pnl()
                 total_pnl   = round(live_upnl + daily_rpnl['pnl'], 2)
                 total_invest = sum(
                     (p.get('avgCost', 0) or 0) * abs(p.get('qty', 0) or 0)
-                    for p in ibkr.values()
+                    for p in live_positions.values()
                 )
                 lines = [f"Status | {datetime.now(ET).strftime('%H:%M ET')}",
                          f"Total P&L: ${total_pnl:+.2f} | 30d WR: {wr:.0f}%",
                          f"Realised: ${daily_rpnl['pnl']:+.2f} ({daily_rpnl['trades']} trades, {daily_rpnl['wins']}W)",
-                         f"Unrealised: ${live_upnl:+.2f} across {len(ibkr)} positions",
-                         f"Open: {len(ibkr)} | Invested: ${total_invest:,.0f}",
+                         f"Unrealised: ${live_upnl:+.2f} across {len(live_positions)} positions",
+                         f"Open: {len(live_positions)} | Invested: ${total_invest:,.0f}",
                          "---"]
-                for sym, pos in sorted(ibkr.items()):
+                for sym, pos in sorted(live_positions.items()):
                     qty     = abs(pos.get('qty', 0) or 0)
                     avg     = pos.get('avgCost', 0) or 0
                     mkt     = pos.get('marketPrice', 0) or 0
@@ -2099,7 +2121,7 @@ def run_scan():
     # Live session P&L = realized today + current unrealized
     try:
         portfolio_snap = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
-        unrealized_now = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio_snap)
+        unrealized_now = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio_snap if (p.get('qty') or 0) != 0)
     except Exception:
         unrealized_now = 0
     session_pnl = daily['pnl'] + unrealized_now
@@ -2294,7 +2316,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     # ── Daily max loss brake ───────────────────────────────────
     try:
         portfolio = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
-        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio)
+        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio if (p.get('qty') or 0) != 0)
     except Exception:
         unrealized = 0
     realized    = get_daily_pnl()
@@ -2414,6 +2436,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             daily_bull_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
+        else:
+            traded_today.add(sym)
+            save_traded_today()
             # LOG MODE: chart alignment check runs in background, never blocks entry
             threading.Thread(
                 target=_chart_alignment_check,
@@ -2445,7 +2470,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     # ── Daily max loss brake ───────────────────────────────────
     try:
         portfolio = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
-        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio)
+        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio if (p.get('qty') or 0) != 0)
     except Exception:
         unrealized = 0
     realized    = get_daily_pnl()
@@ -2459,6 +2484,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
 
     for symbol in scan_order:
         if symbol in traded_today:
+            continue
+        if symbol in BEAR_EXCLUDED:
             continue
         if any(t['symbol'] == symbol for t in open_trades):
             continue
@@ -2547,6 +2574,9 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
             time.sleep(2)
+        else:
+            traded_today.add(sym)
+            save_traded_today()
 
     exits = monitor_open_trades(regime, confirmed_scans)
 
@@ -2854,6 +2884,7 @@ def reset_daily_state():
     """Midnight reset — clears per-day counters so next session starts clean."""
     global traded_today, daily_bull_count, daily_bear_count, pm_scan_done
     global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
+    global partial_done_trades, key_levels, sector_strength
     traded_today       = set()
     daily_bull_count   = 0
     daily_bear_count   = 0
@@ -2864,6 +2895,8 @@ def reset_daily_state():
     trade_entry_times   = {}
     earnings_cache      = {}
     partial_done_trades = {}
+    key_levels          = {}
+    sector_strength     = {}
     save_traded_today()
     log("Daily state reset for new trading day")
 
@@ -2880,6 +2913,23 @@ if __name__ == '__main__':
     daily_bear_count = counts['bear']
     if daily_bull_count or daily_bear_count:
         log(f"Restored daily counts: Bull {daily_bull_count} Bear {daily_bear_count}")
+
+    # Restore trade_entry_times for open trades — prevents no-move timer reset on restart
+    import sqlite3 as _sqlite3
+    _conn = _sqlite3.connect(os.path.join(_DIR, 'trades.db'))
+    _rows = _conn.execute(
+        "SELECT id, entry_date, entry_time FROM trades WHERE status='OPEN'"
+    ).fetchall()
+    _conn.close()
+    for _tid, _edate, _etime in _rows:
+        try:
+            _dt_str = f"{_edate} {_etime}" if _etime else f"{_edate} 09:30:00"
+            _naive  = datetime.strptime(_dt_str, '%Y-%m-%d %H:%M:%S')
+            trade_entry_times[_tid] = ET.localize(_naive)
+        except Exception:
+            pass
+    if trade_entry_times:
+        log(f"Restored entry times for {len(trade_entry_times)} open trades")
 
     print("\n🤖 Auto Trader v2 — Consolidated")
     print("=" * 55)
