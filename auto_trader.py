@@ -37,6 +37,7 @@ _ai              = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 # ── Settings ──────────────────────────────────────────────
 SCAN_INTERVAL     = 300      # 5 min
+MONITOR_INTERVAL  = 30       # 30 sec — fast position monitor (hard stop checks only)
 TOTAL_CAPITAL     = 10000    # max capital deployed across all positions
 MAX_OPEN_TRADES   = 5        # 5 × $2,000 = $10K fully deployed
 MAX_DAILY_BULL_TRADES  = 5   # bull entries per day (independent of bear count)
@@ -97,6 +98,7 @@ key_levels         = {}       # sym → {pm_high, pm_low, prior_close, orb_high,
 trade_entry_times  = {}       # trade_id → datetime of entry (for no-move exit)
 earnings_cache     = {}       # symbol → (date_str, days_to_next_earnings)
 partial_done_trades = {}      # trade_id → locked_pnl_usd — trades that had 50% sold at 1R
+_last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
 
 # ── Bear exclusions — stocks with insufficient bear backtest WR ──
 BEAR_EXCLUDED = {'RDW'}   # RDW: 60% bear WR (below 80% threshold), bull-only addition
@@ -467,6 +469,7 @@ def _bridge_df(symbol, duration='1 D', bar_size='5 mins'):
 
 
 def get_regime():
+    global _last_regime
     try:
         # ── Primary signals — real-time IBKR data via bridge ─────────────────
         spy_intra = _bridge_df('SPY', '1 D', '5 mins')
@@ -584,10 +587,15 @@ def get_regime():
             'es_chg': es_chg, 'nq_chg': nq_chg,
             'broad_advance': broad_advance, 'breadth_weak': breadth_weak,
         }
-        return regime, round(spy_chg, 2), round(vix_val, 2), extra
+        result = regime, round(spy_chg, 2), round(vix_val, 2), extra
+        _last_regime = result   # save last valid reading
+        return result
 
     except Exception as e:
         log(f"Regime error: {e}")
+        if _last_regime is not None:
+            log(f"Regime error: holding last valid regime ({_last_regime[0]}) — SPY bars unavailable")
+            return _last_regime
         return 'NORMAL', 0, 18, {}
 
 # ─────────────────────────────────────────────────────────
@@ -1542,6 +1550,59 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                 log(f"Exit error {sym}: {e}")
 
     return exits
+
+# ─────────────────────────────────────────────────────────
+# FAST POSITION MONITOR — hard stop checks every 30 sec
+# Only checks price vs stop_price and circuit breaker.
+# All other exit logic (VWAP, trail, no-move, EOD) stays in the 5-min monitor_open_trades().
+# ─────────────────────────────────────────────────────────
+def fast_monitor_positions():
+    trades = get_open_trades()
+    if not trades:
+        return
+    for trade in trades:
+        tid    = trade['id']
+        sym    = trade['symbol']
+        shares = trade['shares']
+        entry  = trade['entry_price']
+        sl     = trade['stop_price']
+        side   = trade.get('side', 'LONG')
+        is_short = (side == 'SHORT')
+
+        price = get_live_price(sym)
+        if not price:
+            continue
+
+        if is_short:
+            pnl_usd = (entry - price) * shares
+            stop_hit = price >= sl
+        else:
+            pnl_usd = (price - entry) * shares
+            stop_hit = price <= sl
+
+        circuit_hit = pnl_usd <= -MAX_LOSS_PER_TRADE
+
+        if stop_hit or circuit_hit:
+            reason = (f'Fast stop: ${sl} hit ({pnl_usd:+.0f})' if stop_hit
+                      else f'Fast circuit breaker: -${MAX_LOSS_PER_TRADE} hit (${pnl_usd:+.0f})')
+            try:
+                ibkr_pos = get_ibkr_positions()
+                ibkr_qty = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
+                if ibkr_qty > 0:
+                    close_side = 'BUY' if is_short else 'SELL'
+                    requests.post(f"{BRIDGE}/order", json={
+                        'symbol': sym, 'qty': min(shares, int(ibkr_qty)),
+                        'side': close_side, 'order_type': 'MARKET'
+                    }, timeout=10)
+                pnl = log_trade_exit(tid, price, reason)
+                for d in (price_history, session_high, session_low, open_positions):
+                    d.pop(tid if tid in d else sym, None)
+                direction = '↓SHORT' if is_short else ''
+                log(f"  ⚡ FAST EXIT {sym} {direction}: {reason} | PnL ${pnl:+.2f}")
+                send_telegram(f"⚡ FAST EXIT {sym}: {reason}\nPnL ${pnl:+.2f}")
+            except Exception as e:
+                log(f"Fast exit error {sym}: {e}")
+
 
 # ─────────────────────────────────────────────────────────
 # CHART INTELLIGENCE — mplfinance generation + Claude vision
@@ -3105,10 +3166,17 @@ if __name__ == '__main__':
 
     send_telegram(f"🤖 Auto Trader v2 ON | Swing mode | ${TOTAL_CAPITAL:,} cap | max {MAX_OPEN_TRADES} positions")
 
+    _last_full_scan = 0.0
+
     while True:
         try:
+            now_ts = time.time()
             if is_market_open():
-                run_scan()
+                if now_ts - _last_full_scan >= SCAN_INTERVAL:
+                    run_scan()
+                    _last_full_scan = time.time()
+                else:
+                    fast_monitor_positions()
             else:
                 now = datetime.now(ET)
                 if now.hour >= 16:
@@ -3116,7 +3184,7 @@ if __name__ == '__main__':
                     log(f"Market closed. Bull: {daily_bull_count} Bear: {daily_bear_count} | P&L ${daily['pnl']:+.2f} | sleeping until tomorrow...")
                 elif now.hour < 9 or (now.hour == 9 and now.minute < 31):
                     log("Pre-market — waiting for open...")
-            time.sleep(SCAN_INTERVAL)
+            time.sleep(MONITOR_INTERVAL)
         except KeyboardInterrupt:
             daily = get_daily_pnl()
             send_telegram(f"🤖 Auto Trader stopped\nBull: {daily_bull_count} Bear: {daily_bear_count} | P&L: ${daily['pnl']:+.2f}")
