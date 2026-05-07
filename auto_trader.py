@@ -3177,6 +3177,7 @@ if __name__ == '__main__':
                     _last_full_scan = time.time()
                 else:
                     fast_monitor_positions()
+                time.sleep(MONITOR_INTERVAL)
             else:
                 now = datetime.now(ET)
                 if now.hour >= 16:
@@ -3184,7 +3185,7 @@ if __name__ == '__main__':
                     log(f"Market closed. Bull: {daily_bull_count} Bear: {daily_bear_count} | P&L ${daily['pnl']:+.2f} | sleeping until tomorrow...")
                 elif now.hour < 9 or (now.hour == 9 and now.minute < 31):
                     log("Pre-market — waiting for open...")
-            time.sleep(MONITOR_INTERVAL)
+                time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
             daily = get_daily_pnl()
             send_telegram(f"🤖 Auto Trader stopped\nBull: {daily_bull_count} Bear: {daily_bear_count} | P&L: ${daily['pnl']:+.2f}")
