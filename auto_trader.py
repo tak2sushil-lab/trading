@@ -82,9 +82,12 @@ price_history     = {}       # trade_id → [prices]
 session_high      = {}       # trade_id → highest price seen (LONG trades)
 session_low       = {}       # trade_id → lowest price seen (SHORT trades)
 atr_cache         = {}       # sym → (date_str, atr_value)
-daily_bull_count  = 0
-daily_bear_count  = 0
-pm_scan_done      = False    # pre-market scan fires once per day
+daily_bull_count        = 0
+daily_bear_count        = 0
+daily_sympathy_count    = 0       # separate cap — sympathy plays on top of regular bull slots
+active_sympathy_triggers = {}     # sym → {trigger, trigger_move, gap} — populated at open
+sympathy_scan_done      = False   # fires once per day at market open
+pm_scan_done            = False   # pre-market scan fires once per day
 catalyst_priority  = []       # symbols from today's catalyst scan
 tg_update_id       = 0        # Telegram polling offset
 regime_history     = []       # last N regime readings for confirmation
@@ -103,6 +106,29 @@ ETF_SYMBOLS = {
     'XLE', 'XBI', 'SMH', 'ITA', 'XLK', 'XLF', 'XLI', 'XLU', 'XLY',
     'XME', 'XAR', 'URA', 'GDX', 'ARKK',
 }
+
+# ── Sympathy plays — sector follower boost on mega-cap earnings beats ──
+# When a trigger beats earnings big (>5%), sector peers gap in sympathy.
+# Backtest: 5% trigger + 2% gap → 79% WR, +$40/trade, 0% stop rate (bull only).
+# UNH excluded: MLR is company-specific, no shared sector driver (52% WR).
+SYMPATHY_MAP = {
+    'NVDA':  ['SMCI', 'AMD', 'LRCX', 'MU', 'AMAT', 'MRVL', 'QCOM', 'AVGO'],
+    'META':  ['SNAP', 'PINS', 'GOOGL', 'TTD'],
+    'MSFT':  ['CRM', 'ORCL', 'NOW', 'DDOG', 'PLTR'],
+    'AAPL':  ['QCOM', 'AVGO', 'KEYS', 'SWKS'],
+    'AMZN':  ['SHOP', 'MELI', 'OKTA'],
+    'GOOGL': ['META', 'SNAP', 'PINS', 'TTD'],
+    'XOM':   ['CVX', 'COP', 'SLB', 'HAL', 'OXY', 'PSX', 'VLO'],
+    'CVX':   ['XOM', 'COP', 'SLB', 'HAL', 'OXY'],
+    'JPM':   ['BAC', 'GS', 'MS', 'WFC', 'C', 'SCHW'],
+    'GS':    ['MS', 'JPM', 'BAC', 'SCHW'],
+    'WMT':   ['TGT', 'COST', 'DG', 'DLTR'],
+    'HD':    ['LOW'],
+}
+SYMPATHY_TRIGGER_THRESH   = 0.05   # trigger stock must gap >5% on earnings day
+SYMPATHY_GAP_THRESH       = 0.02   # sympathy stock must gap >2% same direction
+SYMPATHY_SCORE_BOOST      = 20     # points added to grade_setup score
+MAX_DAILY_SYMPATHY_TRADES = 2      # separate cap — additive on top of regular bull cap
 
 # ── Universe ──────────────────────────────────────────────
 FULL_UNIVERSE = list(dict.fromkeys([
@@ -927,7 +953,11 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     # Must be moving today — no entering flat or declining stocks
     today_gain = sig.get('prev_chg', 0)
     if today_gain < MIN_TODAY_GAIN:
-        return 'SKIP', [f'Only +{today_gain:.1f}% today (need ≥{MIN_TODAY_GAIN}%)'], 0
+        # Sympathy stocks use 2% gap threshold (confirmed at detect time) — bypass 3% gate
+        if symbol and symbol in active_sympathy_triggers and today_gain >= SYMPATHY_GAP_THRESH * 100:
+            pass
+        else:
+            return 'SKIP', [f'Only +{today_gain:.1f}% today (need ≥{MIN_TODAY_GAIN}%)'], 0
 
     # ── Gap-and-crap filter (day-1 prop rule) ─────────────────
     # If price is 5%+ below today's opening print, the gap has been distributed.
@@ -1080,6 +1110,12 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
             score += 10; reasons.append('Holding above today open ✓')
         elif price < today_open * 0.98:
             score -= 10; reasons.append(f'Below today open ${today_open} (-10)')
+
+    # Sympathy boost — sector follower on mega-cap earnings beat
+    if symbol and symbol in active_sympathy_triggers:
+        info = active_sympathy_triggers[symbol]
+        score += SYMPATHY_SCORE_BOOST
+        reasons.append(f"Sympathy: {info['trigger']} +{info['trigger_move']:.0f}% earnings ✓ (+{SYMPATHY_SCORE_BOOST})")
 
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
     return grade, reasons, score
@@ -1593,7 +1629,7 @@ def _chart_alignment_check(sym, entry_price, sl, strategy):
 # TELEGRAM COMMAND HANDLER
 # ─────────────────────────────────────────────────────────
 def poll_telegram_commands():
-    global tg_update_id, daily_bull_count
+    global tg_update_id, daily_bull_count, daily_sympathy_count
     try:
         r = requests.get(f"{TG_API}/getUpdates",
                          params={'offset': tg_update_id, 'timeout': 0},
@@ -1866,6 +1902,74 @@ def is_trading_blocked():
     return False, None
 
 # ─────────────────────────────────────────────────────────
+# SYMPATHY TRIGGER DETECTION — runs once at market open
+# ─────────────────────────────────────────────────────────
+def detect_sympathy_triggers():
+    """
+    Runs once at 9:35–9:40am. Checks if any SYMPATHY_MAP trigger gapped >5%
+    on earnings today (reported after previous close). Qualifying sympathy stocks
+    (sector peers that gapped >2%) are added to active_sympathy_triggers and
+    prepended to catalyst_priority so they rank above regular setups.
+    Bull only — bear sympathy has insufficient edge (58% WR, excluded).
+    """
+    global active_sympathy_triggers, catalyst_priority
+    active_sympathy_triggers = {}
+
+    fired_triggers = []
+    for trigger in SYMPATHY_MAP:
+        try:
+            hist = yf.Ticker(trigger).history(period='2d', interval='1d')
+            if len(hist) < 2:
+                continue
+            prev_close = float(hist['Close'].iloc[-2])
+            today_open = float(hist['Open'].iloc[-1])
+            if prev_close <= 0:
+                continue
+            move = (today_open - prev_close) / prev_close
+            if move < SYMPATHY_TRIGGER_THRESH:
+                continue
+            fired_triggers.append((trigger, round(move * 100, 1)))
+            log(f"  💫 SYMPATHY TRIGGER: {trigger} +{move*100:.1f}% at open — scanning basket")
+        except Exception as e:
+            log(f"  Sympathy detect {trigger}: {e}")
+
+    if not fired_triggers:
+        return
+
+    for trigger, trigger_move in fired_triggers:
+        for sym in SYMPATHY_MAP[trigger]:
+            if sym in active_sympathy_triggers:
+                continue  # already flagged by another trigger
+            try:
+                hist = yf.Ticker(sym).history(period='2d', interval='1d')
+                if len(hist) < 2:
+                    continue
+                prev_close = float(hist['Close'].iloc[-2])
+                today_open = float(hist['Open'].iloc[-1])
+                if prev_close <= 0:
+                    continue
+                gap = (today_open - prev_close) / prev_close
+                if gap < SYMPATHY_GAP_THRESH:
+                    log(f"    {sym}: gap {gap*100:+.1f}% < {SYMPATHY_GAP_THRESH*100:.0f}% threshold — skip")
+                    continue
+                active_sympathy_triggers[sym] = {
+                    'trigger':       trigger,
+                    'trigger_move':  trigger_move,
+                    'gap':           round(gap * 100, 1),
+                }
+                if sym not in catalyst_priority:
+                    catalyst_priority.insert(0, sym)
+                log(f"    ✅ {sym}: gap {gap*100:+.1f}% — sympathy candidate")
+            except Exception as e:
+                log(f"    Sympathy check {sym}: {e}")
+
+    if active_sympathy_triggers:
+        syms = ', '.join(active_sympathy_triggers.keys())
+        triggers_str = ', '.join(f"{t} +{m:.0f}%" for t, m in fired_triggers)
+        send_telegram(f"💫 SYMPATHY ALERT\nTrigger: {triggers_str}\nWatching: {syms}")
+
+
+# ─────────────────────────────────────────────────────────
 # PRE-MARKET CATALYST SCAN — earnings gap plays only, 9:20–9:29am
 # ─────────────────────────────────────────────────────────
 def _scan_premarket_catalyst(open_trades):
@@ -2072,6 +2176,7 @@ def _scan_premarket_catalyst(open_trades):
 # ─────────────────────────────────────────────────────────
 def run_scan():
     global daily_bull_count, daily_bear_count, traded_today, regime_history, spy_open_price
+    global sympathy_scan_done
 
     # Reconcile DB with IBKR first
     reconcile_with_ibkr()
@@ -2104,6 +2209,11 @@ def run_scan():
         except Exception:
             pass
 
+    # Sympathy trigger detection — once per day, first post-open scan
+    if is_market_open() and not sympathy_scan_done:
+        detect_sympathy_triggers()
+        sympathy_scan_done = True
+
     spy_above_open = True
     if spy_open_price:
         try:
@@ -2130,7 +2240,8 @@ def run_scan():
         unrealized_now = 0
     session_pnl = daily['pnl'] + unrealized_now
 
-    log(f"Open: {len(open_trades)} | Bull {daily_bull_count}/{MAX_DAILY_BULL_TRADES} Bear {daily_bear_count}/{MAX_DAILY_BEAR_TRADES} today | Realized: ${daily['pnl']:+.2f} | Session: ${session_pnl:+.2f}")
+    symp_str = f" Sympathy {daily_sympathy_count}/{MAX_DAILY_SYMPATHY_TRADES}" if active_sympathy_triggers else ""
+    log(f"Open: {len(open_trades)} | Bull {daily_bull_count}/{MAX_DAILY_BULL_TRADES} Bear {daily_bear_count}/{MAX_DAILY_BEAR_TRADES}{symp_str} today | Realized: ${daily['pnl']:+.2f} | Session: ${session_pnl:+.2f}")
 
     # Always monitor open trades
     exits = []
@@ -2372,19 +2483,22 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         if symbol in dynamic_picks and grade != 'A+':
             continue
 
-        is_catalyst = symbol in catalyst_priority
+        is_catalyst  = symbol in catalyst_priority
+        is_sympathy  = symbol in active_sympathy_triggers
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
             'side': side, 'sl': sl, 'target': target, 'risk_pct': risk_pct, 'rr': rr,
             'reasons': reasons, 'fvg_count': sig['fvg_count'],
             'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
+            'is_sympathy': is_sympathy,
         })
 
-    # Sort: catalyst A+ first, then by grade, then by raw score (highest score wins within grade)
+    # Sort: sympathy A+ first, then catalyst A+, then by grade + score
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
     candidates.sort(key=lambda x: (
-        0 if x['is_catalyst'] and x['grade'] in ('A+', 'A') else 1,
+        0 if x['is_sympathy'] and x['grade'] in ('A+', 'A') else
+        1 if x['is_catalyst'] and x['grade'] in ('A+', 'A') else 2,
         grade_order.get(x['grade'], 3),
         -x['score']
     ))
@@ -2406,6 +2520,11 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         sym    = pick['symbol']
         sector = get_symbol_sector(sym)
 
+        # Sympathy cap — separate from regular bull cap (additive slots)
+        if pick['is_sympathy'] and daily_sympathy_count >= MAX_DAILY_SYMPATHY_TRADES:
+            log(f"  SKIP {sym} — sympathy cap ({MAX_DAILY_SYMPATHY_TRADES}) reached")
+            continue
+
         # Enforce sector concentration limit (OTHER bucket is uncapped)
         if sector != 'OTHER' and sector_counts.get(sector, 0) >= MAX_PER_SECTOR:
             log(f"  SKIP {sym} — {sector} sector full ({MAX_PER_SECTOR} positions)")
@@ -2421,9 +2540,19 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         risk_per_share = round(price - pick['sl'], 4)
         atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
         shares         = max(1, min(int(capital / price), atr_shares))
-        strategy = 'CATALYST' if pick['is_catalyst'] else ('FVG_FILL' if pick['fvg_count'] > 5 else 'MOMENTUM')
 
-        log(f"  {'⚡' if pick['is_catalyst'] else '🎯'} {pick['grade']} {sym} [{sector}] ${price} | "
+        if pick['is_sympathy']:
+            info     = active_sympathy_triggers[sym]
+            strategy = 'SYMPATHY'
+            tag      = '💫'
+        elif pick['is_catalyst']:
+            strategy = 'CATALYST'
+            tag      = '⚡'
+        else:
+            strategy = 'FVG_FILL' if pick['fvg_count'] > 5 else 'MOMENTUM'
+            tag      = '🎯'
+
+        log(f"  {tag} {pick['grade']} {sym} [{sector}] ${price} | "
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | ATR stop")
 
         trade_id = place_trade(
@@ -2438,8 +2567,10 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             save_traded_today()
             open_positions[sym] = trade_id
             daily_bull_count  += 1
+            if pick['is_sympathy']:
+                daily_sympathy_count += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
-            entries.append(pick | {'shares': shares, 'sector': sector})
+            entries.append(pick | {'shares': shares, 'sector': sector, 'tag': tag})
         else:
             traded_today.add(sym)
             save_traded_today()
@@ -2458,8 +2589,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     if entries:
         lines = [f"NEW TRADES {len(entries)} | Bull {daily_bull_count}/{MAX_DAILY_BULL_TRADES}"]
         for e in entries:
-            tag = '⚡' if e['is_catalyst'] else '🤖'
-            lines.append(f"  {tag}{e['grade']} {e['symbol']} [{e.get('sector','?')}] x{e['shares']} @${e['price']} "
+            lines.append(f"  {e.get('tag','🎯')}{e['grade']} {e['symbol']} [{e.get('sector','?')}] x{e['shares']} @${e['price']} "
                          f"SL${e['sl']} T${e['target']} R:R 1:{e['rr']}")
         send_telegram('\n'.join(lines))
 
@@ -2889,10 +3019,14 @@ def reset_daily_state():
     global traded_today, daily_bull_count, daily_bear_count, pm_scan_done
     global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
     global partial_done_trades, key_levels, sector_strength
-    traded_today       = set()
-    daily_bull_count   = 0
-    daily_bear_count   = 0
-    pm_scan_done       = False
+    global daily_sympathy_count, active_sympathy_triggers, sympathy_scan_done
+    traded_today             = set()
+    daily_bull_count         = 0
+    daily_bear_count         = 0
+    daily_sympathy_count     = 0
+    active_sympathy_triggers = {}
+    sympathy_scan_done       = False
+    pm_scan_done             = False
     atr_cache          = {}
     regime_history     = []
     spy_open_price     = None
