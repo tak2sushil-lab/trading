@@ -70,6 +70,7 @@ MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-st
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
 LUNCH_AVOID_END   = (12, 45) # resume entries at 12:45pm ET
+FIRST_BAR_QUALITY = True     # strong first 30-min bar → +15% capital + enable partial exit
 ORB_ENTRY_CUTOFF  = (11, 30) # ORB signal only valid before 11:30am — late breaks are just resistance
 
 # ── Persistence ───────────────────────────────────────────
@@ -97,7 +98,8 @@ sector_strength    = {}       # ETF ticker → % change today, updated each scan
 key_levels         = {}       # sym → {pm_high, pm_low, prior_close, orb_high, orb_low}
 trade_entry_times  = {}       # trade_id → datetime of entry (for no-move exit)
 earnings_cache     = {}       # symbol → (date_str, days_to_next_earnings)
-partial_done_trades = {}      # trade_id → locked_pnl_usd — trades that had 50% sold at 1R
+partial_done_trades     = {}  # trade_id → locked_pnl_usd — trades that had 50% sold at 1R
+first_bar_strong_trades = {}  # trade_id → bool — entry was on a strong first-bar day
 _last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
 
 # ── Bear exclusions — stocks with insufficient bear backtest WR ──
@@ -659,6 +661,23 @@ def get_live_price(symbol):
         pass
     return None
 
+def check_first_bar_quality(df5_today, day_open, avg_vol):
+    """True if first 30-min bar is strong: up >1% from open AND volume >1.3× expected pace."""
+    if not FIRST_BAR_QUALITY or avg_vol is None or avg_vol <= 0:
+        return False
+    try:
+        first_30 = df5_today.between_time('09:30', '09:59')
+        if len(first_30) < 3:
+            return False
+        close_30 = float(first_30['Close'].iloc[-1])
+        vol_30   = float(first_30['Volume'].sum())
+        move_pct = (close_30 - day_open) / day_open * 100
+        expected = avg_vol * (30 / 390)
+        vol_r    = vol_30 / expected if expected > 0 else 1.0
+        return close_30 > day_open and move_pct > 1.0 and vol_r > 1.3
+    except Exception:
+        return False
+
 # ─────────────────────────────────────────────────────────
 # INTRADAY SIGNALS
 # ─────────────────────────────────────────────────────────
@@ -856,6 +875,16 @@ def get_intraday_signals(symbol, spy_chg=0):
         except Exception:
             pass
 
+        # First-bar quality: check live via df5 data already fetched above
+        df5_tz = df5.copy()
+        if df5_tz.index.tz is None:
+            df5_tz.index = df5_tz.index.tz_localize('UTC').tz_convert(ET)
+        else:
+            df5_tz.index = df5_tz.index.tz_convert(ET)
+        df5_today    = df5_tz[df5_tz.index.date == datetime.now(ET).date()]
+        day_open_fbq = float(df5_today['Open'].iloc[0]) if len(df5_today) > 0 else 0
+        first_bar_strong = check_first_bar_quality(df5_today, day_open_fbq, float(avg_vol)) if day_open_fbq > 0 else False
+
         return {
             'price': round(price, 2), 'intra_chg': round(intra_chg, 2),
             'prev_chg': round(prev_chg, 2), 'vol_ratio': round(vol_ratio, 2),
@@ -873,6 +902,7 @@ def get_intraday_signals(symbol, spy_chg=0):
             'is_doji': is_doji, 'aligned_15m': aligned_15m,
             'aligned_15m_bear': aligned_15m_bear,
             'today_open': today_open_price, 'today_lod': today_lod,
+            'first_bar_strong': first_bar_strong,
         }
     except:
         return None
@@ -1425,8 +1455,9 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             except Exception:
                 pass
 
-        # ── Partial exit at 1R (5% gain) ─────────────────────
+        # ── Partial exit at 1R (5% gain) — only on strong first-bar entries ──
         if (is_market_open() and pnl_pct >= 5.0
+                and first_bar_strong_trades.get(tid, False)
                 and tid not in partial_done_trades and shares >= 2):
             half = shares // 2
             cover_side = 'BUY' if is_short else 'SELL'
@@ -2372,8 +2403,9 @@ def get_deployed_capital():
     """Sum of capital currently locked in open positions."""
     return sum(t['shares'] * t['entry_price'] for t in get_open_trades())
 
-def get_position_capital(grade, is_catalyst, deployed):
-    """Dynamic allocation — $2,000 max per trade; 5 trades = $10K fully deployed."""
+def get_position_capital(grade, is_catalyst, deployed, first_bar_strong=False):
+    """Dynamic allocation — $2,000 max per trade; 5 trades = $10K fully deployed.
+    Strong first-bar days get +15% capital (backtest-validated structural edge)."""
     remaining = TOTAL_CAPITAL - deployed
     if remaining < 200:
         return 0
@@ -2385,6 +2417,8 @@ def get_position_capital(grade, is_catalyst, deployed):
         alloc = 1600   # catalyst, decent grade
     else:
         alloc = 1400   # solid A setup
+    if first_bar_strong:
+        alloc = int(alloc * 1.15)
     return round(min(alloc, remaining), 2)
 
 def _scan_catalyst_override(open_trades):
@@ -2553,6 +2587,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'is_sympathy': is_sympathy,
+            'first_bar_strong': sig.get('first_bar_strong', False),
         })
 
     # Sort: sympathy A+ first, then catalyst A+, then by grade + score
@@ -2593,7 +2628,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
 
         price    = pick['price']
         deployed = get_deployed_capital()   # entries already in DB via log_trade_entry
-        capital  = get_position_capital(pick['grade'], pick['is_catalyst'], deployed)
+        capital  = get_position_capital(pick['grade'], pick['is_catalyst'], deployed,
+                                        pick.get('first_bar_strong', False))
         if capital <= 0:
             log(f"  Capital cap reached (${deployed:,.0f}/${TOTAL_CAPITAL:,} deployed)")
             break
@@ -2627,6 +2663,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             traded_today.add(sym)
             save_traded_today()
             open_positions[sym] = trade_id
+            first_bar_strong_trades[trade_id] = pick.get('first_bar_strong', False)
             daily_bull_count  += 1
             if pick['is_sympathy']:
                 daily_sympathy_count += 1
@@ -2713,6 +2750,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             'reasons': reasons, 'fvg_count': sig['fvg_count'],
             'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
+            'first_bar_strong': sig.get('first_bar_strong', False),
         })
 
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
@@ -2741,7 +2779,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
 
         price    = pick['price']
         deployed = get_deployed_capital()
-        capital  = get_position_capital(pick['grade'], pick['is_catalyst'], deployed)
+        capital  = get_position_capital(pick['grade'], pick.get('is_catalyst', False), deployed,
+                                        pick.get('first_bar_strong', False))
         if capital <= 0:
             log(f"  Capital cap reached (${deployed:,.0f}/${TOTAL_CAPITAL:,} deployed)")
             break
@@ -2765,6 +2804,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             traded_today.add(sym)
             save_traded_today()
             open_positions[sym] = trade_id
+            first_bar_strong_trades[trade_id] = pick.get('first_bar_strong', False)
             daily_bear_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
@@ -3079,7 +3119,7 @@ def reset_daily_state():
     """Midnight reset — clears per-day counters so next session starts clean."""
     global traded_today, daily_bull_count, daily_bear_count, pm_scan_done
     global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
-    global partial_done_trades, key_levels, sector_strength
+    global partial_done_trades, first_bar_strong_trades, key_levels, sector_strength
     global daily_sympathy_count, active_sympathy_triggers, sympathy_scan_done
     traded_today             = set()
     daily_bull_count         = 0
@@ -3093,8 +3133,9 @@ def reset_daily_state():
     spy_open_price     = None
     trade_entry_times   = {}
     earnings_cache      = {}
-    partial_done_trades = {}
-    key_levels          = {}
+    partial_done_trades     = {}
+    first_bar_strong_trades = {}
+    key_levels              = {}
     sector_strength     = {}
     save_traded_today()
     log("Daily state reset for new trading day")

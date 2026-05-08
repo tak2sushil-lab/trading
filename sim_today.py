@@ -11,6 +11,8 @@ import numpy as np
 from datetime import datetime, date
 import pytz
 import sys
+import csv
+import os
 
 ET = pytz.timezone('America/New_York')
 
@@ -40,13 +42,88 @@ NO_MOVE_MINUTES   = 240    # min hold before no-move exit fires (150→240 valid
 NO_MOVE_UPPER_PCT = 2.0    # no-move fires if pnl ≤ this % (was 0.8%)
 BE_TRIGGER_PCT    = 2.5    # set break-even stop once profit reaches this % (was 0.5%)
 PARTIAL_EXIT      = True   # take 50% off at 1R (5% gain), ride rest with trail
+FIRST_BAR_QUALITY = True   # boost capital +15% and enable partial exit only on strong first-bar days
+                           # strong = up >1% from open AND volume >1.3x avg in first 30 min
 
-def grade_capital(grade, has_catalyst=False):
+# ── Velocity data collection ──────────────────────────────────────────────────
+# Collects per-bar velocity metrics for every A/A+ symbol from 9:40 onwards.
+# No entry logic is changed. Data written to velocity_logs/ for analysis.
+_velocity_log = []   # accumulated across all symbols in one sim run
+
+def compute_velocity(df5_bars, prev_close):
+    """
+    Returns velocity dict for the current bar.
+    A stock is SLOW if any condition fails — slow stocks are future candidates
+    for a velocity gate that would skip them at entry time.
+    """
+    if len(df5_bars) < 2:
+        return None
+    curr = df5_bars.iloc[-1]
+    prev = df5_bars.iloc[-2]
+    curr_close = float(curr['Close'])
+    curr_open  = float(curr['Open'])
+    curr_vol   = float(curr['Volume'])
+    prev_close_bar = float(prev['Close'])
+    prev_vol   = float(prev['Volume']) if float(prev['Volume']) > 0 else 1
+
+    tp   = (df5_bars['High'] + df5_bars['Low'] + df5_bars['Close']) / 3
+    vwap = float((tp * df5_bars['Volume']).cumsum().iloc[-1] /
+                  df5_bars['Volume'].cumsum().iloc[-1])
+    session_open = float(df5_bars['Open'].iloc[0])
+
+    move_from_open = (curr_close - session_open) / session_open * 100
+    vwap_dist_pct  = (curr_close - vwap) / vwap * 100 if vwap else 0
+
+    v_green    = curr_close > curr_open
+    v_momentum = curr_close > prev_close_bar
+    v_volume   = curr_vol >= prev_vol * 0.80
+    v_vwap     = abs(vwap_dist_pct) >= 0.30
+    v_moved    = move_from_open >= 0.50
+
+    slow_reasons = []
+    if not v_green:    slow_reasons.append('red_bar')
+    if not v_momentum: slow_reasons.append('losing_momentum')
+    if not v_volume:   slow_reasons.append('volume_fading')
+    if not v_vwap:     slow_reasons.append('at_vwap')
+    if not v_moved:    slow_reasons.append('flat_from_open')
+
+    return {
+        'eligible': len(slow_reasons) == 0,
+        'slow_reasons': '|'.join(slow_reasons) if slow_reasons else '',
+        'v_green': v_green, 'v_momentum': v_momentum, 'v_volume': v_volume,
+        'v_vwap': v_vwap, 'v_moved': v_moved,
+        'move_from_open': round(move_from_open, 2),
+        'vwap_dist': round(vwap_dist_pct, 2),
+        'curr_vol': int(curr_vol), 'prev_vol': int(prev_vol),
+    }
+
+
+def check_first_bar_quality(df5_today, day_open, avg_vol):
+    """
+    Assess first 30-min momentum at entry time (10:00 scan).
+    Strong = stock up >1% from session open AND volume >1.3x expected rate.
+    Used to qualify partial exit and boost position size.
+    """
+    if not FIRST_BAR_QUALITY or avg_vol is None or avg_vol <= 0:
+        return False
+    first_30 = df5_today.between_time('09:30', '09:59')
+    if len(first_30) < 3:
+        return False
+    close_30 = float(first_30['Close'].iloc[-1])
+    vol_30   = float(first_30['Volume'].sum())
+    move_pct = (close_30 - day_open) / day_open * 100
+    expected = avg_vol * (30 / 390)           # expected 30-min share of daily avg vol
+    vol_r    = vol_30 / expected if expected > 0 else 1.0
+    return close_30 > day_open and move_pct > 1.0 and vol_r > 1.3
+
+
+def grade_capital(grade, has_catalyst=False, first_bar_strong=False):
     """Mirror auto_trader get_position_capital — dynamic sizing by grade."""
-    if grade == 'A+' and has_catalyst: return 2000
-    if grade == 'A+':                  return 1800
-    if grade == 'A'  and has_catalyst: return 1600
-    return 1400
+    if grade == 'A+' and has_catalyst: base = 2000
+    elif grade == 'A+':                base = 1800
+    elif grade == 'A'  and has_catalyst: base = 1600
+    else:                              base = 1400
+    return int(base * 1.15) if first_bar_strong else base
 
 # ── Parse --date YYYY-MM-DD, --mode bear, and remaining symbol args ──────────
 _args = sys.argv[1:]
@@ -350,8 +427,8 @@ def simulate(symbol, regime, spy_chg):
                     events.append(f"    → {tstr}  Break-even stop → ${be_sl:.2f}  ({pnl_pct:+.1f}%)")
                     sl = be_sl
 
-            # Partial exit at 1R — lock 50% of position, trail the rest
-            if PARTIAL_EXIT and not partial_done and risk_held > 0 and shares >= 2:
+            # Partial exit at 1R — only on strong first-bar days (validated May 8)
+            if PARTIAL_EXIT and first_bar_strong and not partial_done and risk_held > 0 and shares >= 2:
                 if price >= entry_price + risk_held:
                     half   = shares // 2
                     locked = round(risk_held * half, 2)
@@ -404,11 +481,40 @@ def simulate(symbol, regime, spy_chg):
                 events.append(f"           → {tag}  {pnl_f:+.2f}%  ${usd_f:+.2f}{lock_str}")
                 in_trade     = False
                 exited_today = True
+                for rec in reversed(_velocity_log):
+                    if rec['symbol'] == symbol and rec.get('entered') and rec.get('outcome_pct') is None:
+                        rec['outcome_pct'] = round(pnl_f, 2)
+                        rec['outcome_usd'] = round(usd_f, 2)
+                        rec['exit_reason'] = reason[:40]
+                        break
             continue
 
         # ── Not in trade: scan for entry ───────────────────────────────────────
         if exited_today:
             continue
+
+        # ── VELOCITY DATA COLLECTION (no entry logic change) ──────────────────
+        if t >= (9, 40) and i >= 2:
+            vel = compute_velocity(df5.iloc[:i+1], prev_close)
+            if vel:
+                _in_win = (NO_ENTRY_BEFORE <= ts.hour < NO_ENTRY_AFTER and
+                           not (LUNCH_AVOID_START <= t < LUNCH_AVOID_END))
+                time_cat = ('EARLY_940-959' if t < (10, 0) else
+                            'NORMAL_1000-1044' if t < (10, 45) else 'MID_DAY')
+                _velocity_log.append({
+                    'date': SIM_DATE.isoformat(), 'time': tstr, 'symbol': symbol,
+                    'time_cat': time_cat, 'in_entry_window': _in_win,
+                    'price': round(price, 2),
+                    'eligible': vel['eligible'], 'slow_reasons': vel['slow_reasons'],
+                    'v_green': vel['v_green'], 'v_momentum': vel['v_momentum'],
+                    'v_volume': vel['v_volume'], 'v_vwap': vel['v_vwap'],
+                    'v_moved': vel['v_moved'],
+                    'move_from_open': vel['move_from_open'],
+                    'vwap_dist': vel['vwap_dist'],
+                    'entered': False,   # updated to True at entry point below
+                    'entry_price': None, 'outcome_pct': None,
+                })
+        # ── END VELOCITY COLLECTION ────────────────────────────────────────────
 
         blocked = {'CHOPPY', 'WEAK'} | ({'CAUTIOUS'} if BLOCK_CAUTIOUS else set())
         if regime in blocked:
@@ -675,9 +781,12 @@ def simulate(symbol, regime, spy_chg):
             continue
 
         # ── ENTRY ──────────────────────────────────────────────────────────────
-        gap_now      = (price - prev_close) / prev_close * 100
-        is_catalyst  = gap_now >= 4.0 and vol_ratio >= 2.0
-        capital      = grade_capital(grade, is_catalyst)
+        gap_now          = (price - prev_close) / prev_close * 100
+        is_catalyst      = gap_now >= 4.0 and vol_ratio >= 2.0
+        first_bar_strong = check_first_bar_quality(
+            df5[df5.index.date == today_date], day_open, avg_vol
+        )
+        capital          = grade_capital(grade, is_catalyst, first_bar_strong)
         in_trade     = True
         entry_price  = price
         sl           = sl_val
@@ -694,10 +803,20 @@ def simulate(symbol, regime, spy_chg):
         partial_locked_usd = 0.0
         cat_tag      = ' ⚡CATALYST' if is_catalyst else ''
         early_tag    = ' 🌅EARLY-9AM' if is_early_catalyst else ''
+        fb_tag       = ' 🔥1H-STRONG' if first_bar_strong else ''
 
-        events.append(f"  ▶ {tstr}  ${price:.2f}  ENTER  Grade {grade}{cat_tag}{early_tag}  score={score}  capital=${capital:,}")
+        events.append(f"  ▶ {tstr}  ${price:.2f}  ENTER  Grade {grade}{cat_tag}{early_tag}{fb_tag}  score={score}  capital=${capital:,}")
         events.append(f"       Patterns : {' | '.join(patterns)}")
         events.append(f"       SL ${sl:.2f} | Target ${target:.2f} | R:R 1:{rr:.1f} | {shares} sh × ${capital:,}")
+
+        # Mark this bar as an actual entry in the velocity log
+        for rec in reversed(_velocity_log):
+            if rec['symbol'] == symbol and rec['time'] == tstr and rec['date'] == SIM_DATE.isoformat():
+                rec['entered'] = True
+                rec['entry_price'] = price
+                rec['grade'] = grade
+                rec['score'] = score
+                break
 
     # ── Print results ──────────────────────────────────────────────────────────
     if skip_counts:
@@ -855,8 +974,8 @@ def simulate_bear(symbol, regime, spy_chg):
                     events.append(f"    → {tstr}  Break-even stop → ${be_sl:.2f}  ({pnl_pct:+.1f}%)")
                     sl = be_sl
 
-            # Partial exit at 1R — lock 50%
-            if PARTIAL_EXIT and not partial_done and risk_held > 0 and shares >= 2:
+            # Partial exit at 1R — only on strong first-bar days (validated May 8)
+            if PARTIAL_EXIT and first_bar_strong and not partial_done and risk_held > 0 and shares >= 2:
                 if price <= entry_price - risk_held:
                     half   = shares // 2
                     locked = round(risk_held * half, 2)
@@ -1083,7 +1202,10 @@ def simulate_bear(symbol, regime, spy_chg):
             continue
 
         # ── BEAR ENTRY ──────────────────────────────────────────────────────────
-        capital      = grade_capital(grade, False)
+        first_bar_strong = check_first_bar_quality(
+            df5[df5.index.date == today_date], day_open, avg_vol
+        )
+        capital      = grade_capital(grade, False, first_bar_strong)
         in_trade     = True
         entry_price  = price
         sl           = sl_val
@@ -1153,6 +1275,22 @@ def main():
             simulate(sym, regime, spy_chg)
 
     print(f"\n{'='*62}\n")
+
+    # ── Write velocity log CSV ─────────────────────────────────────────────────
+    if _velocity_log:
+        log_dir = os.path.join(os.path.dirname(__file__), 'velocity_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        csv_path = os.path.join(log_dir, f'velocity_{SIM_DATE}.csv')
+        fields = ['date','time','symbol','time_cat','in_entry_window','price',
+                  'eligible','slow_reasons','v_green','v_momentum','v_volume',
+                  'v_vwap','v_moved','move_from_open','vwap_dist',
+                  'entered','entry_price','grade','score',
+                  'outcome_pct','outcome_usd','exit_reason']
+        with open(csv_path, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+            w.writeheader()
+            w.writerows(_velocity_log)
+        print(f"  📊 Velocity log → {csv_path}  ({len(_velocity_log)} rows)")
 
 
 if __name__ == '__main__':

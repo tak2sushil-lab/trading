@@ -38,6 +38,7 @@ MIN_RR             = 2.5         # 5% stop × 2.5 = 12.5% display target
 MIN_VOLUME_RATIO   = 1.3
 MIN_TODAY_GAIN     = 1.5         # stock must close ≥1.5% above prev close
 SKIP_WEAK_DAYS     = True        # no trades on WEAK SPY days
+FIRST_BAR_QUALITY  = True        # strong first-bar day: +15% capital + conditional partial exit
 
 # ── Build SPY daily regime ───────────────────────────────────────────────
 def build_spy_regime(start, end):
@@ -68,27 +69,27 @@ def grade_day(i, df, spy_chg, regime):
     price    = row['Open']
     atr      = row['atr']
     if pd.isna(atr) or atr <= 0 or pd.isna(price) or price < 5:
-        return 'SKIP', 0, []
+        return 'SKIP', 0, [], False
 
     # ── Hard gates ──────────────────────────────────────────────────────
     if SKIP_WEAK_DAYS and regime == 'WEAK':
-        return 'SKIP', 0, []
+        return 'SKIP', 0, [], False
 
     ma20 = df_upto['Close'].rolling(20).mean().iloc[-1]
     if pd.isna(ma20) or price < ma20:
-        return 'SKIP', 0, []
+        return 'SKIP', 0, [], False
 
     # Momentum check: stock must be up ≥MIN_TODAY_GAIN% today (close vs prev close)
     # Note: this uses close — look-ahead, but approximates intraday gain at scan time
     today_gain = (row['Close'] - prev_row['Close']) / prev_row['Close'] * 100
     if today_gain < MIN_TODAY_GAIN:
-        return 'SKIP', 0, []
+        return 'SKIP', 0, [], False
 
     # Volume
     avg_vol   = df_upto['Volume'].rolling(20).mean().iloc[-2] if len(df_upto) >= 21 else None
     vol_ratio = float(row['Volume'] / avg_vol) if avg_vol and avg_vol > 0 else 1.0
     if vol_ratio < MIN_VOLUME_RATIO:
-        return 'SKIP', 0, []
+        return 'SKIP', 0, [], False
 
     # R:R check with fixed 3% intraday stop
     risk_pct  = STOP_PCT
@@ -116,7 +117,7 @@ def grade_day(i, df, spy_chg, regime):
 
     has_pattern  = orb_proxy or vwap_reclaim or bull_flag or hod_break or strong_momo or rs_leader
     if not has_pattern:
-        return 'SKIP', 0, []
+        return 'SKIP', 0, [], False
 
     # ── Scoring (mirrors grade_setup in auto_trader) ────────────────────
     score   = 0
@@ -158,40 +159,50 @@ def grade_day(i, df, spy_chg, regime):
 
     # Only A/A+ entries; on negative SPY day need A+
     if grade in ('B', 'C'):
-        return 'SKIP', score, reasons
+        return 'SKIP', score, reasons, False
     if spy_chg < 0 and grade != 'A+':
-        return 'SKIP', score, reasons
+        return 'SKIP', score, reasons, False
 
-    return grade, score, reasons
+    # First-bar quality proxy (daily data): gap >1% AND vol >1.3× prior 20-day avg
+    vol_avg20        = df_upto['Volume'].rolling(20).mean().iloc[-2]
+    first_bar_strong = (
+        FIRST_BAR_QUALITY
+        and gap_pct > 1.0
+        and not pd.isna(vol_avg20) and vol_avg20 > 0
+        and row['Volume'] > vol_avg20 * 1.3
+    )
+
+    return grade, score, reasons, first_bar_strong
 
 # ── Simulate a single trade from entry at Open ───────────────────────────
-def simulate_trade(row, atr):
-    entry   = row['Open']
-    sl      = round(entry * (1 - STOP_PCT / 100), 2)
-    one_r   = entry * (1 + STOP_PCT / 100)    # +5% = 1R target for partial exit
-    hit_1r  = row['High'] >= one_r             # did price reach 1R intraday?
+def simulate_trade(row, atr, first_bar_strong=False, _always_partial=False):
+    capital    = CAPITAL_PER_TRADE * 1.15 if (FIRST_BAR_QUALITY and first_bar_strong) else CAPITAL_PER_TRADE
+    do_partial = _always_partial or (not FIRST_BAR_QUALITY) or first_bar_strong
 
-    # Partial exit sizing: if 1R hit, sell half at 1R then trail the rest
-    half_cap = CAPITAL_PER_TRADE / 2
-    partial_locked = STOP_PCT / 100 * half_cap if hit_1r else 0.0  # $50 locked at 1R
-    rem_cap  = half_cap if hit_1r else CAPITAL_PER_TRADE
+    entry  = row['Open']
+    sl     = round(entry * (1 - STOP_PCT / 100), 2)
+    one_r  = entry * (1 + STOP_PCT / 100)
+    hit_1r = row['High'] >= one_r
+
+    half_cap       = capital / 2
+    partial_locked = (STOP_PCT / 100 * half_cap) if (hit_1r and do_partial) else 0.0
+    rem_cap        = (half_cap if (hit_1r and do_partial) else capital)
 
     # Stop hit
     if row['Low'] <= sl:
-        if hit_1r:
-            # Spike-and-reverse: partial locked at 1R, remainder stops out → near breakeven
+        if hit_1r and do_partial:
             rest_loss = -STOP_PCT / 100 * rem_cap
             total_pnl = round(partial_locked + rest_loss, 2)
-            return 'PARTIAL_STOP', round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, sl
-        return 'STOP', round(-STOP_PCT, 2), round(-STOP_PCT * CAPITAL_PER_TRADE / 100, 2), sl
+            return 'PARTIAL_STOP', round(total_pnl / capital * 100, 2), total_pnl, sl
+        return 'STOP', round(-STOP_PCT, 2), round(-STOP_PCT * capital / 100, 2), sl
 
     # ATR trail hit — price faded from HOD by > 1.5×ATR
     trail_stop = row['High'] - ATR_TRAIL_MULT * atr
     if row['Close'] < trail_stop:
-        rest_pnl = (trail_stop - entry) / entry * rem_cap
+        rest_pnl  = (trail_stop - entry) / entry * rem_cap
         total_pnl = round(partial_locked + rest_pnl, 2)
         result    = 'WIN' if total_pnl > 0 else 'FADE'
-        return result, round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, trail_stop
+        return result, round(total_pnl / capital * 100, 2), total_pnl, trail_stop
 
     # ATR fade — drop > 1×ATR from HOD while profitable
     fade_stop = row['High'] - ATR_FADE_MULT * atr
@@ -199,13 +210,13 @@ def simulate_trade(row, atr):
         rest_pnl  = (row['Close'] - entry) / entry * rem_cap
         total_pnl = partial_locked + rest_pnl
         if total_pnl > 0:
-            return 'FADE_EXIT', round(total_pnl / CAPITAL_PER_TRADE * 100, 2), round(total_pnl, 2), row['Close']
+            return 'FADE_EXIT', round(total_pnl / capital * 100, 2), round(total_pnl, 2), row['Close']
 
     # EOD exit at close
     rest_pnl  = (row['Close'] - entry) / entry * rem_cap
     total_pnl = round(partial_locked + rest_pnl, 2)
     result    = 'WIN' if total_pnl > 0 else 'LOSS'
-    return result, round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, row['Close']
+    return result, round(total_pnl / capital * 100, 2), total_pnl, row['Close']
 
 # ── Backtest one symbol ──────────────────────────────────────────────────
 def backtest_symbol(symbol, spy_regime):
@@ -227,29 +238,33 @@ def backtest_symbol(symbol, spy_regime):
         spy_chg = float(row['spy_chg'])
         regime  = str(row['regime'])
 
-        grade, score, reasons = grade_day(i, merged, spy_chg, regime)
+        grade, score, reasons, first_bar_strong = grade_day(i, merged, spy_chg, regime)
         if grade == 'SKIP':
             continue
 
-        result, pnl_pct, pnl_usd, exit_price = simulate_trade(row, float(row['atr']))
+        result, pnl_pct, pnl_usd, exit_price = simulate_trade(row, float(row['atr']), first_bar_strong)
+        _, _, pnl_usd_base, _                 = simulate_trade(row, float(row['atr']), False, _always_partial=True)
 
         trades.append({
-            'date':     merged.index[i].strftime('%Y-%m-%d'),
-            'year':     merged.index[i].year,
-            'symbol':   symbol,
-            'grade':    grade,
-            'score':    score,
-            'regime':   regime,
-            'spy_chg':  round(spy_chg, 2),
-            'entry':    round(row['Open'], 2),
-            'high':     round(row['High'], 2),
-            'low':      round(row['Low'], 2),
-            'exit':     round(exit_price, 2),
-            'atr':      round(float(row['atr']), 2),
-            'pnl_pct':  pnl_pct,
-            'pnl_usd':  pnl_usd,
-            'result':   result,
-            'patterns': ' | '.join(reasons[:5]),
+            'date':             merged.index[i].strftime('%Y-%m-%d'),
+            'month':            merged.index[i].month,
+            'year':             merged.index[i].year,
+            'symbol':           symbol,
+            'grade':            grade,
+            'score':            score,
+            'regime':           regime,
+            'spy_chg':          round(spy_chg, 2),
+            'entry':            round(row['Open'], 2),
+            'high':             round(row['High'], 2),
+            'low':              round(row['Low'], 2),
+            'exit':             round(exit_price, 2),
+            'atr':              round(float(row['atr']), 2),
+            'pnl_pct':          pnl_pct,
+            'pnl_usd':          pnl_usd,
+            'pnl_usd_base':     pnl_usd_base,
+            'result':           result,
+            'first_bar_strong': first_bar_strong,
+            'patterns':         ' | '.join(reasons[:5]),
         })
 
     return pd.DataFrame(trades)
@@ -361,6 +376,44 @@ def print_results(df_all):
         if sub.empty: continue
         swr = len(sub[sub['pnl_usd'] > 0]) / len(sub) * 100
         print(f"  {ex:<12} {len(sub):>5} {swr:>5.0f}% {sub['pnl_usd'].mean():>+9.2f} {sub['pnl_pct'].mean():>+7.1f}%")
+
+    # ── Monthly breakdown ──────────────────────────────────────────────
+    MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    print(f"\n  BY MONTH (avg P&L per calendar month, all years combined):")
+    print(f"  {'Month':<6} {'N':>5} {'WR':>6} {'AvgPnL':>9} {'TotalPnL':>11}")
+    print(f"  {'─'*40}")
+    for mo in range(1, 13):
+        sub = df_all[df_all['month'] == mo]
+        if sub.empty: continue
+        swr = len(sub[sub['pnl_usd'] > 0]) / len(sub) * 100
+        print(f"  {MONTH_NAMES[mo-1]:<6} {len(sub):>5} {swr:>5.0f}% {sub['pnl_usd'].mean():>+9.2f} {sub['pnl_usd'].sum():>+11,.0f}")
+
+    # ── First-bar quality impact ────────────────────────────────────────
+    strong = df_all[df_all['first_bar_strong'] == True]
+    weak   = df_all[df_all['first_bar_strong'] == False]
+    total_fbq  = df_all['pnl_usd'].sum()
+    total_base = df_all['pnl_usd_base'].sum()
+    lift       = total_fbq - total_base
+    pct_strong = len(strong) / len(df_all) * 100
+    lift_mo    = lift / n_years / 12
+
+    print(f"\n  FIRST-BAR QUALITY IMPACT  (gap>1% + vol>1.3×avg = strong):")
+    print(f"  {'─'*68}")
+    print(f"  {'Type':<22} {'N':>5} {'WR':>6} {'AvgPnL':>9} {'TotalPnL':>12}")
+    print(f"  {'─'*56}")
+    if len(strong):
+        sw = strong[strong['pnl_usd'] > 0]
+        print(f"  {'Strong first-bar':<22} {len(strong):>5} {len(sw)/len(strong)*100:>5.0f}%"
+              f" {strong['pnl_usd'].mean():>+9.2f} {strong['pnl_usd'].sum():>+12,.0f}")
+    if len(weak):
+        ww = weak[weak['pnl_usd'] > 0]
+        print(f"  {'Non-strong':<22} {len(weak):>5} {len(ww)/len(weak)*100:>5.0f}%"
+              f" {weak['pnl_usd'].mean():>+9.2f} {weak['pnl_usd'].sum():>+12,.0f}")
+    print(f"  {'─'*56}")
+    print(f"  Strong-bar days account for {pct_strong:.0f}% of all trades")
+    print(f"  With  FBQ  : ${total_fbq:>+10,.0f}  (${total_fbq/n_years/12:+.0f}/month avg)")
+    print(f"  Without FBQ: ${total_base:>+10,.0f}  (${total_base/n_years/12:+.0f}/month avg)")
+    print(f"  LIFT       : ${lift:>+10,.0f}  (${lift_mo:+.0f}/month avg)")
 
     # ── Top & worst trades ─────────────────────────────────────────────
     print(f"\n  TOP 5 TRADES:")
