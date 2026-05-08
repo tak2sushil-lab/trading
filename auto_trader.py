@@ -2249,6 +2249,7 @@ def _scan_premarket_catalyst(open_trades):
             traded_today.add(sym)
             save_traded_today()
             open_positions[sym] = trade_id
+            first_bar_strong_trades[trade_id] = True  # PM gaps are inherently strong (≥6% filter)
             daily_bull_count += 1
             entries.append(pick | {'shares': shares, 'limit_price': limit_price, 'sl': sl})
             time.sleep(1)
@@ -2504,6 +2505,7 @@ def _scan_catalyst_override(open_trades):
                 traded_today.add(symbol)
                 save_traded_today()
                 open_positions[symbol] = trade_id
+                first_bar_strong_trades[trade_id] = sig.get('first_bar_strong', False)
                 daily_bull_count += 1
                 entries.append({'symbol': symbol, 'price': price, 'shares': shares,
                                 'sl': sl, 'target': target, 'gap_pct': gap_pct,
