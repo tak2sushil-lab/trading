@@ -1037,9 +1037,12 @@ def cmd_news(sym: str | None, chat_id: str):
         dir_arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '↕', 'NEUTRAL': '—'}.get(detail['direction'], '')
         tier_emoji = {'HIGH': '🔥', 'MEDIUM': '⚡', 'LOW': '💤'}.get(detail['tier'], '')
 
+        ivr = detail.get('iv_rank')
+        ivr_str = (f"IVR {ivr:.0f}% — " + ("cheap ✅" if ivr < 30 else "moderate" if ivr < 45 else "expensive ⚠️")) if ivr is not None else "IVR n/a"
+
         lines = [
             f"📡 *{sym} {dir_arrow} — {now_et}*",
-            f"Tier: {tier_emoji} {detail['tier']} | Score: {detail['score']:.2f} "
+            f"Tier: {tier_emoji} {detail['tier']} | {ivr_str} "
             f"| {detail['signal_count']} signals ({detail['high_count']} HIGH)",
             f"Sources: {_md(detail['sources']) or 'none'}",
         ]
@@ -1077,23 +1080,27 @@ def cmd_news(sym: str | None, chat_id: str):
     show_medium = medium_rows[:3]
 
     # Build monospace table inside a code block
-    # Columns: Sym(5) Dir(1) Sigs(4) H(2) Age
-    HDR = f"{'Sym':<5} {'':1} {'Sigs':>4} {'H':>2}  Age"
-    SEP = '─' * 22
+    # Columns: Sym(5) Dir(1) Sigs(4) H(2) IVR(3) Age
+    HDR = f"{'Sym':<5} {'':1} {'Sigs':>4} {'H':>2}  {'IVR':>3}  Age"
+    SEP = '─' * 27
+
+    def _ivr(row):
+        v = row.get('iv_rank')
+        return f"{v:>3.0f}" if v is not None else ' --'
 
     tbl = [HDR, SEP]
     if show_high:
         for r in show_high:
             arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '~'}.get(r['direction'], ' ')
             ago   = _signal_age(r['last_signal_at']).replace(' ago', '')
-            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {ago}")
+            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {_ivr(r)}  {ago}")
 
     if show_medium:
         tbl.append(SEP)
         for r in show_medium:
             arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '~'}.get(r['direction'], ' ')
             ago   = _signal_age(r['last_signal_at']).replace(' ago', '')
-            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {ago}")
+            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {_ivr(r)}  {ago}")
 
     table_block = '```\n' + '\n'.join(tbl) + '\n```'
 

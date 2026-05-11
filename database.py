@@ -187,9 +187,15 @@ def init_db():
         high_count      INTEGER DEFAULT 0,
         sources         TEXT,
         narrative       TEXT,
+        iv_rank         REAL,
         last_signal_at  TEXT,
         updated_at      TEXT
     )''')
+    # migrate: add iv_rank to existing tables created before this column existed
+    try:
+        c.execute('ALTER TABLE ticker_conviction ADD COLUMN iv_rank REAL')
+    except Exception:
+        pass  # column already exists
 
     # Indexes for common queries
     c.execute('CREATE INDEX IF NOT EXISTS idx_opt_trades_status   ON options_trades(status)')
@@ -840,13 +846,22 @@ def update_conviction_narrative(symbol: str, narrative: str):
     conn.close()
 
 
+def update_conviction_iv(symbol: str, iv_rank: float):
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute("UPDATE ticker_conviction SET iv_rank=? WHERE symbol=?",
+              (iv_rank, symbol.upper()))
+    conn.commit()
+    conn.close()
+
+
 def get_conviction_leaderboard() -> list:
     """Return all tickers with conviction > 0, ranked by score desc."""
     conn = get_connection()
     c    = conn.cursor()
     c.execute("""
         SELECT symbol, direction, tier, score, signal_count, high_count,
-               sources, narrative, last_signal_at, updated_at
+               sources, narrative, iv_rank, last_signal_at, updated_at
         FROM ticker_conviction
         WHERE score > 0
         ORDER BY score DESC, high_count DESC, last_signal_at DESC
@@ -854,7 +869,7 @@ def get_conviction_leaderboard() -> list:
     rows = c.fetchall()
     conn.close()
     keys = ['symbol','direction','tier','score','signal_count','high_count',
-            'sources','narrative','last_signal_at','updated_at']
+            'sources','narrative','iv_rank','last_signal_at','updated_at']
     return [dict(zip(keys, r)) for r in rows]
 
 
@@ -864,7 +879,7 @@ def get_conviction_detail(symbol: str) -> dict:
     c    = conn.cursor()
     c.execute("""
         SELECT symbol, direction, tier, score, signal_count, high_count,
-               sources, narrative, last_signal_at, updated_at
+               sources, narrative, iv_rank, last_signal_at, updated_at
         FROM ticker_conviction WHERE symbol=?
     """, (symbol.upper(),))
     row = c.fetchone()
@@ -872,7 +887,7 @@ def get_conviction_detail(symbol: str) -> dict:
         conn.close()
         return {}
     keys = ['symbol','direction','tier','score','signal_count','high_count',
-            'sources','narrative','last_signal_at','updated_at']
+            'sources','narrative','iv_rank','last_signal_at','updated_at']
     result = dict(zip(keys, row))
 
     c.execute("""

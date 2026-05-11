@@ -27,7 +27,7 @@ from database import (
     log_options_news, add_catalyst,
     headline_seen_recently, get_open_options_trades,
     upsert_catalyst_from_wsh,
-    recompute_conviction, update_conviction_narrative,
+    recompute_conviction, update_conviction_narrative, update_conviction_iv,
 )
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
@@ -746,6 +746,12 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
     conviction = recompute_conviction(symbol) if (high_signals or high_count == 0) else None
     if not conviction:
         conviction = recompute_conviction(symbol)
+
+    # Fetch and store IV rank (bridge call — fails silently if bridge is down)
+    iv_data = get_iv_rank(symbol)
+    if iv_data and iv_data.get('iv_rank') is not None:
+        update_conviction_iv(symbol, round(iv_data['iv_rank'], 1))
+        print(f"[IV] {symbol} iv_rank={iv_data['iv_rank']:.1f}%")
 
     # Fire Telegram only on tier upgrade or first HIGH of the day
     tier        = conviction['tier']
