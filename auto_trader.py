@@ -649,7 +649,11 @@ def get_live_price(symbol):
     try:
         r = requests.get(f"{BRIDGE}/quote/{symbol}", timeout=5)
         d = r.json()
-        if d.get('best_price'):
+        # Only trust bridge price if order book is live (bid or ask present).
+        # A non-None 'last' with no bid/ask means IBKR returned a stale cached
+        # trade print — common for scanner-discovered small-caps without an active
+        # data subscription. Fall through to yfinance in that case.
+        if d.get('best_price') and (d.get('bid') or d.get('ask')):
             return d['best_price']
     except:
         pass
