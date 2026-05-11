@@ -1848,21 +1848,31 @@ def poll_telegram_commands():
                     (p.get('avgCost', 0) or 0) * abs(p.get('qty', 0) or 0)
                     for p in live_positions.values()
                 )
-                lines = [f"Status | {datetime.now(ET).strftime('%H:%M ET')}",
-                         f"Total P&L: ${total_pnl:+.2f} | 30d WR: {wr:.0f}%",
-                         f"Realised: ${daily_rpnl['pnl']:+.2f} ({daily_rpnl['trades']} trades, {daily_rpnl['wins']}W)",
-                         f"Unrealised: ${live_upnl:+.2f} across {len(live_positions)} positions",
-                         f"Open: {len(live_positions)} | Invested: ${total_invest:,.0f}",
-                         "---"]
-                for sym, pos in sorted(live_positions.items()):
-                    qty     = abs(pos.get('qty', 0) or 0)
-                    avg     = pos.get('avgCost', 0) or 0
-                    mkt     = pos.get('marketPrice', 0) or 0
-                    invested = round(avg * qty, 0)
-                    upnl    = pos.get('unrealizedPnL', 0) or 0
-                    pnl_pct = ((mkt - avg) / avg * 100) if avg else 0
-                    lines.append(f"  {sym}: ${mkt} ({pnl_pct:+.1f}%) "
-                                 f"uPnL ${upnl:+.2f} | ${invested:,.0f} ({qty} stock)")
+                losses = daily_rpnl['trades'] - daily_rpnl['wins']
+                lines = [
+                    f"Status | {datetime.now(ET).strftime('%H:%M ET')}",
+                    f"P&L {total_pnl:+.2f} | R: {daily_rpnl['pnl']:+.2f} | uPnL: {live_upnl:+.2f}",
+                    f"Trades: {daily_rpnl['trades']} ({daily_rpnl['wins']}W {losses}L) | 30d WR: {wr:.0f}%",
+                ]
+                if live_positions:
+                    sep = '─' * 38
+                    lines += ['', '```',
+                              f"{'Sym':<6} {'Q':>3}  {'Entry':>7}  {'Now':>7}  {'uPnL':>6}  {'Chg':>5}",
+                              sep]
+                    for sym, pos in sorted(live_positions.items()):
+                        qty     = abs(pos.get('qty', 0) or 0)
+                        avg     = pos.get('avgCost', 0) or 0
+                        mkt     = pos.get('marketPrice', 0) or 0
+                        upnl    = pos.get('unrealizedPnL', 0) or 0
+                        pnl_pct = ((mkt - avg) / avg * 100) if avg else 0
+                        lines.append(
+                            f"{sym:<6} {qty:>3}  ${avg:>6.2f}  ${mkt:>6.2f}  {upnl:>+6.0f}  {pnl_pct:>+5.1f}%"
+                        )
+                    lines += [sep,
+                              f"Invested: ${total_invest:,.0f}",
+                              '```']
+                else:
+                    lines.append('No open positions.')
                 send_telegram_to(reply_to, '\n'.join(lines))
 
             elif text in ('CANCEL', 'STOP', 'PAUSE'):
