@@ -1773,26 +1773,49 @@ def poll_telegram_commands():
                 continue
             log(f"TG command: {text}")
 
-            # ── Viewer gate: only REGIME and STATUS allowed ───────
-            if is_viewer and text not in ('REGIME', 'STATUS'):
+            # ── Viewer gate: read-only commands only ──────────────
+            if is_viewer and text not in ('REGIME', 'STATUS', 'HELP'):
                 continue
 
             if text == 'HELP':
-                send_telegram('\n'.join([
-                    "Commands:",
-                    "STATUS            — P&L, open positions, 30d WR",
-                    "REGIME            — current regime + SPY/VIX snapshot",
+                send_telegram_to(reply_to, '\n'.join([
+                    "📊 *Equity commands:*",
+                    "STATUS            — P&L, open positions, 30d win rate",
+                    "REGIME            — market condition + full snapshot",
                     "TODAY             — today's closed trades + per-trade P&L",
                     "PAUSE/STOP/CANCEL — halt new entries (monitor stays on)",
                     "RESUME            — re-enable entries",
-                    "BUY <SYMBOL> [%]  — market buy, auto-exit at profit target",
-                    "                    e.g.  BUY TSLA       (default 1%)",
-                    "                          BUY TSLA 2.5   (+2.5% target)",
-                    "SELL <SYMBOL>     — close specific position at market",
-                    "                    e.g.  SELL TSLA",
+                    "BUY <SYMBOL> [%]  — manual buy (e.g. BUY TSLA 2.5)",
+                    "SELL <SYMBOL>     — close one position (e.g. SELL TSLA)",
                     "CLOSEALL          — close ALL open positions now",
                     "BLOCK <SYMBOL>    — skip symbol for rest of day",
-                    "                    e.g.  BLOCK TSLA",
+                    "",
+                    "📡 *Options commands (prefix OPT):*",
+                    "OPT STATUS        — options portfolio overview",
+                    "OPT POSITIONS     — per-position Greeks + stop stage",
+                    "OPT NEWS [symbol] — recent HIGH/MEDIUM signals",
+                    "OPT BUY <symbol>  — spread/LEAP calculator",
+                    "OPT CLOSE <sym>   — close an options position",
+                    "OPT PAUSE/RESUME  — halt/resume options scanning",
+                    "",
+                    "📖 *REGIME decoder:*",
+                    "STRONG  — clear bull run, enter freely",
+                    "NORMAL  — healthy market, standard entries",
+                    "CHOPPY  — mixed signals, be selective",
+                    "CAUTIOUS— weakening, reduce size",
+                    "WEAK    — bear conditions, no new longs",
+                    "",
+                    "VIX < 18        — calm, options cheap ✅",
+                    "VIX 18–25       — normal fear, watch trend",
+                    "VIX > 25        — high fear, pause entries ⚠️",
+                    "",
+                    "ES/NQ green     — market expects higher open",
+                    "ES/NQ red       — market expects lower open",
+                    "QQQ leading     — tech outperforming, momentum day",
+                    "QQQ lagging     — tech weak, defensive tone",
+                    "Broad advance   — all sectors rising, rally is real",
+                    "Mixed breadth   — only large caps moving, be selective",
+                    "Broad weakness  — widespread selling, avoid new longs",
                 ]))
 
             elif text == 'STATUS':
@@ -1941,14 +1964,55 @@ def poll_telegram_commands():
             elif text == 'REGIME':
                 try:
                     regime, spy_chg, vix_val, extra = get_regime()
-                    breadth = ('broad advance' if extra.get('broad_advance', True)
-                               else 'broad weakness' if extra.get('breadth_weak', False) else 'mixed')
+                    vix_rising   = extra.get('vix_rising', False)
+                    qqq_leading  = extra.get('qqq_leading', False)
+                    above_vwap   = extra.get('spy_above_vwap', False)
+                    broad_adv    = extra.get('broad_advance', True)
+                    breadth_weak = extra.get('breadth_weak', False)
+                    es_chg       = extra.get('es_chg', 0.0)
+                    nq_chg       = extra.get('nq_chg', 0.0)
+
+                    # VIX interpretation
+                    if vix_val < 18:
+                        vix_note = 'calm market, options cheap'
+                    elif vix_val < 25:
+                        vix_note = 'normal fear, watch direction'
+                    else:
+                        vix_note = 'high fear — pause new entries'
+                    vix_arrow = 'rising ⚠️' if vix_rising else 'falling ✅'
+
+                    # Futures interpretation
+                    if es_chg > 0 and nq_chg > 0:
+                        fut_note = 'market expects higher open'
+                    elif es_chg < 0 and nq_chg < 0:
+                        fut_note = 'market expects lower open'
+                    elif nq_chg > es_chg:
+                        fut_note = 'tech leading, risk-on tone'
+                    else:
+                        fut_note = 'tech lagging, mixed open'
+
+                    # QQQ note
+                    qqq_note = ('tech outperforming — momentum day ✅'
+                                if qqq_leading else
+                                'tech lagging — defensive tone ⚠️')
+
+                    # Breadth interpretation
+                    if broad_adv:
+                        breadth_str  = 'broad advance ✅'
+                        breadth_note = 'small+mid caps rising — all sectors in, healthy rally'
+                    elif breadth_weak:
+                        breadth_str  = 'broad weakness ⚠️'
+                        breadth_note = 'small+mid caps falling — widespread selling, avoid new longs'
+                    else:
+                        breadth_str  = 'mixed'
+                        breadth_note = 'only large caps moving — selective market, wait for confirmation'
+
                     send_telegram_to(reply_to, '\n'.join([
                         f"Regime: {regime} | {datetime.now(ET).strftime('%H:%M ET')}",
-                        f"SPY: {spy_chg:+.2f}% | VIX: {vix_val:.1f} {'rising' if extra.get('vix_rising', False) else 'falling'}",
-                        f"SPY {'above' if extra.get('spy_above_vwap', False) else 'below'} VWAP | QQQ {'leading' if extra.get('qqq_leading', False) else 'lagging'}",
-                        f"ES: {extra.get('es_chg', 0.0):+.2f}% | NQ: {extra.get('nq_chg', 0.0):+.2f}%",
-                        f"Breadth: {breadth}",
+                        f"SPY: {spy_chg:+.2f}% | VIX: {vix_val:.1f} {vix_arrow} ({vix_note})",
+                        f"SPY {'above' if above_vwap else 'below'} VWAP | QQQ {qqq_note}",
+                        f"ES: {es_chg:+.2f}% | NQ: {nq_chg:+.2f}% — {fut_note}",
+                        f"Breadth: {breadth_str} — {breadth_note}",
                     ]))
                 except Exception as ex:
                     send_telegram_to(reply_to, f"Regime fetch error: {ex}")
