@@ -1073,37 +1073,44 @@ def cmd_news(sym: str | None, chat_id: str):
 
     high_rows   = [r for r in board if r['tier'] == 'HIGH']
     medium_rows = [r for r in board if r['tier'] == 'MEDIUM']
-
-    lines = [f"📡 *Signal Leaderboard — {now_et}*\n"]
-
-    # Cap at 10 total — top 7 HIGH, top 3 MEDIUM
     show_high   = high_rows[:7]
     show_medium = medium_rows[:3]
 
+    # Build monospace table inside a code block
+    # Columns: Sym(5) Dir(1) Sigs(4) H(2) Age
+    HDR = f"{'Sym':<5} {'':1} {'Sigs':>4} {'H':>2}  Age"
+    SEP = '─' * 22
+
+    tbl = [HDR, SEP]
     if show_high:
-        lines.append('🔥 *HIGH conviction*')
         for r in show_high:
-            arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '↕'}.get(r['direction'], '')
-            ago   = _signal_age(r['last_signal_at'])
-            lines.append(
-                f"  *{r['symbol']}* {arrow} | "
-                f"{r['signal_count']} sigs ({r['high_count']} HIGH) | {ago}"
-            )
-            if r.get('narrative'):
-                lines.append(f"  {_md(r['narrative'])}")
-        lines.append('')
+            arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '~'}.get(r['direction'], ' ')
+            ago   = _signal_age(r['last_signal_at']).replace(' ago', '')
+            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {ago}")
 
     if show_medium:
-        lines.append('⚡ *MEDIUM conviction*')
+        tbl.append(SEP)
         for r in show_medium:
-            arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '↕'}.get(r['direction'], '')
-            ago   = _signal_age(r['last_signal_at'])
-            lines.append(f"  {r['symbol']} {arrow} | {r['signal_count']} sigs | {ago}")
-        lines.append('')
+            arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '~'}.get(r['direction'], ' ')
+            ago   = _signal_age(r['last_signal_at']).replace(' ago', '')
+            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {ago}")
+
+    table_block = '```\n' + '\n'.join(tbl) + '\n```'
+
+    tier_label = ''
+    if show_high and show_medium:
+        tier_label = f"🔥 {len(show_high)} HIGH  ⚡ {len(show_medium)} MED"
+    elif show_high:
+        tier_label = f"🔥 {len(show_high)} HIGH"
+    else:
+        tier_label = f"⚡ {len(show_medium)} MED"
 
     tracked = len(board)
-    lines += [
-        f"{tracked} tickers tracked · Scores decay 48h · OPT NEWS <sym> for detail",
+    lines = [
+        f"📡 *Signal Leaderboard — {now_et}*",
+        f"{tier_label}  ({tracked} tracked)  H = HIGH signals",
+        table_block,
+        "OPT NEWS <sym> → detail   OPT BUY <sym> → calculator",
     ]
     send_telegram('\n'.join(lines), chat_id)
 
