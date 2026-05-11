@@ -84,11 +84,19 @@ def send_telegram(message: str, chat_id: str | None = None):
         print(f"[TG] {message}")
         return
     try:
-        requests.post(
+        r = requests.post(
             f"{TG_API}/sendMessage",
             json={'chat_id': cid, 'text': message, 'parse_mode': 'Markdown'},
             timeout=10,
         )
+        if not r.ok:
+            # Markdown parse error — retry as plain text
+            print(f"[TG markdown error] {r.status_code} {r.json().get('description')}")
+            requests.post(
+                f"{TG_API}/sendMessage",
+                json={'chat_id': cid, 'text': message},
+                timeout=10,
+            )
     except Exception as e:
         print(f"[TG error] {e}")
 
@@ -1033,10 +1041,10 @@ def cmd_news(sym: str | None, chat_id: str):
             f"📡 *{sym} {dir_arrow} — {now_et}*",
             f"Tier: {tier_emoji} {detail['tier']} | Score: {detail['score']:.2f} "
             f"| {detail['signal_count']} signals ({detail['high_count']} HIGH)",
-            f"Sources: {detail['sources'] or 'none'}",
+            f"Sources: {_md(detail['sources']) or 'none'}",
         ]
         if detail.get('narrative'):
-            lines += ['', f"_{detail['narrative']}_"]
+            lines += ['', _md(detail['narrative'])]
 
         signals = detail.get('signals', [])
         if signals:
@@ -1046,12 +1054,12 @@ def cmd_news(sym: str | None, chat_id: str):
                 ts  = s['created_at'][11:16] if len(s['created_at']) > 11 else ''
                 ico = rel_icon.get(s['relevance'], '⚪️')
                 lines.append(
-                    f"{ico} [{ts}] {s['source']} — {s['news_type']} — {s['relevance']}\n"
-                    f"  {s['headline'][:85]}\n"
-                    f"  ↳ _{s['one_line_reason'] or s['direction']}_"
+                    f"{ico} [{ts}] {_md(s['source'])} — {_md(s['news_type'])} — {s['relevance']}\n"
+                    f"  {_md(s['headline'][:85])}\n"
+                    f"  ↳ {_md(s['one_line_reason'] or s['direction'])}"
                 )
 
-        lines += ['', f"_OPT BUY {sym} → calculator_"]
+        lines += ['', f"OPT BUY {sym} → calculator"]
         send_telegram('\n'.join(lines), chat_id)
         return
 
@@ -1078,7 +1086,7 @@ def cmd_news(sym: str | None, chat_id: str):
                 f"{r['signal_count']} signals ({r['high_count']} HIGH) | {ago}"
             )
             if r.get('narrative'):
-                lines.append(f"  _{r['narrative']}_")
+                lines.append(f"  {_md(r['narrative'])}")
             else:
                 lines.append(f"  Sources: {r['sources'] or '—'}")
         lines.append('')
@@ -1100,6 +1108,11 @@ def cmd_news(sym: str | None, chat_id: str):
         "_OPT NEWS <sym> → detail   OPT BUY <sym> → calculator_",
     ]
     send_telegram('\n'.join(lines), chat_id)
+
+
+def _md(text: str | None) -> str:
+    """Strip Markdown special chars from dynamic/LLM text to prevent Telegram parse errors."""
+    return (text or '').replace('_', ' ').replace('*', '').replace('`', "'").replace('[', '(').replace(']', ')')
 
 
 def _signal_age(ts: str | None) -> str:
