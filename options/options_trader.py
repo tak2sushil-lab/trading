@@ -1076,36 +1076,34 @@ def cmd_news(sym: str | None, chat_id: str):
 
     lines = [f"📡 *Signal Leaderboard — {now_et}*\n"]
 
-    if high_rows:
+    # Cap at 10 total — top 7 HIGH, top 3 MEDIUM
+    show_high   = high_rows[:7]
+    show_medium = medium_rows[:3]
+
+    if show_high:
         lines.append('🔥 *HIGH conviction*')
-        for r in high_rows:
+        for r in show_high:
             arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '↕'}.get(r['direction'], '')
             ago   = _signal_age(r['last_signal_at'])
             lines.append(
-                f"  *{r['symbol']}* {arrow} | {r['score']:.2f} | "
-                f"{r['signal_count']} signals ({r['high_count']} HIGH) | {ago}"
+                f"  *{r['symbol']}* {arrow} | "
+                f"{r['signal_count']} sigs ({r['high_count']} HIGH) | {ago}"
             )
             if r.get('narrative'):
                 lines.append(f"  {_md(r['narrative'])}")
-            else:
-                lines.append(f"  Sources: {r['sources'] or '—'}")
         lines.append('')
 
-    if medium_rows:
+    if show_medium:
         lines.append('⚡ *MEDIUM conviction*')
-        for r in medium_rows[:5]:
+        for r in show_medium:
             arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '↕'}.get(r['direction'], '')
             ago   = _signal_age(r['last_signal_at'])
-            lines.append(
-                f"  {r['symbol']} {arrow} | {r['score']:.2f} | "
-                f"{r['signal_count']} signals | {r['sources'] or '—'} | {ago}"
-            )
+            lines.append(f"  {r['symbol']} {arrow} | {r['signal_count']} sigs | {ago}")
         lines.append('')
 
     tracked = len(board)
     lines += [
-        f"_{tracked} tickers tracked · Scores decay 48h half-life_",
-        "_OPT NEWS <sym> → detail   OPT BUY <sym> → calculator_",
+        f"{tracked} tickers tracked · Scores decay 48h · OPT NEWS <sym> for detail",
     ]
     send_telegram('\n'.join(lines), chat_id)
 
