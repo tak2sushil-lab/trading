@@ -1080,27 +1080,46 @@ def cmd_news(sym: str | None, chat_id: str):
     show_medium = medium_rows[:3]
 
     # Build monospace table inside a code block
-    # Columns: Sym(5) Dir(1) Sigs(4) H(2) IVR(3) Age
-    HDR = f"{'Sym':<5} {'':1} {'Sigs':>4} {'H':>2}  {'IVR':>3}  Age"
-    SEP = '─' * 27
+    # Columns: Sym(5) Dir(1) Sigs(4) H(2) IVR(3) Age Rec(4)
+    HDR = f"{'Sym':<5} {'':1} {'Sigs':>4} {'H':>2}  {'IVR':>3}  {'Age':<5} Rec"
+    SEP = '─' * 34
 
     def _ivr(row):
         v = row.get('iv_rank')
         return f"{v:>3.0f}" if v is not None else ' --'
+
+    def _rec(row):
+        d  = row.get('direction', '')
+        iv = row.get('iv_rank')
+        h  = row.get('high_count', 0)
+        if iv is None:
+            return '?   '
+        if d == 'MIXED':
+            return 'OBS '
+        if d == 'BEAR':
+            return 'SKIP' if iv > 50 else 'PUT '
+        # BULL
+        if iv < 30:
+            return 'ACT!' if h >= 4 else 'LEAP'
+        if iv < 45:
+            return 'SPR '
+        if iv < 60:
+            return 'WAIT'
+        return 'SKIP'
 
     tbl = [HDR, SEP]
     if show_high:
         for r in show_high:
             arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '~'}.get(r['direction'], ' ')
             ago   = _signal_age(r['last_signal_at']).replace(' ago', '')
-            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {_ivr(r)}  {ago}")
+            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {_ivr(r)}  {ago:<5} {_rec(r)}")
 
     if show_medium:
         tbl.append(SEP)
         for r in show_medium:
             arrow = {'BULL': '↑', 'BEAR': '↓', 'MIXED': '~'}.get(r['direction'], ' ')
             ago   = _signal_age(r['last_signal_at']).replace(' ago', '')
-            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {_ivr(r)}  {ago}")
+            tbl.append(f"{r['symbol']:<5} {arrow} {r['signal_count']:>4} {r['high_count']:>2}  {_ivr(r)}  {ago:<5} {_rec(r)}")
 
     table_block = '```\n' + '\n'.join(tbl) + '\n```'
 
@@ -1115,8 +1134,10 @@ def cmd_news(sym: str | None, chat_id: str):
     tracked = len(board)
     lines = [
         f"📡 *Signal Leaderboard — {now_et}*",
-        f"{tier_label}  ({tracked} tracked)  H = HIGH signals",
+        f"{tier_label}  ({tracked} tracked)",
         table_block,
+        "H=HIGH sigs  IVR<30=cheap  >50=exp",
+        "ACT=buy · LEAP=cheap IV · SPR=spread · WAIT=IV high · SKIP=too exp · PUT=bear",
         "OPT NEWS <sym> → detail   OPT BUY <sym> → calculator",
     ]
     send_telegram('\n'.join(lines), chat_id)
