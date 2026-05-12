@@ -1855,18 +1855,22 @@ def poll_telegram_commands():
                     f"Trades: {daily_rpnl['trades']} ({daily_rpnl['wins']}W {losses}L) | 30d WR: {wr:.0f}%",
                 ]
                 if live_positions:
-                    sep = '─' * 38
+                    sep = '─' * 48
                     lines += ['', '```',
-                              f"{'Sym':<6} {'Q':>3}  {'Entry':>7}  {'Now':>7}  {'uPnL':>6}  {'Chg':>5}",
+                              f"{'Sym':<6} {'Q':>4}  {'Entry':>8}  {'Now':>8}  {'uPnL':>6}  {'Chg':>7}",
                               sep]
                     for sym, pos in sorted(live_positions.items()):
-                        qty     = abs(pos.get('qty', 0) or 0)
+                        qty     = int(abs(pos.get('qty', 0) or 0))
                         avg     = pos.get('avgCost', 0) or 0
                         mkt     = pos.get('marketPrice', 0) or 0
                         upnl    = pos.get('unrealizedPnL', 0) or 0
                         pnl_pct = ((mkt - avg) / avg * 100) if avg else 0
                         lines.append(
-                            f"{sym:<6} {qty:>3}  ${avg:>6.2f}  ${mkt:>6.2f}  {upnl:>+6.0f}  {pnl_pct:>+5.1f}%"
+                            f"{sym:<6} {qty:>4}"
+                            f"  {'$'+f'{avg:.2f}':>8}"
+                            f"  {'$'+f'{mkt:.2f}':>8}"
+                            f"  {upnl:>+6.0f}"
+                            f"  {pnl_pct:>+6.1f}%"
                         )
                     lines += [sep,
                               f"Invested: ${total_invest:,.0f}",
