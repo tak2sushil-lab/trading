@@ -59,7 +59,12 @@ load_dotenv()
 BRIDGE_URL       = os.getenv('BRIDGE_URL', 'http://127.0.0.1:8000')
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+# Options-specific bot (falls back to main bot if not configured)
+OPT_TG_TOKEN     = os.getenv('OPTIONS_TELEGRAM_TOKEN') or TELEGRAM_TOKEN
+OPT_TG_CHAT_ID   = os.getenv('OPTIONS_TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
+TG_API           = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
+# Dedicated options capital allocation ($5K start; 30% max deployed = $1.5K cap)
+OPTIONS_ACCOUNT_SIZE = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
 
 ET               = ZoneInfo('America/New_York')
 COMMISSION_RT    = 3.60    # round-trip per spread (2 legs × open + close)
@@ -79,8 +84,8 @@ _last_update_id  = 0
 # ── Telegram helpers ─────────────────────────────────────────────────────────
 
 def send_telegram(message: str, chat_id: str | None = None):
-    cid = chat_id or TELEGRAM_CHAT_ID
-    if not TELEGRAM_TOKEN or not cid:
+    cid = chat_id or OPT_TG_CHAT_ID
+    if not OPT_TG_TOKEN or not cid:
         print(f"[TG] {message}")
         return
     try:
@@ -258,24 +263,15 @@ def get_deployed_capital() -> float:
 def check_capital_cap(new_premium: float, chat_id: str) -> bool:
     """
     Return True if adding new_premium stays within the 30% capital deployment cap.
-    Sends a Telegram warning and returns False if it would breach the cap.
+    Uses OPTIONS_ACCOUNT_SIZE (dedicated options allocation), not full IBKR NAV.
     """
-    nav = get_account_nav()
-    if nav is None:
-        # Bridge unreachable — warn but allow (don't block trades on infra issue)
-        send_telegram(
-            "⚠️ Cannot fetch account NAV — proceeding without cap check. "
-            "Verify deployed capital manually.",
-            chat_id,
-        )
-        return True
     deployed  = get_deployed_capital()
-    cap_limit = nav * 0.30
+    cap_limit = OPTIONS_ACCOUNT_SIZE * 0.30
     if deployed + new_premium > cap_limit:
         send_telegram(
             f"🚫 *Capital cap reached*\n"
             f"Deployed: ${deployed:,.0f} + new ${new_premium:,.0f} = ${deployed+new_premium:,.0f}\n"
-            f"30% cap on ${nav:,.0f} NAV = ${cap_limit:,.0f}\n"
+            f"30% cap on ${OPTIONS_ACCOUNT_SIZE:,.0f} options allocation = ${cap_limit:,.0f}\n"
             f"Close an existing position or wait for more capital.",
             chat_id,
         )
@@ -1422,6 +1418,11 @@ def main():
     print("[options_trader] started — polling Telegram")
     while True:
         try:
+            # Purge expired pending entries to prevent unbounded growth
+            now = datetime.now()
+            for cid in [c for c, p in list(_pending.items()) if p['expires_at'] < now]:
+                del _pending[cid]
+
             updates = poll_telegram()
             for update in updates:
                 uid = update['update_id']

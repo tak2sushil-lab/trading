@@ -779,7 +779,7 @@ def recompute_conviction(symbol: str) -> dict:
     now          = datetime.now()
     seen_sources = set()
     total_score  = 0.0
-    bull = bear  = 0
+    bull_score = bear_score = 0.0
     high_count   = 0
     unique_srcs  = []
     last_at      = ''
@@ -794,11 +794,12 @@ def recompute_conviction(symbol: str) -> dict:
         recency    = 0.5 ** (hours_old / 48)
         diversity  = 1.2 if source not in seen_sources else 1.0
         seen_sources.add(source)
-        total_score += weight * recency * diversity
+        signal_contribution = weight * recency * diversity
+        total_score += signal_contribution
         if direction == 'BULLISH':
-            bull += 1
+            bull_score += signal_contribution
         elif direction == 'BEARISH':
-            bear += 1
+            bear_score += signal_contribution
         if relevance == 'HIGH':
             high_count += 1
         if source not in unique_srcs:
@@ -810,7 +811,7 @@ def recompute_conviction(symbol: str) -> dict:
     tier      = ('HIGH'   if score >= 0.60 and high_count >= 1
             else 'MEDIUM' if score >= 0.30
             else 'LOW')
-    direction = 'BULL' if bull > bear else ('BEAR' if bear > bull else 'MIXED')
+    direction = 'BULL' if bull_score > bear_score else ('BEAR' if bear_score > bull_score else 'MIXED')
     sources   = ', '.join(unique_srcs[:5])
     now_str   = now.isoformat()
 

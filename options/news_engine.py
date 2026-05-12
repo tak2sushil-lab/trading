@@ -37,11 +37,14 @@ ET_TZ             = ZoneInfo('America/New_York')
 BRIDGE_URL        = os.getenv('BRIDGE_URL', 'http://127.0.0.1:8000')
 TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID  = os.getenv('TELEGRAM_CHAT_ID')
+# Options-specific bot (falls back to main bot if not configured)
+OPT_TG_TOKEN     = os.getenv('OPTIONS_TELEGRAM_TOKEN') or TELEGRAM_TOKEN
+OPT_TG_CHAT_ID   = os.getenv('OPTIONS_TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
 ANTHROPIC_KEY     = os.getenv('ANTHROPIC_KEY')
 POLYGON_KEY       = os.getenv('POLYGON_API_KEY')       # optional — $29/mo
 ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')     # optional — free 25 calls/day
 FINNHUB_KEY       = os.getenv('FINNHUB_API_KEY')        # optional — free 60 calls/min
-TG_API            = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+TG_API            = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 
 SCAN_INTERVAL_MIN = 15     # minutes between scans during market hours
 MAX_AGE_HOURS     = 16     # fetch window: covers overnight news at 9:30am open
@@ -228,13 +231,13 @@ ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
 
 # ── Telegram ──────────────────────────────────────────────
 def send_telegram(message: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not OPT_TG_TOKEN or not OPT_TG_CHAT_ID:
         print(f"[TG] {message}")
         return
     try:
         requests.post(
             f"{TG_API}/sendMessage",
-            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message,
+            json={'chat_id': OPT_TG_CHAT_ID, 'text': message,
                   'parse_mode': 'HTML'},
             timeout=10,
         )
@@ -500,17 +503,40 @@ def classify_headline(symbol: str, headline: str,
         return None
 
 
-# ── Per-ticker daily alert dedup (in-memory, resets on restart) ───────────────
-_alerted_today: set[str] = set()   # symbols already alerted this calendar day
-_alerted_date:  str      = ''      # date string when set was last reset
+# ── Per-ticker daily alert dedup ──────────────────────────────────────────────
+_alerted_today:     set[str] = set()   # symbols already alerted this calendar day
+_alerted_date:      str      = ''      # date string when set was last reset
+_alerts_sent_today: int      = 0       # daily cap: max 5 tier-change alerts
+_ALERTED_FILE = os.path.join(os.path.dirname(__file__), '.alerted_today.json')
+
+
+def _load_alerted_file(today: str) -> set[str]:
+    """Reload _alerted_today from disk so restarts don't lose dedup state."""
+    try:
+        with open(_ALERTED_FILE) as f:
+            data = json.load(f)
+        if data.get('date') == today:
+            return set(data.get('symbols', []))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_alerted_file():
+    try:
+        with open(_ALERTED_FILE, 'w') as f:
+            json.dump({'date': _alerted_date, 'symbols': list(_alerted_today)}, f)
+    except Exception:
+        pass
 
 
 def _check_reset_daily():
-    global _alerted_today, _alerted_date
+    global _alerted_today, _alerted_date, _alerts_sent_today
     today = datetime.now(ET_TZ).strftime('%Y-%m-%d')
     if _alerted_date != today:
-        _alerted_today = set()
-        _alerted_date  = today
+        _alerted_today     = _load_alerted_file(today)
+        _alerted_date      = today
+        _alerts_sent_today = 0
 
 
 # ── Consolidated per-ticker alert ─────────────────────────────────────────────
@@ -547,10 +573,12 @@ def _send_consolidated_alert(symbol: str, high_signals: list[dict],
     Send ONE Telegram message per ticker per day summarising all HIGH signals.
     Determines net direction (BULLISH / BEARISH / MIXED) and routes accordingly.
     """
-    _check_reset_daily()
+    global _alerts_sent_today
     if symbol in _alerted_today:
-        return   # already alerted for this ticker today
+        return   # safety guard — should_alert already checked, but be safe
     _alerted_today.add(symbol)
+    _alerts_sent_today += 1
+    _save_alerted_file()
 
     bull  = sum(1 for s in high_signals if s['clf'].get('direction') == 'BULLISH')
     bear  = sum(1 for s in high_signals if s['clf'].get('direction') == 'BEARISH')
@@ -753,25 +781,23 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
         update_conviction_iv(symbol, round(iv_data['iv_rank'], 1))
         print(f"[IV] {symbol} iv_rank={iv_data['iv_rank']:.1f}%")
 
-    # Fire Telegram only on tier upgrade or first HIGH of the day
-    tier        = conviction['tier']
+    # Alert only on tier upgrades (LOW→MEDIUM or MEDIUM→HIGH), cap at 5/day
+    tier         = conviction['tier']
     tier_changed = conviction['tier_changed']
     should_alert = (
-        (tier_changed and tier in ('MEDIUM', 'HIGH'))
-        or (tier == 'HIGH' and symbol not in _alerted_today and high_signals)
+        tier_changed
+        and tier in ('MEDIUM', 'HIGH')
+        and _alerts_sent_today < 5
     )
 
     if should_alert:
-        _check_reset_daily()
         narrative = None
-        if tier == 'HIGH':
-            # Generate narrative once when first reaching HIGH
-            narrative = _generate_narrative(symbol, high_signals) if high_signals else None
+        if tier == 'HIGH' and high_signals:
+            narrative = _generate_narrative(symbol, high_signals)
             if narrative:
                 update_conviction_narrative(symbol, narrative)
-            _alerted_today.add(symbol)
         _send_consolidated_alert(symbol, high_signals, linked_trade, conviction, narrative)
-        print(f"[CONVICTION] {symbol} → {tier} (score {conviction['score']:.2f}) | alert sent")
+        print(f"[CONVICTION] {symbol} → {tier} (score {conviction['score']:.2f}) | alert sent ({_alerts_sent_today}/5 today)")
     else:
         print(f"[CONVICTION] {symbol} → {tier} (score {conviction['score']:.2f}) | silent update")
 
@@ -821,6 +847,7 @@ def sync_wsh_catalysts(days: int = 60) -> tuple[int, int]:
 
 # ── Main scan ─────────────────────────────────────────────
 def run_scan():
+    _check_reset_daily()   # reset _alerted_today and counter at day boundary
     now = datetime.now(ET_TZ)
     print(f"\n[SCAN] {now.strftime('%Y-%m-%d %H:%M ET')} | "
           f"{len(OPTIONS_SYMBOLS)} symbols")
@@ -832,6 +859,10 @@ def run_scan():
         high = process_symbol(symbol, open_trades)
         total_high += high
         time.sleep(0.5)   # gentle rate-limit between symbols
+
+    # Recompute conviction for symbols with no new articles so recency decay applies
+    for symbol in OPTIONS_SYMBOLS:
+        recompute_conviction(symbol)
 
     print(f"[SCAN] Done | HIGH signals: {total_high}")
     return total_high
