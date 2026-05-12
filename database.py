@@ -806,7 +806,10 @@ def recompute_conviction(symbol: str) -> dict:
         last_at = created_at_str
 
     score     = min(1.0, total_score)
-    tier      = 'HIGH' if score >= 0.60 else ('MEDIUM' if score >= 0.30 else 'LOW')
+    # HIGH tier requires at least 1 genuine HIGH-relevance signal, not just MEDIUM accumulation
+    tier      = ('HIGH'   if score >= 0.60 and high_count >= 1
+            else 'MEDIUM' if score >= 0.30
+            else 'LOW')
     direction = 'BULL' if bull > bear else ('BEAR' if bear > bull else 'MIXED')
     sources   = ', '.join(unique_srcs[:5])
     now_str   = now.isoformat()
