@@ -241,6 +241,53 @@ def get_portfolio_options() -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def get_account_nav() -> float | None:
+    """Return account net liquidation value from IBKR bridge."""
+    data = bridge_get("/account")
+    if data and data.get('NetLiquidation'):
+        return float(data['NetLiquidation'])
+    return None
+
+
+def get_deployed_capital() -> float:
+    """Sum of premium_paid for all open options positions."""
+    trades = get_open_options_trades()
+    return sum(t.get('premium_paid') or 0 for t in trades)
+
+
+def check_capital_cap(new_premium: float, chat_id: str) -> bool:
+    """
+    Return True if adding new_premium stays within the 30% capital deployment cap.
+    Sends a Telegram warning and returns False if it would breach the cap.
+    """
+    nav = get_account_nav()
+    if nav is None:
+        # Bridge unreachable — warn but allow (don't block trades on infra issue)
+        send_telegram(
+            "⚠️ Cannot fetch account NAV — proceeding without cap check. "
+            "Verify deployed capital manually.",
+            chat_id,
+        )
+        return True
+    deployed  = get_deployed_capital()
+    cap_limit = nav * 0.30
+    if deployed + new_premium > cap_limit:
+        send_telegram(
+            f"🚫 *Capital cap reached*\n"
+            f"Deployed: ${deployed:,.0f} + new ${new_premium:,.0f} = ${deployed+new_premium:,.0f}\n"
+            f"30% cap on ${nav:,.0f} NAV = ${cap_limit:,.0f}\n"
+            f"Close an existing position or wait for more capital.",
+            chat_id,
+        )
+        return False
+    remaining = cap_limit - deployed - new_premium
+    send_telegram(
+        f"✅ Cap check passed — ${remaining:,.0f} remaining headroom after this trade.",
+        chat_id,
+    )
+    return True
+
+
 # ── Market helpers ────────────────────────────────────────────────────────────
 
 def is_above_200ma(symbol: str) -> bool:
@@ -589,6 +636,11 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str):
     filled_at = None
     for attempt in range(MAX_FILL_TRIES):
         limit_price = round(mid + attempt * 0.05, 2)
+        if attempt > 0:
+            send_telegram(
+                f"⏳ *{sym} spread* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f}",
+                chat_id,
+            )
         payload = {
             'symbol':       sym,
             'expiry':       expiry,
@@ -676,6 +728,11 @@ def _execute_leap_bg(sym: str, leap: dict, chat_id: str):
     filled_at = None
     for attempt in range(MAX_FILL_TRIES):
         limit_price = round(mid + attempt * 0.05, 2)
+        if attempt > 0:
+            send_telegram(
+                f"⏳ *{sym} LEAP* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f}",
+                chat_id,
+            )
         payload = {
             'symbol':      sym,
             'expiry':      leap['expiry'],
@@ -892,6 +949,18 @@ def _run_learning_analysis(chat_id: str):
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 def cmd_buy(sym: str, qty: int, chat_id: str):
+    # Guard: warn if an existing position for this symbol expires within 7 days
+    existing = [t for t in get_open_options_trades() if t['symbol'] == sym.upper()]
+    for t in existing:
+        dte = days_to_expiry(t['expiry'])
+        if dte <= 7:
+            send_telegram(
+                f"⚠️ *{sym} has an open {t['strategy']} expiring in {dte}d*\n"
+                f"Use `OPT CLOSE {sym}` to exit before opening a new position.",
+                chat_id,
+            )
+            return
+
     send_telegram(f"⏳ Running calculator for *{sym}*...", chat_id)
     calc = run_calculator(sym, qty)
     if 'error' in calc:
@@ -954,8 +1023,9 @@ def cmd_positions(chat_id: str):
             leg_str = f"${t['long_strike']}/${t['short_strike']} spread"
         else:
             leg_str = f"${t['strike']} LEAP"
+        expiry_flag = " ⚠️ EXPIRING SOON" if dte <= 7 else ""
         lines += [
-            f"*{t['symbol']}* [{t['entry_grade']}] — {leg_str}",
+            f"*{t['symbol']}* [{t['entry_grade']}] — {leg_str}{expiry_flag}",
             f"  Exp: {t['expiry']} ({dte}d) | Entry: ${prem:.0f}",
             f"  Stop: ${stop:.0f} ({stage_lbl}) | Δ: {t['delta_entry'] or '?'}",
             f"  IV@entry: {t['iv_rank_entry'] or '?'}%",
@@ -1231,6 +1301,10 @@ def handle_reply(text: str, chat_id: str):
             tmpl['underlying'] = calc.get('underlying')
             tmpl['iv_rank']    = calc.get('iv', {}).get('iv_rank')
             tmpl['iv_pct']     = calc.get('iv', {}).get('current_iv')
+            new_premium = tmpl.get('net_debit', 0) * 100 * tmpl.get('qty', 1)
+            if not check_capital_cap(new_premium, chat_id):
+                del _pending[chat_id]
+                return
             del _pending[chat_id]
             send_telegram(f"⏳ Placing {tmpl['template']} spread for *{sym}*...", chat_id)
             t = threading.Thread(target=_execute_spread_bg, args=(sym, tmpl, chat_id), daemon=True)
@@ -1240,6 +1314,10 @@ def handle_reply(text: str, chat_id: str):
             leap = calc.get('leap')
             if not leap:
                 send_telegram(f"No LEAP template available for {sym}.", chat_id)
+                return
+            new_premium = leap.get('mid', 0) * 100 * leap.get('qty', 1)
+            if not check_capital_cap(new_premium, chat_id):
+                del _pending[chat_id]
                 return
             del _pending[chat_id]
             send_telegram(f"⏳ Placing LEAP for *{sym}*...", chat_id)
