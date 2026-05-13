@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import yfinance as yf
 import anthropic
+from groq import Groq
 from dotenv import load_dotenv
 
 # ── Path setup: import database from parent trading/ folder ──
@@ -42,6 +43,7 @@ TELEGRAM_CHAT_ID  = os.getenv('TELEGRAM_CHAT_ID')
 OPT_TG_TOKEN     = os.getenv('OPTIONS_TELEGRAM_TOKEN') or TELEGRAM_TOKEN
 OPT_TG_CHAT_ID   = os.getenv('OPTIONS_TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
 ANTHROPIC_KEY     = os.getenv('ANTHROPIC_KEY')
+GROQ_KEY          = os.getenv('GROQ_API_KEY')          # free tier — used for LLM classification
 POLYGON_KEY       = os.getenv('POLYGON_API_KEY')       # optional — $29/mo
 ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')     # optional — free 25 calls/day
 FINNHUB_KEY       = os.getenv('FINNHUB_API_KEY')        # optional — free 60 calls/min
@@ -226,8 +228,35 @@ DEFAULT_CONTEXT = (
     "Ignore generic market commentary and analyst reiterations."
 )
 
-# ── Claude API client ─────────────────────────────────────
-ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+# ── LLM client: Groq (free) preferred, Claude fallback ───
+# Groq runs Llama 3 70B — same classification quality, zero cost.
+# Claude is used only if GROQ_KEY is absent and ANTHROPIC_KEY is set.
+if GROQ_KEY:
+    _groq_client = Groq(api_key=GROQ_KEY)
+    ai = None   # Claude client not needed
+else:
+    _groq_client = None
+    ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+
+def _llm_call(prompt: str, max_tokens: int) -> str:
+    """Single LLM call — routes to Groq (free) or Claude fallback."""
+    if _groq_client:
+        resp = _groq_client.chat.completions.create(
+            model    = 'llama-3.3-70b-versatile',
+            messages = [{'role': 'user', 'content': prompt}],
+            max_tokens      = max_tokens,
+            temperature     = 0,
+            response_format = {'type': 'json_object'},
+        )
+        return resp.choices[0].message.content.strip()
+    elif ai:
+        resp = ai.messages.create(
+            model    = 'claude-haiku-4-5-20251001',
+            max_tokens = max_tokens,
+            messages = [{'role': 'user', 'content': prompt}],
+        )
+        return resp.content[0].text.strip()
+    raise RuntimeError('No LLM configured — set GROK_API_KEY or ANTHROPIC_KEY')
 
 
 # ── Telegram ──────────────────────────────────────────────
@@ -480,7 +509,7 @@ Relevance rules:
 
 def classify_headline(symbol: str, headline: str,
                       av_sentiment: str | None = None) -> dict | None:
-    if not ai:
+    if not _groq_client and not ai:
         return None
     context  = SYMBOL_CONTEXT.get(symbol, DEFAULT_CONTEXT)
     av_hint  = f"\nAlpha Vantage pre-label: {av_sentiment}" if av_sentiment else ''
@@ -488,12 +517,7 @@ def classify_headline(symbol: str, headline: str,
         symbol=symbol, context=context, av_hint=av_hint, headline=headline
     )
     try:
-        resp = ai.messages.create(
-            model      = 'claude-haiku-4-5-20251001',
-            max_tokens = 300,
-            messages   = [{'role': 'user', 'content': prompt}],
-        )
-        text = resp.content[0].text.strip()
+        text = _llm_call(prompt, max_tokens=300)
         if '```' in text:
             parts = text.split('```')
             text  = parts[1].lstrip('json').strip() if len(parts) > 1 else text
@@ -540,8 +564,10 @@ def classify_headlines_batch(symbol: str,
     items: list of {'title': str, 'av_sentiment': str|None}
     Returns list of clf dicts (or None on error) — same length as items.
     """
-    if not ai or not items:
+    if not _groq_client and not ai:
         return [None] * len(items)
+    if not items:
+        return []
 
     headlines = items
     context   = SYMBOL_CONTEXT.get(symbol, DEFAULT_CONTEXT)
@@ -550,12 +576,7 @@ def classify_headlines_batch(symbol: str,
         symbol=symbol, context=context, headlines=numbered
     )
     try:
-        resp = ai.messages.create(
-            model      = 'claude-haiku-4-5-20251001',
-            max_tokens = 180 * len(headlines),
-            messages   = [{'role': 'user', 'content': prompt}],
-        )
-        text = resp.content[0].text.strip()
+        text = _llm_call(prompt, max_tokens=180 * len(headlines))
         if '```' in text:
             parts = text.split('```')
             text  = parts[1].lstrip('json').strip() if len(parts) > 1 else text
@@ -608,25 +629,24 @@ def _check_reset_daily():
 # ── Consolidated per-ticker alert ─────────────────────────────────────────────
 def _generate_narrative(symbol: str, signals: list[dict]) -> str | None:
     """
-    One-shot Haiku call: synthesise a 2-sentence bull/bear thesis from signal reasons.
+    One LLM call: synthesise a 2-sentence bull/bear thesis from signal reasons.
     Called only when a ticker first reaches HIGH tier — not on every scan.
     """
-    if not ai or not signals:
+    if not _groq_client and not ai:
+        return None
+    if not signals:
         return None
     reasons = '\n'.join(
         f"- [{s['clf'].get('direction','')}] {s['clf'].get('one_line_reason', s['headline'][:80])}"
         for s in signals
     )
     try:
-        resp = ai.messages.create(
-            model      = 'claude-haiku-4-5-20251001',
-            max_tokens = 120,
-            messages   = [{'role': 'user', 'content':
-                f"Stock: {symbol}\nSignals:\n{reasons}\n\n"
-                "Write exactly 2 sentences: a bull/bear thesis summary an options trader "
-                "would find useful. Mention IV if signals suggest event risk. Be specific, no filler."}],
+        return _llm_call(
+            f"Stock: {symbol}\nSignals:\n{reasons}\n\n"
+            "Write exactly 2 sentences: a bull/bear thesis summary an options trader "
+            "would find useful. Mention IV if signals suggest event risk. Be specific, no filler.",
+            max_tokens=120,
         )
-        return resp.content[0].text.strip()
     except Exception:
         return None
 
@@ -972,7 +992,10 @@ def main():
     print(f'   Symbols  : {len(OPTIONS_SYMBOLS)}')
     print(f'   Interval : {SCAN_INTERVAL_MIN} min')
     print(f'   Sources  : {sources}')
-    print(f'   LLM      : {"claude-haiku (enabled)" if ai else "DISABLED — set ANTHROPIC_KEY"}')
+    llm_label = ('groq/llama-3.3-70b (free)' if _groq_client
+                 else 'claude-haiku (fallback)' if ai
+                 else 'DISABLED — set GROK_API_KEY or ANTHROPIC_KEY')
+    print(f'   LLM      : {llm_label}')
     print('=' * 52)
 
     send_telegram(
