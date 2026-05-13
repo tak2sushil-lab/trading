@@ -28,6 +28,7 @@ from database import (
     headline_seen_recently, get_open_options_trades,
     upsert_catalyst_from_wsh,
     recompute_conviction, update_conviction_narrative, update_conviction_iv,
+    log_suggestion, get_suggestions_today_count,
 )
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
@@ -659,7 +660,17 @@ def _send_consolidated_alert(symbol: str, high_signals: list[dict],
         parts.append(tier_line)
     if narrative_line:
         parts.append(narrative_line)
-    parts.append(f"Reply <code>OPT BUY {symbol}</code> to see trade options")
+    # Queue auto-suggest: options_trader will run the calculator and send CONFIRM/SKIP
+    if net_dir == 'BULLISH' and get_suggestions_today_count() < 5:
+        try:
+            score = conviction['score'] if conviction else 0.0
+            n_sig = conviction['signal_count'] if conviction else len(high_signals)
+            log_suggestion(symbol, score, n_sig)
+            parts.append(f"<i>Auto-analysis queued — you will receive a trade suggestion shortly</i>")
+        except Exception:
+            parts.append(f"Reply <code>OPT BUY {symbol}</code> to see trade options")
+    else:
+        parts.append(f"Reply <code>OPT BUY {symbol}</code> to see trade options")
 
     send_telegram('\n'.join(parts))
 

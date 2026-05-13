@@ -197,6 +197,35 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    # ── Auto-suggest decision log ─────────────────────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS opt_suggestions (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol                TEXT NOT NULL,
+        suggested_at          TEXT NOT NULL,
+        conviction_score      REAL,
+        signal_count          INTEGER,
+        calc_log_id           INTEGER REFERENCES opt_calc_log(id),
+        verdict               TEXT,
+        mc_ev_dollar          REAL,
+        mc_win_rate           REAL,
+        gates_pass            INTEGER,
+        long_strike           REAL,
+        short_strike          REAL,
+        expiry                TEXT,
+        net_debit             REAL,
+        underlying_at_suggest REAL,
+        status                TEXT DEFAULT 'PENDING',
+        user_decision         TEXT,
+        decided_at            TEXT,
+        trade_id              INTEGER REFERENCES options_trades(id),
+        underlying_7d         REAL,
+        underlying_14d        REAL,
+        whatif_pnl            REAL,
+        whatif_return_pct     REAL
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_sug_status  ON opt_suggestions(status, suggested_at)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_sug_symbol  ON opt_suggestions(symbol, suggested_at)')
+
     # ── KB: Calculator run log — every OPT BUY evaluation ────────
     c.execute('''CREATE TABLE IF NOT EXISTS opt_calc_log (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1159,6 +1188,150 @@ def get_kb_summary() -> dict:
         'top_conviction':  top_conviction,
         'model_accuracy':  model_accuracy,
     }
+
+
+# ── Auto-suggest helpers ──────────────────────────────────────────────────────
+
+def log_suggestion(symbol: str, conviction_score: float,
+                   signal_count: int) -> int:
+    """Called by news_engine when a BULLISH HIGH alert fires. Returns row id."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''INSERT INTO opt_suggestions
+        (symbol, suggested_at, conviction_score, signal_count, status)
+        VALUES (?, ?, ?, ?, 'PENDING')''',
+        (symbol.upper(), datetime.now().isoformat(timespec='seconds'),
+         conviction_score, signal_count))
+    row_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_suggestions_today_count() -> int:
+    """How many auto-suggestions have been queued today."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''SELECT COUNT(*) FROM opt_suggestions
+                 WHERE date(suggested_at) = date('now')''')
+    n = c.fetchone()[0]
+    conn.close()
+    return n
+
+
+def get_pending_suggestions() -> list:
+    """Return PENDING suggestions not yet processed by options_trader."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''SELECT id, symbol, conviction_score, signal_count
+                 FROM opt_suggestions
+                 WHERE status = 'PENDING'
+                 ORDER BY suggested_at ASC''')
+    rows = c.fetchall()
+    conn.close()
+    return [{'id': r[0], 'symbol': r[1],
+             'conviction_score': r[2], 'signal_count': r[3]}
+            for r in rows]
+
+
+def update_suggestion_calc(sug_id: int, calc: dict, calc_log_id: int | None):
+    """Store calculator result on a suggestion row."""
+    conn = get_connection()
+    c    = conn.cursor()
+    eg   = calc.get('entry_gates', {})
+    mc   = calc.get('mc_ev', {})
+    c.execute('''UPDATE opt_suggestions SET
+        calc_log_id=?, verdict=?, mc_ev_dollar=?, mc_win_rate=?,
+        gates_pass=?, long_strike=?, short_strike=?, expiry=?,
+        net_debit=?, underlying_at_suggest=?
+        WHERE id=?''',
+    (
+        calc_log_id, eg.get('verdict'),
+        mc.get('ev_dollar'), mc.get('win_rate'),
+        eg.get('gates_pass'),
+        calc.get('long_strike'), calc.get('short_strike'),
+        calc.get('expiry'), calc.get('net_debit'),
+        calc.get('underlying'), sug_id,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def update_suggestion_status(sug_id: int, status: str):
+    """Transition status: PENDING → SENT / NO_TRADE / ERROR."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('UPDATE opt_suggestions SET status=? WHERE id=?', (status, sug_id))
+    conn.commit()
+    conn.close()
+
+
+def update_suggestion_decision(sug_id: int, decision: str,
+                                trade_id: int | None = None):
+    """Record user CONFIRMED / SKIPPED / EXPIRED."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''UPDATE opt_suggestions SET
+        user_decision=?, decided_at=?, trade_id=?, status=?
+        WHERE id=?''',
+        (decision, datetime.now().isoformat(timespec='seconds'),
+         trade_id, decision, sug_id))
+    conn.commit()
+    conn.close()
+
+
+def fill_whatif_prices():
+    """
+    Nightly: for SKIPped/EXPIRED suggestions, fetch current price and compute
+    what the P&L would have been had the user confirmed the trade.
+    Fills underlying_7d (if 7+ days old) and underlying_14d (if 14+ days old).
+    Called from learner.py.
+    """
+    import yfinance as yf
+    conn = get_connection()
+    c    = conn.cursor()
+
+    c.execute('''SELECT id, symbol, suggested_at, long_strike, short_strike,
+                        net_debit, underlying_at_suggest,
+                        underlying_7d, underlying_14d
+                 FROM opt_suggestions
+                 WHERE user_decision IN ('SKIPPED','EXPIRED','NO_TRADE')
+                   AND long_strike IS NOT NULL
+                   AND (underlying_7d IS NULL OR underlying_14d IS NULL)''')
+    rows = c.fetchall()
+
+    today = date.today()
+    for row in rows:
+        sid, sym, sug_at, ls, ss, nd, entry_price, u7, u14 = row
+        try:
+            sug_date = date.fromisoformat(sug_at[:10])
+            days_old = (today - sug_date).days
+            current  = yf.Ticker(sym).fast_info.get('last_price')
+            if not current:
+                continue
+
+            if days_old >= 7 and u7 is None:
+                c.execute('UPDATE opt_suggestions SET underlying_7d=? WHERE id=?',
+                          (current, sid))
+            if days_old >= 14 and u14 is None:
+                c.execute('UPDATE opt_suggestions SET underlying_14d=? WHERE id=?',
+                          (current, sid))
+
+            # Estimate what-if P&L using intrinsic value of spread at current price
+            # (simplified: spread value = clamp(current - long_strike, 0, width) * 100)
+            if ls and ss and nd and entry_price and current:
+                width   = ss - ls
+                spread_val = max(0.0, min(current - ls, width))
+                whatif_pnl = round((spread_val - nd) * 100, 2)
+                whatif_pct = round((spread_val - nd) / nd * 100, 1) if nd else 0
+                c.execute('''UPDATE opt_suggestions
+                             SET whatif_pnl=?, whatif_return_pct=? WHERE id=?''',
+                          (whatif_pnl, whatif_pct, sid))
+        except Exception:
+            continue
+
+    conn.commit()
+    conn.close()
 
 
 if __name__ == '__main__':

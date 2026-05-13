@@ -53,6 +53,10 @@ from database import (
     log_calc_run,
     update_calc_action,
     log_trade_outcome,
+    get_pending_suggestions,
+    update_suggestion_calc,
+    update_suggestion_status,
+    update_suggestion_decision,
 )
 
 load_dotenv()
@@ -844,7 +848,9 @@ def format_calc_message(calc: dict) -> str:
 
 # ── Order execution (background thread) ──────────────────────────────────────
 
-def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str, calc_log_id: int | None = None):
+def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
+                       calc_log_id: int | None = None,
+                       sug_id: int | None = None):
     """Place a spread combo order with incremental limit, runs in thread."""
     qty      = tmpl['qty']
     mid      = tmpl['net_debit']
@@ -925,10 +931,12 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str, calc_log_id: int | No
         days_to_catalyst=tmpl.get('catalyst_days'),
     )
 
-    # Link trade_id to KB calc log row
+    # Link trade_id to KB calc log + suggestion rows
     try:
         if calc_log_id:
             update_calc_action(calc_log_id, 'CONFIRM', trade_id)
+        if sug_id:
+            update_suggestion_decision(sug_id, 'CONFIRMED', trade_id)
     except Exception:
         pass
 
@@ -1569,11 +1577,14 @@ def handle_reply(text: str, chat_id: str):
         qty  = pending['qty']
         upper = text.upper()
         calc_log_id = calc.get('calc_log_id')
+        sug_id      = pending.get('suggestion_id')
         if upper == 'SKIP':
             del _pending[chat_id]
             try:
                 if calc_log_id:
                     update_calc_action(calc_log_id, 'SKIP')
+                if sug_id:
+                    update_suggestion_decision(sug_id, 'SKIPPED')
             except Exception:
                 pass
             send_telegram(f"Skipped {sym}. No order placed.", chat_id)
@@ -1590,7 +1601,8 @@ def handle_reply(text: str, chat_id: str):
                 return
             del _pending[chat_id]
             send_telegram(f"⏳ Placing EM-Anchored spread for *{sym}*...", chat_id)
-            t = threading.Thread(target=_execute_spread_bg, args=(sym, trade, chat_id, calc_log_id), daemon=True)
+            t = threading.Thread(target=_execute_spread_bg,
+                                 args=(sym, trade, chat_id, calc_log_id, sug_id), daemon=True)
             t.start()
             return
         # Unrecognised reply
@@ -1692,15 +1704,106 @@ def dispatch(text: str, chat_id: str):
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
+def _process_pending_suggestions():
+    """
+    Called from main loop every iteration.
+    Picks up one PENDING suggestion written by news_engine, runs the calculator,
+    and sends the CONFIRM/SKIP verdict message. Processes at most one per call
+    so we never queue two trades waiting at once.
+    """
+    OPT_CHAT = os.getenv('OPTIONS_TELEGRAM_CHAT_ID', '')
+    if not OPT_CHAT:
+        return
+
+    # Don't start a new auto-suggest while one is already waiting for a reply
+    if OPT_CHAT in _pending:
+        return
+
+    suggestions = get_pending_suggestions()
+    if not suggestions:
+        return
+
+    sug = suggestions[0]   # oldest first
+    sug_id = sug['id']
+    sym    = sug['symbol']
+
+    # Mark immediately so next loop iteration skips it
+    update_suggestion_status(sug_id, 'PROCESSING')
+
+    send_telegram(
+        f"📡 *Auto-analysis: {sym}* (HIGH conviction)\n"
+        f"⏳ Running Evidence-Based calculator...",
+        OPT_CHAT,
+    )
+
+    calc = run_calculator(sym, 1)
+
+    if 'error' in calc:
+        send_telegram(f"❌ {sym} calculator error: {calc['error']}", OPT_CHAT)
+        update_suggestion_status(sug_id, 'ERROR')
+        return
+
+    calc_log_id = calc.get('calc_log_id')
+    verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+
+    # Store calc results on the suggestion row
+    try:
+        update_suggestion_calc(sug_id, calc, calc_log_id)
+    except Exception:
+        pass
+
+    if verdict in ('ENTER', 'ENTER_REDUCED'):
+        msg = format_calc_message(calc)
+        send_telegram(msg, OPT_CHAT)
+        _pending[OPT_CHAT] = {
+            'action':        'spread_confirm',
+            'symbol':        sym,
+            'qty':           1,
+            'calc':          calc,
+            'suggestion_id': sug_id,
+            'expires_at':    datetime.now() + timedelta(minutes=30),
+        }
+        update_suggestion_status(sug_id, 'SENT')
+    else:
+        # Calculator says SKIP — send a brief note, no CONFIRM prompt
+        gs    = calc.get('entry_gates', {})
+        mc    = calc.get('mc_ev', {})
+        gates = gs.get('gates_pass', 0)
+        ev    = mc.get('ev_dollar')
+        ev_str = f"MC EV ${ev:+.0f}" if ev is not None else "no EV"
+        send_telegram(
+            f"📊 *{sym} auto-analysis: {verdict}* ({gates}/5 gates, {ev_str})\n"
+            f"Conviction is HIGH but setup not ready. No action needed.",
+            OPT_CHAT,
+        )
+        update_suggestion_status(sug_id, 'NO_TRADE')
+
+
 def main():
     global _last_update_id
     print("[options_trader] started — polling Telegram")
+    _suggestion_check_counter = 0
     while True:
         try:
-            # Purge expired pending entries to prevent unbounded growth
+            # Purge expired pending entries; mark timed-out suggestions EXPIRED
             now = datetime.now()
             for cid in [c for c, p in list(_pending.items()) if p['expires_at'] < now]:
+                sug_id = _pending[cid].get('suggestion_id')
+                if sug_id:
+                    try:
+                        update_suggestion_decision(sug_id, 'EXPIRED')
+                    except Exception:
+                        pass
                 del _pending[cid]
+
+            # Check for new auto-suggest requests every ~30s (3 × 10s sleep)
+            _suggestion_check_counter += 1
+            if _suggestion_check_counter >= 3:
+                _suggestion_check_counter = 0
+                try:
+                    _process_pending_suggestions()
+                except Exception as _se:
+                    print(f"[options_trader] suggestion poller error: {_se}")
 
             updates = poll_telegram()
             for update in updates:
