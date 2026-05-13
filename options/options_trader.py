@@ -574,9 +574,11 @@ def format_calc_message(calc: dict) -> str:
     else:
         routing = "🟡 IV Rank 30-45% — Spread preferred"
 
+    under_str = f"${under:.2f}" if under is not None else "n/a"
+    iv_str    = f"{current_iv}%" if current_iv is not None else "n/a"
     lines = [
         f"📊 *{sym} Options Calculator*",
-        f"Price: ${under:.2f} | IV Rank: {iv_rank}% | IV: {current_iv}%",
+        f"Price: {under_str} | IV Rank: {iv_rank}% | IV: {iv_str}",
         routing,
         "",
     ]
@@ -1271,6 +1273,10 @@ def cmd_resume(chat_id: str):
 def handle_reply(text: str, chat_id: str):
     pending = _pending.get(chat_id)
     if not pending:
+        send_telegram(
+            "No active calculator session. Send `OPT BUY <sym>` to start a new one.",
+            chat_id,
+        )
         return
 
     if pending['expires_at'] < datetime.now():
@@ -1453,6 +1459,7 @@ def main():
         except Exception as e:
             print(f"[options_trader] loop error: {e}")
             traceback.print_exc()
+            import sys; sys.stdout.flush(); sys.stderr.flush()
         time.sleep(10)  # short-poll every 10s — avoids blocking auto_trader's Telegram connection
 
 
