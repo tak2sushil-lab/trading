@@ -50,6 +50,9 @@ from database import (
     get_news_quality_stats,
     get_conviction_leaderboard,
     get_conviction_detail,
+    log_calc_run,
+    update_calc_action,
+    log_trade_outcome,
 )
 
 load_dotenv()
@@ -641,7 +644,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         'catalyst_days': catalyst_days,
     }
 
-    return {
+    result = {
         'symbol':       sym,
         'underlying':   underlying,
         'expiry':       expiry,
@@ -673,6 +676,15 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         'qty':          qty,
         'trade':        trade,
     }
+
+    # Persist to KB (non-blocking — errors should never kill the calculator)
+    try:
+        calc_log_id = log_calc_run(result)
+        result['calc_log_id'] = calc_log_id
+    except Exception:
+        pass
+
+    return result
 
 
 # ── Format calculator output for Telegram ────────────────────────────────────
@@ -832,7 +844,7 @@ def format_calc_message(calc: dict) -> str:
 
 # ── Order execution (background thread) ──────────────────────────────────────
 
-def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str):
+def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str, calc_log_id: int | None = None):
     """Place a spread combo order with incremental limit, runs in thread."""
     qty      = tmpl['qty']
     mid      = tmpl['net_debit']
@@ -912,6 +924,13 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str):
         catalyst_id=tmpl.get('catalyst_id'),
         days_to_catalyst=tmpl.get('catalyst_days'),
     )
+
+    # Link trade_id to KB calc log row
+    try:
+        if calc_log_id:
+            update_calc_action(calc_log_id, 'CONFIRM', trade_id)
+    except Exception:
+        pass
 
     send_telegram(
         f"✅ *{sym} SPREAD entered* [trade #{trade_id}]\n"
@@ -1073,6 +1092,35 @@ def _execute_close_bg(trade: dict, chat_id: str):
 
     return_pct = close_options_trade(tid, exit_value, exit_reason='MANUAL')
     sign       = '+' if (return_pct or 0) >= 0 else ''
+
+    # KB: log actual outcome vs predicted EV
+    try:
+        from database import get_connection as _gc, DB_PATH as _dbp
+        import sqlite3 as _sq
+        _conn = _sq.connect(_dbp)
+        _cur  = _conn.cursor()
+        _cur.execute('''SELECT id, mc_ev_dollar, mc_win_rate
+                        FROM opt_calc_log WHERE trade_id=? LIMIT 1''', (tid,))
+        _row = _cur.fetchone()
+        _cur.execute('''SELECT entry_date FROM options_trades WHERE id=?''', (tid,))
+        _erow = _cur.fetchone()
+        _conn.close()
+        if _row:
+            from datetime import date as _date
+            _entry_date = _erow[0] if _erow else None
+            _days = ((_date.today() - _date.fromisoformat(_entry_date)).days
+                     if _entry_date else 0)
+            _actual_pnl = exit_value - (_row[1] or 0)
+            log_trade_outcome(
+                trade_id=tid, calc_log_id=_row[0],
+                predicted_ev=_row[1], predicted_wr=_row[2],
+                actual_pnl=round(exit_value, 2),
+                exit_reason='MANUAL',
+                days_held=_days,
+            )
+    except Exception:
+        pass
+
     send_telegram(
         f"{'✅' if filled else '⚠️'} *{sym} {strat} closed* [trade #{tid}]\n"
         f"Exit value: ${exit_value:.0f} | Return: {sign}{return_pct:.1f}%\n"
@@ -1481,6 +1529,24 @@ def cmd_resume(chat_id: str):
 
 # ── Reply handlers ────────────────────────────────────────────────────────────
 
+def cmd_kb(chat_id: str):
+    """Send a compact KB session brief to Telegram."""
+    try:
+        import importlib.util, os
+        spec = importlib.util.spec_from_file_location(
+            "kb_report",
+            os.path.join(os.path.dirname(__file__), "kb_report.py"),
+        )
+        kb_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(kb_mod)
+        from database import get_kb_summary
+        kb    = get_kb_summary()
+        brief = kb_mod.build_telegram_brief(kb)
+        send_telegram(brief, chat_id)
+    except Exception as e:
+        send_telegram(f"KB error: {e}", chat_id)
+
+
 def handle_reply(text: str, chat_id: str):
     pending = _pending.get(chat_id)
     if not pending:
@@ -1502,8 +1568,14 @@ def handle_reply(text: str, chat_id: str):
         sym  = pending['symbol']
         qty  = pending['qty']
         upper = text.upper()
+        calc_log_id = calc.get('calc_log_id')
         if upper == 'SKIP':
             del _pending[chat_id]
+            try:
+                if calc_log_id:
+                    update_calc_action(calc_log_id, 'SKIP')
+            except Exception:
+                pass
             send_telegram(f"Skipped {sym}. No order placed.", chat_id)
             return
         if upper == 'CONFIRM':
@@ -1518,7 +1590,7 @@ def handle_reply(text: str, chat_id: str):
                 return
             del _pending[chat_id]
             send_telegram(f"⏳ Placing EM-Anchored spread for *{sym}*...", chat_id)
-            t = threading.Thread(target=_execute_spread_bg, args=(sym, trade, chat_id), daemon=True)
+            t = threading.Thread(target=_execute_spread_bg, args=(sym, trade, chat_id, calc_log_id), daemon=True)
             t.start()
             return
         # Unrecognised reply
@@ -1569,13 +1641,16 @@ def dispatch(text: str, chat_id: str):
         elif cmd == 'NEWS':
             sym = parts[2].upper() if len(parts) > 2 else None
             cmd_news(sym, chat_id)
+        elif cmd == 'KB':
+            cmd_kb(chat_id)
         else:
             send_telegram(
                 "Unknown OPT command. Available:\n"
                 "`OPT STATUS` · `OPT POSITIONS` · `OPT CALENDAR`\n"
                 "`OPT PAUSE` · `OPT RESUME`\n"
                 "`OPT CLOSE <sym>` · `OPT BUY <sym> [qty]`\n"
-                "`OPT NEWS [sym]` · `OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]`",
+                "`OPT NEWS [sym]` · `OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]`\n"
+                "`OPT KB` — session catch-up brief",
                 chat_id,
             )
         return
@@ -1609,7 +1684,8 @@ def dispatch(text: str, chat_id: str):
         "`OPT BUY <sym> [qty]` — spread/LEAP calculator\n"
         "`OPT CLOSE <sym>` — close a position\n"
         "`OPT PAUSE` / `OPT RESUME` — halt/resume scanning\n"
-        "`OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]` — manual catalyst",
+        "`OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]` — manual catalyst\n"
+        "`OPT KB` — session catch-up brief (open, closed, MC accuracy, gates)",
         chat_id,
     )
 

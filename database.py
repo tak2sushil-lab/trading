@@ -197,6 +197,67 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    # ── KB: Calculator run log — every OPT BUY evaluation ────────
+    c.execute('''CREATE TABLE IF NOT EXISTS opt_calc_log (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_at          TEXT NOT NULL,
+        symbol          TEXT NOT NULL,
+        underlying      REAL,
+        iv_pct          REAL,
+        iv_rank         REAL,
+        hv30            REAL,
+        edge_pts        REAL,
+        vol_verdict     TEXT,
+        expected_move   REAL,
+        dte             INTEGER,
+        expiry          TEXT,
+        long_strike     REAL,
+        short_strike    REAL,
+        net_debit       REAL,
+        breakeven       REAL,
+        breakeven_pct   REAL,
+        momentum_5d     REAL,
+        above_200       INTEGER,
+        conviction_tier TEXT,
+        conviction_dir  TEXT,
+        signal_count    INTEGER,
+        vol_gate        INTEGER,
+        tech_gate       INTEGER,
+        conviction_gate INTEGER,
+        liquidity_gate  INTEGER,
+        momentum_gate   INTEGER,
+        gates_pass      INTEGER,
+        verdict         TEXT,
+        net_delta       REAL,
+        net_theta       REAL,
+        net_vega        REAL,
+        velocity_ratio  REAL,
+        mc_ev_dollar    REAL,
+        mc_win_rate     REAL,
+        user_action     TEXT DEFAULT 'NONE',
+        trade_id        INTEGER REFERENCES options_trades(id)
+    )''')
+
+    # ── KB: Outcome log — actual P&L vs predicted MC EV ──────────
+    c.execute('''CREATE TABLE IF NOT EXISTS opt_trade_outcomes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_id        INTEGER NOT NULL REFERENCES options_trades(id),
+        calc_log_id     INTEGER REFERENCES opt_calc_log(id),
+        predicted_ev    REAL,
+        predicted_wr    REAL,
+        actual_pnl      REAL,
+        exit_reason     TEXT,
+        days_held       INTEGER,
+        accuracy_pct    REAL,
+        thesis_correct  INTEGER,
+        lesson          TEXT,
+        recorded_at     TEXT
+    )''')
+
+    # migrate: indexes are safe to repeat
+    c.execute('CREATE INDEX IF NOT EXISTS idx_calc_log_sym    ON opt_calc_log(symbol, run_at)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_calc_log_verdict ON opt_calc_log(verdict, run_at)')
+
     # Indexes for common queries
     c.execute('CREATE INDEX IF NOT EXISTS idx_opt_trades_status   ON options_trades(status)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_opt_trades_symbol   ON options_trades(symbol)')
@@ -908,6 +969,196 @@ def get_conviction_detail(symbol: str) -> dict:
                 'one_line_reason','created_at']
     result['signals'] = [dict(zip(sig_keys, r)) for r in sig_rows]
     return result
+
+
+# ── KB: Calculator run logging ────────────────────────────────────────────────
+
+def log_calc_run(calc: dict) -> int:
+    """Persist every run_calculator() result to opt_calc_log. Returns row id."""
+    conn = get_connection()
+    c    = conn.cursor()
+    now  = datetime.now().isoformat(timespec='seconds')
+
+    eg = calc.get('entry_gates', {})
+    ng = calc.get('net_greeks',  {})
+    vl = calc.get('velocity',    {})
+    mc = calc.get('mc_ev',       {})
+    va = calc.get('vol_analysis', {})
+    cv = calc.get('conviction',   {})
+
+    c.execute('''INSERT INTO opt_calc_log (
+        run_at, symbol, underlying, iv_pct, iv_rank, hv30,
+        edge_pts, vol_verdict, expected_move, dte, expiry,
+        long_strike, short_strike, net_debit, breakeven, breakeven_pct,
+        momentum_5d, above_200, conviction_tier, conviction_dir, signal_count,
+        vol_gate, tech_gate, conviction_gate, liquidity_gate, momentum_gate,
+        gates_pass, verdict, net_delta, net_theta, net_vega,
+        velocity_ratio, mc_ev_dollar, mc_win_rate
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+    (
+        now, calc.get('symbol'), calc.get('underlying'),
+        calc.get('current_iv'), calc.get('iv_rank'), calc.get('hv30'),
+        va.get('edge_pts'), va.get('verdict'),
+        calc.get('em'), calc.get('dte'), calc.get('expiry'),
+        calc.get('long_strike'), calc.get('short_strike'),
+        calc.get('net_debit'), calc.get('breakeven'), calc.get('breakeven_pct'),
+        calc.get('momentum_5d'), 1 if calc.get('above_200') else 0,
+        cv.get('tier'), cv.get('direction'), cv.get('signals'),
+        1 if eg.get('vol')        else 0,
+        1 if eg.get('tech')       else 0,
+        1 if eg.get('conviction') else 0,
+        1 if eg.get('liquidity')  else 0,
+        1 if eg.get('momentum')   else 0,
+        eg.get('gates_pass'), eg.get('verdict'),
+        ng.get('net_delta'), ng.get('net_theta'), ng.get('net_vega'),
+        vl.get('velocity_ratio'),
+        mc.get('ev_dollar'), mc.get('win_rate'),
+    ))
+    row_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def update_calc_action(calc_log_id: int, user_action: str, trade_id: int | None = None):
+    """Record user CONFIRM/SKIP and link to options_trade row if executed."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('UPDATE opt_calc_log SET user_action=?, trade_id=? WHERE id=?',
+              (user_action, trade_id, calc_log_id))
+    conn.commit()
+    conn.close()
+
+
+def log_trade_outcome(trade_id: int, calc_log_id: int | None,
+                      predicted_ev: float | None, predicted_wr: float | None,
+                      actual_pnl: float, exit_reason: str,
+                      days_held: int, thesis_correct: bool | None = None,
+                      lesson: str = ''):
+    """Called when an options trade closes — captures actual vs predicted EV."""
+    conn = get_connection()
+    c    = conn.cursor()
+    accuracy = None
+    if predicted_ev is not None and predicted_ev != 0:
+        accuracy = round(abs((actual_pnl - predicted_ev) / abs(predicted_ev)) * 100, 1)
+    c.execute('''INSERT INTO opt_trade_outcomes
+        (trade_id, calc_log_id, predicted_ev, predicted_wr, actual_pnl,
+         exit_reason, days_held, accuracy_pct,
+         thesis_correct, lesson, recorded_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+    (
+        trade_id, calc_log_id, predicted_ev, predicted_wr, actual_pnl,
+        exit_reason, days_held, accuracy,
+        1 if thesis_correct else 0 if thesis_correct is not None else None,
+        lesson, datetime.now().isoformat(timespec='seconds'),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_kb_summary() -> dict:
+    """
+    Pull everything needed for a session catch-up brief.
+    Returns: open_positions, recent_closed, gate_stats, recent_runs,
+             top_conviction, model_accuracy.
+    """
+    conn = get_connection()
+    c    = conn.cursor()
+
+    # Open options positions
+    c.execute('''
+        SELECT id, symbol, strategy, long_strike, short_strike, expiry,
+               net_debit, contracts, entry_date, entry_thesis
+        FROM options_trades WHERE status='OPEN'
+        ORDER BY entry_date DESC
+    ''')
+    open_pos = [dict(zip(
+        ['id','symbol','strategy','long_strike','short_strike','expiry',
+         'net_debit','contracts','entry_date','entry_thesis'], r))
+        for r in c.fetchall()]
+
+    # Last 20 closed options trades
+    c.execute('''
+        SELECT symbol, strategy, long_strike, short_strike, expiry,
+               net_debit, return_pct, return_on_risk, exit_reason,
+               entry_date, exit_date, lesson
+        FROM options_trades WHERE status IN ('WIN','LOSS','EXPIRED','CLOSED')
+        ORDER BY exit_date DESC LIMIT 20
+    ''')
+    recent_closed = [dict(zip(
+        ['symbol','strategy','long_strike','short_strike','expiry',
+         'net_debit','return_pct','ror','exit_reason',
+         'entry_date','exit_date','lesson'], r))
+        for r in c.fetchall()]
+
+    # Gate failure stats (last 30 days)
+    c.execute('''
+        SELECT
+            SUM(CASE WHEN vol_gate=0        THEN 1 ELSE 0 END) as vol_fail,
+            SUM(CASE WHEN tech_gate=0       THEN 1 ELSE 0 END) as tech_fail,
+            SUM(CASE WHEN conviction_gate=0 THEN 1 ELSE 0 END) as conv_fail,
+            SUM(CASE WHEN liquidity_gate=0  THEN 1 ELSE 0 END) as liq_fail,
+            SUM(CASE WHEN momentum_gate=0   THEN 1 ELSE 0 END) as mom_fail,
+            COUNT(*)                                             as total_runs,
+            SUM(CASE WHEN verdict='ENTER' OR verdict='ENTER_REDUCED' THEN 1 ELSE 0 END) as enters,
+            SUM(CASE WHEN verdict='SKIP'  THEN 1 ELSE 0 END)    as skips
+        FROM opt_calc_log
+        WHERE run_at >= datetime('now', '-30 days')
+    ''')
+    row = c.fetchone()
+    gate_stats = dict(zip(
+        ['vol_fail','tech_fail','conv_fail','liq_fail','mom_fail',
+         'total_runs','enters','skips'], row)) if row else {}
+
+    # Recent calc runs (last 14 days)
+    c.execute('''
+        SELECT run_at, symbol, underlying, iv_pct, hv30, edge_pts, vol_verdict,
+               gates_pass, verdict, mc_ev_dollar, mc_win_rate, user_action
+        FROM opt_calc_log
+        WHERE run_at >= datetime('now', '-14 days')
+        ORDER BY run_at DESC LIMIT 30
+    ''')
+    recent_runs = [dict(zip(
+        ['run_at','symbol','underlying','iv_pct','hv30','edge_pts','vol_verdict',
+         'gates_pass','verdict','mc_ev','mc_wr','user_action'], r))
+        for r in c.fetchall()]
+
+    # Top conviction (HIGH tier BULLISH)
+    c.execute('''
+        SELECT symbol, tier, score, signal_count, high_count,
+               iv_rank, narrative, last_signal_at
+        FROM ticker_conviction
+        WHERE tier IN ('HIGH','MEDIUM') AND direction='BULLISH'
+        ORDER BY score DESC LIMIT 10
+    ''')
+    top_conviction = [dict(zip(
+        ['symbol','tier','score','signals','highs','ivr','narrative','last_at'], r))
+        for r in c.fetchall()]
+
+    # Model accuracy (closed trades with outcomes)
+    c.execute('''
+        SELECT COUNT(*) as n,
+               AVG(actual_pnl)    as avg_actual,
+               AVG(predicted_ev)  as avg_predicted,
+               AVG(accuracy_pct)  as avg_accuracy,
+               SUM(CASE WHEN actual_pnl > 0 THEN 1 ELSE 0 END) as wins,
+               AVG(predicted_wr)  as avg_predicted_wr
+        FROM opt_trade_outcomes
+    ''')
+    row = c.fetchone()
+    model_accuracy = dict(zip(
+        ['n','avg_actual','avg_predicted','avg_accuracy','wins','avg_predicted_wr'],
+        row)) if row else {}
+
+    conn.close()
+    return {
+        'open_positions':  open_pos,
+        'recent_closed':   recent_closed,
+        'gate_stats':      gate_stats,
+        'recent_runs':     recent_runs,
+        'top_conviction':  top_conviction,
+        'model_accuracy':  model_accuracy,
+    }
 
 
 if __name__ == '__main__':
