@@ -728,10 +728,10 @@ def format_calc_message(calc: dict) -> str:
     edge_pts = vol.get('edge_pts')
     vol_vtd  = vol.get('verdict', 'UNKNOWN')
     vol_icon = '✅' if vol.get('gate_pass') else '❌'
-    if hv30 and iv:
-        edge_str = f"IV: {iv:.1f}% | HV30: {hv30:.1f}% | {edge_pts:+.1f}pts {vol_vtd} {vol_icon}"
-    else:
-        edge_str = f"IV: {iv:.1f}% | HV30: n/a | {vol_vtd}"
+    iv_s    = f"{iv:.1f}%"   if iv   is not None else "n/a"
+    hv30_s  = f"{hv30:.1f}%" if hv30 is not None else "n/a"
+    edge_s  = f"{edge_pts:+.1f}pts " if edge_pts is not None else ""
+    edge_str = f"IV: {iv_s} | HV30: {hv30_s} | {edge_s}{vol_vtd} {vol_icon}"
 
     if em and und:
         em_lo = round(und - em, 2)
