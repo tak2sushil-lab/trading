@@ -13,7 +13,6 @@ import pytz
 from database import (
     get_recent_trades, get_best_setups,
     update_strategy_weights, get_win_rate, get_connection,
-    fill_whatif_prices,
 )
 
 ET = pytz.timezone('America/New_York')
@@ -252,14 +251,6 @@ def run_learning_cycle():
     print(f"  Earnings weight: {new_weights['earnings']:.1f}")
     print(f"\n  Overall 30-day win rate: {overall_wr:.0f}%")
     print(f"  System is now smarter for tomorrow!")
-
-    # Fill what-if prices for old skipped/expired options suggestions
-    print("\n--- Options What-If Update ---")
-    try:
-        fill_whatif_prices()
-        print("  What-if prices updated for skipped suggestions.")
-    except Exception as e:
-        print(f"  What-if update skipped: {e}")
 
 if __name__ == '__main__':
     run_learning_cycle()

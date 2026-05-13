@@ -23,6 +23,7 @@ from database import (
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
+from options.learner_options import run_options_learning_cycle
 
 ET = pytz.timezone('America/New_York')
 
@@ -1849,10 +1850,11 @@ def poll_telegram_commands():
                     for p in live_positions.values()
                 )
                 losses = daily_rpnl['trades'] - daily_rpnl['wins']
+                n_open = len(live_positions)
                 lines = [
                     f"Status | {datetime.now(ET).strftime('%H:%M ET')}",
                     f"P&L {total_pnl:+.2f} | R: {daily_rpnl['pnl']:+.2f} | uPnL: {live_upnl:+.2f}",
-                    f"Trades: {daily_rpnl['trades']} ({daily_rpnl['wins']}W {losses}L) | 30d WR: {wr:.0f}%",
+                    f"Trades: {daily_rpnl['trades']} ({daily_rpnl['wins']}W {losses}L) | Open: {n_open} | 30d WR: {wr:.0f}%",
                 ]
                 if live_positions:
                     lines.append('')
@@ -3144,6 +3146,12 @@ def nightly_learning():
         log("Learning complete.")
     except Exception as e:
         log(f"Learning error: {e}")
+
+    # Options side — runs independently after equity learner
+    try:
+        run_options_learning_cycle()
+    except Exception as e:
+        log(f"Options learning error: {e}")
 
 def chart_gate_weekly_review():
     """Every Friday 4:30pm — parse CHART GATE LOG lines, cross-ref DB outcomes,
