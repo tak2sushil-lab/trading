@@ -47,7 +47,7 @@ ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')     # optional — free 25 ca
 FINNHUB_KEY       = os.getenv('FINNHUB_API_KEY')        # optional — free 60 calls/min
 TG_API            = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 
-SCAN_INTERVAL_MIN = 15     # minutes between scans during market hours
+SCAN_INTERVAL_MIN = 30     # minutes between scans during market hours (was 15 — halved for cost)
 MAX_AGE_HOURS     = 16     # fetch window: covers overnight news at 9:30am open
                            # (4pm close + ~12h gap to open = need ≥13h; 16h gives margin)
 DEDUP_HOURS       = 24     # dedup window: must be >= MAX_AGE_HOURS to prevent re-classifying
@@ -489,12 +489,11 @@ def classify_headline(symbol: str, headline: str,
     )
     try:
         resp = ai.messages.create(
-            model      = 'claude-haiku-4-5-20251001',  # fast + cheap for bulk classification
+            model      = 'claude-haiku-4-5-20251001',
             max_tokens = 300,
             messages   = [{'role': 'user', 'content': prompt}],
         )
         text = resp.content[0].text.strip()
-        # Strip markdown fences if model wraps output
         if '```' in text:
             parts = text.split('```')
             text  = parts[1].lstrip('json').strip() if len(parts) > 1 else text
@@ -502,6 +501,72 @@ def classify_headline(symbol: str, headline: str,
     except Exception as e:
         print(f"[LLM] {symbol} classify error: {e}")
         return None
+
+
+# ── Noise pre-filter (no LLM cost) ───────────────────────
+import re as _re
+_NOISE_RE = _re.compile(
+    r'\b(reiterates?|reaffirms?|maintains?)\b.{0,40}'
+    r'\b(buy|hold|sell|neutral|overweight|underweight|outperform|underperform|market\s*perform)\b',
+    _re.I
+)
+
+def _is_obvious_noise(headline: str) -> bool:
+    """Return True for analyst reiterations that never need LLM classification."""
+    return bool(_NOISE_RE.search(headline))
+
+
+# ── Batch classifier — one LLM call per symbol per scan ──
+_BATCH_CLASSIFY_PROMPT = (
+    "You are a financial news classifier for an options trader who buys LEAP calls "
+    "and bull call spreads.\n\n"
+    "Stock: {symbol}\nContext: {context}\n\n"
+    "Classify each numbered headline. Return ONLY a valid JSON array — no extra text, "
+    "no markdown. Array length must equal the number of headlines.\n"
+    "Each element schema:\n"
+    '{{\"relevance\":\"HIGH|MEDIUM|LOW|NOISE\",\"news_type\":\"PARTNERSHIP|REGULATORY|'
+    'EARNINGS_SIGNAL|PRODUCT|LAYOFF|MACRO|ANALYST|CEO_COMMENT|LEGAL|SECTOR\",'
+    '\"direction\":\"BULLISH|BEARISH|NEUTRAL\",\"time_horizon\":\"IMMEDIATE|SHORT|LONG\",'
+    '\"already_priced_in\":\"YES|NO|UNCLEAR\",\"creates_future_event\":false,'
+    '\"future_event_date\":null,\"future_event_name\":null,\"one_line_reason\":\"one sentence\"}}\n\n'
+    "Headlines:\n{headlines}"
+)
+
+
+def classify_headlines_batch(symbol: str,
+                              items: list[dict]) -> list[dict | None]:
+    """
+    Classify a batch of headlines for one symbol in a single LLM call.
+    items: list of {'title': str, 'av_sentiment': str|None}
+    Returns list of clf dicts (or None on error) — same length as items.
+    """
+    if not ai or not items:
+        return [None] * len(items)
+
+    headlines = items
+    context   = SYMBOL_CONTEXT.get(symbol, DEFAULT_CONTEXT)
+    numbered  = '\n'.join(f'{i+1}. "{it["title"]}"' for i, it in enumerate(headlines))
+    prompt    = _BATCH_CLASSIFY_PROMPT.format(
+        symbol=symbol, context=context, headlines=numbered
+    )
+    try:
+        resp = ai.messages.create(
+            model      = 'claude-haiku-4-5-20251001',
+            max_tokens = 180 * len(headlines),
+            messages   = [{'role': 'user', 'content': prompt}],
+        )
+        text = resp.content[0].text.strip()
+        if '```' in text:
+            parts = text.split('```')
+            text  = parts[1].lstrip('json').strip() if len(parts) > 1 else text
+        results = json.loads(text)
+        if isinstance(results, list) and len(results) == len(headlines):
+            return results
+        print(f"[LLM] {symbol} batch length mismatch ({len(results)} vs {len(headlines)}) — falling back")
+        return [None] * len(headlines)
+    except Exception as e:
+        print(f"[LLM] {symbol} batch classify error: {e}")
+        return [None] * len(headlines)
 
 
 # ── Per-ticker daily alert dedup ──────────────────────────────────────────────
@@ -713,73 +778,88 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
 
     open_sym_map = {t['symbol']: t for t in open_trades}
     high_count   = 0
-    high_signals: list[dict] = []   # accumulate HIGHs → one consolidated alert
+    high_signals: list[dict] = []
 
+    # ── Pre-filter obvious noise (no LLM call needed) ────────
+    to_classify: list[dict] = []
     for item in unique:
-        headline  = item['title']
-        source    = item['source']
-        pub_at    = item.get('published_at', '')
-        av_sent   = item.get('av_sentiment')
-
-        clf = classify_headline(symbol, headline, av_sentiment=av_sent)
-        if clf is None:
-            continue
-
-        relevance = clf.get('relevance', 'LOW')
-        if relevance in ('LOW', 'NOISE'):
-            # Still need to store the hash to prevent re-processing
-            # Store as NOISE so dedup works next scan
+        if _is_obvious_noise(item['title']):
             log_options_news(
-                symbol=symbol, headline=headline[:150], source=source,
-                published_at=pub_at, relevance='NOISE', news_type='',
-                direction='', time_horizon='', already_priced_in='',
-                creates_future_event=0, one_line_reason='',
+                symbol=symbol, headline=item['title'][:150], source=item['source'],
+                published_at=item.get('published_at', ''), relevance='NOISE',
+                news_type='ANALYST', direction='', time_horizon='',
+                already_priced_in='', creates_future_event=0, one_line_reason='analyst reiteration',
             )
-            continue
+            print(f"[NEWS] {symbol} NOISE  pre-filter            | {item['title'][:70]}")
+        else:
+            to_classify.append(item)
 
-        # Auto-create catalyst if future event detected
-        catalyst_id = None
-        if clf.get('creates_future_event') and clf.get('future_event_date'):
-            catalyst_id = add_catalyst(
-                symbol              = symbol,
-                catalyst_type       = clf.get('news_type', 'SECTOR'),
-                event_name          = clf.get('future_event_name') or headline[:80],
-                event_date          = clf.get('future_event_date'),
-                confidence          = 'MEDIUM',
-                iv_rank_when_noted  = None,
-                news_source         = source,
-                notes               = clf.get('one_line_reason'),
+    if not to_classify:
+        pass  # fall through to conviction recompute
+    else:
+        # ── Batch classify all remaining headlines in ONE LLM call ──
+        clfs = classify_headlines_batch(symbol, to_classify)
+
+        for item, clf in zip(to_classify, clfs):
+            headline = item['title']
+            source   = item['source']
+            pub_at   = item.get('published_at', '')
+
+            if clf is None:
+                continue
+
+            relevance = clf.get('relevance', 'LOW')
+            if relevance in ('LOW', 'NOISE'):
+                log_options_news(
+                    symbol=symbol, headline=headline[:150], source=source,
+                    published_at=pub_at, relevance='NOISE', news_type='',
+                    direction='', time_horizon='', already_priced_in='',
+                    creates_future_event=0, one_line_reason='',
+                )
+                continue
+
+            # Auto-create catalyst if future event detected
+            catalyst_id = None
+            if clf.get('creates_future_event') and clf.get('future_event_date'):
+                catalyst_id = add_catalyst(
+                    symbol              = symbol,
+                    catalyst_type       = clf.get('news_type', 'SECTOR'),
+                    event_name          = clf.get('future_event_name') or headline[:80],
+                    event_date          = clf.get('future_event_date'),
+                    confidence          = 'MEDIUM',
+                    iv_rank_when_noted  = None,
+                    news_source         = source,
+                    notes               = clf.get('one_line_reason'),
+                )
+                print(f"[CATALYST] Auto-created: {symbol} "
+                      f"{clf.get('future_event_date')} — "
+                      f"{clf.get('future_event_name') or headline[:60]}")
+
+            linked_trade    = open_sym_map.get(symbol)
+            linked_trade_id = linked_trade['id'] if linked_trade else None
+
+            log_options_news(
+                symbol               = symbol,
+                headline             = headline[:150],
+                source               = source,
+                published_at         = pub_at,
+                relevance            = relevance,
+                news_type            = clf.get('news_type', ''),
+                direction            = clf.get('direction', ''),
+                time_horizon         = clf.get('time_horizon', ''),
+                already_priced_in    = clf.get('already_priced_in', ''),
+                creates_future_event = 1 if clf.get('creates_future_event') else 0,
+                one_line_reason      = clf.get('one_line_reason', ''),
+                catalyst_id          = catalyst_id,
+                linked_trade_id      = linked_trade_id,
             )
-            print(f"[CATALYST] Auto-created: {symbol} "
-                  f"{clf.get('future_event_date')} — "
-                  f"{clf.get('future_event_name') or headline[:60]}")
 
-        # Link to open trade if exists
-        linked_trade    = open_sym_map.get(symbol)
-        linked_trade_id = linked_trade['id'] if linked_trade else None
+            print(f"[NEWS] {symbol} {relevance:6s} {clf.get('news_type',''):20s} "
+                  f"{clf.get('direction',''):7s} | {headline[:70]}")
 
-        log_options_news(
-            symbol               = symbol,
-            headline             = headline[:150],
-            source               = source,
-            published_at         = pub_at,
-            relevance            = relevance,
-            news_type            = clf.get('news_type', ''),
-            direction            = clf.get('direction', ''),
-            time_horizon         = clf.get('time_horizon', ''),
-            already_priced_in    = clf.get('already_priced_in', ''),
-            creates_future_event = 1 if clf.get('creates_future_event') else 0,
-            one_line_reason      = clf.get('one_line_reason', ''),
-            catalyst_id          = catalyst_id,
-            linked_trade_id      = linked_trade_id,
-        )
-
-        print(f"[NEWS] {symbol} {relevance:6s} {clf.get('news_type',''):20s} "
-              f"{clf.get('direction',''):7s} | {headline[:70]}")
-
-        if relevance == 'HIGH':
-            high_count += 1
-            high_signals.append({'headline': headline, 'clf': clf})
+            if relevance == 'HIGH':
+                high_count += 1
+                high_signals.append({'headline': headline, 'clf': clf})
 
     # Recompute conviction score from all signals in last 5 days
     conviction = recompute_conviction(symbol) if (high_signals or high_count == 0) else None
