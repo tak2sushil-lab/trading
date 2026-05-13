@@ -6,13 +6,14 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env file from same folder
 
 import os
-from ib_async import IB, Stock, Index, MarketOrder, LimitOrder, ScannerSubscription
+from ib_async import IB, Stock, Index, Option, Contract, ComboLeg, MarketOrder, LimitOrder, ScannerSubscription, WshEventData
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import asyncio
 import math
+import re
 import anthropic
 import json
 import requests as http_requests
@@ -509,6 +510,450 @@ def send_telegram_alert(message: str):
 async def send_alert(data: dict):
     send_telegram_alert(data.get("message", ""))
     return {"status": "sent"}
+
+# ═══════════════════════════════════════════════════════════
+# OPTIONS ENDPOINTS
+# ═══════════════════════════════════════════════════════════
+
+# ── Options chain ─────────────────────────────────────────
+@app.get("/options/chain/{symbol}")
+async def get_options_chain(
+    symbol: str,
+    expiry: str = Query(default=None, description="YYYYMMDD — if omitted returns nearest 4 expiries"),
+    right:  str = Query(default="C",  description="C=call P=put"),
+):
+    """
+    Return available strikes for a symbol/expiry.
+    If expiry omitted, returns the next 4 expiry dates and all strikes for each.
+    """
+    sym      = symbol.upper()
+    stk      = Stock(sym, 'SMART', 'USD')
+    await ib.qualifyContractsAsync(stk)
+    con_id   = stk.conId
+
+    chains   = await ib.reqSecDefOptParamsAsync(sym, '', 'STK', con_id)
+    if not chains:
+        return {"error": f"No options chain data for {sym}"}
+
+    # Use SMART or first available exchange
+    chain    = next((c for c in chains if c.exchange == 'SMART'), chains[0])
+    from datetime import date as _date, datetime as _datetime
+    today    = _date.today()
+
+    def _dte(e):
+        return (_datetime.strptime(e, '%Y%m%d').date() - today).days
+
+    expiries = sorted(chain.expirations)
+
+    if expiry:
+        target_expiries = [expiry] if expiry in expiries else []
+    else:
+        # Return expiries useful for spreads (18-50 DTE) + LEAPs (360-750 DTE)
+        target_expiries = [e for e in expiries if 18 <= _dte(e) <= 50 or 360 <= _dte(e) <= 750]
+        if not target_expiries:
+            target_expiries = expiries[:8]   # fallback if nothing in range
+
+    if not target_expiries:
+        return {"error": f"Expiry {expiry} not found. Available: {expiries[:8]}"}
+
+    result = []
+    for exp in target_expiries:
+        result.append({
+            "expiry":  exp,
+            "right":   right.upper(),
+            "strikes": sorted(chain.strikes),
+        })
+    return {"symbol": sym, "chain": result}
+
+
+# ── Single option quote with Greeks ──────────────────────
+@app.get("/options/quote/{symbol}/{expiry}/{strike}/{right}")
+async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
+    """
+    Delayed bid/ask/mid + Greeks for a single option contract.
+    Uses reqMarketDataType(3) — 15-min delayed, no OPRA subscription required.
+    expiry: YYYYMMDD, right: C or P
+    """
+    sym      = symbol.upper()
+    contract  = Option(sym, expiry, strike, right.upper(), 'SMART', '', 'USD')
+    qualified = await ib.qualifyContractsAsync(contract)
+    q = qualified[0] if qualified else None
+    if not q or not getattr(q, 'conId', None):
+        return {"error": f"Could not qualify {sym} {expiry} {strike} {right}"}
+
+    ib.reqMarketDataType(3)   # delayed — works without OPRA on paper account
+    ticker   = ib.reqMktData(q, genericTickList='', snapshot=True)
+    await asyncio.sleep(4)
+    ib.reqMarketDataType(1)   # reset to live for equity quotes
+
+    bid  = clean(ticker.bid)
+    ask  = clean(ticker.ask)
+    last = clean(ticker.last)
+    mid  = round((bid + ask) / 2, 4) if bid and ask else None
+
+    greeks = ticker.modelGreeks
+    delta  = clean(greeks.delta)  if greeks else None
+    gamma  = clean(greeks.gamma)  if greeks else None
+    theta  = clean(greeks.theta)  if greeks else None
+    vega   = clean(greeks.vega)   if greeks else None
+    iv     = clean(greeks.impliedVol) if greeks else None
+
+    return {
+        "symbol":  sym,
+        "expiry":  expiry,
+        "strike":  strike,
+        "right":   right.upper(),
+        "bid":     bid,
+        "ask":     ask,
+        "mid":     mid,
+        "last":    last,
+        "spread":  round(ask - bid, 4) if bid and ask else None,
+        "delta":   delta,
+        "gamma":   gamma,
+        "theta":   theta,
+        "vega":    vega,
+        "iv":      iv,
+    }
+
+
+# ── IV Rank ───────────────────────────────────────────────
+@app.get("/options/iv_rank/{symbol}")
+async def get_iv_rank(symbol: str):
+    """
+    Calculate IV Rank = (current_IV - 52w_low) / (52w_high - 52w_low) × 100
+    Uses IBKR historical OPTION_IMPLIED_VOLATILITY bars for the underlying stock.
+    """
+    sym      = symbol.upper()
+    stk      = Stock(sym, 'SMART', 'USD')
+    await ib.qualifyContractsAsync(stk)
+
+    bars     = await ib.reqHistoricalDataAsync(
+        stk, endDateTime='', durationStr='1 Y',
+        barSizeSetting='1 day', whatToShow='OPTION_IMPLIED_VOLATILITY',
+        useRTH=True, formatDate=1, keepUpToDate=False
+    )
+    if not bars or len(bars) < 20:
+        return {"symbol": sym, "iv_rank": None, "error": "Insufficient IV history"}
+
+    iv_vals       = [b.close for b in bars if b.close and b.close > 0]
+    current_iv    = round(iv_vals[-1] * 100, 2)    # convert to % e.g. 0.38 → 38%
+    iv_52w_high   = round(max(iv_vals) * 100, 2)
+    iv_52w_low    = round(min(iv_vals) * 100, 2)
+    iv_rank       = round((iv_vals[-1] - min(iv_vals)) /
+                          (max(iv_vals) - min(iv_vals)) * 100, 1) if max(iv_vals) != min(iv_vals) else 50.0
+
+    return {
+        "symbol":     sym,
+        "current_iv": current_iv,
+        "iv_52w_high": iv_52w_high,
+        "iv_52w_low":  iv_52w_low,
+        "iv_rank":     iv_rank,
+        "note":        "buy when rank<30, sell when rank>60",
+    }
+
+
+@app.get("/options/iv_history/{symbol}")
+async def get_iv_history(symbol: str):
+    """
+    Return 1 year of daily implied-volatility bars as a time series.
+    Used by backtester_options.py to reconstruct historical IV rank at each date.
+    Values are raw decimals (e.g. 0.47 = 47% IV).
+    """
+    sym = symbol.upper()
+    stk = Stock(sym, 'SMART', 'USD')
+    await ib.qualifyContractsAsync(stk)
+
+    bars = await ib.reqHistoricalDataAsync(
+        stk, endDateTime='', durationStr='1 Y',
+        barSizeSetting='1 day', whatToShow='OPTION_IMPLIED_VOLATILITY',
+        useRTH=True, formatDate=1, keepUpToDate=False
+    )
+    if not bars:
+        return {"symbol": sym, "bars": [], "error": "No IV data returned"}
+
+    result = [
+        {"date": str(b.date), "iv": round(b.close, 6)}
+        for b in bars if b.close and b.close > 0
+    ]
+    return {"symbol": sym, "count": len(result), "bars": result}
+
+
+# ── Place options order (single leg or combo spread) ──────
+class OptionsOrderRequest(BaseModel):
+    symbol:      str
+    expiry:      str             # YYYYMMDD
+    strike:      float
+    right:       str             # C or P
+    qty:         int
+    action:      str             # BUY or SELL
+    order_type:  str  = "LIMIT"
+    limit_price: float = None
+    # Spread (second leg) — omit for single-leg orders
+    short_expiry:  str   = None
+    short_strike:  float = None
+    short_right:   str   = None
+    net_debit:     float = None  # positive = debit spread (you pay), negative = credit
+
+@app.post("/options/order")
+async def place_options_order(req: OptionsOrderRequest):
+    """
+    Place a single-leg option order or a two-leg combo (bull spread).
+    For spreads: provide short_strike + short_expiry + net_debit.
+    Always uses LIMIT orders — never market orders on options.
+    """
+    sym = req.symbol.upper()
+
+    # ── Single leg ────────────────────────────────────────
+    if req.short_strike is None:
+        contract  = Option(sym, req.expiry, req.strike, req.right.upper(), 'SMART', '', 'USD')
+        qualified = await ib.qualifyContractsAsync(contract)
+        if not qualified:
+            return {"error": f"Could not qualify {sym} {req.expiry} {req.strike} {req.right}"}
+        if req.limit_price is None:
+            return {"error": "limit_price required — never use market orders on options"}
+        order = LimitOrder(req.action.upper(), req.qty, req.limit_price)
+        trade = ib.placeOrder(contract, order)
+        await asyncio.sleep(1)
+        return {
+            "status":    "submitted",
+            "type":      "single_leg",
+            "symbol":    sym,
+            "expiry":    req.expiry,
+            "strike":    req.strike,
+            "right":     req.right.upper(),
+            "action":    req.action.upper(),
+            "qty":       req.qty,
+            "limit":     req.limit_price,
+            "orderId":   trade.order.orderId,
+        }
+
+    # ── Two-leg combo (bull spread) ───────────────────────
+    long_leg  = Option(sym, req.expiry,       req.strike,       req.right.upper(),       'SMART', '', 'USD')
+    short_leg = Option(sym, req.short_expiry or req.expiry,
+                            req.short_strike, (req.short_right or req.right).upper(), 'SMART', '', 'USD')
+
+    qualified = await ib.qualifyContractsAsync(long_leg, short_leg)
+    if len(qualified) < 2 or not getattr(qualified[0], 'conId', None) or not getattr(qualified[1], 'conId', None):
+        return {"error": f"Could not qualify {sym} {req.expiry} ${req.strike}/{req.short_strike} — strike not listed for this expiry"}
+
+    combo           = Contract()
+    combo.symbol    = sym
+    combo.secType   = 'BAG'
+    combo.currency  = 'USD'
+    combo.exchange  = 'SMART'
+
+    buy_leg         = ComboLeg()
+    buy_leg.conId   = long_leg.conId
+    buy_leg.ratio   = 1
+    buy_leg.action  = 'BUY'
+    buy_leg.exchange= 'SMART'
+
+    sell_leg        = ComboLeg()
+    sell_leg.conId  = short_leg.conId
+    sell_leg.ratio  = 1
+    sell_leg.action = 'SELL'
+    sell_leg.exchange='SMART'
+
+    combo.comboLegs = [buy_leg, sell_leg]
+
+    if req.net_debit is None:
+        return {"error": "net_debit required for spread orders"}
+
+    order = LimitOrder('BUY', req.qty, round(req.net_debit, 2))
+    order.tif = 'DAY'
+    order.transmit = True
+    trade = ib.placeOrder(combo, order)
+    await asyncio.sleep(1)
+    return {
+        "status":      "submitted",
+        "type":        "bull_spread",
+        "symbol":      sym,
+        "long_leg":    f"{req.expiry} ${req.strike} {req.right.upper()}",
+        "short_leg":   f"{req.short_expiry or req.expiry} ${req.short_strike} {(req.short_right or req.right).upper()}",
+        "qty":         req.qty,
+        "net_debit":   req.net_debit,
+        "orderId":     trade.order.orderId,
+    }
+
+
+# ── IBKR news feed ───────────────────────────────────────
+@app.get("/options/news_providers")
+async def get_news_providers():
+    """List all IBKR news providers available on this account."""
+    providers = await ib.reqNewsProvidersAsync()
+    return {
+        "count":     len(providers),
+        "providers": [{"code": p.code, "name": p.name} for p in providers],
+    }
+
+
+@app.get("/options/news/{symbol}")
+async def get_ibkr_news(
+    symbol: str,
+    hours:  int = Query(default=6, description="How many hours back to search"),
+    limit:  int = Query(default=20, description="Max articles to return"),
+):
+    """
+    Fetch recent news for a symbol via IBKR's news feed.
+    Uses all providers subscribed on this account.
+    Paper accounts often have Globe Newswire + PR Newswire free.
+    Paid providers (Briefing.com, Dow Jones) activate automatically once subscribed.
+    """
+    sym = symbol.upper()
+    stk = Stock(sym, 'SMART', 'USD')
+    await ib.qualifyContractsAsync(stk)
+    if not stk.conId:
+        return {"symbol": sym, "news": [], "error": "Could not qualify contract"}
+
+    providers = await ib.reqNewsProvidersAsync()
+    if not providers:
+        return {"symbol": sym, "news": [], "providers": [],
+                "note": "No news providers available — check IBKR account subscriptions"}
+
+    provider_codes = '+'.join(p.code for p in providers)
+    end_dt   = datetime.now()
+    start_dt = end_dt - timedelta(hours=hours)
+
+    # Return type annotation in ib_async is wrong; wrapper accumulates into a list
+    articles = await ib.reqHistoricalNewsAsync(
+        conId=stk.conId,
+        providerCodes=provider_codes,
+        startDateTime=start_dt,
+        endDateTime=end_dt,
+        totalResults=limit,
+        historicalNewsOptions=[],
+    )
+
+    if not articles:
+        return {
+            "symbol":    sym,
+            "providers": [p.code for p in providers],
+            "news":      [],
+            "note":      "No articles in time window — provider may require subscription",
+        }
+
+    news = [
+        {
+            "headline":  re.sub(r'^\{[^}]+\}', '', a.headline).strip(),
+            "time":      a.time.isoformat(),
+            "provider":  a.providerCode,
+            "articleId": a.articleId,
+        }
+        for a in articles
+    ]
+    return {
+        "symbol":    sym,
+        "providers": [p.code for p in providers],
+        "count":     len(news),
+        "news":      news,
+    }
+
+
+# ── Open options positions ────────────────────────────────
+@app.get("/portfolio/options")
+async def get_options_portfolio():
+    """Return all open options positions with unrealized P&L."""
+    items = ib.portfolio()
+    opts  = []
+    for p in items:
+        if p.contract.secType not in ('OPT', 'BAG') or p.position == 0:
+            continue
+        c = p.contract
+        opts.append({
+            "symbol":        c.symbol,
+            "expiry":        getattr(c, 'lastTradeDateOrContractMonth', None),
+            "strike":        getattr(c, 'strike', None),
+            "right":         getattr(c, 'right', None),
+            "qty":           p.position,
+            "avgCost":       clean(p.averageCost),
+            "marketPrice":   clean(p.marketPrice),
+            "marketValue":   clean(p.marketValue),
+            "unrealizedPnL": clean(p.unrealizedPNL),
+        })
+    return opts
+
+
+# ── Wall Street Horizon corporate events ─────────────────
+@app.get("/options/wsh_events/{symbol}")
+async def get_wsh_events(
+    symbol: str,
+    days: int = Query(default=60, description="How many days ahead to search"),
+):
+    """
+    Fetch upcoming corporate events from Wall Street Horizon for a symbol.
+    Requires WSH subscription in IBKR (fee waived on most accounts).
+    Returns earnings, analyst days, conferences, guidance events.
+    """
+    sym = symbol.upper()
+    stk = Stock(sym, 'SMART', 'USD')
+    await ib.qualifyContractsAsync(stk)
+    if not stk.conId:
+        return {"symbol": sym, "events": [], "error": "Could not qualify contract"}
+
+    start_dt = datetime.now().strftime('%Y%m%d')
+    end_dt   = (datetime.now() + timedelta(days=days)).strftime('%Y%m%d')
+
+    wsh = WshEventData(
+        conId     = stk.conId,
+        startDate = start_dt,
+        endDate   = end_dt,
+        totalLimit = 20,
+    )
+
+    try:
+        raw = await ib.getWshEventDataAsync(wsh)
+    except Exception as e:
+        return {"symbol": sym, "events": [], "error": str(e)}
+
+    if not raw:
+        return {"symbol": sym, "events": [],
+                "note": "No WSH data returned — check IBKR subscription"}
+
+    # WSH returns a JSON string; parse and normalise
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {"symbol": sym, "raw_text": raw[:500], "events": [],
+                "note": "Could not parse WSH response — raw_text shows first 500 chars"}
+
+    # Normalise into a flat list regardless of WSH response envelope shape
+    events_raw = data if isinstance(data, list) else data.get("data", data.get("events", []))
+
+    # Map WSH event types to our catalyst_calendar types
+    type_map = {
+        "earnings":          "EARNINGS",
+        "earnings release":  "EARNINGS",
+        "dividend":          "SECTOR_EVENT",
+        "analyst day":       "ANALYST_EVENT",
+        "analyst/investor":  "ANALYST_EVENT",
+        "conference":        "CONFERENCE",
+        "product":           "PRODUCT_LAUNCH",
+        "guidance":          "EARNINGS_SIGNAL",
+        "fda":               "MACRO_EVENT",
+        "split":             "SECTOR_EVENT",
+    }
+
+    events = []
+    for ev in events_raw:
+        raw_type   = str(ev.get("wshEventType") or ev.get("type") or "").lower()
+        event_type = next((v for k, v in type_map.items() if k in raw_type), "SECTOR_EVENT")
+        event_date = (ev.get("startDate") or ev.get("date") or "")[:10]  # YYYY-MM-DD
+        if not event_date:
+            continue
+        events.append({
+            "event_type":   event_type,
+            "event_name":   ev.get("description") or ev.get("title") or raw_type.title(),
+            "event_date":   event_date,
+            "importance":   ev.get("importance") or "Medium",
+            "wsh_raw_type": raw_type,
+        })
+
+    return {
+        "symbol": sym,
+        "count":  len(events),
+        "events": sorted(events, key=lambda x: x["event_date"]),
+    }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

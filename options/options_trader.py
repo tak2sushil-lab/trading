@@ -1,26 +1,24 @@
 """
-options_trader.py — OPT Telegram command handler, bull spread calculator,
-                    LEAP evaluator, and order execution.
+options_trader.py — OPT Telegram command handler, Evidence-Based Verdict
+                    spread calculator, and order execution.
 
-Run as a standalone process. Long-polls Telegram for OPT* messages and
-numbered replies. Zero interaction with equity auto_trader.py.
+Run as a standalone process. Long-polls Telegram for OPT* messages.
+Zero interaction with equity auto_trader.py.
 
 Standing commands (any time):
   OPT STATUS                         — portfolio overview + all-time stats
   OPT POSITIONS                      — per-position: Greeks, stop stage, DTE
   OPT CALENDAR                       — upcoming catalysts (30-day window)
-  OPT PAUSE                          — suspend scanning flags (inform watchman/news)
+  OPT PAUSE                          — suspend scanning
   OPT RESUME                         — re-enable scanning
   OPT CLOSE <sym>                    — prompt to close open position on <sym>
   OPT ADD <sym> <YYYY-MM-DD> <note> [HIGH|MEDIUM|LOW]  — add DOMAIN_INSIGHT catalyst
-  OPT BUY <sym> [qty]                — run calculator, show 4 entry options
+  OPT BUY <sym> [qty]                — Evidence-Based Verdict: HV30 edge, EM strikes,
+                                       5-gate entry, net Greeks, Monte Carlo EV
 
-Numbered replies after OPT BUY (30-min timeout):
-  1 = enter Conservative spread
-  2 = enter Balanced spread
-  3 = enter Aggressive spread
-  4 = enter as LEAP
-  5 = skip
+After OPT BUY (30-min timeout):
+  CONFIRM = place the recommended spread trade
+  SKIP    = cancel
 
 Close confirmation:
   YES = execute, NO = cancel
@@ -39,6 +37,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import engine   # options/engine.py — same directory
 from database import (
     get_open_options_trades,
     get_upcoming_catalysts,
@@ -187,6 +186,8 @@ def get_quote(symbol: str, expiry: str, strike: float, right: str = 'C') -> dict
                 'ask':   data['ask'],
                 'mid':   data.get('mid'),
                 'delta': data.get('delta'),
+                'theta': data.get('theta'),
+                'vega':  data.get('vega'),
                 'iv':    data.get('iv'),
             }
     except Exception:
@@ -474,15 +475,17 @@ def _calc_leap(symbol: str, underlying: float, expiry: str, strike: float,
     }
 
 
-# ── Full calculator ───────────────────────────────────────────────────────────
+# ── Evidence-Based Verdict Calculator ────────────────────────────────────────
 
 def run_calculator(symbol: str, qty: int = 1) -> dict:
     """
-    For a symbol, fetch chain + IV rank, compute 3 spread templates + 1 LEAP.
-    Returns {'iv': {...}, 'templates': [...], 'leap': {...}, 'underlying': float}
+    Evidence-Based Verdict System. Returns a single recommended trade (or SKIP)
+    with: HV30 volatility edge, EM-anchored strikes, net Greeks, theta velocity,
+    Monte Carlo EV, and 5-gate entry scoring.
     """
     sym = symbol.upper()
 
+    # ── Market data ───────────────────────────────────────────────────────
     iv_data    = get_iv_rank(sym)
     iv_rank    = iv_data.get('iv_rank',    50.0) if iv_data else 50.0
     current_iv = iv_data.get('current_iv')       if iv_data else None
@@ -495,13 +498,26 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     if not chain_data or 'chain' not in chain_data:
         return {'error': f'Cannot fetch option chain for {sym}'}
 
-    # All available expiry dates (theoretical strike list from bridge — used as fallback only)
-    expiries    = [item['expiry'] for item in chain_data['chain']]
+    expiries     = [item['expiry'] for item in chain_data['chain']]
     theo_strikes = chain_data['chain'][0]['strikes'] if chain_data['chain'] else []
 
-    # Upcoming catalyst for this symbol (for grading + DTE info)
-    upcoming     = get_upcoming_catalysts(days=60)
-    sym_cats     = [c for c in upcoming if c['symbol'] == sym]
+    # ── Stock analytics (single yfinance call) ────────────────────────────
+    stock_data  = engine.get_stock_data(sym)
+    hv30        = stock_data['hv30']
+    above_200   = stock_data['above_200']
+    momentum_5d = stock_data['momentum_5d']
+
+    # ── Volatility edge (Gate 1) ──────────────────────────────────────────
+    iv_for_calc = current_iv or iv_rank or 40.0
+    if hv30 is not None:
+        vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
+    else:
+        vol_analysis = {'edge_pts': None, 'verdict': 'UNKNOWN', 'gate_pass': True,
+                        'iv': iv_for_calc, 'hv30': None}
+
+    # ── Upcoming catalyst ─────────────────────────────────────────────────
+    upcoming      = get_upcoming_catalysts(days=90)
+    sym_cats      = [c for c in upcoming if c['symbol'] == sym]
     catalyst_days = None
     catalyst_id   = None
     if sym_cats:
@@ -509,132 +525,307 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         catalyst_days = (cat_date - date.today()).days
         catalyst_id   = sym_cats[0]['id']
 
-    # Domain insight: if we have any DOMAIN_INSIGHT catalyst for this symbol
-    domain_insight = any(c.get('type') == 'DOMAIN_INSIGHT' for c in sym_cats)
-    above_200      = is_above_200ma(sym)
+    # ── Conviction (Gate 3) ───────────────────────────────────────────────
+    conviction    = get_conviction_detail(sym)
+    tier          = conviction.get('tier', 'LOW')
+    direction     = conviction.get('direction', 'MIXED')
+    signal_count  = conviction.get('signal_count', 0)
+    narrative     = conviction.get('narrative', '')
+    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULLISH')
 
-    # ── 3 Spread Templates ─────────────────────────────────────────────────
-    templates = []
-    spread_configs = [
-        # (name, long_otm_pct, width_pct, dte_min, dte_max)
-        ('Conservative', 0.00, 0.07, 21, 28),
-        ('Balanced',     0.04, 0.11, 28, 35),
-        ('Aggressive',   0.06, 0.17, 35, 45),
-    ]
+    # ── Expiry selection (catalyst-driven or balanced DTE) ────────────────
+    if catalyst_days and 21 <= catalyst_days <= 75:
+        target_dte = catalyst_days + 14
+        valid_exp  = [e for e in expiries if days_to_expiry(e) >= 21]
+        expiry     = min(valid_exp, key=lambda e: abs(days_to_expiry(e) - target_dte), default=None)
+    else:
+        expiry = _find_expiry(expiries, 28, 45)
 
-    for name, long_otm, width_pct, dte_min, dte_max in spread_configs:
-        expiry = _find_expiry(expiries, dte_min, dte_max)
-        if not expiry:
-            continue
+    if not expiry:
+        return {'error': f'No suitable expiry for {sym} (no options 28-45 DTE)'}
 
-        # Use actual listed strikes for this expiry — avoids IBKR qualification failures
-        strikes = _actual_strikes(sym, expiry) or theo_strikes
+    dte = days_to_expiry(expiry)
 
-        target_long  = underlying * (1 + long_otm)
-        target_short = underlying * (1 + long_otm + width_pct)
-        long_strike  = _find_nearest_strike(strikes, target_long)
-        short_strike = _find_nearest_strike(strikes, target_short)
-        if not long_strike or not short_strike or long_strike >= short_strike:
-            continue
+    # ── Expected Move and EM-anchored strike selection ────────────────────
+    em = engine.compute_expected_move(underlying, iv_for_calc, dte)
 
-        tmpl = _calc_template(sym, underlying, expiry, long_strike, short_strike,
-                               iv_rank, catalyst_days, name)
-        if tmpl:
-            tmpl['qty']         = qty
-            tmpl['catalyst_id'] = catalyst_id
-            tmpl['catalyst_days'] = catalyst_days
-            templates.append(tmpl)
+    strikes = _actual_strikes(sym, expiry) or theo_strikes
+    if not strikes:
+        return {'error': f'Cannot fetch strike list for {sym} {expiry}'}
 
-    # ── LEAP Template ──────────────────────────────────────────────────────
-    leap_data = None
-    # LEAP: 18-24 month expiry, delta ~0.65-0.75 (10% OTM or ATM)
-    leap_expiry = _find_expiry(expiries, 540, 720)
-    if not leap_expiry:
-        leap_expiry = _find_expiry(expiries, 360, 540)  # fallback 12-18m
+    target_long  = underlying + em * 0.33   # ~33% of 1-SD move — moderate OTM entry
+    target_short = underlying + em * 1.00   # at the 1-SD level — natural cap
+    long_strike  = _find_nearest_strike(strikes, target_long)
+    short_strike = _find_nearest_strike(strikes, target_short)
 
-    if leap_expiry:
-        leap_strikes = _actual_strikes(sym, leap_expiry) or theo_strikes
-        target_leap_strike = underlying * 1.05  # slightly OTM
-        leap_strike = _find_nearest_strike(leap_strikes, target_leap_strike)
-        if leap_strike:
-            leap_data = _calc_leap(sym, underlying, leap_expiry, leap_strike,
-                                   iv_rank, catalyst_days, above_200, domain_insight)
-            if leap_data:
-                leap_data['qty']          = qty
-                leap_data['catalyst_id']  = catalyst_id
-                leap_data['catalyst_days'] = catalyst_days
+    if not long_strike or not short_strike or long_strike >= short_strike:
+        return {'error': f'Cannot determine valid strikes for {sym} (EM=${em}, strikes near ${target_long:.0f}/${target_short:.0f})'}
+
+    # ── Quotes with full Greeks ───────────────────────────────────────────
+    lq = get_quote(sym, expiry, long_strike)
+    sq = get_quote(sym, expiry, short_strike)
+
+    if not lq or not sq:
+        return {'error': f'Cannot fetch option quotes for {sym}'}
+
+    long_bid  = float(lq.get('bid') or 0)
+    long_ask  = float(lq.get('ask') or 0)
+    short_bid = float(sq.get('bid') or 0)
+    short_ask = float(sq.get('ask') or 0)
+
+    if not (long_bid and long_ask and short_bid and short_ask):
+        return {'error': f'Incomplete bid/ask for {sym} options (check market hours or IBKR connection)'}
+
+    long_mid  = (long_bid  + long_ask)  / 2
+    short_mid = (short_bid + short_ask) / 2
+    net_debit = round(long_mid - short_mid, 2)
+
+    spread_width      = short_strike - long_strike
+    net_debit_dollar  = round(net_debit * 100, 2)
+    max_profit_dollar = round((spread_width - net_debit) * 100, 2)
+    max_loss_dollar   = net_debit_dollar
+    breakeven         = round(long_strike + net_debit, 2)
+    breakeven_pct     = round((breakeven - underlying) / underlying * 100, 1)
+
+    # ── Gate evaluation ───────────────────────────────────────────────────
+    long_ba  = round(long_ask  - long_bid,  2)
+    short_ba = round(short_ask - short_bid, 2)
+    liquidity_gate = long_ba <= 0.30 and short_ba <= 0.30
+
+    momentum_gate = (momentum_5d is not None and momentum_5d >= 1.0) or \
+                    (catalyst_days is not None and catalyst_days <= 3)
+
+    entry_gates = engine.score_entry_gates(
+        vol_gate=vol_analysis.get('gate_pass', True),
+        tech_gate=above_200,
+        conviction_gate=conviction_gate,
+        liquidity_gate=liquidity_gate,
+        momentum_gate=momentum_gate,
+    )
+
+    # ── Net Greeks ────────────────────────────────────────────────────────
+    net_greeks = engine.compute_net_greeks(lq, sq)
+
+    # ── Theta velocity ────────────────────────────────────────────────────
+    hv30_for_vel = hv30 or iv_for_calc
+    velocity = engine.compute_theta_velocity(breakeven, underlying, dte, hv30_for_vel)
+
+    # ── Monte Carlo EV ────────────────────────────────────────────────────
+    mc_ev = engine.run_monte_carlo_ev(
+        price=underlying,
+        iv_pct=iv_for_calc,
+        dte=dte,
+        long_strike=long_strike,
+        short_strike=short_strike,
+        net_debit=net_debit,
+        hv30=hv30,   # two-sigma: paths on HV30, pricing on IV
+    )
+
+    # ── Trade dict for execution (consumed by _execute_spread_bg) ─────────
+    verdict     = entry_gates['verdict']
+    grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
+    trade = {
+        'qty':           qty,
+        'net_debit':     net_debit,
+        'expiry':        expiry,
+        'dte':           dte,
+        'long_strike':   long_strike,
+        'short_strike':  short_strike,
+        'underlying':    underlying,
+        'iv_rank':       iv_rank,
+        'iv_pct':        current_iv,
+        'grade':         grade_label,
+        'template':      'EM-Anchored',
+        'delta_long':    lq.get('delta'),
+        'catalyst_id':   catalyst_id,
+        'catalyst_days': catalyst_days,
+    }
 
     return {
-        'symbol':      sym,
-        'underlying':  underlying,
-        'iv':          iv_data,
-        'templates':   templates,
-        'leap':        leap_data,
-        'above_200ma': above_200,
+        'symbol':       sym,
+        'underlying':   underlying,
+        'expiry':       expiry,
+        'dte':          dte,
+        'iv_rank':      iv_rank,
+        'current_iv':   current_iv,
+        'hv30':         hv30,
+        'vol_analysis': vol_analysis,
+        'em':           em,
+        'long_strike':  long_strike,
+        'short_strike': short_strike,
+        'net_debit':    net_debit,
+        'net_debit_$':  net_debit_dollar,
+        'max_profit_$': max_profit_dollar,
+        'max_loss_$':   max_loss_dollar,
+        'breakeven':    breakeven,
+        'breakeven_pct': breakeven_pct,
+        'long_ba':      long_ba,
+        'short_ba':     short_ba,
+        'entry_gates':  entry_gates,
+        'net_greeks':   net_greeks,
+        'velocity':     velocity,
+        'mc_ev':        mc_ev,
+        'momentum_5d':  momentum_5d,
+        'above_200':    above_200,
+        'conviction':   {'tier': tier, 'direction': direction, 'signals': signal_count, 'narrative': narrative},
+        'catalyst_days': catalyst_days,
+        'catalyst_id':  catalyst_id,
+        'qty':          qty,
+        'trade':        trade,
     }
 
 
 # ── Format calculator output for Telegram ────────────────────────────────────
 
 def format_calc_message(calc: dict) -> str:
-    sym        = calc['symbol']
-    under      = calc['underlying']
-    iv_data    = calc.get('iv') or {}
-    iv_rank    = iv_data.get('iv_rank',    '?')
-    current_iv = iv_data.get('current_iv', '?')
+    sym  = calc['symbol']
+    und  = calc['underlying']
+    iv   = calc.get('current_iv') or calc.get('iv_rank') or 0
+    hv30 = calc.get('hv30')
+    vol  = calc.get('vol_analysis') or {}
+    em   = calc.get('em')
+    gs   = calc.get('entry_gates') or {}
+    gr   = calc.get('net_greeks')  or {}
+    vel  = calc.get('velocity')    or {}
+    mc   = calc.get('mc_ev')       or {}
+    con  = calc.get('conviction')  or {}
+    dte  = calc.get('dte', 0)
 
-    # IV routing header
-    if isinstance(iv_rank, float) and iv_rank > 45:
-        routing = "🔴 IV Rank > 45% — *all templates at edge of viable range*"
-    elif isinstance(iv_rank, float) and iv_rank < 30:
-        routing = "🟢 IV Rank < 30% — LEAP preferred"
+    verdict    = gs.get('verdict', 'SKIP')
+    gates_pass = gs.get('gates_pass', 0)
+    ls         = calc.get('long_strike')
+    ss         = calc.get('short_strike')
+    nd         = calc.get('net_debit', 0)
+    nd_dol     = calc.get('net_debit_$', 0)
+    mp_dol     = calc.get('max_profit_$', 0)
+    be         = calc.get('breakeven', 0)
+    be_pct     = calc.get('breakeven_pct', 0)
+    qty        = calc.get('qty', 1)
+
+    # ── Expiry label ──────────────────────────────────────────────────────
+    try:
+        exp_fmt = f"{calc['expiry'][4:6]}/{calc['expiry'][6:]}"   # YYYYMMDD → MM/DD
+    except Exception:
+        exp_fmt = calc.get('expiry', '?')
+
+    # ── Volatility edge block ─────────────────────────────────────────────
+    edge_pts = vol.get('edge_pts')
+    vol_vtd  = vol.get('verdict', 'UNKNOWN')
+    vol_icon = '✅' if vol.get('gate_pass') else '❌'
+    if hv30 and iv:
+        edge_str = f"IV: {iv:.1f}% | HV30: {hv30:.1f}% | {edge_pts:+.1f}pts {vol_vtd} {vol_icon}"
     else:
-        routing = "🟡 IV Rank 30-45% — Spread preferred"
+        edge_str = f"IV: {iv:.1f}% | HV30: n/a | {vol_vtd}"
 
-    under_str = f"${under:.2f}" if under is not None else "n/a"
-    iv_str    = f"{current_iv}%" if current_iv is not None else "n/a"
+    if em and und:
+        em_lo = round(und - em, 2)
+        em_hi = round(und + em, 2)
+        em_str = f"1-SD move ({dte}d): +/-${em:.2f} → ${em_lo}–${em_hi}"
+    else:
+        em_str = ""
+
+    # ── Conviction block ──────────────────────────────────────────────────
+    tier      = con.get('tier', '?')
+    direction = con.get('direction', '?')
+    sig_count = con.get('signals', 0)
+    narrative = con.get('narrative', '')
+    tier_icon = '🔥' if tier == 'HIGH' else ('⚠️' if tier == 'MEDIUM' else '❄️')
+    con_str   = f"{tier_icon} {tier} · {sig_count} signals · {direction}"
+    if narrative:
+        con_str += f" — {narrative[:40]}"
+
+    tech_str     = "✅ Above 200MA" if calc.get('above_200') else "❌ Below 200MA"
+    mom_5d       = calc.get('momentum_5d')
+    mom_str      = (f"✅ +{mom_5d:.1f}% (5d)" if (mom_5d or 0) >= 1.0
+                    else (f"❌ {mom_5d:.1f}% (5d)" if mom_5d is not None else "❌ n/a"))
+
+    # ── Gate summary ──────────────────────────────────────────────────────
+    if verdict == 'ENTER':
+        gate_verdict = f"*{gates_pass}/5 → ENTER full size*"
+    elif verdict == 'ENTER_REDUCED':
+        gate_verdict = f"*{gates_pass}/5 → PROCEED (half size)*"
+    else:
+        gate_verdict = f"*{gates_pass}/5 → SKIP*"
+        failed = []
+        if not gs.get('vol'):        failed.append("Volatility")
+        if not gs.get('tech'):       failed.append("Technical")
+        if not gs.get('conviction'): failed.append("Conviction")
+        if not gs.get('liquidity'):  failed.append("Liquidity")
+        if not gs.get('momentum'):   failed.append("Momentum")
+
+    # ── Build message ─────────────────────────────────────────────────────
     lines = [
-        f"📊 *{sym} Options Calculator*",
-        f"Price: {under_str} | IV Rank: {iv_rank}% | IV: {iv_str}",
-        routing,
+        f"📊 *{sym} — Bull Spread Analysis*",
         "",
+        "VOLATILITY EDGE",
+        edge_str,
     ]
-
-    for i, t in enumerate(calc['templates'], 1):
-        liq  = "✅ liquid" if t['liquidity_ok'] and t['min_debit_ok'] else "⚠️ illiquid"
-        warn = "" if t['min_debit_ok'] else " *(debit < $0.80 — skip)*"
-        ev_t    = t['ev_net']    if t['ev_net']    is not None else 0
-        rr_t    = t['rr_net']   if t['rr_net']    is not None else 0
-        pp_t    = t['prob_profit'] if t['prob_profit'] is not None else 0
-        pl_t    = t['prob_loss']   if t['prob_loss']   is not None else 0
-        lines += [
-            f"*{i}. {t['template']} [{t['grade']}]* {warn}",
-            f"   {t['dte']}d exp | ${t['long_strike']}/${t['short_strike']} call spread",
-            f"   Cost: ${t['net_debit_$']} | Max profit: ${t['max_profit_$']} | Max loss: ${t['max_loss_$']}",
-            f"   EV (post-comm): ${ev_t:+.0f} | R:R {rr_t:.1f}x | {liq}",
-            f"   Prob profit: {pp_t:.0f}% | Prob loss: {pl_t:.0f}%",
-            "",
-        ]
-
-    lp = calc.get('leap')
-    if lp:
-        liq_leap = "✅" if (lp.get('bid_ask_spread') or 1.0) <= 0.40 else "⚠️"
-        delta_str = f"{lp['delta']:.2f}" if lp.get('delta') else 'n/a'
-        ev_lp     = lp['ev_net'] if lp.get('ev_net') is not None else 0
-        lines += [
-            f"*4. LEAP [{lp['grade']}]* {liq_leap}",
-            f"   {lp['dte']}d exp | ${lp['strike']} call",
-            f"   Premium: ${lp['premium_$']} | Delta: {delta_str}",
-            f"   EV (est, post-comm): ${ev_lp:+.0f} | 200MA: {'✅' if lp['above_200ma'] else '❌'}",
-            "",
-        ]
-    else:
-        lines.append("*4. LEAP* — no 12-24m expiry available")
-        lines.append("")
+    if em_str:
+        lines.append(em_str)
 
     lines += [
-        "Reply: *1/2/3/4* to enter, *5* to skip",
-        f"_(timeout in 30 min)_",
+        "",
+        "CONVICTION",
+        con_str,
+        f"Tech: {tech_str}",
+        f"Momentum: {mom_str}",
+        "",
+        f"ENTRY GATE: {gate_verdict}",
+    ]
+
+    if verdict == 'SKIP':
+        if failed:
+            lines.append(f"Fails: {', '.join(failed)}")
+        lines += ["", "No trade recommended — keep watching."]
+        return "\n".join(lines)
+
+    # ── Trade details (ENTER / ENTER_REDUCED) ─────────────────────────────
+    liq_warn = "" if (calc.get('long_ba', 1) <= 0.30 and calc.get('short_ba', 1) <= 0.30) \
+               else " ⚠️ wide spread"
+    stop_dol = round(nd_dol * 0.50, 0)
+    tgt_dol  = round(mp_dol * 0.50, 0)
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "*RECOMMENDED TRADE*",
+        f"${ls}/{ss} Call Spread · {exp_fmt} ({dte}d){liq_warn}",
+        f"Debit: ${nd:.2f}/sh · ${nd_dol:.0f}/contract",
+        f"Breakeven: ${be:.2f} (+{be_pct:.1f}%)",
+        "",
+        "GREEKS (net spread)",
+    ]
+
+    nd_str  = f"Δ {gr['net_delta']:+.3f}" if gr.get('net_delta') is not None else "Δ n/a"
+    th_str  = f"θ ${gr['net_theta']:.2f}/day" if gr.get('net_theta') is not None else "θ n/a"
+    vg_str  = f"ν ${gr['net_vega']:.0f}/IV pt" if gr.get('net_vega') is not None else "ν n/a"
+    lines.append(f"{nd_str} · {th_str} · {vg_str}")
+
+    if vel.get('required_pct_day') is not None and vel.get('hv30_daily') is not None:
+        ach_icon = "✅" if vel.get('achievable') else "⚠️"
+        lines.append(
+            f"Velocity: {vel['required_pct_day']:.2f}%/d needed "
+            f"| HV30 avg {vel['hv30_daily']:.2f}%/d {ach_icon}"
+        )
+
+    if mc.get('ev_dollar') is not None:
+        ev_sign = "+" if mc['ev_dollar'] >= 0 else ""
+        lines += [
+            "",
+            "MONTE CARLO EV (10K paths, managed)",
+            f"EV: {ev_sign}${mc['ev_dollar']:.0f}/contract · Win: {mc['win_rate']:.0f}%",
+        ]
+
+    lines += [
+        "",
+        "EXIT RULES",
+        f"Target: ${tgt_dol:.0f} (50% max profit)",
+        f"Stop:   ${stop_dol:.0f} (50% of debit)",
+        f"Time:   21 DTE",
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "Reply *CONFIRM* to place · *SKIP* to cancel",
+        "_(timeout in 30 min)_",
     ]
     return "\n".join(lines)
 
@@ -976,7 +1167,7 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
             )
             return
 
-    send_telegram(f"⏳ Running calculator for *{sym}*...", chat_id)
+    send_telegram(f"⏳ Running Evidence-Based analysis for *{sym}*...", chat_id)
     calc = run_calculator(sym, qty)
     if 'error' in calc:
         send_telegram(f"❌ {calc['error']}", chat_id)
@@ -985,13 +1176,16 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
     msg = format_calc_message(calc)
     send_telegram(msg, chat_id)
 
-    _pending[chat_id] = {
-        'action':     'signal_alert',
-        'symbol':     sym,
-        'qty':        qty,
-        'calc':       calc,
-        'expires_at': datetime.now() + timedelta(minutes=30),
-    }
+    # Only add to pending if verdict allows trading (ENTER or ENTER_REDUCED)
+    verdict = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+    if verdict in ('ENTER', 'ENTER_REDUCED'):
+        _pending[chat_id] = {
+            'action':     'spread_confirm',
+            'symbol':     sym,
+            'qty':        qty,
+            'calc':       calc,
+            'expires_at': datetime.now() + timedelta(minutes=30),
+        }
 
 
 def cmd_status(chat_id: str):
@@ -1303,46 +1497,32 @@ def handle_reply(text: str, chat_id: str):
 
     action = pending['action']
 
-    if action == 'signal_alert':
+    if action == 'spread_confirm':
         calc = pending['calc']
         sym  = pending['symbol']
         qty  = pending['qty']
-        if text == '5':
+        upper = text.upper()
+        if upper == 'SKIP':
             del _pending[chat_id]
             send_telegram(f"Skipped {sym}. No order placed.", chat_id)
             return
-        if text in ('1', '2', '3'):
-            idx = int(text) - 1
-            if idx >= len(calc['templates']):
-                send_telegram(f"Template {text} not available for {sym}.", chat_id)
+        if upper == 'CONFIRM':
+            trade = calc.get('trade')
+            if not trade:
+                del _pending[chat_id]
+                send_telegram(f"❌ Trade data missing for {sym}. Run `OPT BUY {sym}` again.", chat_id)
                 return
-            tmpl = calc['templates'][idx]
-            tmpl['underlying'] = calc.get('underlying')
-            tmpl['iv_rank']    = calc.get('iv', {}).get('iv_rank')
-            tmpl['iv_pct']     = calc.get('iv', {}).get('current_iv')
-            new_premium = tmpl.get('net_debit', 0) * 100 * tmpl.get('qty', 1)
+            new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
             if not check_capital_cap(new_premium, chat_id):
                 del _pending[chat_id]
                 return
             del _pending[chat_id]
-            send_telegram(f"⏳ Placing {tmpl['template']} spread for *{sym}*...", chat_id)
-            t = threading.Thread(target=_execute_spread_bg, args=(sym, tmpl, chat_id), daemon=True)
+            send_telegram(f"⏳ Placing EM-Anchored spread for *{sym}*...", chat_id)
+            t = threading.Thread(target=_execute_spread_bg, args=(sym, trade, chat_id), daemon=True)
             t.start()
             return
-        if text == '4':
-            leap = calc.get('leap')
-            if not leap:
-                send_telegram(f"No LEAP template available for {sym}.", chat_id)
-                return
-            new_premium = leap.get('mid', 0) * 100 * leap.get('qty', 1)
-            if not check_capital_cap(new_premium, chat_id):
-                del _pending[chat_id]
-                return
-            del _pending[chat_id]
-            send_telegram(f"⏳ Placing LEAP for *{sym}*...", chat_id)
-            t = threading.Thread(target=_execute_leap_bg, args=(sym, leap, chat_id), daemon=True)
-            t.start()
-            return
+        # Unrecognised reply
+        send_telegram("Reply *CONFIRM* to place the trade or *SKIP* to cancel.", chat_id)
 
     elif action == 'close_confirm':
         trade = pending['trade']
@@ -1400,8 +1580,8 @@ def dispatch(text: str, chat_id: str):
             )
         return
 
-    # Numbered or YES/NO replies to pending actions
-    if text in ('1', '2', '3', '4', '5') or text.upper() in ('YES', 'NO'):
+    # CONFIRM/SKIP (spread entry) and YES/NO (close confirmation) replies
+    if upper in ('CONFIRM', 'SKIP', 'YES', 'NO'):
         handle_reply(text, chat_id)
         return
 
