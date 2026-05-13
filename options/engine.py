@@ -231,17 +231,22 @@ def run_monte_carlo_ev(
     When HV30 > IV (options cheap), paths move more than priced → positive EV edge.
     """
     rng          = np.random.default_rng(42)
-    path_sigma   = (hv30 / 100) if hv30 is not None else (iv_pct / 100)
-    price_sigma  = iv_pct / 100
+    # VRP model: price paths and spread valuation both use realized vol (HV30).
+    # Entry cost (net_debit) stays at market price (IV-based quote).
+    # → When HV30 > IV: entry < fair value → positive EV (options cheap for buyer)
+    # → When HV30 < IV: entry > fair value → negative EV (options expensive)
+    sigma        = (hv30 / 100) if hv30 is not None else (iv_pct / 100)
+    price_sigma  = sigma
+    path_sigma   = sigma
     dt           = 1 / 252
     spread_width = short_strike - long_strike
 
     profit_target_val = net_debit + (spread_width - net_debit) * 0.50
     stop_level_val    = net_debit * 0.50
 
-    # Price paths using realized vol (or IV if HV30 unavailable): (n_paths, dte)
+    # Price paths: (n_paths, dte)
     Z        = rng.standard_normal((n_paths, dte))
-    log_rets = -0.5 * path_sigma**2 * dt + path_sigma * math.sqrt(dt) * Z
+    log_rets = -0.5 * sigma**2 * dt + sigma * math.sqrt(dt) * Z
     cum_rets = np.cumsum(log_rets, axis=1)
     prices   = price * np.exp(cum_rets)
 
@@ -249,7 +254,7 @@ def run_monte_carlo_ev(
     days_idx = np.arange(dte)
     T_remain = ((dte - days_idx - 1) / 252).reshape(1, -1)   # (1, dte) years
 
-    # BS spread values using pricing sigma (IV) — reflects market option prices
+    # BS spread values: use realized sigma so EV reflects VRP edge at entry
     spread_vals = _bs_spread_vals(prices, long_strike, short_strike, price_sigma, T_remain)
 
     # Exit masks
