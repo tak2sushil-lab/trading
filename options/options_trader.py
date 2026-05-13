@@ -357,6 +357,19 @@ def _find_nearest_strike(available: list[float], target: float) -> float | None:
     return min(available, key=lambda s: abs(s - target))
 
 
+def _actual_strikes(symbol: str, expiry: str) -> list[float]:
+    """
+    Return the strikes actually listed for this expiry (from yfinance).
+    These are the strikes IBKR will accept for order qualification.
+    Falls back to [] if yfinance can't fetch — caller falls back to theoretical list.
+    """
+    try:
+        df = _yf_option_chain(symbol, expiry, 'C')
+        return sorted(df['strike'].tolist())
+    except Exception:
+        return []
+
+
 def _calc_template(symbol: str, underlying: float, expiry: str,
                    long_strike: float, short_strike: float,
                    iv_rank: float, catalyst_days: int | None,
@@ -482,9 +495,9 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     if not chain_data or 'chain' not in chain_data:
         return {'error': f'Cannot fetch option chain for {sym}'}
 
-    # All available expiry dates and strikes
-    expiries = [item['expiry'] for item in chain_data['chain']]
-    all_strikes = chain_data['chain'][0]['strikes'] if chain_data['chain'] else []
+    # All available expiry dates (theoretical strike list from bridge — used as fallback only)
+    expiries    = [item['expiry'] for item in chain_data['chain']]
+    theo_strikes = chain_data['chain'][0]['strikes'] if chain_data['chain'] else []
 
     # Upcoming catalyst for this symbol (for grading + DTE info)
     upcoming     = get_upcoming_catalysts(days=60)
@@ -514,10 +527,13 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         if not expiry:
             continue
 
+        # Use actual listed strikes for this expiry — avoids IBKR qualification failures
+        strikes = _actual_strikes(sym, expiry) or theo_strikes
+
         target_long  = underlying * (1 + long_otm)
         target_short = underlying * (1 + long_otm + width_pct)
-        long_strike  = _find_nearest_strike(all_strikes, target_long)
-        short_strike = _find_nearest_strike(all_strikes, target_short)
+        long_strike  = _find_nearest_strike(strikes, target_long)
+        short_strike = _find_nearest_strike(strikes, target_short)
         if not long_strike or not short_strike or long_strike >= short_strike:
             continue
 
@@ -537,8 +553,9 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         leap_expiry = _find_expiry(expiries, 360, 540)  # fallback 12-18m
 
     if leap_expiry:
+        leap_strikes = _actual_strikes(sym, leap_expiry) or theo_strikes
         target_leap_strike = underlying * 1.05  # slightly OTM
-        leap_strike = _find_nearest_strike(all_strikes, target_leap_strike)
+        leap_strike = _find_nearest_strike(leap_strikes, target_leap_strike)
         if leap_strike:
             leap_data = _calc_leap(sym, underlying, leap_expiry, leap_strike,
                                    iv_rank, catalyst_days, above_200, domain_insight)
