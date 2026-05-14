@@ -993,6 +993,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     }
 
     result = {
+        'strategy':     'BULL_SPREAD',
         'symbol':       sym,
         'underlying':   underlying,
         'expiry':       expiry,
@@ -1194,10 +1195,11 @@ def format_calc_message(calc: dict) -> str:
 
     if mc.get('ev_dollar') is not None:
         ev_sign = "+" if mc['ev_dollar'] >= 0 else ""
+        win_rate = mc.get('win_rate') or 0
         lines += [
             "",
             "MONTE CARLO EV (10K paths, managed)",
-            f"EV: {ev_sign}${mc['ev_dollar']:.0f}/contract · Win: {mc['win_rate']:.0f}%",
+            f"EV: {ev_sign}${mc['ev_dollar']:.0f}/contract · Win: {win_rate:.0f}%",
         ]
 
     time_rule = "18-month hold or 50% gain" if strategy == 'LEAP' else "21 DTE"
@@ -1478,8 +1480,8 @@ def _execute_close_bg(trade: dict, chat_id: str):
     status = get_order_status(order_id)
     filled = status and status.get('filled', 0) >= qty
 
-    return_pct = close_options_trade(tid, exit_value, exit_reason='MANUAL')
-    sign       = '+' if (return_pct or 0) >= 0 else ''
+    return_pct = close_options_trade(tid, exit_value, exit_reason='MANUAL') or 0
+    sign       = '+' if return_pct >= 0 else ''
 
     # KB: log actual outcome vs predicted EV
     try:
