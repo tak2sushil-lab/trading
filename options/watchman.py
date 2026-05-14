@@ -46,6 +46,7 @@ from database import (
     update_options_stop,
     close_options_trade,
     log_options_snapshot,
+    log_trade_outcome,
     get_upcoming_catalysts,
     get_closed_options_count,
     get_options_learning_data,
@@ -110,6 +111,102 @@ def is_eod_window() -> bool:
 
 
 # ── Bridge helpers ────────────────────────────────────────────────────────────
+
+def _bridge_post(path: str, payload: dict) -> dict | None:
+    try:
+        r = requests.post(f"{BRIDGE_URL}{path}", json=payload, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"[bridge POST] {path} — {e}")
+    return None
+
+
+def _auto_close_position(trade: dict, current_value: float, exit_reason: str = 'AUTO_STOP') -> bool:
+    """
+    Place a market-limit sell order to close the position when stop is hit.
+    Records outcome to DB. Returns True if close order was successfully placed.
+    """
+    sym   = trade['symbol']
+    strat = trade['strategy']
+    tid   = trade['id']
+    qty   = trade.get('contracts', 1)
+
+    if strat == 'BULL_SPREAD':
+        lq = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
+        sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
+        if not lq or not sq:
+            return False
+        long_mid   = (lq.get('bid', 0) + lq.get('ask', 0)) / 2
+        short_mid  = (sq.get('bid', 0) + sq.get('ask', 0)) / 2
+        spread_mid = round(long_mid - short_mid, 2)
+        payload = {
+            'symbol':       sym,
+            'expiry':       trade['expiry'],
+            'strike':       trade['long_strike'],
+            'right':        trade['right'],
+            'qty':          qty,
+            'action':       'SELL',
+            'order_type':   'LIMIT',
+            'limit_price':  round(spread_mid - 0.05, 2),
+            'short_strike': trade['short_strike'],
+            'net_debit':    round(-(spread_mid - 0.05), 2),
+        }
+        exit_dollar = round(spread_mid * 100 * qty, 2)
+    else:  # LEAP
+        q = get_quote(sym, trade['expiry'], trade['strike'], trade['right'])
+        if not q:
+            return False
+        mid = round((q.get('bid', 0) + q.get('ask', 0)) / 2, 2)
+        payload = {
+            'symbol':      sym,
+            'expiry':      trade['expiry'],
+            'strike':      trade['strike'],
+            'right':       trade['right'],
+            'qty':         qty,
+            'action':      'SELL',
+            'order_type':  'LIMIT',
+            'limit_price': round(mid - 0.05, 2),
+        }
+        exit_dollar = round(mid * 100 * qty, 2)
+
+    resp = _bridge_post('/options/order', payload)
+    if not resp or 'orderId' not in resp:
+        return False
+
+    # Wait one scan cycle for IBKR to fill, then record
+    time.sleep(30)
+    return_pct = close_options_trade(tid, exit_dollar, exit_reason=exit_reason)
+
+    # Log outcome for learning loop
+    try:
+        import sqlite3 as _sq
+        from database import DB_PATH as _dbp
+        _conn = _sq.connect(_dbp)
+        _cur  = _conn.cursor()
+        _cur.execute(
+            'SELECT id, mc_ev_dollar, mc_win_rate FROM opt_calc_log WHERE trade_id=? LIMIT 1',
+            (tid,))
+        _row = _cur.fetchone()
+        _cur.execute('SELECT entry_date FROM options_trades WHERE id=?', (tid,))
+        _erow = _cur.fetchone()
+        _conn.close()
+        if _row:
+            _days = ((date.today() - date.fromisoformat(_erow[0])).days
+                     if _erow and _erow[0] else 0)
+            log_trade_outcome(
+                trade_id=tid, calc_log_id=_row[0],
+                predicted_ev=_row[1], predicted_wr=_row[2],
+                actual_pnl=round(exit_dollar, 2),
+                exit_reason='AUTO_STOP',
+                days_held=_days,
+            )
+    except Exception:
+        pass
+
+    print(f"[watchman] auto-closed {sym} trade #{tid} — exit ${exit_dollar:.0f} ({return_pct:+.1f}%)")
+    return True
+
 
 def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
     try:
@@ -182,9 +279,16 @@ def get_leap_value(trade: dict) -> float | None:
 
 
 def get_contract_value(trade: dict) -> float | None:
+    """Return TOTAL current value of the position (all contracts combined).
+    premium_paid and stop_value in DB are also totals, so comparisons are consistent."""
+    contracts = trade.get('contracts', 1) or 1
     if trade['strategy'] == 'BULL_SPREAD':
-        return get_spread_value(trade)
-    return get_leap_value(trade)
+        val = get_spread_value(trade)
+    else:
+        val = get_leap_value(trade)
+    if val is None:
+        return None
+    return round(val * contracts, 2)
 
 
 # ── DTE helper ───────────────────────────────────────────────────────────────
@@ -317,14 +421,45 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                 f"Stop value: ${stop:.2f} | Contract: ${current_value:.2f}"
             )
 
-    # ── T4: value below stop — close alert ──
+    # ── T3b: hit profit target — AUTO-CLOSE ──
+    target = trade.get('target_value')
+    if target is not None and current_value >= target and 'T3b' not in fired:
+        fired.add('T3b')
+        gain_pct = round((current_value - prem) / prem * 100, 1) if prem else 0
+        tgt_label = '50% max profit' if trade['strategy'] == 'BULL_SPREAD' else '100% gain'
+        closed = _auto_close_position(trade, current_value, exit_reason='AUTO_TARGET')
+        if closed:
+            alerts.append(
+                f"🎯 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
+                f"Profit target reached ({tgt_label}) · +{gain_pct}%\n"
+                f"Value: ${current_value:.2f} ≥ target ${target:.2f}"
+            )
+        else:
+            alerts.append(
+                f"🎯 *TARGET HIT — {sym} {strat}* (trade #{tid})\n"
+                f"{tgt_label} reached · +{gain_pct}%\n"
+                f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
+            )
+        return alerts   # no further checks needed once position is closed
+
+    # ── T4: value below stop — AUTO-CLOSE ──
     if stop is not None and current_value <= stop:
-        alerts.append(
-            f"🚨 *STOP HIT — {sym} {strat}* (trade #{tid})\n"
-            f"Value: ${current_value:.2f} | Stop: ${stop:.2f}\n"
-            f"Entry cost: ${prem:.2f} | Stage: {stage}\n"
-            f"→ Close via: `OPT CLOSE {sym}`"
-        )
+        stage_label = {1: 'hard stop (-50%)', 2: 'breakeven stop', 3: 'trail stop'}.get(stage, '')
+        closed = _auto_close_position(trade, current_value)
+        if closed:
+            alerts.append(
+                f"🚨 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
+                f"Stop hit ({stage_label})\n"
+                f"Value: ${current_value:.2f} | Stop level: ${stop:.2f} | Entry: ${prem:.2f}"
+            )
+            return alerts   # position gone, skip further checks
+        else:
+            alerts.append(
+                f"🚨 *STOP HIT — {sym} {strat}* (trade #{tid})\n"
+                f"Value: ${current_value:.2f} | Stop: ${stop:.2f} | Stage: {stage}\n"
+                f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
+            )
+            return alerts   # don't pile on other alerts when stop is hit
 
     # ── T1: underlying > 3% move ──
     if underlying and prior_close and prior_close > 0:

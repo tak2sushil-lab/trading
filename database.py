@@ -197,6 +197,12 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    # migrate: add target_value to options_trades for profit-target auto-close
+    try:
+        c.execute('ALTER TABLE options_trades ADD COLUMN target_value REAL')
+    except Exception:
+        pass  # column already exists
+
     # ── Auto-suggest decision log ─────────────────────────────────
     c.execute('''CREATE TABLE IF NOT EXISTS opt_suggestions (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -599,22 +605,26 @@ def log_options_trade(strategy, symbol, cap_type, underlying_price,
                       right='C', net_debit=None, catalyst_id=None, days_to_catalyst=None):
     conn       = get_connection()
     c          = conn.cursor()
-    # Initial stop = value at which to close: spread -50%, LEAP -40% (keep 60%)
+    # Stop: spread -50% of premium, LEAP -40% (keep 60%)
     if strategy == 'BULL_SPREAD':
-        stop_value = round(premium_paid * 0.50, 2)
+        stop_value   = round(premium_paid * 0.50, 2)
+        # Target: 50% of max profit captured (same level stated in analysis message)
+        target_value = round(premium_paid + (max_profit or 0) * 0.50, 2)
     else:
-        stop_value = round(premium_paid * 0.60, 2)
+        stop_value   = round(premium_paid * 0.60, 2)
+        # LEAP target: 100% gain (double the cost)
+        target_value = round(premium_paid * 2.0, 2)
     c.execute('''INSERT INTO options_trades
         (strategy, symbol, cap_type, underlying_price, strike, long_strike,
          short_strike, expiry, right, contracts, delta_entry, iv_rank_entry,
          iv_pct_entry, premium_paid, max_profit, max_loss, net_debit,
-         stop_value, stop_stage, catalyst_id, days_to_catalyst,
+         stop_value, stop_stage, target_value, catalyst_id, days_to_catalyst,
          entry_grade, entry_thesis, entry_date, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,\'OPEN\')''',
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,\'OPEN\')''',
         (strategy, symbol.upper(), cap_type, underlying_price, strike, long_strike,
          short_strike, expiry, right, contracts, delta_entry, iv_rank_entry,
          iv_pct_entry, premium_paid, max_profit, max_loss, net_debit,
-         stop_value, catalyst_id, days_to_catalyst,
+         stop_value, target_value, catalyst_id, days_to_catalyst,
          entry_grade, entry_thesis, date.today().isoformat()))
     trade_id = c.lastrowid
     conn.commit()
@@ -628,7 +638,7 @@ def get_open_options_trades():
                         strike, long_strike, short_strike, expiry, right,
                         contracts, delta_entry, iv_rank_entry, premium_paid,
                         max_profit, max_loss, net_debit, stop_value, stop_stage,
-                        catalyst_id, entry_grade, entry_date
+                        target_value, catalyst_id, entry_grade, entry_date
                  FROM options_trades WHERE status=\'OPEN\'
                  ORDER BY entry_date ASC''')
     rows = c.fetchall()
@@ -637,7 +647,7 @@ def get_open_options_trades():
             'strike','long_strike','short_strike','expiry','right',
             'contracts','delta_entry','iv_rank_entry','premium_paid',
             'max_profit','max_loss','net_debit','stop_value','stop_stage',
-            'catalyst_id','entry_grade','entry_date']
+            'target_value','catalyst_id','entry_grade','entry_date']
     return [dict(zip(keys, r)) for r in rows]
 
 def update_options_stop(trade_id, new_stop_value, new_stage):
@@ -712,6 +722,27 @@ def log_options_news(symbol, headline, source, published_at, relevance,
     conn.commit()
     conn.close()
     return news_id
+
+def get_options_total_pnl() -> float:
+    """Sum of (exit_value - premium_paid) for all CLOSED options trades.
+    Negative = net loss. Used by the $2K circuit breaker."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''SELECT COALESCE(SUM(exit_value - premium_paid), 0.0)
+                 FROM options_trades WHERE status='CLOSED' ''')
+    val = c.fetchone()[0]
+    conn.close()
+    return round(float(val), 2)
+
+def get_options_deployed_capital() -> float:
+    """Sum of premium_paid for all OPEN options trades. Used for capital re-deployment gate."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute("SELECT COALESCE(SUM(premium_paid), 0.0) FROM options_trades WHERE status='OPEN'")
+    val = c.fetchone()[0]
+    conn.close()
+    return round(float(val), 2)
+
 
 def get_closed_options_count():
     conn = get_connection()

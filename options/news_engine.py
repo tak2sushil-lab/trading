@@ -49,7 +49,7 @@ ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')     # optional — free 25 ca
 FINNHUB_KEY       = os.getenv('FINNHUB_API_KEY')        # optional — free 60 calls/min
 TG_API            = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 
-SCAN_INTERVAL_MIN = 30     # minutes between scans during market hours (was 15 — halved for cost)
+SCAN_INTERVAL_MIN = 15     # minutes between scans — safe on Groq free tier (dedup keeps LLM calls <25/day)
 MAX_AGE_HOURS     = 16     # fetch window: covers overnight news at 9:30am open
                            # (4pm close + ~12h gap to open = need ≥13h; 16h gives margin)
 DEDUP_HOURS       = 24     # dedup window: must be >= MAX_AGE_HOURS to prevent re-classifying

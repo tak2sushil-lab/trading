@@ -46,6 +46,8 @@ from database import (
     close_options_trade,
     get_closed_options_count,
     get_options_learning_data,
+    get_options_total_pnl,
+    get_options_deployed_capital,
     get_recent_news,
     get_news_quality_stats,
     get_conviction_leaderboard,
@@ -70,7 +72,10 @@ OPT_TG_TOKEN     = os.getenv('OPTIONS_TELEGRAM_TOKEN') or TELEGRAM_TOKEN
 OPT_TG_CHAT_ID   = os.getenv('OPTIONS_TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
 TG_API           = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 # Dedicated options capital allocation ($5K start; 30% max deployed = $1.5K cap)
-OPTIONS_ACCOUNT_SIZE = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
+OPTIONS_ACCOUNT_SIZE    = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
+OPTIONS_CIRCUIT_BREAKER = float(os.getenv('OPTIONS_CIRCUIT_BREAKER', '2000'))  # max realized loss
+OPTIONS_TOTAL_CAPITAL   = float(os.getenv('OPTIONS_TOTAL_CAPITAL',   '5000'))  # total pool
+MAX_OPTIONS_POSITIONS   = int(os.getenv('MAX_OPTIONS_POSITIONS',     '4'))     # max concurrent
 
 ET               = ZoneInfo('America/New_York')
 COMMISSION_RT    = 3.60    # round-trip per spread (2 legs × open + close)
@@ -78,8 +83,17 @@ MAX_SLIPPAGE     = 0.15    # max $ above mid before cancel
 FILL_WAIT_SEC    = 45      # seconds between fill checks
 MAX_FILL_TRIES   = 4       # attempts: mid, mid+.05, mid+.10, mid+.15
 
-MID_CAP_UNIVERSE = {'PLTR', 'RKLB', 'APP', 'HOOD', 'IONQ'}
-LARGE_CAP_UNIVERSE = {'NVDA', 'META', 'AMZN', 'MSFT', 'AAPL', 'TSLA', 'AMD', 'GOOGL'}
+LARGE_CAP_UNIVERSE = {
+    # Mega/large cap >$100B — deep options liquidity, expensive contracts, qty=1
+    'NVDA', 'META', 'AMZN', 'MSFT', 'AAPL', 'TSLA', 'AMD', 'GOOGL',
+    'ORCL', 'PLTR', 'APP',  'CRWD', 'ARM',  'SHOP',
+}
+MID_CAP_UNIVERSE = {
+    # Mid cap $2B-$100B — cheaper contracts, auto-qty targets $1,200/position
+    'COIN', 'AXON', 'HOOD', 'SMCI', 'RKLB',
+    'IONQ', 'CELH', 'AFRM', 'SOFI', 'HIMS', 'MARA',
+}
+AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales to this)
 
 # ── Global state ──────────────────────────────────────────────────────────────
 _paused          = False
@@ -292,6 +306,92 @@ def check_capital_cap(new_premium: float, chat_id: str) -> bool:
     return True
 
 
+# ── Circuit breaker ───────────────────────────────────────────────────────────
+
+def check_circuit_breaker(chat_id: str) -> bool:
+    """
+    Block new entries if cumulative realized options losses exceed OPTIONS_CIRCUIT_BREAKER.
+    Returns True if OK to trade, False if breaker is tripped.
+    """
+    total_pnl = get_options_total_pnl()
+    if total_pnl < -OPTIONS_CIRCUIT_BREAKER:
+        send_telegram(
+            f"🛑 *Options circuit breaker tripped*\n"
+            f"Cumulative realized loss: ${abs(total_pnl):,.0f} "
+            f"exceeds ${OPTIONS_CIRCUIT_BREAKER:,.0f} limit\n"
+            f"No new entries until losses recover. Review open positions.",
+            chat_id,
+        )
+        return False
+    return True
+
+
+def capital_status() -> dict:
+    """Return deployed, available, and open slot count. Central fact source."""
+    open_trades = get_open_options_trades()
+    deployed    = sum(t['premium_paid'] or 0 for t in open_trades)
+    available   = max(0.0, OPTIONS_TOTAL_CAPITAL - deployed)
+    slots_used  = len(open_trades)
+    slots_free  = max(0, MAX_OPTIONS_POSITIONS - slots_used)
+    return {
+        'deployed':   round(deployed, 2),
+        'available':  round(available, 2),
+        'slots_used': slots_used,
+        'slots_free': slots_free,
+        'total':      OPTIONS_TOTAL_CAPITAL,
+    }
+
+
+def can_open_position(estimated_cost: float = 0.0, chat_id: str | None = None) -> bool:
+    """
+    Returns True if a new position can be opened.
+    Checks: open slot count, available capital.
+    Sends a message to chat_id if blocked (when chat_id is provided).
+    """
+    cs = capital_status()
+    if cs['slots_free'] <= 0:
+        if chat_id:
+            send_telegram(
+                f"⛔ All {MAX_OPTIONS_POSITIONS} position slots full "
+                f"({cs['slots_used']} open). Capital re-deploys when a trade closes.",
+                chat_id,
+            )
+        return False
+    if estimated_cost > 0 and estimated_cost > cs['available']:
+        if chat_id:
+            send_telegram(
+                f"⛔ Insufficient capital: ${estimated_cost:.0f} needed, "
+                f"${cs['available']:.0f} available "
+                f"(${cs['deployed']:.0f} deployed of ${cs['total']:.0f}).",
+                chat_id,
+            )
+        return False
+    return True
+
+
+# ── Extended-hours awareness ──────────────────────────────────────────────────
+
+def is_options_session() -> bool:
+    """Options can be traded 9:15am–8:00pm ET Mon-Fri."""
+    n = datetime.now(ET)
+    if n.weekday() >= 5:
+        return False
+    open_  = n.replace(hour=9,  minute=15, second=0, microsecond=0)
+    close_ = n.replace(hour=20, minute=0,  second=0, microsecond=0)
+    return open_ <= n <= close_
+
+
+def session_liquidity_note() -> str:
+    """Return a warning if we're outside regular market hours."""
+    n = datetime.now(ET)
+    h, m = n.hour, n.minute
+    if h < 9 or (h == 9 and m < 30):
+        return " ⚠️ Pre-market — spreads wider than normal"
+    if h >= 16:
+        return " ⚠️ Post-market — spreads wider, fills slower"
+    return ""
+
+
 # ── Market helpers ────────────────────────────────────────────────────────────
 
 def is_above_200ma(symbol: str) -> bool:
@@ -480,6 +580,250 @@ def _calc_leap(symbol: str, underlying: float, expiry: str, strike: float,
         'grade':          grd,
         'above_200ma':    above_200ma,
     }
+
+
+# ── Full LEAP calculator (mirrors run_calculator for bull spreads) ────────────
+
+def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
+    """
+    Full LEAP analysis: same 5-gate scoring, MC EV via engine (single-leg GBM).
+    Targets 18-month DTE, 5% OTM strike.
+    """
+    sym = symbol.upper()
+
+    iv_data    = get_iv_rank(sym)
+    iv_rank    = iv_data.get('iv_rank',    50.0) if iv_data else 50.0
+    current_iv = iv_data.get('current_iv')       if iv_data else None
+
+    underlying = get_underlying_price(sym)
+    if not underlying:
+        return {'error': f'Cannot fetch price for {sym}'}
+
+    chain_data = get_chain(sym)
+    if not chain_data or 'chain' not in chain_data:
+        return {'error': f'Cannot fetch option chain for {sym}'}
+
+    expiries = [item['expiry'] for item in chain_data['chain']]
+    stock_data  = engine.get_stock_data(sym)
+    hv30        = stock_data['hv30']
+    above_200   = stock_data['above_200']
+    momentum_5d = stock_data['momentum_5d']
+
+    iv_for_calc  = current_iv or iv_rank or 40.0
+    vol_analysis = (engine.assess_volatility_edge(iv_for_calc, hv30)
+                    if hv30 else {'edge_pts': None, 'verdict': 'UNKNOWN',
+                                  'gate_pass': True, 'iv': iv_for_calc, 'hv30': None})
+
+    upcoming      = get_upcoming_catalysts(days=90)
+    sym_cats      = [c for c in upcoming if c['symbol'] == sym]
+    catalyst_days = None
+    catalyst_id   = None
+    if sym_cats:
+        cat_date      = datetime.strptime(sym_cats[0]['date'], '%Y-%m-%d').date()
+        catalyst_days = (cat_date - date.today()).days
+        catalyst_id   = sym_cats[0]['id']
+
+    conviction    = get_conviction_detail(sym)
+    tier          = conviction.get('tier', 'LOW')
+    direction     = conviction.get('direction', 'MIXED')
+    signal_count  = conviction.get('signal_count', 0)
+    narrative     = conviction.get('narrative', '')
+    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULLISH')
+
+    # LEAP: 15-24 month expiry (450–730 DTE)
+    expiry = _find_expiry(expiries, 450, 730)
+    if not expiry:
+        expiry = _find_expiry(expiries, 300, 730)
+    if not expiry:
+        return {'error': f'No LEAP-eligible expiry found for {sym}'}
+
+    dte = days_to_expiry(expiry)
+
+    # Strike: 5% OTM on actual IBKR strikes
+    target_strike = round(underlying * 1.05, 0)
+    avail = _actual_strikes(sym, expiry)
+    strike = _find_nearest_strike(avail, target_strike) if avail else target_strike
+
+    q = get_quote(sym, expiry, strike)
+    if not q or q.get('bid') is None or q.get('ask') is None:
+        return {'error': f'Cannot fetch LEAP quote for {sym} {strike}'}
+
+    bid = float(q['bid'] or 0)
+    ask = float(q['ask'] or 0)
+    if bid <= 0 or ask <= 0:
+        return {'error': f'No valid LEAP bid/ask for {sym}'}
+
+    mid           = round((bid + ask) / 2, 2)
+    ba_spread     = round(ask - bid, 2)
+    net_debit     = mid
+    net_debit_dol = round(mid * 100 * qty, 2)
+    breakeven     = round(strike + mid, 2)
+    breakeven_pct = round((breakeven - underlying) / underlying * 100, 1)
+
+    # 5-gate scoring — same framework, LEAP-specific thresholds
+    liquidity_gate  = ba_spread <= 0.60        # LEAP spreads wider — allow up to $0.60
+    momentum_gate   = (momentum_5d is not None and momentum_5d >= 1.0) or \
+                      (catalyst_days is not None and catalyst_days <= 3)
+
+    entry_gates = engine.score_entry_gates(
+        vol_gate=vol_analysis.get('gate_pass', True),
+        tech_gate=above_200,
+        conviction_gate=conviction_gate,
+        liquidity_gate=liquidity_gate,
+        momentum_gate=momentum_gate,
+    )
+
+    # Greeks from IBKR quote
+    net_greeks = {
+        'net_delta': q.get('delta'),
+        'net_theta': round((q.get('theta') or 0) * 100, 2),
+        'net_vega':  round((q.get('vega')  or 0) * 100, 2),
+    }
+
+    # Theta velocity (same function — single-leg uses same daily move math)
+    hv30_for_vel = hv30 or iv_for_calc
+    velocity = engine.compute_theta_velocity(breakeven, underlying, dte, hv30_for_vel)
+
+    # MC EV: single-leg call — model as spread with very high short strike (→ 0 short value)
+    mc_ev = engine.run_monte_carlo_ev(
+        price=underlying,
+        iv_pct=iv_for_calc,
+        dte=dte,
+        long_strike=strike,
+        short_strike=underlying * 10,   # far OTM → short leg ≈ 0, simulates single call
+        net_debit=net_debit,
+        hv30=hv30,
+    )
+
+    grd = grade_leap(iv_rank, catalyst_days, above_200, bool(sym_cats))
+
+    return {
+        'strategy':     'LEAP',
+        'symbol':       sym,
+        'underlying':   underlying,
+        'expiry':       expiry,
+        'dte':          dte,
+        'strike':       strike,
+        'iv_rank':      iv_rank,
+        'current_iv':   current_iv,
+        'hv30':         hv30,
+        'vol_analysis': vol_analysis,
+        'net_debit':    net_debit,
+        'net_debit_$':  net_debit_dol,
+        'breakeven':    breakeven,
+        'breakeven_pct': breakeven_pct,
+        'long_ba':      ba_spread,
+        'entry_gates':  entry_gates,
+        'net_greeks':   net_greeks,
+        'velocity':     velocity,
+        'mc_ev':        mc_ev,
+        'momentum_5d':  momentum_5d,
+        'above_200':    above_200,
+        'conviction':   {'tier': tier, 'direction': direction,
+                         'signals': signal_count, 'narrative': narrative},
+        'catalyst_days': catalyst_days,
+        'catalyst_id':   catalyst_id,
+        'qty':           qty,
+        'grade':         grd,
+        'trade': {
+            'qty':         qty,
+            'net_debit':   net_debit,
+            'expiry':      expiry,
+            'dte':         dte,
+            'strike':      strike,
+            'underlying':  underlying,
+            'iv_rank':     iv_rank,
+            'iv_pct':      current_iv,
+            'grade':       grd,
+            'template':    'LEAP-5pct-OTM',
+            'delta_long':  q.get('delta'),
+            'catalyst_id': catalyst_id,
+            'catalyst_days': catalyst_days,
+        },
+    }
+
+
+# ── Auto-qty: scale contracts to target $1,200/position ──────────────────────
+
+def _auto_qty_calc(calc: dict) -> dict:
+    """
+    Scale qty so total position cost targets AUTO_QTY_TARGET.
+    Only applies when the original calc was run at qty=1 (prevents double-scaling).
+    Modifies calc in place and returns it.
+    """
+    if calc.get('qty', 1) != 1:
+        return calc
+    cost_per = calc.get('net_debit_$') or 0
+    if cost_per <= 0:
+        return calc
+    auto_qty = max(1, min(5, int(AUTO_QTY_TARGET / cost_per)))
+    if auto_qty == 1:
+        return calc
+
+    calc['qty'] = auto_qty
+    calc['net_debit_$']  = round(calc['net_debit'] * 100 * auto_qty, 2)
+    if calc.get('max_profit_$') is not None:
+        calc['max_profit_$'] = round((calc.get('max_profit') or 0) * 100 * auto_qty, 2)
+    if calc.get('max_loss_$') is not None:
+        calc['max_loss_$']   = round(calc['net_debit'] * 100 * auto_qty, 2)
+    if isinstance(calc.get('trade'), dict):
+        calc['trade']['qty'] = auto_qty
+    total_ev = (calc.get('mc_ev') or {}).get('ev_dollar')
+    total_ev_str = f"MC EV ${total_ev * auto_qty:+.0f} total" if total_ev is not None else ""
+    calc['_auto_qty_note'] = (
+        f"Auto {auto_qty}× contracts (${cost_per:.0f}/contract → "
+        f"${calc['net_debit_$']:.0f} total{', ' + total_ev_str if total_ev_str else ''})"
+    )
+    return calc
+
+
+# ── Strategy comparison: pick BULL_SPREAD vs LEAP based on MC EV ─────────────
+
+def run_strategy_comparison(symbol: str, qty: int = 1) -> dict:
+    """
+    Run both BULL_SPREAD and LEAP calculators. Return the one with higher MC EV
+    (or better gate score if EV is tied/unavailable). Attaches comparison summary.
+    """
+    sym = symbol.upper()
+    spread_calc = run_calculator(sym, qty)
+    leap_calc   = run_leap_calculator(sym, qty)
+
+    spread_err = 'error' in spread_calc
+    leap_err   = 'error' in leap_calc
+
+    if spread_err and leap_err:
+        return spread_calc   # both failed, return spread error
+
+    if spread_err:
+        leap_calc['_comparison'] = 'LEAP only (spread failed)'
+        return leap_calc
+
+    if leap_err:
+        spread_calc['_comparison'] = 'SPREAD only (LEAP failed)'
+        return spread_calc
+
+    # Both succeeded — compare MC EV
+    spread_ev  = (spread_calc.get('mc_ev') or {}).get('ev_dollar') or 0
+    leap_ev    = (leap_calc.get('mc_ev')   or {}).get('ev_dollar') or 0
+    spread_gates = (spread_calc.get('entry_gates') or {}).get('gates_pass', 0)
+    leap_gates   = (leap_calc.get('entry_gates')   or {}).get('gates_pass', 0)
+
+    # Prefer higher MC EV; gate score breaks ties
+    if spread_ev >= leap_ev and spread_gates >= leap_gates:
+        winner = spread_calc
+        loser_label  = f"LEAP: ${leap_ev:+.0f} EV, {leap_gates}/5 gates"
+        winner_label = f"SPREAD: ${spread_ev:+.0f} EV, {spread_gates}/5 gates"
+    elif leap_ev > spread_ev or leap_gates > spread_gates:
+        winner = leap_calc
+        loser_label  = f"SPREAD: ${spread_ev:+.0f} EV, {spread_gates}/5 gates"
+        winner_label = f"LEAP: ${leap_ev:+.0f} EV, {leap_gates}/5 gates"
+    else:
+        winner = spread_calc
+        loser_label  = f"LEAP: ${leap_ev:+.0f} EV, {leap_gates}/5 gates"
+        winner_label = f"SPREAD: ${spread_ev:+.0f} EV, {spread_gates}/5 gates"
+
+    winner['_comparison'] = f"✅ {winner_label} beats {loser_label}"
+    return winner
 
 
 # ── Evidence-Based Verdict Calculator ────────────────────────────────────────
@@ -694,8 +1038,9 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
 # ── Format calculator output for Telegram ────────────────────────────────────
 
 def format_calc_message(calc: dict) -> str:
-    sym  = calc['symbol']
-    und  = calc['underlying']
+    sym      = calc['symbol']
+    und      = calc['underlying']
+    strategy = calc.get('strategy', 'BULL_SPREAD')
     iv   = calc.get('current_iv') or calc.get('iv_rank') or 0
     hv30 = calc.get('hv30')
     vol  = calc.get('vol_analysis') or {}
@@ -770,9 +1115,17 @@ def format_calc_message(calc: dict) -> str:
         if not gs.get('momentum'):   failed.append("Momentum")
 
     # ── Build message ─────────────────────────────────────────────────────
+    strat_label  = "LEAP Analysis" if strategy == 'LEAP' else "Bull Spread Analysis"
+    comparison   = calc.get('_comparison', '')
+    auto_qty_note = calc.get('_auto_qty_note', '')
     lines = [
-        f"📊 *{sym} — Bull Spread Analysis*",
-        "",
+        f"📊 *{sym} — {strat_label}*",
+    ]
+    if comparison:
+        lines.append(f"_{comparison}_")
+    if auto_qty_note:
+        lines.append(f"📦 _{auto_qty_note}_")
+    lines += [
         "VOLATILITY EDGE",
         edge_str,
     ]
@@ -796,25 +1149,40 @@ def format_calc_message(calc: dict) -> str:
         return "\n".join(lines)
 
     # ── Trade details (ENTER / ENTER_REDUCED) ─────────────────────────────
-    liq_warn = "" if (calc.get('long_ba', 1) <= 0.30 and calc.get('short_ba', 1) <= 0.30) \
-               else " ⚠️ wide spread"
     stop_dol = round(nd_dol * 0.50, 0)
-    tgt_dol  = round(mp_dol * 0.50, 0)
-
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━━",
-        "*RECOMMENDED TRADE*",
-        f"${ls}/{ss} Call Spread · {exp_fmt} ({dte}d){liq_warn}",
-        f"Debit: ${nd:.2f}/sh · ${nd_dol:.0f}/contract",
-        f"Breakeven: ${be:.2f} (+{be_pct:.1f}%)",
-        "",
-        "GREEKS (net spread)",
-    ]
-
     nd_str  = f"Δ {gr['net_delta']:+.3f}" if gr.get('net_delta') is not None else "Δ n/a"
     th_str  = f"θ ${gr['net_theta']:.2f}/day" if gr.get('net_theta') is not None else "θ n/a"
     vg_str  = f"ν ${gr['net_vega']:.0f}/IV pt" if gr.get('net_vega') is not None else "ν n/a"
+
+    if strategy == 'LEAP':
+        strike   = calc.get('strike', 0)
+        liq_warn = "" if calc.get('long_ba', 1) <= 0.60 else " ⚠️ wide spread"
+        tgt_dol  = round(nd_dol * 1.00, 0)    # target: 100% gain (double debit)
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━",
+            "*RECOMMENDED TRADE*",
+            f"${strike} LEAP Call · {exp_fmt} ({dte}d){liq_warn}",
+            f"Cost: ${nd:.2f}/sh · ${nd_dol:.0f}/contract",
+            f"Breakeven: ${be:.2f} (+{be_pct:.1f}% from now)",
+            "",
+            "GREEKS",
+        ]
+    else:
+        liq_warn = "" if (calc.get('long_ba', 1) <= 0.30 and calc.get('short_ba', 1) <= 0.30) \
+                   else " ⚠️ wide spread"
+        tgt_dol  = round(mp_dol * 0.50, 0)
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━",
+            "*RECOMMENDED TRADE*",
+            f"${ls}/{ss} Call Spread · {exp_fmt} ({dte}d){liq_warn}",
+            f"Debit: ${nd:.2f}/sh · ${nd_dol:.0f}/contract",
+            f"Breakeven: ${be:.2f} (+{be_pct:.1f}%)",
+            "",
+            "GREEKS (net spread)",
+        ]
+
     lines.append(f"{nd_str} · {th_str} · {vg_str}")
 
     if vel.get('required_pct_day') is not None and vel.get('hv30_daily') is not None:
@@ -832,12 +1200,13 @@ def format_calc_message(calc: dict) -> str:
             f"EV: {ev_sign}${mc['ev_dollar']:.0f}/contract · Win: {mc['win_rate']:.0f}%",
         ]
 
+    time_rule = "18-month hold or 50% gain" if strategy == 'LEAP' else "21 DTE"
     lines += [
         "",
         "EXIT RULES",
-        f"Target: ${tgt_dol:.0f} (50% max profit)",
+        f"Target: ${tgt_dol:.0f} ({'100% gain' if strategy == 'LEAP' else '50% max profit'})",
         f"Stop:   ${stop_dol:.0f} (50% of debit)",
-        f"Time:   21 DTE",
+        f"Time:   {time_rule}",
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "Reply *CONFIRM* to place · *SKIP* to cancel",
@@ -952,10 +1321,11 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
     _check_learning_milestone(chat_id)
 
 
-def _execute_leap_bg(sym: str, leap: dict, chat_id: str):
+def _execute_leap_bg(sym: str, leap: dict, chat_id: str,
+                     calc_log_id: int | None = None, sug_id: int | None = None):
     """Place a LEAP single-leg order with incremental limit, runs in thread."""
     qty  = leap['qty']
-    mid  = leap['mid']
+    mid  = leap['net_debit']
 
     order_id  = None
     filled_at = None
@@ -1004,33 +1374,43 @@ def _execute_leap_bg(sym: str, leap: dict, chat_id: str):
 
     # ── Log trade to DB ──
     premium_dollar = round(filled_at * 100 * qty, 2)
+    delta_val = leap.get('delta_long') or leap.get('delta')
     trade_id = log_options_trade(
         strategy='LEAP',
         symbol=sym,
         cap_type=cap_type(sym),
-        underlying_price=None,
+        underlying_price=leap.get('underlying'),
         expiry=leap['expiry'],
         contracts=qty,
-        delta_entry=leap.get('delta'),
-        iv_rank_entry=None,
-        iv_pct_entry=None,
+        delta_entry=delta_val,
+        iv_rank_entry=leap.get('iv_rank'),
+        iv_pct_entry=leap.get('iv_pct'),
         premium_paid=premium_dollar,
         max_profit=None,
         max_loss=premium_dollar,
         entry_grade=leap['grade'],
-        entry_thesis=f"LEAP {leap['dte']}d · delta {leap.get('delta', '?')}",
+        entry_thesis=f"LEAP {leap['dte']}d · delta {delta_val or '?'}",
         strike=leap['strike'],
         right='C',
         catalyst_id=leap.get('catalyst_id'),
         days_to_catalyst=leap.get('catalyst_days'),
     )
 
+    # Link trade_id to KB calc log + suggestion rows
+    try:
+        if calc_log_id:
+            update_calc_action(calc_log_id, 'CONFIRM', trade_id)
+        if sug_id:
+            update_suggestion_decision(sug_id, 'CONFIRMED', trade_id)
+    except Exception:
+        pass
+
     hard_stop = round(premium_dollar * 0.60, 2)
     send_telegram(
         f"✅ *{sym} LEAP entered* [trade #{trade_id}]\n"
         f"${leap['strike']} call · {leap['dte']}d exp · {qty} contract(s)\n"
         f"Fill: ${filled_at:.2f} = ${premium_dollar:.0f} deployed\n"
-        f"Delta: {leap.get('delta', '?')} | Grade: {leap['grade']}\n"
+        f"Delta: {delta_val or '?'} | Grade: {leap['grade']}\n"
         f"Hard stop: ${hard_stop:.0f} (-40%)",
         chat_id,
     )
@@ -1223,11 +1603,26 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
             )
             return
 
-    send_telegram(f"⏳ Running Evidence-Based analysis for *{sym}*...", chat_id)
-    calc = run_calculator(sym, qty)
+    if not check_circuit_breaker(chat_id):
+        return
+    if not can_open_position(chat_id=chat_id):
+        return
+
+    liq_note = session_liquidity_note()
+    cs = capital_status()
+    send_telegram(
+        f"⏳ Running SPREAD vs LEAP analysis for *{sym}*..."
+        + (f"\n{liq_note}" if liq_note else "")
+        + f"\n_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
+        chat_id,
+    )
+    calc = run_strategy_comparison(sym, qty)
     if 'error' in calc:
         send_telegram(f"❌ {calc['error']}", chat_id)
         return
+
+    calc = _auto_qty_calc(calc)
+    qty  = calc['qty']   # use auto-scaled qty for pending entry
 
     msg = format_calc_message(calc)
     send_telegram(msg, chat_id)
@@ -1249,23 +1644,34 @@ def cmd_status(chat_id: str):
     closed  = get_closed_options_count()
     cats    = get_upcoming_catalysts(days=30)
     paused  = "PAUSED" if _paused else "ACTIVE"
-    lines   = [f"📊 *Options Status — {paused}*\n"]
-    lines.append(f"Open: {len(trades)} | Closed all-time: {closed}\n")
+    cs      = capital_status()
+    total_pnl = get_options_total_pnl()
+
+    bar_filled = round(cs['deployed'] / cs['total'] * 10) if cs['total'] else 0
+    cap_bar    = '█' * bar_filled + '░' * (10 - bar_filled)
+
+    lines = [f"📊 *Options Status — {paused}*\n"]
+    lines.append(
+        f"Capital: [{cap_bar}] ${cs['deployed']:.0f} deployed / ${cs['available']:.0f} free\n"
+        f"Slots: {cs['slots_used']}/{MAX_OPTIONS_POSITIONS} | "
+        f"Closed: {closed} | Net P&L: ${total_pnl:+.0f}"
+    )
 
     if trades:
+        lines.append("")
         for t in trades:
             prem = t['premium_paid'] or 0
             stop = t['stop_value']
             dte  = days_to_expiry(t['expiry'])
             lines.append(
                 f"• *{t['symbol']}* [{t['strategy']}] {t['entry_grade']} — "
-                f"entry ${prem:.0f} | stop ${stop:.0f} | {dte}d exp"
+                f"${prem:.0f} in | stop {'${:.0f}'.format(stop) if stop is not None else 'n/a'} | {dte}d"
             )
     else:
-        lines.append("No open positions.")
+        lines.append("\nNo open positions — capital ready to deploy.")
 
     if cats:
-        lines.append(f"\n*Catalysts (30d):*")
+        lines.append(f"\n*Upcoming catalysts:*")
         for c in cats[:5]:
             lines.append(f"• {c['symbol']} — {c['name']} ({c['date']}) [{c['confidence']}]")
 
@@ -1292,7 +1698,7 @@ def cmd_positions(chat_id: str):
         lines += [
             f"*{t['symbol']}* [{t['entry_grade']}] — {leg_str}{expiry_flag}",
             f"  Exp: {t['expiry']} ({dte}d) | Entry: ${prem:.0f}",
-            f"  Stop: ${stop:.0f} ({stage_lbl}) | Δ: {t['delta_entry'] or '?'}",
+            f"  Stop: {'${:.0f}'.format(stop) if stop is not None else 'n/a'} ({stage_lbl}) | Δ: {t['delta_entry'] or '?'}",
             f"  IV@entry: {t['iv_rank_entry'] or '?'}%",
             "",
         ]
@@ -1596,13 +2002,19 @@ def handle_reply(text: str, chat_id: str):
                 send_telegram(f"❌ Trade data missing for {sym}. Run `OPT BUY {sym}` again.", chat_id)
                 return
             new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
-            if not check_capital_cap(new_premium, chat_id):
+            if not can_open_position(new_premium, chat_id):
                 del _pending[chat_id]
                 return
+            strategy = calc.get('strategy', 'BULL_SPREAD')
             del _pending[chat_id]
-            send_telegram(f"⏳ Placing EM-Anchored spread for *{sym}*...", chat_id)
-            t = threading.Thread(target=_execute_spread_bg,
-                                 args=(sym, trade, chat_id, calc_log_id, sug_id), daemon=True)
+            if strategy == 'LEAP':
+                send_telegram(f"⏳ Placing LEAP call for *{sym}*...", chat_id)
+                t = threading.Thread(target=_execute_leap_bg,
+                                     args=(sym, trade, chat_id, calc_log_id, sug_id), daemon=True)
+            else:
+                send_telegram(f"⏳ Placing EM-Anchored spread for *{sym}*...", chat_id)
+                t = threading.Thread(target=_execute_spread_bg,
+                                     args=(sym, trade, chat_id, calc_log_id, sug_id), daemon=True)
             t.start()
             return
         # Unrecognised reply
@@ -1730,21 +2142,42 @@ def _process_pending_suggestions():
     # Mark immediately so next loop iteration skips it
     update_suggestion_status(sug_id, 'PROCESSING')
 
+    if not check_circuit_breaker(OPT_CHAT):
+        update_suggestion_status(sug_id, 'NO_TRADE')
+        return
+
+    # Capital and slot gate — silently defer if full (will retry on next suggestion cycle)
+    if not can_open_position():
+        cs = capital_status()
+        send_telegram(
+            f"📋 *{sym}* queued — {cs['slots_used']}/{MAX_OPTIONS_POSITIONS} slots used, "
+            f"${cs['available']:.0f} available. Will evaluate when a position closes.",
+            OPT_CHAT,
+        )
+        update_suggestion_status(sug_id, 'PENDING')   # put it back so we retry
+        return
+
+    liq_note = session_liquidity_note()
+    cs       = capital_status()
     send_telegram(
         f"📡 *Auto-analysis: {sym}* (HIGH conviction)\n"
-        f"⏳ Running Evidence-Based calculator...",
+        f"⏳ Running SPREAD vs LEAP comparison..."
+        + (f"\n{liq_note}" if liq_note else "")
+        + f"\n_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
         OPT_CHAT,
     )
 
-    calc = run_calculator(sym, 1)
+    calc = run_strategy_comparison(sym, 1)
 
     if 'error' in calc:
         send_telegram(f"❌ {sym} calculator error: {calc['error']}", OPT_CHAT)
         update_suggestion_status(sug_id, 'ERROR')
         return
 
+    calc        = _auto_qty_calc(calc)
     calc_log_id = calc.get('calc_log_id')
     verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+    comparison  = calc.get('_comparison', '')
 
     # Store calc results on the suggestion row
     try:
@@ -1771,8 +2204,9 @@ def _process_pending_suggestions():
         gates = gs.get('gates_pass', 0)
         ev    = mc.get('ev_dollar')
         ev_str = f"MC EV ${ev:+.0f}" if ev is not None else "no EV"
+        cmp_note = f"\n_{comparison}_" if comparison else ""
         send_telegram(
-            f"📊 *{sym} auto-analysis: {verdict}* ({gates}/5 gates, {ev_str})\n"
+            f"📊 *{sym} auto-analysis: {verdict}* ({gates}/5 gates, {ev_str}){cmp_note}\n"
             f"Conviction is HIGH but setup not ready. No action needed.",
             OPT_CHAT,
         )

@@ -754,12 +754,18 @@ async def place_options_order(req: OptionsOrderRequest):
     sell_leg.action = 'SELL'
     sell_leg.exchange='SMART'
 
+    # For opening: long_leg=BUY, short_leg=SELL, order=BUY (debit)
+    # For closing: long_leg=SELL, short_leg=BUY, order=SELL (credit)
+    order_action = (req.action or 'BUY').upper()
+    buy_leg.action  = 'BUY'  if order_action == 'BUY' else 'SELL'
+    sell_leg.action = 'SELL' if order_action == 'BUY' else 'BUY'
+
     combo.comboLegs = [buy_leg, sell_leg]
 
     if req.net_debit is None:
         return {"error": "net_debit required for spread orders"}
 
-    order = LimitOrder('BUY', req.qty, round(req.net_debit, 2))
+    order = LimitOrder(order_action, req.qty, abs(round(req.net_debit, 2)))
     order.tif = 'DAY'
     order.transmit = True
     trade = ib.placeOrder(combo, order)
