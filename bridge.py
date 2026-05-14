@@ -768,8 +768,11 @@ async def place_options_order(req: OptionsOrderRequest):
     order = LimitOrder(order_action, req.qty, abs(round(req.net_debit, 2)))
     order.tif = 'DAY'
     order.transmit = True
+    # Paper account needs type=1 to trigger fill simulation on BAG orders
+    ib.reqMarketDataType(1)
     trade = ib.placeOrder(combo, order)
-    await asyncio.sleep(1)
+    await asyncio.sleep(3)   # give paper sim time to match
+    ib.reqMarketDataType(3)  # restore delayed for option quotes
     return {
         "status":      "submitted",
         "type":        "bull_spread",

@@ -100,6 +100,11 @@ _paused          = False
 _pending: dict   = {}       # chat_id → {action, symbol, qty, templates, leap, expires_at}
 _last_update_id  = 0
 
+def _is_paper() -> bool:
+    """Return True if connected to IBKR paper account (port 4002)."""
+    info = bridge_get('/')
+    return (info or {}).get('mode') == 'paper'
+
 
 # ── Telegram helpers ─────────────────────────────────────────────────────────
 
@@ -1260,6 +1265,11 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         status = get_order_status(order_id)
         if status and status.get('filled', 0) >= qty:
             filled_at = limit_price
+            break
+
+        # Paper account: BAG fill simulation often stays at Submitted — treat as filled
+        if status and status.get('status') in ('Submitted', 'PreSubmitted') and _is_paper():
+            filled_at = limit_price   # paper fill at limit
             break
 
         # Not filled yet — cancel before trying next increment
