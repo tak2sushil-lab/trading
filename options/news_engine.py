@@ -576,7 +576,7 @@ def classify_headlines_batch(symbol: str,
         symbol=symbol, context=context, headlines=numbered
     )
     try:
-        text = _llm_call(prompt, max_tokens=180 * len(headlines))
+        text = _llm_call(prompt, max_tokens=80 * len(headlines))
         if '```' in text:
             parts = text.split('```')
             text  = parts[1].lstrip('json').strip() if len(parts) > 1 else text
@@ -793,14 +793,14 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
     if not unique:
         return 0
 
-    # Sort oldest-first so source_first tracking is meaningful
-    unique.sort(key=lambda x: x.get('published_at', ''))
+    # Sort newest-first so the cap keeps the most recent articles
+    unique.sort(key=lambda x: x.get('published_at', ''), reverse=True)
 
     open_sym_map = {t['symbol']: t for t in open_trades}
     high_count   = 0
     high_signals: list[dict] = []
 
-    # ── Pre-filter obvious noise (no LLM call needed) ────────
+    # ── Pre-filter obvious noise (no LLM cost) ───────────────
     to_classify: list[dict] = []
     for item in unique:
         if _is_obvious_noise(item['title']):
@@ -814,10 +814,15 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
         else:
             to_classify.append(item)
 
+    # Cap at 3 most recent per batch — prevents first-scan token burst.
+    # Older articles will be picked up in the next scan cycle (they stay new
+    # in the dedup window until classified and stored in DB).
+    to_classify = to_classify[:3]
+
     if not to_classify:
         pass  # fall through to conviction recompute
     else:
-        # ── Batch classify all remaining headlines in ONE LLM call ──
+        # ── Batch classify up to 3 headlines in ONE LLM call ──
         clfs = classify_headlines_batch(symbol, to_classify)
 
         for item, clf in zip(to_classify, clfs):

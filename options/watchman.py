@@ -198,7 +198,7 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
                 trade_id=tid, calc_log_id=_row[0],
                 predicted_ev=_row[1], predicted_wr=_row[2],
                 actual_pnl=round(exit_dollar, 2),
-                exit_reason='AUTO_STOP',
+                exit_reason=exit_reason,
                 days_held=_days,
             )
     except Exception:
@@ -557,10 +557,9 @@ def _build_eod_summary(trades: list[dict]) -> str:
             sym   = t['symbol']
             strat = t['strategy']
             prem  = t['premium_paid'] or 0
-            cv        = get_contract_value(t) or 0
-            contracts = t.get('contracts', 1)
-            pnl       = round(cv * contracts - prem, 2)
-            pct       = round((cv * contracts - prem) / prem * 100, 1) if prem else 0
+            cv        = get_contract_value(t) or 0  # already total (×contracts)
+            pnl       = round(cv - prem, 2)
+            pct       = round((cv - prem) / prem * 100, 1) if prem else 0
             dte   = days_to_expiry(t['expiry'])
             stage = t['stop_stage'] or 1
             stop  = t['stop_value']
