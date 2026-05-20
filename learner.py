@@ -13,6 +13,7 @@ import pytz
 from database import (
     get_recent_trades, get_best_setups,
     update_strategy_weights, get_win_rate, get_connection,
+    update_sector_grades,
 )
 
 ET = pytz.timezone('America/New_York')
@@ -138,7 +139,7 @@ def calculate_new_weights(rsi_analysis, volume_analysis,
         best_rsi = max(rsi_analysis, key=lambda x: x[2]/x[1] if x[1] > 0 else 0)
         best_rate = best_rsi[2] / best_rsi[1] if best_rsi[1] > 0 else 0.5
 
-        if best_rate > 0.65:
+        if best_rate > 0.58:  # lowered from 0.65 — fires at our actual 54-60% WR
             weights['rsi'] = 1.5  # RSI is a strong predictor
         elif best_rate < 0.45:
             weights['rsi'] = 0.7  # RSI not working well lately
@@ -153,7 +154,7 @@ def calculate_new_weights(rsi_analysis, volume_analysis,
             high_rate = sum(r[2] for r in high_vol) / sum(r[1] for r in high_vol)
             low_rate  = sum(r[2] for r in low_vol) / sum(r[1] for r in low_vol)
 
-            if high_rate > low_rate + 0.15:
+            if high_rate > low_rate + 0.08:  # lowered from 0.15 — fires at our WR spread
                 weights['volume'] = 1.7  # Volume very predictive
             elif high_rate < low_rate:
                 weights['volume'] = 0.8
@@ -173,6 +174,35 @@ def calculate_new_weights(rsi_analysis, volume_analysis,
                 weights['earnings'] = 0.8  # Earnings not hurting us
 
     return weights
+
+def analyse_sector_grades():
+    """
+    Compute 30-day WR per sector, classify STRONG/NEUTRAL/WEAK.
+    Requires min 5 trades to avoid noise from thin data.
+    """
+    conn = get_connection()
+    rows = conn.execute('''
+        SELECT sector,
+               COUNT(*) as total,
+               SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) as wins
+        FROM trades
+        WHERE status IN ('WIN','LOSS')
+          AND entry_date >= date('now', '-30 days')
+          AND sector IS NOT NULL AND sector != 'OTHER'
+        GROUP BY sector
+        HAVING total >= 5
+        ORDER BY wins * 1.0 / total DESC
+    ''').fetchall()
+    conn.close()
+
+    grades = {}
+    for sector, total, wins in rows:
+        wr    = wins / total
+        grade = 'STRONG' if wr >= 0.70 else 'WEAK' if wr < 0.50 else 'NEUTRAL'
+        grades[sector] = {'wr': wr, 'count': total, 'grade': grade}
+        print(f"  Sector {sector:<15} {wr*100:.0f}% WR ({total} trades) → {grade}")
+    return grades
+
 
 def run_learning_cycle():
     """Main learning function — runs overnight"""
@@ -214,6 +244,12 @@ def run_learning_cycle():
         if r[1] > 0:
             rate = r[2]/r[1]*100
             print(f"  {r[0]:<20} Win rate: {rate:.0f}% ({r[1]} trades, avg ${r[3]:.2f})")
+
+    print("\n--- Sector Grades (30d, min 5 trades) ---")
+    sector_grades = analyse_sector_grades()
+    if sector_grades:
+        update_sector_grades(sector_grades)
+        print(f"  Saved {len(sector_grades)} sector grades to DB")
 
     print("\n--- Earnings Analysis ---")
     earnings_analysis = analyse_earnings_performance()

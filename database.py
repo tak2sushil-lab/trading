@@ -300,6 +300,15 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_opt_news_symbol     ON options_news(symbol, relevance)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_catalyst_symbol     ON catalyst_calendar(symbol, event_date)')
 
+    # ── Sector grades — learner writes nightly, grade_setup reads ─
+    c.execute('''CREATE TABLE IF NOT EXISTS sector_grades (
+        sector      TEXT PRIMARY KEY,
+        wr_30d      REAL,
+        trade_count INTEGER,
+        grade       TEXT,
+        updated_at  TEXT
+    )''')
+
     # Insert default strategy weights if none exist
     c.execute('SELECT COUNT(*) FROM strategy_weights')
     if c.fetchone()[0] == 0:
@@ -503,6 +512,27 @@ def update_strategy_weights(new_weights, notes=''):
          new_weights.get('sector', 1.0),
          new_weights.get('earnings', 1.0),
          notes))
+    conn.commit()
+    conn.close()
+
+def get_sector_grade(sector):
+    """Return 'STRONG', 'NEUTRAL', 'WEAK' or None if no data yet."""
+    conn = get_connection()
+    row  = conn.execute(
+        'SELECT grade FROM sector_grades WHERE sector = ?', (sector,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def update_sector_grades(grades):
+    """grades = {sector: {'wr': float, 'count': int, 'grade': str}}"""
+    conn = get_connection()
+    now  = datetime.now().isoformat()
+    for sector, data in grades.items():
+        conn.execute('''
+            INSERT OR REPLACE INTO sector_grades (sector, wr_30d, trade_count, grade, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (sector, data['wr'], data['count'], data['grade'], now))
     conn.commit()
     conn.close()
 

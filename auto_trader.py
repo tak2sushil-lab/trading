@@ -19,7 +19,8 @@ from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
     update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades,
-    get_strategy_weights, get_today_entry_counts
+    get_strategy_weights, get_today_entry_counts,
+    get_sector_grade,
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -41,8 +42,8 @@ SCAN_INTERVAL     = 300      # 5 min
 MONITOR_INTERVAL  = 30       # 30 sec — fast position monitor (hard stop checks only)
 TOTAL_CAPITAL     = 10000    # max capital deployed across all positions
 MAX_OPEN_TRADES   = 5        # 5 × $2,000 = $10K fully deployed
-MAX_DAILY_BULL_TRADES  = 5   # bull entries per day (independent of bear count)
-MAX_DAILY_BEAR_TRADES  = 5   # bear entries per day (independent of bull count)
+MAX_DAILY_BULL_TRADES  = 20  # recycling: slot limit (MAX_OPEN_TRADES=5) is the real cap
+MAX_DAILY_BEAR_TRADES  = 20  # recycling: slot limit (MAX_OPEN_TRADES=5) is the real cap
 MAX_PREMARKET_TRADES   = 2       # pre-market earnings gap entries (sub-cap inside bull daily count)
 PREMARKET_GAP_LARGE    = 6.0    # large-cap (price ≥ $150): mega/large caps rarely move more — 6% is a real surprise
 PREMARKET_GAP_MID      = 8.0    # mid-cap  ($50–$149):  more volatile, need stronger signal to avoid gap-and-crap
@@ -51,7 +52,7 @@ PREMARKET_VOL_MIN      = 200_000  # pre-market volume floor — liquidity gate
 PREMARKET_HOLD_PCT     = 0.97   # gap must hold ≥ 97% of its pre-market high (not fading)
 MAX_RISK_PCT        = 8.0    # hard ATR cap — removed 2% floor, trust the ATR fully
 MIN_RR              = 2.5    # min reward:risk for entry qualification
-MAX_LOSS_PER_TRADE  = 100    # dollar circuit breaker: $100 = 5% of $2,000 position
+MAX_LOSS_PER_TRADE  = 150    # dollar circuit breaker: $150 = 5% of $3,000 position (raised May 19)
 DAILY_PROFIT_TARGET = 400    # at +$400 session P&L: protect gains, no new entries
 EOD_CLOSE_HOUR      = 15     # 3:45pm ET EOD close — exit unless conviction to hold overnight
 EOD_CLOSE_MINUTE    = 45
@@ -699,14 +700,23 @@ def get_intraday_signals(symbol, spy_chg=0):
         if df5.empty or df1d.empty or len(df1d) < 20:
             return None
 
+        # Isolate today's 5-min bars — all intraday metrics (VWAP, HOD, open_p) must
+        # reset each session; using 5-day cumulative produces wrong values
+        _df5_tz = df5.copy()
+        _df5_tz.index = (_df5_tz.index.tz_convert(ET) if _df5_tz.index.tz
+                         else _df5_tz.index.tz_localize('UTC').tz_convert(ET))
+        _today = _df5_tz[_df5_tz.index.date == datetime.now(ET).date()]
+
         price     = float(df5['Close'].iloc[-1])
-        open_p    = float(df5['Open'].iloc[0])
+        open_p    = float(_today['Open'].iloc[0]) if not _today.empty else float(df5['Open'].iloc[-50])
         intra_chg = (price - open_p) / open_p * 100
 
         avg_vol   = df1d['Volume'].rolling(20).mean().iloc[-2]
         now       = datetime.now(ET)
         mins_open = max(1, (now.hour - 9) * 60 + now.minute - 30)
-        vol_ratio = (df5['Volume'].sum() * (390 / mins_open)) / avg_vol if avg_vol > 0 else 1
+        # Use today's volume only — 5-day sum inflates vol_ratio by ~5x
+        _today_vol = float(_today['Volume'].sum()) if not _today.empty else float(df5['Volume'].iloc[-1])
+        vol_ratio  = (_today_vol * (390 / mins_open)) / avg_vol if avg_vol > 0 else 1
 
         close    = df1d['Close']
         ma20     = float(close.rolling(20).mean().iloc[-1])
@@ -743,14 +753,22 @@ def get_intraday_signals(symbol, spy_chg=0):
         prev_chg  = (float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
 
         # ── VWAP (intraday, resets each session) ─────────────
+        # Compute on today's bars only — 5-day cumsum produces a meaningless multi-day VWAP
+        _vwap_src = _today.copy() if not _today.empty else df5.iloc[-78:].copy()
+        _vwap_src['typical'] = (_vwap_src['High'] + _vwap_src['Low'] + _vwap_src['Close']) / 3
+        _vwap_src['vwap']    = ((_vwap_src['typical'] * _vwap_src['Volume']).cumsum()
+                                / _vwap_src['Volume'].cumsum())
+        # Keep df5 vwap column populated for downstream references
         df5['typical'] = (df5['High'] + df5['Low'] + df5['Close']) / 3
-        df5['vwap']    = (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum()
-        vwap           = round(float(df5['vwap'].iloc[-1]), 2)
+        df5['vwap']    = (_vwap_src['vwap'].reindex(df5.index, method='ffill')
+                          if not _today.empty else
+                          (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum())
+        vwap           = round(float(_vwap_src['vwap'].iloc[-1]), 2)
         above_vwap     = price > vwap
         # VWAP reclaim: last bar crossed above VWAP from below
-        vwap_reclaim   = (len(df5) >= 2 and
-                          float(df5['Close'].iloc[-1]) > float(df5['vwap'].iloc[-1]) and
-                          float(df5['Close'].iloc[-2]) <= float(df5['vwap'].iloc[-2]))
+        vwap_reclaim   = (len(_vwap_src) >= 2 and
+                          float(_vwap_src['Close'].iloc[-1]) > float(_vwap_src['vwap'].iloc[-1]) and
+                          float(_vwap_src['Close'].iloc[-2]) <= float(_vwap_src['vwap'].iloc[-2]))
 
         # ── Bull flag: surge → tight consolidation → breakout ─
         is_bull_flag = False
@@ -767,8 +785,10 @@ def get_intraday_signals(symbol, spy_chg=0):
                             and price >= base_high * 0.998)
 
         # ── High of day break ─────────────────────────────────
-        hod        = float(df5['High'].max())
-        prior_hod  = float(df5['High'].iloc[:-2].max()) if len(df5) > 2 else hod
+        # Use today's bars only — 5-day max treats Monday's spike as today's HOD
+        _hod_src  = _today if not _today.empty else df5
+        hod        = float(_hod_src['High'].max())
+        prior_hod  = float(_hod_src['High'].iloc[:-2].max()) if len(_hod_src) > 2 else hod
         hod_break  = price >= prior_hod * 0.999 and price >= hod * 0.995
 
         # ── Opening Range Breakout (ORB) ──────────────────────
@@ -779,9 +799,7 @@ def get_intraday_signals(symbol, spy_chg=0):
         today_open_price = None
         today_lod        = None
         try:
-            df5_tz = df5.copy()
-            df5_tz.index = df5_tz.index.tz_convert(ET)
-            today_bars = df5_tz[df5_tz.index.date == datetime.now(ET).date()]
+            today_bars = _today  # already filtered to today's ET bars
             orb_bars   = today_bars[
                 (today_bars.index.hour == 9) & (today_bars.index.minute >= 30) |
                 (today_bars.index.hour == 9) & (today_bars.index.minute <= 44)
@@ -828,8 +846,8 @@ def get_intraday_signals(symbol, spy_chg=0):
                              (last_h - last_c) < candle_body * 0.5)
 
         # ── Low of day break (bear) ───────────────────────────
-        lod           = float(df5['Low'].min())
-        prior_lod     = float(df5['Low'].iloc[:-2].min()) if len(df5) > 2 else lod
+        lod           = float(_hod_src['Low'].min())
+        prior_lod     = float(_hod_src['Low'].iloc[:-2].min()) if len(_hod_src) > 2 else lod
         lod_break     = price <= prior_lod * 1.001 and price <= lod * 1.005
 
         # ── ORB break downward (bear) ─────────────────────────
@@ -881,11 +899,7 @@ def get_intraday_signals(symbol, spy_chg=0):
             pass
 
         # First-bar quality: check live via df5 data already fetched above
-        df5_tz = df5.copy()
-        if df5_tz.index.tz is None:
-            df5_tz.index = df5_tz.index.tz_localize('UTC').tz_convert(ET)
-        else:
-            df5_tz.index = df5_tz.index.tz_convert(ET)
+        df5_tz = _df5_tz  # reuse already-converted tz-aware df
         df5_today    = df5_tz[df5_tz.index.date == datetime.now(ET).date()]
         day_open_fbq = float(df5_today['Open'].iloc[0]) if len(df5_today) > 0 else 0
         first_bar_strong = check_first_bar_quality(df5_today, day_open_fbq, float(avg_vol)) if day_open_fbq > 0 else False
@@ -1040,10 +1054,13 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         score += 10; reasons.append('Uptrend')
 
     # Daily RSI — scoring only, no longer a hard gate (high RSI = momentum, not overbought)
+    # RSI 65-75 bucket has 42.5% WR historically — no bonus, no penalty
     if 45 <= sig['rsi'] <= 65:
         score += round(20 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} ideal')
-    elif 65 < sig['rsi'] <= 80:
-        score += round(10 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} elevated (momentum)')
+    elif 65 < sig['rsi'] <= 75:
+        reasons.append(f'RSI {sig["rsi"]} elevated (neutral)')  # 42.5% WR — skip bonus
+    elif 75 < sig['rsi'] <= 80:
+        score += round(5  * w['rsi']); reasons.append(f'RSI {sig["rsi"]} strong momentum')
     else:
         score += round(5  * w['rsi']); reasons.append(f'RSI {sig["rsi"]} (trending)')
 
@@ -1120,6 +1137,15 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
             score += round(5  * w['sector']); reasons.append(f'{etf} +{etf_chg:.1f}%')
         elif etf_chg <= -1.0:
             score -= round(10 * w['sector']); reasons.append(f'{etf} {etf_chg:.1f}% weak sector')
+
+    # ── Sector historical grade (learner writes nightly, reflects 30d WR) ─
+    if symbol:
+        sec_name  = get_symbol_sector(symbol)
+        sec_grade = get_sector_grade(sec_name)
+        if sec_grade == 'STRONG':
+            score += 15; reasons.append(f'{sec_name} sector STRONG +15')
+        elif sec_grade == 'WEAK':
+            score -= 20; reasons.append(f'{sec_name} sector WEAK -20')
 
     if regime == 'STRONG':
         score += 15; reasons.append('Strong market')
@@ -1534,7 +1560,15 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             if entry_dt:
                 mins_held = (now - entry_dt).total_seconds() / 60
                 if mins_held >= 240 and -0.3 <= pnl_pct <= 2.0:
-                    exit_reason = f'No-move exit: flat {mins_held:.0f}min ({pnl_pct:+.1f}%)'
+                    if pnl_usd > 0:
+                        # Profitable but flat — lock breakeven as stop, hold for potential breakout
+                        be_stop = round(entry * 1.0005, 2) if not is_short else round(entry * 0.9995, 2)
+                        if abs(sl - be_stop) > 0.01:
+                            update_trade_stop(tid, be_stop)
+                            sl = be_stop
+                            log(f"  {sym}: No-move {mins_held:.0f}min (+${pnl_usd:.0f}) — locking breakeven stop ${be_stop}")
+                    else:
+                        exit_reason = f'No-move exit: flat {mins_held:.0f}min ({pnl_pct:+.1f}%)'
 
         # 6. EOD close — shorts ALWAYS cover (no overnight shorts)
         if not exit_reason and is_market_open() and (now.hour, now.minute) >= (EOD_CLOSE_HOUR, EOD_CLOSE_MINUTE):
@@ -1570,11 +1604,12 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     continue
                 close_side = 'BUY' if is_short else 'SELL'
                 close_qty  = min(shares, int(ibkr_qty))
+                # DB write first — if IBKR call fails, reconcile_with_ibkr() corrects state
+                pnl = log_trade_exit(tid, price, exit_reason)
                 requests.post(f"{BRIDGE}/order", json={
                     'symbol': sym, 'qty': close_qty,
                     'side': close_side, 'order_type': 'MARKET'
                 }, timeout=10)
-                pnl = log_trade_exit(tid, price, exit_reason)
                 exits.append({
                     'sym': sym, 'price': price, 'entry': entry,
                     'pnl': pnl, 'pnl_pct': pnl_pct, 'pnl_usd': round(pnl_usd, 2),
@@ -1624,13 +1659,14 @@ def fast_monitor_positions():
             try:
                 ibkr_pos = get_ibkr_positions()
                 ibkr_qty = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
+                # DB write first — if IBKR call fails, reconcile_with_ibkr() corrects state
+                pnl = log_trade_exit(tid, price, reason)
                 if ibkr_qty > 0:
                     close_side = 'BUY' if is_short else 'SELL'
                     requests.post(f"{BRIDGE}/order", json={
                         'symbol': sym, 'qty': min(shares, int(ibkr_qty)),
                         'side': close_side, 'order_type': 'MARKET'
                     }, timeout=10)
-                pnl = log_trade_exit(tid, price, reason)
                 for d in (price_history, session_high, session_low, open_positions):
                     d.pop(tid if tid in d else sym, None)
                 direction = '↓SHORT' if is_short else ''
@@ -2445,12 +2481,10 @@ def run_scan():
         log(f"CHOPPY market — monitoring only, no new entries")
         exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'WEAK':
-        # Post-lunch WEAK signals (12:45–14:00) are often lunch noise — require 3 scans not 2
-        now_hm = (now.hour, now.minute)
-        post_lunch_window = (12, 45) <= now_hm <= (14, 0)
-        required_bear_scans = 3 if post_lunch_window else MIN_REGIME_SCANS
-        if confirmed_scans < required_bear_scans:
-            log(f"WEAK market — post-lunch window, need {required_bear_scans} scans (have {confirmed_scans}) — monitoring only")
+        # Require 3 consecutive WEAK scans before any bear entry (all-day rule)
+        # Eliminates false signals from brief dips, lunch noise, and quick regime flips
+        if confirmed_scans < 3:
+            log(f"WEAK market — need 3 confirmed scans (have {confirmed_scans}) — monitoring only")
             exits = monitor_open_trades(regime, confirmed_scans)
         else:
             log(f"WEAK market — routing to bear strategy (short scan)")
