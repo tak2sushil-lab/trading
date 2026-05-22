@@ -64,6 +64,8 @@ ATR_PERIOD        = 14
 ATR_STOP_MULT     = 2.0      # initial stop: entry - 2×ATR (swing needs breathing room)
 ATR_TRAIL_MULT    = 1.5      # trail: 1.5×ATR below rolling session high
 ATR_FADE_MULT     = 1.0      # momentum fade: drop > 1×ATR from session high
+PCT_TRAIL_ACTIVATE = 1.5     # % trail activates at +1.5% gain (protects dead zone below ATR activation)
+PCT_TRAIL_GAP      = 0.5     # trail 0.5% below session high (Gap 1 fix — validated May 2026)
 MAX_HOLD_DAYS     = 1        # hard max hold: exit any position after 1 business day (~24h)
 NO_ENTRY_BEFORE   = 10       # wait until 10:00am — let opening range establish
 NO_ENTRY_AFTER    = 15       # no new entries at/after 3:00pm ET
@@ -72,6 +74,14 @@ MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-st
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
 LUNCH_AVOID_END   = (12, 45) # resume entries at 12:45pm ET
+# P&L protection: once session peak ≥ $200, if it drops 25% → cut non-runners
+# Validated May 2026: +$34/month, 0 false positives, +$539/yr
+PL_PROTECT_PEAK   = 200      # peak session P&L trigger threshold
+PL_PROTECT_DROP   = 0.25     # 25% drawdown from peak fires the cut
+# Afternoon gate: no new entries (long or short) after 12pm if morning realized ≥ $150
+# Data: afternoon LONG 44.8% WR / -$0.91 avg, afternoon SHORT 18.2% WR / -$6.56 avg
+AFTERNOON_GATE_HOUR      = 12   # no new entries from 12pm ET
+AFTERNOON_GATE_THRESHOLD = 150  # only gate if morning realized ≥ $150
 FIRST_BAR_QUALITY = True     # strong first 30-min bar → +15% capital + enable partial exit
 ORB_ENTRY_CUTOFF  = (11, 30) # ORB signal only valid before 11:30am — late breaks are just resistance
 
@@ -103,6 +113,8 @@ earnings_cache     = {}       # symbol → (date_str, days_to_next_earnings)
 partial_done_trades     = {}  # trade_id → locked_pnl_usd — trades that had 50% sold at 1R
 first_bar_strong_trades = {}  # trade_id → bool — entry was on a strong first-bar day
 _last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
+peak_session_pnl    = 0.0    # highest session P&L seen today (realized + unrealized)
+pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
 
 # ── Bear exclusions — stocks with insufficient bear backtest WR ──
 BEAR_EXCLUDED = {'RDW'}   # RDW: 60% bear WR (below 80% threshold), bull-only addition
@@ -209,10 +221,13 @@ SECTOR_MAP = {
     'AMAT':'SEMIS','MU':'SEMIS','SMH':'SEMIS','INDI':'SEMIS','POET':'SEMIS',
     # NUCLEAR: small modular reactors, uranium
     'OKLO':'NUCLEAR','CCJ':'NUCLEAR','UUUU':'NUCLEAR','DNN':'NUCLEAR',
-    # FINTECH: neo-banks, payments, trading apps, financials, crypto exchange
+    # FINTECH: neo-banks, payments, trading apps, financials
     'NU':'FINTECH','RKT':'FINTECH','JPM':'FINTECH','GS':'FINTECH',
-    'HOOD':'FINTECH','TOST':'FINTECH','BAC':'FINTECH','C':'FINTECH',
-    'WFC':'FINTECH','V':'FINTECH','MA':'FINTECH','COIN':'FINTECH',
+    'TOST':'FINTECH','BAC':'FINTECH','C':'FINTECH',
+    'WFC':'FINTECH','V':'FINTECH','MA':'FINTECH',
+    # COIN reclassified: crypto exchange trades like BTC miners (MARA/MSTR) — QUANTUM_CRYPTO
+    # HOOD reclassified: high-beta retail trading app — trades like momentum TECH, not bank stocks
+    'COIN':'QUANTUM_CRYPTO','HOOD':'TECH',
     # BIOTECH: pharma, gene editing, healthcare
     'LLY':'BIOTECH','NTLA':'BIOTECH','BEAM':'BIOTECH','NUTX':'BIOTECH',
     'UNH':'BIOTECH','MRNA':'BIOTECH','PFE':'BIOTECH','ABBV':'BIOTECH',
@@ -714,8 +729,9 @@ def get_intraday_signals(symbol, spy_chg=0):
         avg_vol   = df1d['Volume'].rolling(20).mean().iloc[-2]
         now       = datetime.now(ET)
         mins_open = max(1, (now.hour - 9) * 60 + now.minute - 30)
-        # Use today's volume only — 5-day sum inflates vol_ratio by ~5x
-        _today_vol = float(_today['Volume'].sum()) if not _today.empty else float(df5['Volume'].iloc[-1])
+        # RTH-only volume — pre-market bars inflate ratio by 5-10x on catalyst days
+        _rth_today = _today.between_time('09:30', '16:00') if not _today.empty else _today
+        _today_vol = float(_rth_today['Volume'].sum()) if not _rth_today.empty else float(df5['Volume'].iloc[-1])
         vol_ratio  = (_today_vol * (390 / mins_open)) / avg_vol if avg_vol > 0 else 1
 
         close    = df1d['Close']
@@ -1425,6 +1441,15 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     sl = atr_trail
                     update_trade_stop(tid, sl)
                     log(f"  {sym} ↓SHORT: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
+            # % trail for shorts: symmetric with long PCT trail, uses session_low
+            # Fires in dead zone (+1.5% to ~+5%) before ATR trail activates
+            # Was completely absent for shorts — bug fix May 2026
+            if pnl_pct >= PCT_TRAIL_ACTIVATE:
+                pct_trail_sl = round(session_low[tid] * (1 + PCT_TRAIL_GAP / 100), 2)
+                if pct_trail_sl < entry and pct_trail_sl < sl:
+                    sl = pct_trail_sl
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym} ↓SHORT: PCT trail → ${sl} ({pnl_pct:+.1f}%)")
         else:
             trail_threshold = entry + atr
             if price >= trail_threshold:
@@ -1433,6 +1458,16 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     sl = atr_trail
                     update_trade_stop(tid, sl)
                     log(f"  {sym}: ATR trail → ${sl} ({pnl_pct:+.1f}%)")
+
+            # % trail: activates at +1.5%, trails 0.5% below session high
+            # Fires in the dead zone (+1.5% to ~+5%) where ATR trail won't activate
+            # For big movers where ATR trail already set a higher SL, max() keeps the better one
+            if pnl_pct >= PCT_TRAIL_ACTIVATE:
+                pct_trail_sl = round(session_high[tid] * (1 - PCT_TRAIL_GAP / 100), 2)
+                if pct_trail_sl > entry and pct_trail_sl > sl:
+                    sl = pct_trail_sl
+                    update_trade_stop(tid, sl)
+                    log(f"  {sym}: PCT trail → ${sl} ({pnl_pct:+.1f}%)")
 
         # ── Break-even stop: once +2.5% profit ───────────────
         if pnl_pct >= 2.5:
@@ -1512,9 +1547,18 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         # ── Exit decisions ────────────────────────────────────
         exit_reason = None
 
+        # 0a. P&L protection: peak session P&L ≥$200 dropped 25% — cut non-runners
+        # Non-runner = pnl < -0.3% (never moved in our favour, don't hold hoping)
+        # Applies both LONG and SHORT. Free the capital for better next setup.
+        if pl_protect_active and pnl_pct < -0.3:
+            exit_reason = (f'P&L protection: session peak ${peak_session_pnl:.0f} '
+                           f'dropped 25% — cutting non-runner ({pnl_pct:+.1f}%)')
+
         # 0. Regime flip exit: cover losing shorts when market turns NORMAL/STRONG
+        # Requires 3 consecutive scans (symmetric with 3-scan bear entry requirement)
+        # 2-scan rule caused 6/24 premature covers (+$754/yr improvement with 3-scan)
         if (is_short and regime in ('NORMAL', 'STRONG')
-                and confirmed_scans >= 2 and pnl_pct < 0):
+                and confirmed_scans >= 3 and pnl_pct < 0):
             exit_reason = (f'Regime flip {regime} (x{confirmed_scans}) — '
                            f'covering losing short ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
 
@@ -1563,7 +1607,10 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     if pnl_usd > 0:
                         # Profitable but flat — lock breakeven as stop, hold for potential breakout
                         be_stop = round(entry * 1.0005, 2) if not is_short else round(entry * 0.9995, 2)
-                        if abs(sl - be_stop) > 0.01:
+                        # Guard: stop must be below current price (long) — prevents immediate fire
+                        # when stock is barely positive (e.g. +0.04%: be_stop > price → exits instantly)
+                        price_ok = (not is_short and be_stop < price) or (is_short and be_stop > price)
+                        if price_ok and abs(sl - be_stop) > 0.01:
                             update_trade_stop(tid, be_stop)
                             sl = be_stop
                             log(f"  {sym}: No-move {mins_held:.0f}min (+${pnl_usd:.0f}) — locking breakeven stop ${be_stop}")
@@ -1605,7 +1652,13 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                 close_side = 'BUY' if is_short else 'SELL'
                 close_qty  = min(shares, int(ibkr_qty))
                 # DB write first — if IBKR call fails, reconcile_with_ibkr() corrects state
-                pnl = log_trade_exit(tid, price, exit_reason)
+                if is_short:
+                    peak = session_low.get(tid, entry)
+                    _max_gain_pct = (entry - peak) / entry * 100 if peak < entry else 0.0
+                else:
+                    peak = session_high.get(tid, entry)
+                    _max_gain_pct = (peak - entry) / entry * 100 if peak > entry else 0.0
+                pnl = log_trade_exit(tid, price, exit_reason, max_gain_pct=_max_gain_pct)
                 requests.post(f"{BRIDGE}/order", json={
                     'symbol': sym, 'qty': close_qty,
                     'side': close_side, 'order_type': 'MARKET'
@@ -1660,7 +1713,13 @@ def fast_monitor_positions():
                 ibkr_pos = get_ibkr_positions()
                 ibkr_qty = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
                 # DB write first — if IBKR call fails, reconcile_with_ibkr() corrects state
-                pnl = log_trade_exit(tid, price, reason)
+                if is_short:
+                    _peak = session_low.get(tid, entry)
+                    _max_gain = (entry - _peak) / entry * 100 if _peak < entry else 0.0
+                else:
+                    _peak = session_high.get(tid, entry)
+                    _max_gain = (_peak - entry) / entry * 100 if _peak > entry else 0.0
+                pnl = log_trade_exit(tid, price, reason, max_gain_pct=_max_gain)
                 if ibkr_qty > 0:
                     close_side = 'BUY' if is_short else 'SELL'
                     requests.post(f"{BRIDGE}/order", json={
@@ -1973,12 +2032,13 @@ def poll_telegram_commands():
                         ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
                         qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty else t['shares']
                         try:
+                            # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
+                            pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
+                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
                             requests.post(f"{BRIDGE}/order",
                                           json={'symbol': sym, 'qty': qty,
                                                 'side': close_side, 'order_type': 'MARKET'},
                                           timeout=10)
-                            pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
-                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
                             for d in (price_history, session_high, session_low):
                                 d.pop(t['id'], None)
                             open_positions.pop(sym, None)
@@ -2008,12 +2068,13 @@ def poll_telegram_commands():
                         ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
                         qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty else t['shares']
                         try:
+                            # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
+                            pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
+                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
                             requests.post(f"{BRIDGE}/order",
                                           json={'symbol': sym, 'qty': qty,
                                                 'side': close_side, 'order_type': 'MARKET'},
                                           timeout=10)
-                            pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
-                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
                             for d in (price_history, session_high, session_low):
                                 d.pop(t['id'], None)
                             open_positions.pop(sym, None)
@@ -2463,6 +2524,17 @@ def run_scan():
     symp_str = f" Sympathy {daily_sympathy_count}/{MAX_DAILY_SYMPATHY_TRADES}" if active_sympathy_triggers else ""
     log(f"Open: {len(open_trades)} | Bull {daily_bull_count}/{MAX_DAILY_BULL_TRADES} Bear {daily_bear_count}/{MAX_DAILY_BEAR_TRADES}{symp_str} today | Realized: ${daily['pnl']:+.2f} | Session: ${session_pnl:+.2f}")
 
+    # P&L protection: track session peak, fire when peak ≥$200 drops 25%
+    global peak_session_pnl, pl_protect_active
+    if session_pnl > peak_session_pnl:
+        peak_session_pnl = session_pnl
+    if (not pl_protect_active
+            and peak_session_pnl >= PL_PROTECT_PEAK
+            and session_pnl < peak_session_pnl * (1 - PL_PROTECT_DROP)):
+        pl_protect_active = True
+        log(f"⚠️  P&L PROTECTION ACTIVE: peak ${peak_session_pnl:.0f} → now ${session_pnl:.0f} "
+            f"(-{(peak_session_pnl - session_pnl) / peak_session_pnl * 100:.0f}%) — will cut non-runners")
+
     # Always monitor open trades
     exits = []
 
@@ -2662,6 +2734,14 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
         return monitor_open_trades(regime, confirmed_scans)
 
+    # ── Afternoon gate: protect morning gains, skip new longs after 12pm ──────
+    # Afternoon LONG: 44.8% WR / -$0.91 avg on recycled capital (vs 58.5% morning)
+    now_et = datetime.now(ET)
+    morning_pnl = realized.get('pnl', 0)
+    if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
+        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD} — no new longs after 12pm")
+        return monitor_open_trades(regime, confirmed_scans)
+
     # Dynamic picks = symbols in catalyst_priority but NOT in fixed FULL_UNIVERSE
     dynamic_picks = [s for s in catalyst_priority if s not in FULL_UNIVERSE]
 
@@ -2836,6 +2916,14 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     daily_total = realized.get('pnl', 0) + unrealized
     if daily_total <= -MAX_DAILY_LOSS:
         log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
+        return monitor_open_trades(regime, confirmed_scans)
+
+    # ── Afternoon gate: no new shorts after 12pm if morning was profitable ────
+    # Afternoon SHORT: 18.2% WR / -$6.56 avg — catastrophic vs 51.5% morning
+    now_et = datetime.now(ET)
+    morning_pnl = realized.get('pnl', 0)
+    if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
+        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD} — no new shorts after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
@@ -3254,6 +3342,7 @@ def reset_daily_state():
     global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
     global partial_done_trades, first_bar_strong_trades, key_levels, sector_strength
     global daily_sympathy_count, active_sympathy_triggers, sympathy_scan_done
+    global peak_session_pnl, pl_protect_active
     traded_today             = set()
     daily_bull_count         = 0
     daily_bear_count         = 0
@@ -3270,6 +3359,8 @@ def reset_daily_state():
     first_bar_strong_trades = {}
     key_levels              = {}
     sector_strength     = {}
+    peak_session_pnl    = 0.0
+    pl_protect_active   = False
     save_traded_today()
     log("Daily state reset for new trading day")
 
