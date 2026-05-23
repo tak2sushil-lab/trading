@@ -76,12 +76,16 @@ LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
 LUNCH_AVOID_END   = (12, 45) # resume entries at 12:45pm ET
 # P&L protection: once session peak ≥ $200, if it drops 25% → cut non-runners
 # Validated May 2026: +$34/month, 0 false positives, +$539/yr
-PL_PROTECT_PEAK   = 200      # peak session P&L trigger threshold
-PL_PROTECT_DROP   = 0.25     # 25% drawdown from peak fires the cut
-# Afternoon gate: no new entries (long or short) after 12pm if morning realized ≥ $150
+# P&L protection and afternoon gate use % of capital so thresholds scale automatically
+# when TOTAL_CAPITAL grows — no manual update needed at go-live or scaling events
+PL_PROTECT_PEAK_PCT = 2.0    # trigger when peak session P&L ≥ 2% of capital ($200 at $10K)
+PL_PROTECT_PEAK     = TOTAL_CAPITAL * PL_PROTECT_PEAK_PCT / 100
+PL_PROTECT_DROP     = 0.25   # 25% drawdown from peak fires the cut
+# Afternoon gate: no new entries (long or short) after 12pm if morning realized ≥ 1.5% of capital
 # Data: afternoon LONG 44.8% WR / -$0.91 avg, afternoon SHORT 18.2% WR / -$6.56 avg
-AFTERNOON_GATE_HOUR      = 12   # no new entries from 12pm ET
-AFTERNOON_GATE_THRESHOLD = 150  # only gate if morning realized ≥ $150
+AFTERNOON_GATE_HOUR      = 12
+AFTERNOON_GATE_PCT       = 1.5   # gate threshold: 1.5% of capital ($150 at $10K)
+AFTERNOON_GATE_THRESHOLD = TOTAL_CAPITAL * AFTERNOON_GATE_PCT / 100
 FIRST_BAR_QUALITY = True     # strong first 30-min bar → +15% capital + enable partial exit
 ORB_ENTRY_CUTOFF  = (11, 30) # ORB signal only valid before 11:30am — late breaks are just resistance
 
@@ -2532,8 +2536,8 @@ def run_scan():
             and peak_session_pnl >= PL_PROTECT_PEAK
             and session_pnl < peak_session_pnl * (1 - PL_PROTECT_DROP)):
         pl_protect_active = True
-        log(f"⚠️  P&L PROTECTION ACTIVE: peak ${peak_session_pnl:.0f} → now ${session_pnl:.0f} "
-            f"(-{(peak_session_pnl - session_pnl) / peak_session_pnl * 100:.0f}%) — will cut non-runners")
+        log(f"⚠️  P&L PROTECTION ACTIVE: peak ${peak_session_pnl:.0f} ({PL_PROTECT_PEAK_PCT:.1f}% of capital) "
+            f"→ now ${session_pnl:.0f} (-{(peak_session_pnl - session_pnl) / peak_session_pnl * 100:.0f}%) — will cut non-runners")
 
     # Always monitor open trades
     exits = []
@@ -2739,7 +2743,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     now_et = datetime.now(ET)
     morning_pnl = realized.get('pnl', 0)
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
-        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD} — no new longs after 12pm")
+        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new longs after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
 
     # Dynamic picks = symbols in catalyst_priority but NOT in fixed FULL_UNIVERSE
@@ -2923,7 +2927,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     now_et = datetime.now(ET)
     morning_pnl = realized.get('pnl', 0)
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
-        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD} — no new shorts after 12pm")
+        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new shorts after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
