@@ -1239,6 +1239,14 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
     if today_chg > -MIN_TODAY_GAIN:
         return 'SKIP', [f'Only {today_chg:.1f}% today (need ≤-{MIN_TODAY_GAIN}%)'], 0
 
+    # ── Pattern gate — mirrors bull requirement ────────────────────────────────
+    # Strong distribution (≤-5% AND underperforming SPY by 2%+) counts as the signal itself
+    strong_dist = today_chg <= -5.0 and sig.get('rs_vs_spy', 0) <= -2.0
+    has_bear_pattern = (sig.get('orb_break_down') or sig.get('vwap_rejection')
+                        or sig.get('lod_break') or sig.get('is_bear_flag') or strong_dist)
+    if not has_bear_pattern:
+        return 'SKIP', ['No bear pattern — need ORB breakdown/VWAP rejection/LOD break/bear flag'], 0
+
     # ── Entry signal scoring ──────────────────────────────
     if sig.get('orb_break_down'):
         score += 25; reasons.append('ORB break down')
@@ -1310,6 +1318,17 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
             score += 5;  reasons.append(f'{etf} {etf_chg:.1f}%')
         elif etf_chg >= 1.0:
             score -= 10; reasons.append(f'{etf} +{etf_chg:.1f}% strong sector (risk)')
+
+    # Sector historical grade — inverted for shorts
+    # WEAK sector (BIOTECH/ENERGY historically bad on longs) = short-friendly tailwind +15
+    # STRONG sector (SEMIS/NUCLEAR/TECH historically dominant) = shorting against the trend -20
+    if symbol:
+        sec_name  = get_symbol_sector(symbol)
+        sec_grade = get_sector_grade(sec_name)
+        if sec_grade == 'WEAK':
+            score += 15; reasons.append(f'{sec_name} sector WEAK (short-friendly) +15')
+        elif sec_grade == 'STRONG':
+            score -= 20; reasons.append(f'{sec_name} sector STRONG (short-risky) -20')
 
     # WEAK regime confirmation
     score += 15; reasons.append('WEAK regime confirmed')
