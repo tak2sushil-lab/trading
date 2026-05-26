@@ -2603,12 +2603,13 @@ def _scan_premarket_catalyst(open_trades):
     log(f"Pre-market: {len(candidates)} qualified gap candidates")
 
     entries    = []
+    attempted  = 0   # orders submitted this cycle (incl. failures) — prevents MAX_OPEN bypass
     open_count = len(open_trades)
 
     for pick in candidates:
         if len(entries) >= MAX_PREMARKET_TRADES:
             break
-        if open_count + len(entries) >= MAX_OPEN_TRADES:
+        if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
@@ -2630,6 +2631,7 @@ def _scan_premarket_catalyst(open_trades):
             f"vol {pick['pm_vol']/1000:.0f}K | LIMIT ${limit_price} SL ${sl} T ${target} "
             f"R:R 1:{rr} | {', '.join(pick['reasons'])}")
 
+        attempted += 1
         trade_id = place_trade(
             sym, price, shares, sl, target,
             'EARNINGS_GAP', pick['grade'],
@@ -2840,7 +2842,8 @@ def _scan_catalyst_override(open_trades):
 
     # Build scan list: dynamic (momentum scanner) picks first, then full universe
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
-    entries = []
+    entries   = []
+    attempted = 0   # orders submitted this cycle (incl. failures) — prevents MAX_OPEN bypass
 
     for symbol in scan_order:
         if symbol in traded_today:
@@ -2849,7 +2852,7 @@ def _scan_catalyst_override(open_trades):
             continue
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
-        if len(open_trades) + len(entries) >= MAX_OPEN_TRADES:
+        if len(open_trades) + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
 
         try:
@@ -2897,6 +2900,7 @@ def _scan_catalyst_override(open_trades):
 
             log(f"  ⚡ CATALYST OVERRIDE {symbol} gap {gap_pct:+.1f}% vol {vol_ratio:.1f}x — entering despite WEAK market")
 
+            attempted += 1
             trade_id = place_trade(
                 symbol, price, shares, sl, target,
                 'CATALYST_OVERRIDE', grade,
