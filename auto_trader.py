@@ -729,30 +729,54 @@ def reconcile_with_ibkr():
     # We do NOT adopt orphans as strategy positions — they were never scored/sized
     # by the system, and adopting them caused the May 26 2026 mass-entry incident.
     for sym, pos in ibkr.items():
-        if sym not in db_symbols and pos['qty'] > 0:
-            log(f"Reconcile: {sym} in IBKR but missing from DB → closing orphan immediately")
+        qty = int(pos['qty'])
+        if sym not in db_symbols and qty != 0:
+            # Long orphan → SELL, Short orphan → BUY
+            close_side = 'SELL' if qty > 0 else 'BUY'
+            close_qty  = abs(qty)
+            log(f"Reconcile: {sym} in IBKR (qty={qty}) but missing from DB → closing orphan immediately")
+            send_telegram(f"⚠️ Reconcile: {sym} orphan position ({qty} shares) found — closing now")
+            closed = False
+
+            # Attempt 1: market order (fast, works when data subscription exists)
             try:
                 r_close = requests.post(
                     f"{BRIDGE}/order",
-                    json={'symbol': sym, 'qty': int(pos['qty']),
-                          'side': 'SELL', 'order_type': 'MARKET'},
+                    json={'symbol': sym, 'qty': close_qty,
+                          'side': close_side, 'order_type': 'MARKET'},
                     timeout=10,
                 )
-                log(f"Reconcile: {sym} close order → {r_close.json().get('orderId', 'failed')}")
+                status = r_close.json().get('status', '')
+                log(f"Reconcile: {sym} market close → {status}")
+                if status not in ('Cancelled', 'Inactive', ''):
+                    closed = True
             except Exception as _re:
-                # Close failed — create a minimal record so monitor_open_trades can
-                # try to exit via normal exit logic next cycle.
-                log(f"Reconcile: {sym} close failed ({_re}) — creating RECONCILED record")
-                avg = pos['avgCost']
-                log_trade_entry(
-                    symbol=sym, entry_price=avg,
-                    shares=int(pos['qty']),
-                    target_price=round(avg * 1.075, 2),
-                    stop_price=round(avg * 0.965, 2),
-                    setup_type='RECONCILED', rsi=0, volume_ratio=0,
-                    sector='OTHER', earnings_days=999, confidence=50,
-                    order_id='reconciled'
-                )
+                log(f"Reconcile: {sym} market order failed ({_re})")
+
+            # Attempt 2: limit order with yfinance price (bypasses data subscription gate)
+            if not closed:
+                price = get_live_price(sym)
+                if price:
+                    # Limit slightly aggressive to ensure fill
+                    lmt = round(price * 1.005 if close_side == 'BUY' else price * 0.995, 2)
+                    try:
+                        r_lmt = requests.post(
+                            f"{BRIDGE}/order",
+                            json={'symbol': sym, 'qty': close_qty,
+                                  'side': close_side, 'order_type': 'LMT',
+                                  'limit_price': lmt},
+                            timeout=10,
+                        )
+                        status = r_lmt.json().get('status', '')
+                        log(f"Reconcile: {sym} limit close @ {lmt} → {status}")
+                        if status not in ('Cancelled', 'Inactive', ''):
+                            closed = True
+                    except Exception as _re2:
+                        log(f"Reconcile: {sym} limit order failed ({_re2})")
+
+            if not closed:
+                send_telegram(f"🚨 Reconcile: {sym} orphan could not be closed — MANUAL ACTION REQUIRED")
+                log(f"Reconcile: {sym} all close attempts failed — manual close required")
 
     # DB has open trade, IBKR doesn't → closed externally
     for sym, trade in db_symbols.items():
