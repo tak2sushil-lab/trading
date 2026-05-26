@@ -133,6 +133,21 @@ def _bridge_post(path: str, payload: dict) -> dict | None:
     return None
 
 
+def _bridge_get(path: str) -> dict | None:
+    try:
+        r = requests.get(f"{BRIDGE_URL}{path}", timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"[bridge GET] {path} — {e}")
+    return None
+
+
+def _is_paper() -> bool:
+    info = _bridge_get('/')
+    return (info or {}).get('mode') == 'paper'
+
+
 def _auto_close_position(trade: dict, current_value: float, exit_reason: str = 'AUTO_STOP') -> bool:
     """
     Place a market-limit sell order to close the position when stop is hit.
@@ -201,8 +216,22 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
     if not resp or 'orderId' not in resp:
         return False
 
-    # Wait one scan cycle for IBKR to fill, then record
+    order_id = resp['orderId']
+    # Wait one scan cycle for IBKR to fill, then verify before writing DB
     time.sleep(30)
+    status = _bridge_get(f'/order/{order_id}/status')
+    filled = status and (
+        status.get('filled', 0) >= qty
+        or (_is_paper() and status.get('status') in ('Submitted', 'PreSubmitted', 'Filled'))
+    )
+    if not filled:
+        send_telegram(
+            f"⚠️ *{sym} auto-close order not confirmed* (trade #{tid})\n"
+            f"Order {order_id} status: {(status or {}).get('status', 'unknown')}\n"
+            f"DB NOT updated — check IBKR manually. Use `OPT CLOSE {sym}` to retry."
+        )
+        return False
+
     return_pct = close_options_trade(tid, exit_dollar, exit_reason=exit_reason)
 
     # Log outcome for learning loop

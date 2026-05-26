@@ -1549,7 +1549,15 @@ def _execute_close_bg(trade: dict, chat_id: str):
     time.sleep(FILL_WAIT_SEC)
 
     status = get_order_status(order_id)
-    filled = status and status.get('filled', 0) >= qty
+    filled = status and (
+        status.get('filled', 0) >= qty
+        # Paper accounts return Submitted/PreSubmitted for BAG orders — treat as filled
+        or (_is_paper() and status.get('status') in ('Submitted', 'PreSubmitted', 'Filled'))
+    )
+
+    if not filled:
+        send_telegram(f"⚠️ {sym} close order not confirmed — check IBKR manually. DB NOT updated.", chat_id)
+        return
 
     return_pct = close_options_trade(tid, exit_value, exit_reason='MANUAL') or 0
     sign       = '+' if return_pct >= 0 else ''

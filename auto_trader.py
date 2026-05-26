@@ -2239,15 +2239,18 @@ def poll_telegram_commands():
                         close_side = 'BUY' if is_short else 'SELL'
                         ibkr_pos   = get_ibkr_positions()
                         ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
-                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty else t['shares']
+                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty > 0 else t['shares']
                         try:
                             # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
                             pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
                             pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
-                            requests.post(f"{BRIDGE}/order",
-                                          json={'symbol': sym, 'qty': qty,
-                                                'side': close_side, 'order_type': 'MARKET'},
-                                          timeout=10)
+                            if ibkr_qty > 0:
+                                requests.post(f"{BRIDGE}/order",
+                                              json={'symbol': sym, 'qty': qty,
+                                                    'side': close_side, 'order_type': 'MARKET'},
+                                              timeout=10)
+                            else:
+                                log(f"SELL {sym}: no IBKR position — DB-only close")
                             for d in (price_history, session_high, session_low):
                                 d.pop(t['id'], None)
                             open_positions.pop(sym, None)
@@ -2275,15 +2278,18 @@ def poll_telegram_commands():
                         is_short   = t.get('side', 'LONG') == 'SHORT'
                         close_side = 'BUY' if is_short else 'SELL'
                         ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
-                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty else t['shares']
+                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty > 0 else t['shares']
                         try:
                             # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
                             pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
                             pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
-                            requests.post(f"{BRIDGE}/order",
-                                          json={'symbol': sym, 'qty': qty,
-                                                'side': close_side, 'order_type': 'MARKET'},
-                                          timeout=10)
+                            if ibkr_qty > 0:
+                                requests.post(f"{BRIDGE}/order",
+                                              json={'symbol': sym, 'qty': qty,
+                                                    'side': close_side, 'order_type': 'MARKET'},
+                                              timeout=10)
+                            else:
+                                log(f"CLOSEALL {sym}: no IBKR position — DB-only close")
                             for d in (price_history, session_high, session_low):
                                 d.pop(t['id'], None)
                             open_positions.pop(sym, None)
@@ -3755,6 +3761,17 @@ def reset_daily_state():
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────
 if __name__ == '__main__':
+    # Singleton guard — prevent two instances running simultaneously during launchctl restart.
+    # The lock is held for the lifetime of the process and released automatically on exit.
+    import fcntl as _fcntl
+    _LOCK_PATH = os.path.join(_DIR, 'auto_trader.lock')
+    _lockfd = open(_LOCK_PATH, 'w')
+    try:
+        _fcntl.flock(_lockfd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("ERROR: Another auto_trader instance is already running — exiting to prevent duplicate orders.")
+        sys.exit(1)
+
     if os.getenv('TRADING_MODE', 'paper') == 'live':
         if os.getenv('PROD_EQUITY_ENABLED', 'false').lower() != 'true':
             log("PROD_EQUITY_ENABLED is not 'true' in .env — exiting. Set it to enable live equity trading.")
