@@ -117,11 +117,24 @@ SCALP_ENTRY_HOUR_START  = (10, 0)
 SCALP_ENTRY_HOUR_CUTOFF = (13, 30)
 SCALP_NEWS_HOURS    = 4      # Mode B: conviction signal must be within this many hours
 
+# ── Proactive recycling constants ─────────────────────────────────────────────
+PROACTIVE_ENTRY_CUTOFF = (14, 30)   # no new spread/LEAP entries after 2:30pm ET
+PROACTIVE_COOLDOWN_HRS = 3          # hours before re-evaluating same symbol after SKIP
+PROACTIVE_SIGNAL_HOURS = 24         # conviction signal must be within this many hours
+
+US_HOLIDAYS_2026 = frozenset({
+    (2026,  1,  1), (2026,  1, 19), (2026,  2, 16),
+    (2026,  4,  3), (2026,  5, 25), (2026,  6, 19),
+    (2026,  7,  3), (2026,  9,  7), (2026, 11, 26),
+    (2026, 12, 25),
+})
+
 # ── Global state ──────────────────────────────────────────────────────────────
 _paused          = False
 _pending: dict   = {}       # chat_id → {action, symbol, qty, templates, leap, expires_at}
 _last_update_id  = 0
-_scalp_triggered: dict[str, datetime] = {}   # sym → last trigger time (4h cooldown)
+_scalp_triggered: dict[str, datetime]    = {}   # sym → last trigger time (4h cooldown)
+_proactive_cooldown: dict[str, datetime] = {}   # sym → last evaluated time (3h cooldown)
 _scalp_scan_counter: int = 0
 
 def _is_paper() -> bool:
@@ -2548,12 +2561,43 @@ def dispatch(text: str, chat_id: str):
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
+def _get_proactive_candidates(exclude: set) -> list[str]:
+    """
+    Return HIGH BULL conviction symbols ranked by score, excluding already-open
+    positions and symbols still within their 3-hour cooldown window.
+    Signal must be fresh (within PROACTIVE_SIGNAL_HOURS).
+    """
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn   = sqlite3.connect(DB_PATH)
+        c      = conn.cursor()
+        cutoff = (datetime.now() - timedelta(hours=PROACTIVE_SIGNAL_HOURS)).isoformat()
+        c.execute(
+            "SELECT symbol, score FROM ticker_conviction "
+            "WHERE tier='HIGH' AND direction='BULL' AND last_signal_at>=? "
+            "ORDER BY score DESC",
+            (cutoff,),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0] not in exclude]
+    except Exception as e:
+        print(f"[proactive] candidate query error: {e}")
+        return []
+
+
 def _process_pending_suggestions():
     """
-    Called from main loop every iteration.
-    Picks up one PENDING suggestion written by news_engine, runs the calculator,
-    and sends the CONFIRM/SKIP verdict message. Processes at most one per call
-    so we never queue two trades waiting at once.
+    Called from main loop every ~30s.
+
+    Step 1 — news_engine queue: pick up the oldest PENDING suggestion, run the
+    calculator, auto-execute on 5/5 gates or send CONFIRM on 4/5.
+
+    Step 2 — proactive recycling: when the queue is empty and a spread/LEAP slot
+    is free, scan the conviction leaderboard for the top HIGH BULL symbol and
+    evaluate it.  3-hour per-symbol cooldown prevents hammering the same setup.
+    No new entries after 2:30pm ET.
     """
     OPT_CHAT = os.getenv('OPTIONS_TELEGRAM_CHAT_ID', '')
     if not OPT_CHAT:
@@ -2563,22 +2607,26 @@ def _process_pending_suggestions():
     if OPT_CHAT in _pending:
         return
 
+    # ── Step 1: news_engine suggestion queue ─────────────────────────────────
     suggestions = get_pending_suggestions()
-    if not suggestions:
+    if suggestions:
+        _handle_queued_suggestion(suggestions[0], OPT_CHAT)
         return
 
-    sug = suggestions[0]   # oldest first
+    # ── Step 2: proactive recycling ───────────────────────────────────────────
+    _proactive_recycle(OPT_CHAT)
+
+def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
+    """Process one news_engine suggestion — the original auto-suggest path."""
     sug_id = sug['id']
     sym    = sug['symbol']
 
-    # Mark immediately so next loop iteration skips it
     update_suggestion_status(sug_id, 'PROCESSING')
 
     if not check_circuit_breaker(OPT_CHAT):
         update_suggestion_status(sug_id, 'NO_TRADE')
         return
 
-    # Capital and slot gate — silently defer if full (will retry on next suggestion cycle)
     if not can_open_position():
         cs = capital_status()
         send_telegram(
@@ -2586,7 +2634,7 @@ def _process_pending_suggestions():
             f"${cs['available']:.0f} available. Will evaluate when a position closes.",
             OPT_CHAT,
         )
-        update_suggestion_status(sug_id, 'PENDING')   # put it back so we retry
+        update_suggestion_status(sug_id, 'PENDING')
         return
 
     liq_note = session_liquidity_note()
@@ -2600,7 +2648,6 @@ def _process_pending_suggestions():
     )
 
     calc = run_strategy_comparison(sym, 1)
-
     if 'error' in calc:
         send_telegram(f"❌ {sym} calculator error: {calc['error']}", OPT_CHAT)
         update_suggestion_status(sug_id, 'ERROR')
@@ -2611,23 +2658,51 @@ def _process_pending_suggestions():
     verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
     comparison  = calc.get('_comparison', '')
 
-    # Store calc results on the suggestion row
     try:
         update_suggestion_calc(sug_id, calc, calc_log_id)
     except Exception:
         pass
 
+    if verdict == 'SKIP':
+        gs     = calc.get('entry_gates', {})
+        mc     = calc.get('mc_ev', {})
+        gates  = gs.get('gates_pass', 0)
+        ev     = mc.get('ev_dollar')
+        ev_str = f"MC EV ${ev:+.0f}" if ev is not None else "no EV"
+        cmp_note = f"\n_{comparison}_" if comparison else ""
+        send_telegram(
+            f"📊 *{sym} auto-analysis: SKIP* ({gates}/5 gates, {ev_str}){cmp_note}\n"
+            f"Conviction is HIGH but setup not ready. No action needed.",
+            OPT_CHAT,
+        )
+        update_suggestion_status(sug_id, 'NO_TRADE')
+    else:
+        _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id,
+                              sug_id=sug_id, source='queue')
+
+
+def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
+                          calc_log_id: int | None,
+                          sug_id: int | None = None,
+                          source: str = 'queue'):
+    """
+    Shared execution path for both queued suggestions and proactive recycling.
+    verdict=ENTER → auto-execute; ENTER_REDUCED → CONFIRM prompt.
+    source: 'queue' or 'recycle' — used in Telegram labels only.
+    """
+    label = 'HIGH conviction auto-suggest' if source == 'queue' else 'proactive recycle'
+
     if verdict == 'ENTER':
-        # Phase 1: 5/5 gates → auto-execute immediately
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
-        update_suggestion_status(sug_id, 'SENT')
+        if sug_id:
+            update_suggestion_status(sug_id, 'SENT')
         trade = calc.get('trade')
         if trade:
             new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
             if can_open_position(new_premium):
                 send_telegram(
-                    f"⚡ *Auto-executing {sym}* — 5/5 gates passed (HIGH conviction auto-suggest)",
+                    f"⚡ *Auto-executing {sym}* — 5/5 gates ({label})",
                     OPT_CHAT,
                 )
                 strategy = calc.get('strategy', 'BULL_SPREAD')
@@ -2644,34 +2719,103 @@ def _process_pending_suggestions():
                         daemon=True,
                     ).start()
             else:
-                update_suggestion_status(sug_id, 'NO_TRADE')
+                if sug_id:
+                    update_suggestion_status(sug_id, 'NO_TRADE')
+
     elif verdict == 'ENTER_REDUCED':
-        # 4/5 gates → send CONFIRM prompt
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
         _pending[OPT_CHAT] = {
             'action':        'spread_confirm',
             'symbol':        sym,
-            'qty':           1,
+            'qty':           calc.get('qty', 1),
             'calc':          calc,
             'suggestion_id': sug_id,
             'expires_at':    datetime.now() + timedelta(minutes=30),
         }
-        update_suggestion_status(sug_id, 'SENT')
-    else:
-        # Calculator says SKIP — send a brief note, no CONFIRM prompt
-        gs    = calc.get('entry_gates', {})
-        mc    = calc.get('mc_ev', {})
-        gates = gs.get('gates_pass', 0)
-        ev    = mc.get('ev_dollar')
+        if sug_id:
+            update_suggestion_status(sug_id, 'SENT')
+
+
+def _proactive_recycle(OPT_CHAT: str):
+    """
+    Fires when the suggestion queue is empty and a spread/LEAP slot is free.
+    Picks the top HIGH BULL conviction symbol not in cooldown, runs the calculator,
+    and auto-executes (5/5) or sends CONFIRM (4/5).  Silently skips if:
+    - all slots full
+    - after 2:30pm ET
+    - no qualifying conviction symbol found
+    - circuit breaker tripped
+    """
+    global _proactive_cooldown
+
+    # Slot gate
+    cs = capital_status()
+    if cs['slots_free'] <= 0:
+        return
+
+    # Time gate: no new spread/LEAP positions after 2:30pm ET
+    n = datetime.now(ET)
+    if n.weekday() >= 5:
+        return
+    if (n.year, n.month, n.day) in US_HOLIDAYS_2026:
+        return
+    cutoff_dt = n.replace(hour=PROACTIVE_ENTRY_CUTOFF[0], minute=PROACTIVE_ENTRY_CUTOFF[1],
+                           second=0, microsecond=0)
+    if n > cutoff_dt:
+        return
+
+    if not check_circuit_breaker(OPT_CHAT):
+        return
+
+    # Expire 3-hour cooldowns
+    now   = datetime.now()
+    stale = [sym for sym, ts in list(_proactive_cooldown.items())
+             if (now - ts).total_seconds() > PROACTIVE_COOLDOWN_HRS * 3600]
+    for sym in stale:
+        del _proactive_cooldown[sym]
+
+    open_syms  = {t['symbol'] for t in get_open_options_trades()}
+    exclude    = open_syms | set(_proactive_cooldown.keys())
+    candidates = _get_proactive_candidates(exclude)
+    if not candidates:
+        return
+
+    sym = candidates[0]
+    _proactive_cooldown[sym] = now   # claim cooldown before network calls
+
+    liq_note = session_liquidity_note()
+    send_telegram(
+        f"♻️ *Proactive recycle: {sym}* (slot free — HIGH conviction)\n"
+        f"⏳ Running SPREAD vs LEAP analysis..."
+        + (f"\n{liq_note}" if liq_note else "")
+        + f"\n_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
+        OPT_CHAT,
+    )
+
+    calc = run_strategy_comparison(sym, 1)
+    if 'error' in calc:
+        send_telegram(f"❌ {sym} proactive error: {calc['error']}", OPT_CHAT)
+        return
+
+    calc        = _auto_qty_calc(calc)
+    calc_log_id = calc.get('calc_log_id')
+    verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+
+    if verdict == 'SKIP':
+        gs     = calc.get('entry_gates', {})
+        mc     = calc.get('mc_ev', {})
+        gates  = gs.get('gates_pass', 0)
+        ev     = mc.get('ev_dollar')
         ev_str = f"MC EV ${ev:+.0f}" if ev is not None else "no EV"
-        cmp_note = f"\n_{comparison}_" if comparison else ""
         send_telegram(
-            f"📊 *{sym} auto-analysis: {verdict}* ({gates}/5 gates, {ev_str}){cmp_note}\n"
-            f"Conviction is HIGH but setup not ready. No action needed.",
+            f"📊 *{sym} recycle scan: SKIP* ({gates}/5 gates, {ev_str})\n"
+            f"Setup not ready — 3h cooldown applied.",
             OPT_CHAT,
         )
-        update_suggestion_status(sug_id, 'NO_TRADE')
+        return
+
+    _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id, source='recycle')
 
 
 def main():
