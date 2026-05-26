@@ -725,20 +725,34 @@ def reconcile_with_ibkr():
     db_trades  = get_open_trades()
     db_symbols = {t['symbol']: t for t in db_trades}
 
-    # IBKR has position, DB doesn't → orphaned, create minimal record
+    # IBKR has position, DB doesn't → orphaned: close it immediately.
+    # We do NOT adopt orphans as strategy positions — they were never scored/sized
+    # by the system, and adopting them caused the May 26 2026 mass-entry incident.
     for sym, pos in ibkr.items():
         if sym not in db_symbols and pos['qty'] > 0:
-            log(f"Reconcile: {sym} in IBKR but missing from DB → creating record")
-            avg = pos['avgCost']
-            log_trade_entry(
-                symbol=sym, entry_price=avg,
-                shares=int(pos['qty']),
-                target_price=round(avg * 1.075, 2),
-                stop_price=round(avg * 0.965, 2),
-                setup_type='RECONCILED', rsi=0, volume_ratio=0,
-                sector='OTHER', earnings_days=999, confidence=50,
-                order_id='reconciled'
-            )
+            log(f"Reconcile: {sym} in IBKR but missing from DB → closing orphan immediately")
+            try:
+                r_close = requests.post(
+                    f"{BRIDGE}/order",
+                    json={'symbol': sym, 'qty': int(pos['qty']),
+                          'side': 'SELL', 'order_type': 'MARKET'},
+                    timeout=10,
+                )
+                log(f"Reconcile: {sym} close order → {r_close.json().get('orderId', 'failed')}")
+            except Exception as _re:
+                # Close failed — create a minimal record so monitor_open_trades can
+                # try to exit via normal exit logic next cycle.
+                log(f"Reconcile: {sym} close failed ({_re}) — creating RECONCILED record")
+                avg = pos['avgCost']
+                log_trade_entry(
+                    symbol=sym, entry_price=avg,
+                    shares=int(pos['qty']),
+                    target_price=round(avg * 1.075, 2),
+                    stop_price=round(avg * 0.965, 2),
+                    setup_type='RECONCILED', rsi=0, volume_ratio=0,
+                    sector='OTHER', earnings_days=999, confidence=50,
+                    order_id='reconciled'
+                )
 
     # DB has open trade, IBKR doesn't → closed externally
     for sym, trade in db_symbols.items():
@@ -1514,6 +1528,14 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                     filled = True
                     break
                 if d.get('status') in ('Cancelled', 'Inactive'):
+                    # IBKR paper sometimes fills then reports Cancelled during a gateway
+                    # reconnect. Before giving up, confirm no position exists.
+                    ibkr_chk = get_ibkr_positions()
+                    if ibkr_chk.get(symbol, {}).get('qty', 0) > 0:
+                        log(f"  {symbol}: Order {order_id} {d['status']} but position confirmed in IBKR — recording fill")
+                        price = ibkr_chk[symbol].get('avgCost', price)
+                        filled = True
+                        break
                     log(f"  {symbol}: Order {order_id} {d['status']} — not recording")
                     return None
             except Exception:
@@ -3012,11 +3034,12 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             pass
 
     entries       = []
+    attempted     = 0   # orders submitted this cycle (incl. failures) — prevents MAX_OPEN bypass
     open_count    = len(open_trades)
     sector_counts = get_open_sector_counts()
 
     for pick in candidates:
-        if open_count + len(entries) >= MAX_OPEN_TRADES:
+        if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
@@ -3062,6 +3085,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         log(f"  {tag} {pick['grade']} {sym} [{sector}] ${price} | "
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | ATR stop")
 
+        attempted += 1  # count this slot before we know fill outcome
         trade_id = place_trade(
             sym, price, shares, pick['sl'], pick['target'],
             strategy, pick['grade'],
@@ -3230,11 +3254,12 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             pass
 
     entries       = []
+    attempted     = 0   # orders submitted this cycle (incl. failures)
     open_count    = len(open_trades)
     sector_counts = get_open_sector_counts()
 
     for pick in candidates:
-        if open_count + len(entries) >= MAX_OPEN_TRADES:
+        if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
         if daily_bear_count >= MAX_DAILY_BEAR_TRADES:
             break
@@ -3264,6 +3289,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | "
             f"SL${pick['sl']} | {', '.join(pick['reasons'][:3])}")
 
+        attempted += 1  # count before fill outcome
         trade_id = place_trade(
             sym, price, shares, pick['sl'], pick['target'],
             'BEAR_MOMENTUM', pick['grade'],

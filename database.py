@@ -456,11 +456,13 @@ def get_win_rate(symbol=None, days=30):
     if symbol:
         c.execute('''SELECT COUNT(*), SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END)
                      FROM trades WHERE symbol=? AND status IN ('WIN','LOSS')
+                     AND setup_type != 'RECONCILED'
                      AND entry_date >= date('now', ?)''',
                   (symbol, f'-{days} days'))
     else:
         c.execute('''SELECT COUNT(*), SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END)
                      FROM trades WHERE status IN ('WIN','LOSS')
+                     AND setup_type != 'RECONCILED'
                      AND entry_date >= date('now', ?)''',
                   (f'-{days} days',))
     row   = c.fetchone()
@@ -475,6 +477,7 @@ def get_today_entry_counts():
     c    = conn.cursor()
     c.execute('''SELECT side, COUNT(*) FROM trades
                  WHERE entry_date=date('now') AND status IN ('OPEN','WIN','LOSS')
+                 AND setup_type != 'RECONCILED'
                  GROUP BY side''')
     rows = c.fetchall()
     conn.close()
@@ -492,6 +495,7 @@ def get_today_trades():
     c.execute('''SELECT symbol, entry_price, exit_price, shares, pnl, status, exit_reason, side
                  FROM trades
                  WHERE entry_date=date('now') AND status IN ('WIN','LOSS')
+                 AND setup_type != 'RECONCILED'
                  ORDER BY id''')
     rows = c.fetchall()
     conn.close()
@@ -506,7 +510,9 @@ def get_daily_pnl():
                         SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END)
                  FROM trades
                  WHERE entry_date=date('now')
-                 AND status IN ('WIN','LOSS')''')
+                 AND status IN ('WIN','LOSS')
+                 AND setup_type != 'RECONCILED'
+                 ''')
     row  = c.fetchone()
     conn.close()
     return {
@@ -582,6 +588,7 @@ def get_recent_trades(limit=20):
     c.execute('''SELECT symbol, entry_date, entry_price, exit_price,
                         pnl, pnl_pct, status, exit_reason, setup_type
                  FROM trades WHERE status IN ('WIN','LOSS')
+                 AND setup_type != 'RECONCILED'
                  ORDER BY id DESC LIMIT ?''', (limit,))
     rows = c.fetchall()
     conn.close()
@@ -596,6 +603,7 @@ def get_best_setups(min_trades=5):
                         SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) as wins,
                         AVG(pnl) as avg_pnl
                  FROM trades WHERE status IN ('WIN','LOSS')
+                 AND setup_type != 'RECONCILED'
                  GROUP BY setup_type
                  HAVING total >= ?
                  ORDER BY wins*1.0/total DESC''', (min_trades,))
@@ -1538,6 +1546,7 @@ def backfill_scan_log_from_trades():
                         volume_ratio, rsi_at_entry, sector, confidence, setup_type
                  FROM trades
                  WHERE status IN ('WIN', 'LOSS', 'CLOSED', 'OPEN')
+                 AND setup_type != 'RECONCILED'
                  ORDER BY entry_date, entry_time''')
     trades = c.fetchall()
 

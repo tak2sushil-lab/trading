@@ -37,6 +37,7 @@ def analyse_rsi_performance():
             AVG(pnl) as avg_pnl
         FROM trades
         WHERE status IN ('WIN','LOSS')
+        AND setup_type != 'RECONCILED'
         AND rsi_at_entry IS NOT NULL
         GROUP BY rsi_range
         ORDER BY wins*1.0/total DESC
@@ -62,6 +63,7 @@ def analyse_volume_performance():
             AVG(pnl) as avg_pnl
         FROM trades
         WHERE status IN ('WIN','LOSS')
+        AND setup_type != 'RECONCILED'
         AND volume_ratio IS NOT NULL
         GROUP BY vol_range
         ORDER BY wins*1.0/total DESC
@@ -81,6 +83,7 @@ def analyse_sector_performance():
                AVG(pnl) as avg_pnl
         FROM trades
         WHERE status IN ('WIN','LOSS')
+        AND setup_type != 'RECONCILED'
         AND entry_date >= date('now', '-14 days')
         AND sector IS NOT NULL
         GROUP BY sector
@@ -107,6 +110,7 @@ def analyse_earnings_performance():
             AVG(pnl) as avg_pnl
         FROM trades
         WHERE status IN ('WIN','LOSS')
+        AND setup_type != 'RECONCILED'
         AND earnings_days IS NOT NULL
         GROUP BY earnings_zone
         ORDER BY wins*1.0/total DESC
@@ -187,6 +191,7 @@ def analyse_sector_grades():
                SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) as wins
         FROM trades
         WHERE status IN ('WIN','LOSS')
+          AND setup_type != 'RECONCILED'
           AND entry_date >= date('now', '-30 days')
           AND sector IS NOT NULL AND sector != 'OTHER'
         GROUP BY sector
@@ -213,7 +218,7 @@ def run_learning_cycle():
     # Check if we have enough data
     conn = get_connection()
     c    = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WIN','LOSS')")
+    c.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WIN','LOSS') AND setup_type != 'RECONCILED'")
     trade_count = c.fetchone()[0]
     conn.close()
 

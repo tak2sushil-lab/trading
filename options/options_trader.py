@@ -168,19 +168,26 @@ def send_telegram(message: str, chat_id: str | None = None):
         print(f"[TG error] {e}")
 
 
+_tg_fail_streak = 0
+
 def poll_telegram(timeout: int = 0) -> list[dict]:
     """Fetch updates without advancing offset — caller decides what to consume."""
+    global _tg_fail_streak
     try:
         r = requests.get(
             f"{TG_API}/getUpdates",
             params={'offset': _last_update_id + 1, 'timeout': timeout},
             timeout=10,
         )
+        _tg_fail_streak = 0
         if r.status_code != 200:
             return []
         return r.json().get('result', [])
     except Exception as e:
-        print(f"[poll error] {e}")
+        _tg_fail_streak += 1
+        # Only log first failure and then every 30th — prevents log spam during outages
+        if _tg_fail_streak <= 1 or _tg_fail_streak % 30 == 0:
+            print(f"[poll error] {e}")
         return []
 
 
@@ -2895,7 +2902,9 @@ def main():
             print(f"[options_trader] loop error: {e}")
             traceback.print_exc()
             import sys; sys.stdout.flush(); sys.stderr.flush()
-        time.sleep(10)  # short-poll every 10s — avoids blocking auto_trader's Telegram connection
+        # Back off during Telegram outages: cap at 60s so scalp scan still fires roughly on time
+        sleep_s = min(60, 10 + _tg_fail_streak * 2) if _tg_fail_streak > 5 else 10
+        time.sleep(sleep_s)
 
 
 if __name__ == '__main__':
