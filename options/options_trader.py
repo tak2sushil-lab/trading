@@ -1414,6 +1414,10 @@ def _execute_leap_bg(sym: str, leap: dict, chat_id: str,
         if status and status.get('filled', 0) >= qty:
             filled_at = limit_price
             break
+        # Paper account: single-leg options stay at Submitted — treat as filled
+        if status and status.get('status') in ('Submitted', 'PreSubmitted') and _is_paper():
+            filled_at = limit_price
+            break
 
         if attempt < MAX_FILL_TRIES - 1:
             cancel_all_orders()

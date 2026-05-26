@@ -608,10 +608,11 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                     )
                 return alerts
 
-    # ── T1: underlying > 3% move ──
-    if underlying and prior_close and prior_close > 0:
+    # ── T1: underlying > 3% move (once per session) ──
+    if underlying and prior_close and prior_close > 0 and 'T1' not in fired:
         move_pct = (underlying - prior_close) / prior_close * 100
         if abs(move_pct) > 3.0:
+            fired.add('T1')
             direction = "▲" if move_pct > 0 else "▼"
             alerts.append(
                 f"{direction} *{sym} moved {move_pct:+.1f}%* today\n"
@@ -619,10 +620,11 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                 f"Contract value: ${current_value:.2f}"
             )
 
-    # ── T2: IV rank spike > 8 pts from entry ──
-    if iv_rank is not None and trade['iv_rank_entry'] is not None:
+    # ── T2: IV rank spike > 8 pts from entry (once per session) ──
+    if iv_rank is not None and trade['iv_rank_entry'] is not None and 'T2' not in fired:
         iv_change = iv_rank - trade['iv_rank_entry']
         if abs(iv_change) > 8:
+            fired.add('T2')
             direction = "↑" if iv_change > 0 else "↓"
             alerts.append(
                 f"⚡ *{sym} IV rank {direction}{abs(iv_change):.0f} pts*\n"
@@ -663,8 +665,9 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             f"→ Use `OPT CLOSE {sym}` to exit"
         )
 
-    # ── Bull Spread: 21 DTE time exit ──
-    if strat == 'BULL_SPREAD' and dte <= 21:
+    # ── Bull Spread: 21 DTE time exit (once per session) ──
+    if strat == 'BULL_SPREAD' and dte <= 21 and 'BULL_DTE' not in fired:
+        fired.add('BULL_DTE')
         alerts.append(
             f"⏰ *{sym} SPREAD: {dte} DTE* — 21-DTE time exit rule\n"
             f"P&L: ${current_value - prem:+.2f} | Value: ${current_value:.2f}\n"
