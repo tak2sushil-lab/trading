@@ -147,7 +147,6 @@ Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 1
 |------|---------|
 | ~~May 25~~ | ~~Memorial Day~~ |
 | Jun 19 | Juneteenth ← **next closed day** |
-| Jun 19 | Juneteenth |
 | Jul 3 | Independence Day (observed) |
 | Sep 7 | Labor Day |
 | Nov 26 | Thanksgiving |

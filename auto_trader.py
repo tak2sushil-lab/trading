@@ -1555,9 +1555,12 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 if d.get('status') in ('Cancelled', 'Inactive'):
                     # IBKR paper sometimes fills then reports Cancelled during a gateway
                     # reconnect. Before giving up, confirm no position exists.
+                    # Must check sign: LONG fill = positive qty, SHORT fill = negative qty.
                     ibkr_chk = get_ibkr_positions()
-                    if ibkr_chk.get(symbol, {}).get('qty', 0) > 0:
-                        log(f"  {symbol}: Order {order_id} {d['status']} but position confirmed in IBKR — recording fill")
+                    ibkr_qty = ibkr_chk.get(symbol, {}).get('qty', 0) or 0
+                    position_match = (side == 'LONG' and ibkr_qty > 0) or (side == 'SHORT' and ibkr_qty < 0)
+                    if position_match:
+                        log(f"  {symbol}: Order {order_id} {d['status']} but {side} position confirmed in IBKR — recording fill")
                         price = ibkr_chk[symbol].get('avgCost', price)
                         filled = True
                         break
@@ -3767,14 +3770,29 @@ if __name__ == '__main__':
     if daily_bull_count or daily_bear_count:
         log(f"Restored daily counts: Bull {daily_bull_count} Bear {daily_bear_count}")
 
-    # Restore trade_entry_times and partial_done_trades for open trades
+    # Restore sympathy count separately (not in get_today_entry_counts)
     import sqlite3 as _sqlite3
+    _sc_conn = _sqlite3.connect(os.path.join(_DIR, 'trades.db'))
+    daily_sympathy_count = (_sc_conn.execute(
+        "SELECT COUNT(*) FROM trades WHERE entry_date=date('now') "
+        "AND status IN ('OPEN','WIN','LOSS') AND setup_type='SYMPATHY'"
+    ).fetchone() or [0])[0]
+    _sc_conn.close()
+    if daily_sympathy_count:
+        log(f"Restored daily_sympathy_count: {daily_sympathy_count}")
+
+    # Fix D: if restarting after pre-market window (9:20–9:29am), mark it done
+    _now_et = datetime.now(ET)
+    if not (_now_et.hour == 9 and 20 <= _now_et.minute <= 29):
+        pm_scan_done = True   # window already closed or not yet open — won't re-fire pre-mkt scan
+
+    # Restore trade_entry_times, partial_done_trades, and session_high/session_low for open trades
     _conn = _sqlite3.connect(os.path.join(_DIR, 'trades.db'))
     _rows = _conn.execute(
-        "SELECT id, entry_date, entry_time, partial_exited FROM trades WHERE status='OPEN'"
+        "SELECT id, entry_date, entry_time, partial_exited, symbol, side FROM trades WHERE status='OPEN'"
     ).fetchall()
     _conn.close()
-    for _tid, _edate, _etime, _partial in _rows:
+    for _tid, _edate, _etime, _partial, _sym, _side in _rows:
         try:
             _dt_str = f"{_edate} {_etime}" if _etime else f"{_edate} 09:30:00"
             _naive  = datetime.strptime(_dt_str, '%Y-%m-%d %H:%M:%S')
@@ -3782,11 +3800,28 @@ if __name__ == '__main__':
         except Exception:
             pass
         if _partial:
-            partial_done_trades[_tid] = 0.0  # locked amount unknown after restart, use 0
+            partial_done_trades[_tid] = 0.0  # locked amount unknown after restart; key presence blocks re-trigger
+
+        # Fix B: seed session_high/session_low from today's actual OHLC so trailing
+        # stops have the correct reference point on restart (not just current price).
+        try:
+            _bars = yf.Ticker(_sym).history(period='1d', interval='1m')
+            if not _bars.empty:
+                _today_bars = _bars[_bars.index.date == datetime.now(ET).date()]
+                if not _today_bars.empty:
+                    if (_side or 'LONG') == 'LONG':
+                        session_high[_tid] = round(float(_today_bars['High'].max()), 2)
+                    else:
+                        session_low[_tid]  = round(float(_today_bars['Low'].min()), 2)
+        except Exception:
+            pass  # falls back to lazy init on first monitor cycle — acceptable
+
     if trade_entry_times:
         log(f"Restored entry times for {len(trade_entry_times)} open trades")
     if partial_done_trades:
         log(f"Restored partial_done_trades: {len(partial_done_trades)} trades already partially exited")
+    if session_high or session_low:
+        log(f"Seeded session_high/low for {len(session_high) + len(session_low)} open positions")
 
     print("\n🤖 Auto Trader v2 — Consolidated")
     print("=" * 55)
