@@ -1,8 +1,12 @@
 #!/bin/bash
-# Wrapper for launchd — kills stale bridge before starting fresh
-pkill -f "bridge.py" 2>/dev/null
+# Wrapper for launchd — kills stale bridge on THIS environment's port, then starts fresh.
+# Works for both UAT (port 8000) and Prod (port 8001) — BRIDGE_PORT comes from .env.
+TRADING_DIR="$(cd "$(dirname "$0")" && pwd)"
+set -a; source "$TRADING_DIR/.env"; set +a
+BRIDGE_PORT="${BRIDGE_PORT:-8000}"
+
+# Kill only the bridge process holding this environment's port (not the other env's bridge)
+lsof -ti :"$BRIDGE_PORT" | xargs kill -9 2>/dev/null
 sleep 2
-# Clear port 8000 if something else grabbed it
-lsof -ti :8000 | xargs kill -9 2>/dev/null
-sleep 1
-exec /Users/sushil/trading/venv/bin/python -u /Users/sushil/trading/bridge.py
+
+exec "$TRADING_DIR/venv/bin/python" -u "$TRADING_DIR/bridge.py"

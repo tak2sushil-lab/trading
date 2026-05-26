@@ -36,7 +36,25 @@ ATR_TRAIL_MULT    = 1.5
 ATR_FADE_MULT     = 1.0
 MIN_RR            = 2.5
 MIN_VOLUME_RATIO  = 1.3
-MIN_TODAY_DECLINE = 1.5           # stock must be down ≥1.5% today
+MIN_TODAY_DECLINE = 3.0           # matches live auto_trader — stock must be down ≥3% today
+
+# ── DNA Cluster Sets (mirrors auto_trader.py — update when dna_analysis.py re-runs) ──
+HIGH_VOL_SYMBOLS = frozenset([
+    'AI','APLD','APP','BBAI','BEAM','CHPT','DNN','EOSE','INDI','IONQ',
+    'IREN','JOBY','LAC','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS',
+    'RDW','RGTI','RIVN','RKLB','RKT','SOUN','TOST','VERI',
+    'ARRY','CIFR','CLSK','EQT','HUT','RIOT','WULF',
+])
+INSTITUTIONAL_SYMBOLS = frozenset([
+    'AAPL','ABBV','AMAT','AVGO','AXON','BAC','C','CAT','CNQ','COST',
+    'CVX','DE','DVN','GOOGL','GS','HAL','HOOD','INTC','ISRG','ITA',
+    'JPM','KLAC','LMT','LRCX','MA','MSFT','NKE','NOC','OKLO','ON',
+    'OXY','PFE','QCOM','RTX','SBUX','SLB','SMH','UNH','V','VST',
+    'WFC','XBI','XLE','XOM',
+    'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
+    'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
+    'TPR','TT','TXT','YUM',
+])
 
 # ── Build SPY daily regime ────────────────────────────────────────────
 def build_spy_regime(start, end):
@@ -59,7 +77,7 @@ def add_atr(df):
     return df
 
 # ── Grade a day's short setup ─────────────────────────────────────────
-def grade_bear_day(i, df, spy_chg, regime):
+def grade_bear_day(i, df, spy_chg, regime, symbol=None):
     row      = df.iloc[i]
     prev_row = df.iloc[i - 1]
     df_upto  = df.iloc[:i + 1]
@@ -139,6 +157,17 @@ def grade_bear_day(i, df, spy_chg, regime):
     score += 15; reasons.append('WEAK regime')
     score += 5;  reasons.append(f'R:R 1:{MIN_RR}')
 
+    # ── DNA cluster modifier — short side (mirrors auto_trader) ─────
+    vwap_rejection_proxy = row['High'] > vwap_est and row['Close'] < vwap_est
+    if symbol in HIGH_VOL_SYMBOLS:
+        if orb_break_dn and not vwap_rejection_proxy:
+            score -= 15; reasons.append('HIGH_VOL: ORB↓-15 (bounce risk)')
+        if vwap_rejection_proxy:
+            score += 15; reasons.append('HIGH_VOL: VWAP reject+15')
+    elif symbol in INSTITUTIONAL_SYMBOLS:
+        if orb_break_dn:
+            score += 5; reasons.append('INST: ORB↓+5')
+
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
     if grade in ('B', 'C'):
@@ -150,7 +179,7 @@ def grade_bear_day(i, df, spy_chg, regime):
     return grade, score, reasons
 
 # ── Simulate a single short trade ──────────────────────────────────────
-def simulate_bear_trade(row, atr):
+def simulate_bear_trade(row, atr, symbol=None):
     entry  = row['Open']
     sl     = round(entry * 1.05, 2)        # 5% above entry = stop
     one_r  = entry * 0.95                  # 5% below = 1R gain target
@@ -168,8 +197,9 @@ def simulate_bear_trade(row, atr):
             return 'PARTIAL_STOP', round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, sl
         return 'STOP', round(-STOP_PCT, 2), round(-STOP_PCT * CAPITAL_PER_TRADE / 100, 2), sl
 
-    # ATR trail hit — price bounced from LOD by >1.5×ATR (short squeeze)
-    trail_stop = row['Low'] + ATR_TRAIL_MULT * atr
+    # ATR trail hit — price bounced from LOD (1.0× for HIGH_VOL, 1.5× others)
+    _trail_mult = 1.0 if symbol in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
+    trail_stop = row['Low'] + _trail_mult * atr
     if row['Close'] > trail_stop:
         rest_pnl  = (entry - trail_stop) / entry * rem_cap
         total_pnl = round(partial_locked + rest_pnl, 2)
@@ -210,11 +240,11 @@ def backtest_symbol(symbol, spy_regime):
         spy_chg = float(row['spy_chg'])
         regime  = str(row['regime'])
 
-        grade, score, reasons = grade_bear_day(i, merged, spy_chg, regime)
+        grade, score, reasons = grade_bear_day(i, merged, spy_chg, regime, symbol)
         if grade == 'SKIP':
             continue
 
-        result, pnl_pct, pnl_usd, exit_price = simulate_bear_trade(row, float(row['atr']))
+        result, pnl_pct, pnl_usd, exit_price = simulate_bear_trade(row, float(row['atr']), symbol)
 
         trades.append({
             'date':     merged.index[i].strftime('%Y-%m-%d'),

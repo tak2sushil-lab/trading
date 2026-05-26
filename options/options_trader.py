@@ -1930,6 +1930,11 @@ def scalp_scan_loop():
     global _scalp_triggered
 
     n     = datetime.now(ET)
+    if n.weekday() >= 5:
+        return
+    if (n.year, n.month, n.day) in US_HOLIDAYS_2026:
+        return
+
     start = n.replace(hour=SCALP_ENTRY_HOUR_START[0],  minute=SCALP_ENTRY_HOUR_START[1],
                       second=0, microsecond=0)
     cutoff = n.replace(hour=SCALP_ENTRY_HOUR_CUTOFF[0], minute=SCALP_ENTRY_HOUR_CUTOFF[1],

@@ -84,7 +84,7 @@ def analyse_sector_performance():
         AND entry_date >= date('now', '-14 days')
         AND sector IS NOT NULL
         GROUP BY sector
-        HAVING total >= 2
+        HAVING total >= 3
         ORDER BY wins*1.0/total DESC
     ''')
     rows = c.fetchall()
@@ -148,7 +148,7 @@ def calculate_new_weights(rsi_analysis, volume_analysis,
     if volume_analysis:
         # Check if high volume trades win more
         high_vol = [r for r in volume_analysis if '2-3x' in r[0] or '3x+' in r[0]]
-        low_vol  = [r for r in volume_analysis if '1.5x' in r[0]]
+        low_vol  = [r for r in volume_analysis if '<1.5x' in r[0]]
 
         if high_vol and low_vol:
             high_rate = sum(r[2] for r in high_vol) / sum(r[1] for r in high_vol)

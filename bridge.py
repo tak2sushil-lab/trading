@@ -27,6 +27,8 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 IBKR_HOST        = os.getenv("IBKR_HOST", "127.0.0.1")
 IBKR_PORT        = int(os.getenv("IBKR_PORT", "4002"))
+IBKR_ACCOUNT     = os.getenv("IBKR_ACCOUNT", "")   # must be set in prod .env — Individual account only
+BRIDGE_PORT      = int(os.getenv("BRIDGE_PORT", "8000"))
 TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ── Clients ───────────────────────────────────────────────
@@ -58,6 +60,9 @@ async def _connect_ibkr() -> bool:
     for cid in range(10, 20):
         try:
             await ib.connectAsync(host=IBKR_HOST, port=IBKR_PORT, clientId=cid)
+            # Subscribe to account updates so ib.portfolio() cache is populated
+            ib.reqAccountUpdates(True, '')
+            await asyncio.sleep(3)
             return True
         except Exception:
             continue
@@ -150,6 +155,26 @@ async def get_quote(symbol: str):
 # ── Get portfolio positions ───────────────────────────────
 @app.get("/portfolio")
 async def get_portfolio():
+    # reqPositions() is the reliable explicit request; portfolio() cache may be empty
+    # if reqAccountUpdates subscription hasn't pushed data yet (e.g. weekend reconnects)
+    if not ib.positions():
+        ib.reqPositions()
+        await asyncio.sleep(2)
+
+    positions = ib.positions()
+    if positions:
+        return [{
+            "account":       p.account,
+            "symbol":        p.contract.symbol,
+            "qty":           p.position,
+            "avgCost":       clean(p.avgCost),
+            "marketPrice":   None,
+            "marketValue":   None,
+            "unrealizedPnL": None,
+            "realizedPnL":   None,
+        } for p in positions if p.position != 0]
+
+    # Fallback: portfolio cache (populated after reqAccountUpdates settles)
     items = ib.portfolio()
     return [{
         "symbol":        p.contract.symbol,
@@ -167,6 +192,9 @@ async def get_account():
     summary = await ib.accountSummaryAsync()
     result  = {}
     for item in summary:
+        # Filter to configured account only — avoids mixing TFSA and Individual balances
+        if IBKR_ACCOUNT and item.account != IBKR_ACCOUNT:
+            continue
         if item.tag in ['NetLiquidation', 'TotalCashValue',
                         'BuyingPower', 'UnrealizedPnL']:
             try:
@@ -263,6 +291,8 @@ async def place_order(req: OrderRequest):
 
     if req.outside_rth:
         order.outsideRth = True   # IBKR extended-hours flag
+    if IBKR_ACCOUNT:
+        order.account = IBKR_ACCOUNT   # pin to Individual account — never TFSA
 
     trade = ib.placeOrder(contract, order)
     await asyncio.sleep(1)
@@ -712,6 +742,8 @@ async def place_options_order(req: OptionsOrderRequest):
         if req.limit_price is None:
             return {"error": "limit_price required — never use market orders on options"}
         order = LimitOrder(req.action.upper(), req.qty, req.limit_price)
+        if IBKR_ACCOUNT:
+            order.account = IBKR_ACCOUNT
         trade = ib.placeOrder(contract, order)
         await asyncio.sleep(1)
         return {
@@ -768,6 +800,8 @@ async def place_options_order(req: OptionsOrderRequest):
     order = LimitOrder(order_action, req.qty, abs(round(req.net_debit, 2)))
     order.tif = 'DAY'
     order.transmit = True
+    if IBKR_ACCOUNT:
+        order.account = IBKR_ACCOUNT
     # Paper account needs type=1 to trigger fill simulation on BAG orders
     ib.reqMarketDataType(1)
     trade = ib.placeOrder(combo, order)
@@ -965,4 +999,4 @@ async def get_wsh_events(
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=BRIDGE_PORT)

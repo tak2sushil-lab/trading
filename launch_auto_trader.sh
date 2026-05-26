@@ -1,5 +1,7 @@
 #!/bin/bash
-# Wrapper for launchd — kills stale auto_trader before starting fresh
-pkill -f "auto_trader.py" 2>/dev/null
+# Wrapper for launchd — kills stale auto_trader for THIS directory only, then starts fresh.
+# Using full path in pkill ensures UAT and Prod auto_traders don't kill each other.
+TRADING_DIR="$(cd "$(dirname "$0")" && pwd)"
+pkill -f "$TRADING_DIR/auto_trader.py" 2>/dev/null
 sleep 2
-exec /Users/sushil/trading/venv/bin/python -u /Users/sushil/trading/auto_trader.py
+exec "$TRADING_DIR/venv/bin/python" -u "$TRADING_DIR/auto_trader.py"

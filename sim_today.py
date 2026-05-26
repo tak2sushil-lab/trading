@@ -21,6 +21,8 @@ ATR_PERIOD        = 14
 ATR_STOP_MULT     = 2.0
 ATR_TRAIL_MULT    = 1.5
 ATR_FADE_MULT     = 1.0
+PCT_TRAIL_ACTIVATE = 1.5   # % trail activates at +1.5% gain (Gap 1 fix)
+PCT_TRAIL_GAP      = 0.5   # trail 0.5% below session high
 MIN_RR            = 2.5
 MAX_RISK_PCT      = 8.0
 MIN_VOLUME_RATIO  = 1.3
@@ -34,7 +36,7 @@ ORB_ENTRY_CUTOFF  = (11, 30)
 EOD_CLOSE_HOUR    = 15
 EOD_CLOSE_MINUTE  = 45
 CAPITAL_PER_TRADE = 1000   # base; grade_capital() overrides per-trade
-MAX_LOSS_PER_TRADE = 100   # $100 risk per trade (5% of $2000 position)
+MAX_LOSS_PER_TRADE = 150   # $150 risk per trade — 5% of $3,000 position (raised May 19)
 
 # ── Tunable exit parameters (patched by sim_tune.py for A/B testing) ─────────
 # Validated Apr 26 via 3-week A/B: these beat baseline in every week
@@ -44,6 +46,24 @@ BE_TRIGGER_PCT    = 2.5    # set break-even stop once profit reaches this % (was
 PARTIAL_EXIT      = True   # take 50% off at 1R (5% gain), ride rest with trail
 FIRST_BAR_QUALITY = True   # boost capital +15% and enable partial exit only on strong first-bar days
                            # strong = up >1% from open AND volume >1.3x avg in first 30 min
+
+# ── DNA Cluster Sets (mirrors auto_trader.py — update when dna_analysis.py re-runs) ──
+HIGH_VOL_SYMBOLS = frozenset([
+    'AI','APLD','APP','BBAI','BEAM','CHPT','DNN','EOSE','INDI','IONQ',
+    'IREN','JOBY','LAC','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS',
+    'RDW','RGTI','RIVN','RKLB','RKT','SOUN','TOST','VERI',
+    'ARRY','CIFR','CLSK','EQT','HUT','RIOT','WULF',
+])
+INSTITUTIONAL_SYMBOLS = frozenset([
+    'AAPL','ABBV','AMAT','AVGO','AXON','BAC','C','CAT','CNQ','COST',
+    'CVX','DE','DVN','GOOGL','GS','HAL','HOOD','INTC','ISRG','ITA',
+    'JPM','KLAC','LMT','LRCX','MA','MSFT','NKE','NOC','OKLO','ON',
+    'OXY','PFE','QCOM','RTX','SBUX','SLB','SMH','UNH','V','VST',
+    'WFC','XBI','XLE','XOM',
+    'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
+    'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
+    'TPR','TT','TXT','YUM',
+])
 
 # ── Velocity data collection ──────────────────────────────────────────────────
 # Collects per-bar velocity metrics for every A/A+ symbol from 9:40 onwards.
@@ -410,12 +430,20 @@ def simulate(symbol, regime, spy_chg):
             session_high = max(session_high, float(bar['High']))
             pnl_pct      = (price - entry_price) / entry_price * 100
 
-            # ATR trail — activates once 1×ATR in profit
+            # ATR trail — activates once 1×ATR in profit (1.0× HIGH_VOL, 1.5× others)
             if price >= entry_price + atr:
-                new_trail = round(session_high - ATR_TRAIL_MULT * atr, 2)
+                _trail_mult = 1.0 if symbol in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
+                new_trail = round(session_high - _trail_mult * atr, 2)
                 if new_trail > sl:
                     events.append(f"    → {tstr}  ATR trail raised to ${new_trail:.2f}  ({pnl_pct:+.1f}%)")
                     sl = new_trail
+
+            # PCT trail — activates at +1.5%, trails 0.5% below session high (Gap 1 fix)
+            if pnl_pct >= PCT_TRAIL_ACTIVATE:
+                pct_trail_sl = round(session_high * (1 - PCT_TRAIL_GAP / 100), 2)
+                if pct_trail_sl > entry_price and pct_trail_sl > sl:
+                    events.append(f"    → {tstr}  PCT trail raised to ${pct_trail_sl:.2f}  ({pnl_pct:+.1f}%)")
+                    sl = pct_trail_sl
 
             # Break-even stop — trigger at BE_TRIGGER_PCT; offset scales with trigger
             if pnl_pct >= BE_TRIGGER_PCT and sl < entry_price:
@@ -666,8 +694,10 @@ def simulate(symbol, regime, spy_chg):
             score += 10; patterns.append('Uptrend')
         if 45 <= rsi_d <= 65:
             score += 20; patterns.append(f'Daily RSI {rsi_d:.0f} ideal')
-        elif 65 < rsi_d <= 80:
-            score += 10; patterns.append(f'Daily RSI {rsi_d:.0f} momentum')
+        elif 65 < rsi_d <= 75:
+            patterns.append(f'Daily RSI {rsi_d:.0f} elevated (neutral)')  # 42.5% WR — no bonus
+        elif 75 < rsi_d <= 80:
+            score += 5;  patterns.append(f'Daily RSI {rsi_d:.0f} strong momentum')
         else:
             score += 5;  patterns.append(f'Daily RSI {rsi_d:.0f}')
         if is_tight:
@@ -758,6 +788,16 @@ def simulate(symbol, regime, spy_chg):
                 score += 10; patterns.append('Holding above today open ✓')
             elif price < today_open_at_bar * 0.98:
                 score -= 10; patterns.append(f'Below today open ${today_open_at_bar:.2f} (-10)')
+
+        # ── DNA cluster modifier (Layer 1 — mirrors auto_trader) ─────────────
+        if symbol in HIGH_VOL_SYMBOLS:
+            if orb_break and not vwap_reclaim:
+                score -= 15; patterns.append('HIGH_VOL: ORB-15 (wait VWAP reclaim)')
+            if vwap_reclaim:
+                score += 15; patterns.append('HIGH_VOL: VWAP+15 ✓')
+        elif symbol in INSTITUTIONAL_SYMBOLS:
+            if orb_break:
+                score += 5; patterns.append('INST: ORB+5')
 
         grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
@@ -959,9 +999,10 @@ def simulate_bear(symbol, regime, spy_chg):
             session_low = min(session_low, float(bar['Low']))
             pnl_pct     = (entry_price - price) / entry_price * 100   # positive when price falls
 
-            # ATR trail — activates once 1×ATR in profit (price dropped below entry - atr)
+            # ATR trail — activates once 1×ATR in profit (1.0× HIGH_VOL, 1.5× others)
             if price <= entry_price - atr:
-                new_trail = round(session_low + ATR_TRAIL_MULT * atr, 2)
+                _trail_mult = 1.0 if symbol in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
+                new_trail = round(session_low + _trail_mult * atr, 2)
                 if new_trail < sl:   # SL moves DOWN for shorts
                     events.append(f"    → {tstr}  ATR trail lowered to ${new_trail:.2f}  ({pnl_pct:+.1f}%)")
                     sl = new_trail
@@ -1187,6 +1228,16 @@ def simulate_bear(symbol, regime, spy_chg):
             score += 10; patterns.append(f'R:R 1:{rr:.1f} excellent')
         elif rr >= MIN_RR:
             score += 5;  patterns.append(f'R:R 1:{rr:.1f}')
+
+        # ── DNA cluster modifier — short side (mirrors auto_trader) ──────────
+        if symbol in HIGH_VOL_SYMBOLS:
+            if orb_break_down and not vwap_rejection:
+                score -= 15; patterns.append('HIGH_VOL: ORB↓-15 (bounce risk)')
+            if vwap_rejection:
+                score += 15; patterns.append('HIGH_VOL: VWAP reject+15 ✓')
+        elif symbol in INSTITUTIONAL_SYMBOLS:
+            if orb_break_down:
+                score += 5; patterns.append('INST: ORB↓+5')
 
         grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 

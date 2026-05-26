@@ -1,4 +1,4 @@
-# sim_week.py — simulate last trading week (Apr 20-24, 2026) across key momentum stocks
+# sim_week.py — simulate the most recent completed trading week across key momentum stocks
 # Command: venv/bin/python sim_week.py
 #          venv/bin/python sim_week.py NVDA PLTR MSFT AAPL
 
@@ -8,23 +8,22 @@ import re
 import contextlib
 from datetime import date
 
+import yfinance as yf
 import sim_today
 
-# ── Week to simulate ─────────────────────────────────────────────────────────
+# ── Week to simulate (last 5 trading days with market data) ──────────────────
 
-WEEK_DAYS = [
-    date(2026, 4, 20),   # Monday
-    date(2026, 4, 21),   # Tuesday
-    date(2026, 4, 22),   # Wednesday
-    date(2026, 4, 23),   # Thursday
-    date(2026, 4, 24),   # Friday
-]
+def _last_5_trading_days():
+    spy = yf.Ticker('SPY').history(period='30d', interval='1d')
+    return sorted(d.date() for d in spy.index)[-5:]
+
+WEEK_DAYS = _last_5_trading_days()
 
 DEFAULT_SYMBOLS = [
     'NVDA', 'PLTR', 'MSFT', 'AAPL', 'TSLA',
-    'POET', 'EOSE', 'IONQ', 'HOOD', 'AMD',
+    'IONQ', 'HOOD', 'AMD',
     'AVGO', 'META', 'AMZN', 'SOUN', 'RKLB',
-    'OKLO', 'SMCI', 'CRM',  'CRWV', 'BBAI',
+    'OKLO', 'SMCI', 'CRM',
 ]
 
 SYMBOLS = sys.argv[1:] if len(sys.argv) > 1 else DEFAULT_SYMBOLS
@@ -101,8 +100,9 @@ def run_week():
     all_trades  = []
     day_summary = []
 
+    week_label = f"{WEEK_DAYS[0].strftime('%b %d')}–{WEEK_DAYS[-1].strftime('%b %d, %Y')}"
     print(f"\n{'='*70}")
-    print(f"  WEEKLY SIMULATION  —  Apr 20–24, 2026")
+    print(f"  WEEKLY SIMULATION  —  {week_label}")
     print(f"  Universe ({len(SYMBOLS)}): {', '.join(SYMBOLS)}")
     print(f"{'='*70}")
 

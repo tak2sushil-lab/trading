@@ -36,9 +36,27 @@ ATR_TRAIL_MULT     = 1.5         # trail = HOD - 1.5×ATR
 ATR_FADE_MULT      = 1.0         # fade exit = HOD - 1.0×ATR (when in profit)
 MIN_RR             = 2.5         # 5% stop × 2.5 = 12.5% display target
 MIN_VOLUME_RATIO   = 1.3
-MIN_TODAY_GAIN     = 1.5         # stock must close ≥1.5% above prev close
+MIN_TODAY_GAIN     = 3.0         # matches live auto_trader — stock must close ≥3% above prev close
 SKIP_WEAK_DAYS     = True        # no trades on WEAK SPY days
 FIRST_BAR_QUALITY  = True        # strong first-bar day: +15% capital + conditional partial exit
+
+# ── DNA Cluster Sets (mirrors auto_trader.py — update when dna_analysis.py re-runs) ──
+HIGH_VOL_SYMBOLS = frozenset([
+    'AI','APLD','APP','BBAI','BEAM','CHPT','DNN','EOSE','INDI','IONQ',
+    'IREN','JOBY','LAC','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS',
+    'RDW','RGTI','RIVN','RKLB','RKT','SOUN','TOST','VERI',
+    'ARRY','CIFR','CLSK','EQT','HUT','RIOT','WULF',
+])
+INSTITUTIONAL_SYMBOLS = frozenset([
+    'AAPL','ABBV','AMAT','AVGO','AXON','BAC','C','CAT','CNQ','COST',
+    'CVX','DE','DVN','GOOGL','GS','HAL','HOOD','INTC','ISRG','ITA',
+    'JPM','KLAC','LMT','LRCX','MA','MSFT','NKE','NOC','OKLO','ON',
+    'OXY','PFE','QCOM','RTX','SBUX','SLB','SMH','UNH','V','VST',
+    'WFC','XBI','XLE','XOM',
+    'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
+    'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
+    'TPR','TT','TXT','YUM',
+])
 
 # ── Build SPY daily regime ───────────────────────────────────────────────
 def build_spy_regime(start, end):
@@ -61,7 +79,7 @@ def add_atr(df):
     return df
 
 # ── Grade a day's setup ──────────────────────────────────────────────────
-def grade_day(i, df, spy_chg, regime):
+def grade_day(i, df, spy_chg, regime, symbol=None):
     row      = df.iloc[i]
     prev_row = df.iloc[i - 1]
     df_upto  = df.iloc[:i + 1]
@@ -142,8 +160,9 @@ def grade_day(i, df, spy_chg, regime):
     g = d.clip(lower=0).rolling(14).mean().iloc[-1]
     l = (-d.clip(upper=0)).rolling(14).mean().iloc[-1]
     rsi = round(float(100 - (100 / (1 + g / l))), 1) if l and l > 0 else 50
-    if 45 <= rsi <= 65:   score += 20; reasons.append(f'RSI {rsi:.0f}')
-    elif 65 < rsi <= 80:  score += 10; reasons.append(f'RSI {rsi:.0f}↑')
+    if 45 <= rsi <= 65:    score += 20; reasons.append(f'RSI {rsi:.0f}')
+    elif 65 < rsi <= 75:  reasons.append(f'RSI {rsi:.0f} elevated (neutral)')  # 42.5% WR
+    elif 75 < rsi <= 80:  score += 5;  reasons.append(f'RSI {rsi:.0f} strong momentum')
     else:                 score += 5
 
     if today_gain >= 5.0: score += 30; reasons.append(f'+{today_gain:.1f}%')
@@ -154,6 +173,16 @@ def grade_day(i, df, spy_chg, regime):
     elif regime == 'NORMAL': score += 5
 
     score += 5  # R:R always = MIN_RR (by construction)
+
+    # ── DNA cluster modifier (mirrors auto_trader L1 entry) ─────────
+    if symbol in HIGH_VOL_SYMBOLS:
+        if orb_proxy and not vwap_reclaim:
+            score -= 15; reasons.append('HIGH_VOL: ORB-15 (naked, gap fill risk)')
+        if vwap_reclaim:
+            score += 15; reasons.append('HIGH_VOL: VWAP+15 (pullback confirmed)')
+    elif symbol in INSTITUTIONAL_SYMBOLS:
+        if orb_proxy:
+            score += 5; reasons.append('INST: ORB+5 (gap sticks 75%)')
 
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
@@ -175,7 +204,7 @@ def grade_day(i, df, spy_chg, regime):
     return grade, score, reasons, first_bar_strong
 
 # ── Simulate a single trade from entry at Open ───────────────────────────
-def simulate_trade(row, atr, first_bar_strong=False, _always_partial=False):
+def simulate_trade(row, atr, first_bar_strong=False, _always_partial=False, symbol=None):
     capital    = CAPITAL_PER_TRADE * 1.15 if (FIRST_BAR_QUALITY and first_bar_strong) else CAPITAL_PER_TRADE
     do_partial = _always_partial or (not FIRST_BAR_QUALITY) or first_bar_strong
 
@@ -197,7 +226,8 @@ def simulate_trade(row, atr, first_bar_strong=False, _always_partial=False):
         return 'STOP', round(-STOP_PCT, 2), round(-STOP_PCT * capital / 100, 2), sl
 
     # ATR trail hit — price faded from HOD by > 1.5×ATR
-    trail_stop = row['High'] - ATR_TRAIL_MULT * atr
+    _trail_mult = 1.0 if symbol in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
+    trail_stop = row['High'] - _trail_mult * atr
     if row['Close'] < trail_stop:
         rest_pnl  = (trail_stop - entry) / entry * rem_cap
         total_pnl = round(partial_locked + rest_pnl, 2)
@@ -238,12 +268,12 @@ def backtest_symbol(symbol, spy_regime):
         spy_chg = float(row['spy_chg'])
         regime  = str(row['regime'])
 
-        grade, score, reasons, first_bar_strong = grade_day(i, merged, spy_chg, regime)
+        grade, score, reasons, first_bar_strong = grade_day(i, merged, spy_chg, regime, symbol)
         if grade == 'SKIP':
             continue
 
-        result, pnl_pct, pnl_usd, exit_price = simulate_trade(row, float(row['atr']), first_bar_strong)
-        _, _, pnl_usd_base, _                 = simulate_trade(row, float(row['atr']), False, _always_partial=True)
+        result, pnl_pct, pnl_usd, exit_price = simulate_trade(row, float(row['atr']), first_bar_strong, symbol=symbol)
+        _, _, pnl_usd_base, _                 = simulate_trade(row, float(row['atr']), False, _always_partial=True, symbol=symbol)
 
         trades.append({
             'date':             merged.index[i].strftime('%Y-%m-%d'),

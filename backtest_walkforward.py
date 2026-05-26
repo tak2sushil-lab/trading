@@ -34,8 +34,26 @@ ATR_TRAIL_MULT    = 1.5
 ATR_FADE_MULT     = 1.0
 MIN_RR            = 2.5
 MIN_VOLUME_RATIO  = 1.3
-MIN_TODAY_GAIN    = 1.5
+MIN_TODAY_GAIN    = 3.0         # matches live auto_trader
 SKIP_WEAK_DAYS    = True
+
+# ── DNA Cluster Sets (mirrors auto_trader.py — update when dna_analysis.py re-runs) ──
+HIGH_VOL_SYMBOLS = frozenset([
+    'AI','APLD','APP','BBAI','BEAM','CHPT','DNN','EOSE','INDI','IONQ',
+    'IREN','JOBY','LAC','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS',
+    'RDW','RGTI','RIVN','RKLB','RKT','SOUN','TOST','VERI',
+    'ARRY','CIFR','CLSK','EQT','HUT','RIOT','WULF',
+])
+INSTITUTIONAL_SYMBOLS = frozenset([
+    'AAPL','ABBV','AMAT','AVGO','AXON','BAC','C','CAT','CNQ','COST',
+    'CVX','DE','DVN','GOOGL','GS','HAL','HOOD','INTC','ISRG','ITA',
+    'JPM','KLAC','LMT','LRCX','MA','MSFT','NKE','NOC','OKLO','ON',
+    'OXY','PFE','QCOM','RTX','SBUX','SLB','SMH','UNH','V','VST',
+    'WFC','XBI','XLE','XOM',
+    'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
+    'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
+    'TPR','TT','TXT','YUM',
+])
 
 TODAY = date.today().isoformat()
 
@@ -74,7 +92,7 @@ def add_atr(df):
     return df
 
 # ── Grade a day's setup ───────────────────────────────────────────────────────
-def grade_day(i, df, spy_chg, regime):
+def grade_day(i, df, spy_chg, regime, symbol=None):
     row      = df.iloc[i]
     prev_row = df.iloc[i - 1]
     df_upto  = df.iloc[:i + 1]
@@ -143,9 +161,10 @@ def grade_day(i, df, spy_chg, regime):
     g = d.clip(lower=0).rolling(14).mean().iloc[-1]
     l = (-d.clip(upper=0)).rolling(14).mean().iloc[-1]
     rsi = round(float(100 - (100 / (1 + g / l))), 1) if l and l > 0 else 50
-    if 45 <= rsi <= 65:  score += 20; reasons.append(f'RSI {rsi:.0f}')
-    elif 65 < rsi <= 80: score += 10; reasons.append(f'RSI {rsi:.0f}↑')
-    else:                score += 5
+    if 45 <= rsi <= 65:    score += 20; reasons.append(f'RSI {rsi:.0f}')
+    elif 65 < rsi <= 75:  reasons.append(f'RSI {rsi:.0f} elevated (neutral)')  # 42.5% WR
+    elif 75 < rsi <= 80:  score += 5;  reasons.append(f'RSI {rsi:.0f} strong momentum')
+    else:                 score += 5
 
     if today_gain >= 5.0:   score += 30; reasons.append(f'+{today_gain:.1f}%')
     elif today_gain >= 3.0: score += 20; reasons.append(f'+{today_gain:.1f}%')
@@ -155,6 +174,16 @@ def grade_day(i, df, spy_chg, regime):
     elif regime == 'NORMAL': score += 5
 
     score += 5  # R:R always = MIN_RR by construction
+
+    # ── DNA cluster modifier (mirrors auto_trader L1 entry) ─────────
+    if symbol in HIGH_VOL_SYMBOLS:
+        if orb_proxy and not vwap_reclaim:
+            score -= 15; reasons.append('HIGH_VOL: ORB-15')
+        if vwap_reclaim:
+            score += 15; reasons.append('HIGH_VOL: VWAP+15')
+    elif symbol in INSTITUTIONAL_SYMBOLS:
+        if orb_proxy:
+            score += 5; reasons.append('INST: ORB+5')
 
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
 
@@ -166,7 +195,7 @@ def grade_day(i, df, spy_chg, regime):
     return grade, score, reasons
 
 # ── Simulate a single trade from entry at Open ────────────────────────────────
-def simulate_trade(row, atr):
+def simulate_trade(row, atr, symbol=None):
     entry  = row['Open']
     sl     = round(entry * (1 - STOP_PCT / 100), 2)
     one_r  = entry * (1 + STOP_PCT / 100)
@@ -183,7 +212,8 @@ def simulate_trade(row, atr):
             return 'PARTIAL_STOP', round(total_pnl / CAPITAL_PER_TRADE * 100, 2), total_pnl, sl
         return 'STOP', round(-STOP_PCT, 2), round(-STOP_PCT * CAPITAL_PER_TRADE / 100, 2), sl
 
-    trail_stop = row['High'] - ATR_TRAIL_MULT * atr
+    _trail_mult = 1.0 if symbol in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
+    trail_stop = row['High'] - _trail_mult * atr
     if row['Close'] < trail_stop:
         rest_pnl  = (trail_stop - entry) / entry * rem_cap
         total_pnl = round(partial_locked + rest_pnl, 2)
@@ -228,11 +258,11 @@ def backtest_symbol_window(symbol, df_full, spy_regime_full, period_start, perio
         spy_chg = float(row['spy_chg'])
         regime  = str(row['regime'])
 
-        grade, score, reasons = grade_day(i, merged, spy_chg, regime)
+        grade, score, reasons = grade_day(i, merged, spy_chg, regime, symbol)
         if grade == 'SKIP':
             continue
 
-        result, pnl_pct, pnl_usd, exit_price = simulate_trade(row, float(row['atr']))
+        result, pnl_pct, pnl_usd, exit_price = simulate_trade(row, float(row['atr']), symbol)
 
         trades.append({
             'date':    row_date.strftime('%Y-%m-%d'),

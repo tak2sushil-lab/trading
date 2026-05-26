@@ -11,32 +11,37 @@ requests_cache.install_cache('sim_tune_cache', expire_after=86400)
 
 import sys, io, re, contextlib
 from datetime import date
+from collections import defaultdict
+import yfinance as yf
 import sim_today
 
 # ── Universe ──────────────────────────────────────────────────────────────────
 
 DEFAULT_SYMBOLS = [
     'NVDA', 'PLTR', 'MSFT', 'AAPL', 'TSLA',
-    'POET', 'EOSE', 'IONQ', 'HOOD', 'AMD',
+    'IONQ', 'HOOD', 'AMD',
     'AVGO', 'META', 'AMZN', 'SOUN', 'RKLB',
-    'OKLO', 'SMCI', 'CRM',  'CRWV', 'BBAI',
+    'OKLO', 'SMCI', 'CRM',
 ]
 SYMBOLS = sys.argv[1:] if len(sys.argv) > 1 else DEFAULT_SYMBOLS
 
-# ── 3 weeks to test ───────────────────────────────────────────────────────────
+# ── Last N calendar weeks of trading days ─────────────────────────────────────
 
-WEEKS = [
-    {
-        'label': 'Week 1  Apr 14–18  (tariff bounce)',
-        'days':  [date(2026, 4, 14), date(2026, 4, 15), date(2026, 4, 16),
-                  date(2026, 4, 17), date(2026, 4, 18)],
-    },
-    {
-        'label': 'Week 2  Apr 20–24  (tariff chaos)',
-        'days':  [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22),
-                  date(2026, 4, 23), date(2026, 4, 24)],
-    },
-]
+def _build_dynamic_weeks(n_weeks=2):
+    spy = yf.Ticker('SPY').history(period='60d', interval='1d')
+    days = sorted(d.date() for d in spy.index)
+    by_week = defaultdict(list)
+    for d in days:
+        by_week[(d.isocalendar()[0], d.isocalendar()[1])].append(d)
+    sorted_keys = sorted(by_week.keys())[-n_weeks:]
+    result = []
+    for i, wk in enumerate(sorted_keys):
+        chunk = by_week[wk]
+        label = f"Week {i+1}  {chunk[0].strftime('%b %d')}–{chunk[-1].strftime('%b %d')}"
+        result.append({'label': label, 'days': chunk})
+    return result
+
+WEEKS = _build_dynamic_weeks()
 
 # ── Configs to compare ────────────────────────────────────────────────────────
 # _MAX_DAILY: not a sim_today constant — handled post-processing (top-N per day)
