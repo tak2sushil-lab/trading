@@ -1970,8 +1970,8 @@ def scalp_scan_loop():
     if len(open_scalps) >= MAX_SCALP_POSITIONS:
         return
 
-    # Expire 4-hour cooldown entries
-    now   = datetime.now()
+    # Expire 4-hour cooldown entries (use ET to stay consistent with n above)
+    now   = n
     stale = [sym for sym, ts in list(_scalp_triggered.items())
              if (now - ts).total_seconds() > 4 * 3600]
     for sym in stale:
@@ -2627,10 +2627,34 @@ def _process_pending_suggestions():
     if OPT_CHAT in _pending:
         return
 
+    # Reset any PROCESSING rows stuck for > 5 min (crash recovery)
+    try:
+        import sqlite3 as _sq
+        _sdb = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trading.db'))
+        _sc  = _sq.connect(_sdb)
+        _sc.execute(
+            "UPDATE opt_suggestions SET status='PENDING' "
+            "WHERE status='PROCESSING' AND "
+            "datetime(suggested_at) < datetime('now', '-5 minutes')"
+        )
+        _sc.commit()
+        _sc.close()
+    except Exception:
+        pass
+
     # ── Step 1: news_engine suggestion queue ─────────────────────────────────
     suggestions = get_pending_suggestions()
     if suggestions:
-        _handle_queued_suggestion(suggestions[0], OPT_CHAT)
+        sug = suggestions[0]
+        try:
+            _handle_queued_suggestion(sug, OPT_CHAT)
+        except Exception as _e:
+            # Unexpected crash — reset to PENDING so it retries next cycle
+            print(f"[options_trader] suggestion handler crash ({sug['symbol']}): {_e}")
+            try:
+                update_suggestion_status(sug['id'], 'PENDING')
+            except Exception:
+                pass
         return
 
     # ── Step 2: proactive recycling ───────────────────────────────────────────
@@ -2669,8 +2693,15 @@ def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
 
     calc = run_strategy_comparison(sym, 1)
     if 'error' in calc:
-        send_telegram(f"❌ {sym} calculator error: {calc['error']}", OPT_CHAT)
-        update_suggestion_status(sug_id, 'ERROR')
+        err = calc['error']
+        # Bridge/data outages are transient — reset to PENDING so it retries next cycle
+        is_transient = any(w in str(err).lower() for w in ('connection', 'timeout', 'bridge', 'empty'))
+        if is_transient:
+            send_telegram(f"⚠️ {sym} temporary data error — will retry: {err}", OPT_CHAT)
+            update_suggestion_status(sug_id, 'PENDING')
+        else:
+            send_telegram(f"❌ {sym} calculator error: {err}", OPT_CHAT)
+            update_suggestion_status(sug_id, 'ERROR')
         return
 
     calc        = _auto_qty_calc(calc)

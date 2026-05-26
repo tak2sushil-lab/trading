@@ -945,10 +945,6 @@ def get_intraday_signals(symbol, spy_chg=0):
         today_lod        = None
         try:
             today_bars = _today  # already filtered to today's ET bars
-            orb_bars   = today_bars[
-                (today_bars.index.hour == 9) & (today_bars.index.minute >= 30) |
-                (today_bars.index.hour == 9) & (today_bars.index.minute <= 44)
-            ]
             # Use first 15-min window: 9:30–9:44
             orb_window = today_bars[
                 (today_bars.index.hour == 9) &

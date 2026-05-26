@@ -794,6 +794,9 @@ def run_eod():
 
 def main():
     print("[watchman] started")
+    # Note: _session_highs is empty on startup — seeds from current price on first
+    # check per trade. Trailing stops are seeded from current price (not true intraday
+    # high) after a mid-day restart. Hard stop (-50%) still protects against large losses.
     eod_sent_today: date | None = None
 
     while True:
