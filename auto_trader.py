@@ -110,6 +110,7 @@ TRADED_TODAY_FILE = os.path.join(_DIR, 'traded_today.json')
 # ── In-memory state ───────────────────────────────────────
 traded_today      = set()
 open_positions    = {}       # sym → trade_id
+_gateway_unstable_until = None   # datetime: no new entries until this time (post-reconnect freeze)
 price_history     = {}       # trade_id → [prices]
 session_high      = {}       # trade_id → highest price seen (LONG trades)
 session_low       = {}       # trade_id → lowest price seen (SHORT trades)
@@ -2664,10 +2665,43 @@ def _scan_premarket_catalyst(open_trades):
 # ─────────────────────────────────────────────────────────
 def run_scan():
     global daily_bull_count, daily_bear_count, traded_today, regime_history, spy_open_price
-    global sympathy_scan_done
+    global sympathy_scan_done, _gateway_unstable_until
 
-    # Reconcile DB with IBKR first
-    reconcile_with_ibkr()
+    # ── Gateway stability gate ─────────────────────────────────────────────
+    # Layer 1: is the bridge connected right now?
+    _entries_allowed = True
+    try:
+        bst = requests.get(f"{BRIDGE}/", timeout=5).json()
+        if not bst.get('connected', False):
+            log("⚠️ Gateway not connected — reconcile skipped, entries blocked this cycle")
+            _gateway_unstable_until = datetime.now(ET) + timedelta(minutes=10)
+            send_telegram("⚠️ IBKR gateway disconnected — entries paused for 10 min")
+            _entries_allowed = False
+    except Exception as _be:
+        log(f"⚠️ Bridge unreachable ({_be}) — entries blocked this cycle")
+        _entries_allowed = False
+
+    # Layer 2: post-reconnect cooldown (10 min freeze after any disconnect event)
+    if _entries_allowed and _gateway_unstable_until:
+        if datetime.now(ET) < _gateway_unstable_until:
+            mins_left = int((_gateway_unstable_until - datetime.now(ET)).total_seconds() / 60) + 1
+            log(f"⚠️ Post-reconnect freeze: {mins_left} min remaining — monitoring only")
+            _entries_allowed = False
+        else:
+            _gateway_unstable_until = None   # freeze expired
+
+    # Reconcile DB with IBKR (only if gateway is up)
+    if _entries_allowed:
+        reconcile_with_ibkr()
+
+        # Layer 3: position parity — if counts still differ after reconcile, don't enter
+        ibkr_pos  = get_ibkr_positions()
+        ibkr_count = len([p for p in ibkr_pos.values() if int(p.get('qty', 0)) != 0])
+        db_count   = len(get_open_trades())
+        if ibkr_count != db_count:
+            log(f"⚠️ Position mismatch after reconcile: IBKR={ibkr_count} DB={db_count} — entries blocked this cycle")
+            send_telegram(f"⚠️ Position mismatch IBKR={ibkr_count} DB={db_count} — entries paused, check positions")
+            _entries_allowed = False
 
     # Update sector ETF strengths once per scan cycle
     update_sector_strength()
@@ -2747,10 +2781,14 @@ def run_scan():
 
     # Pre-market window: fire once per day at 9:20–9:29am for earnings gap entries
     if is_premarket_window() and not pm_scan_done:
-        _scan_premarket_catalyst(open_trades)
+        if _entries_allowed:
+            _scan_premarket_catalyst(open_trades)
         return  # no monitoring needed — no open positions pre-market
 
-    if not is_entry_window():
+    if not _entries_allowed:
+        log("Gateway unstable / position mismatch — monitoring only, no new entries")
+        exits = monitor_open_trades(regime, confirmed_scans)
+    elif not is_entry_window():
         log("Outside entry window — monitoring only")
         exits = monitor_open_trades(regime, confirmed_scans)
     elif is_trading_blocked()[0]:
