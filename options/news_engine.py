@@ -15,7 +15,7 @@ import sys
 import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import yfinance as yf
 import anthropic
@@ -36,6 +36,13 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 # ── Credentials + config ──────────────────────────────────
 ET_TZ             = ZoneInfo('America/New_York')
+
+US_HOLIDAYS_2026 = {
+    date(2026,  1,  1), date(2026,  1, 19), date(2026,  2, 16),
+    date(2026,  4,  3), date(2026,  5, 25), date(2026,  6, 19),
+    date(2026,  7,  3), date(2026,  9,  7), date(2026, 11, 26),
+    date(2026, 12, 25),
+}
 BRIDGE_URL        = os.getenv('BRIDGE_URL', 'http://127.0.0.1:8000')
 TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID  = os.getenv('TELEGRAM_CHAT_ID')
@@ -238,25 +245,44 @@ else:
     _groq_client = None
     ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
 
+_groq_fallback_active = False  # flips True when 70B daily cap is hit
+
 def _llm_call(prompt: str, max_tokens: int) -> str:
-    """Single LLM call — routes to Groq (free) or Claude fallback."""
+    """Single LLM call — Groq 70B → 8B fallback on daily cap → Claude fallback."""
+    global _groq_fallback_active
     if _groq_client:
-        resp = _groq_client.chat.completions.create(
-            model    = 'llama-3.3-70b-versatile',
-            messages = [{'role': 'user', 'content': prompt}],
-            max_tokens      = max_tokens,
-            temperature     = 0,
-            response_format = {'type': 'json_object'},
+        models = (
+            ['llama-3.1-8b-instant'] if _groq_fallback_active
+            else ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
         )
-        return resp.choices[0].message.content.strip()
-    elif ai:
+        for model in models:
+            try:
+                resp = _groq_client.chat.completions.create(
+                    model    = model,
+                    messages = [{'role': 'user', 'content': prompt}],
+                    max_tokens      = max_tokens,
+                    temperature     = 0,
+                    response_format = {'type': 'json_object'},
+                )
+                if model != 'llama-3.3-70b-versatile' and not _groq_fallback_active:
+                    pass  # already tried 70B, this is the fallback
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                err = str(e)
+                if '429' in err and 'tokens per day' in err:
+                    if model == 'llama-3.3-70b-versatile':
+                        print(f'[LLM] 70B daily cap hit — switching to 8B for rest of day')
+                        _groq_fallback_active = True
+                        continue  # retry with next model
+                raise  # non-rate-limit error — propagate
+    if ai:
         resp = ai.messages.create(
             model    = 'claude-haiku-4-5-20251001',
             max_tokens = max_tokens,
             messages = [{'role': 'user', 'content': prompt}],
         )
         return resp.content[0].text.strip()
-    raise RuntimeError('No LLM configured — set GROK_API_KEY or ANTHROPIC_KEY')
+    raise RuntimeError('No LLM configured — set GROQ_API_KEY or ANTHROPIC_KEY')
 
 
 # ── Telegram ──────────────────────────────────────────────
@@ -286,6 +312,8 @@ def is_trading_hours() -> bool:
     """
     now = datetime.now(ET_TZ)
     if now.weekday() >= 5:
+        return False
+    if now.date() in US_HOLIDAYS_2026:
         return False
     open_  = now.replace(hour=4,  minute=0, second=0, microsecond=0)
     close_ = now.replace(hour=20, minute=0, second=0, microsecond=0)
@@ -986,6 +1014,11 @@ def run_scan():
 
 # ── Entry point ───────────────────────────────────────────
 def main():
+    if os.getenv('TRADING_MODE', 'paper') == 'live':
+        if os.getenv('PROD_OPTIONS_ENABLED', 'false').lower() != 'true':
+            print("PROD_OPTIONS_ENABLED is not 'true' in .env — exiting.")
+            sys.exit(0)
+
     sources = 'yfinance + Finnhub + IBKR'
     if POLYGON_KEY:
         sources += ' + Polygon'

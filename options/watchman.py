@@ -65,6 +65,13 @@ OPT_TG_CHAT_ID   = os.getenv('OPTIONS_TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
 TG_API           = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 
 ET = ZoneInfo('America/New_York')
+
+US_HOLIDAYS_2026 = {
+    date(2026,  1,  1), date(2026,  1, 19), date(2026,  2, 16),
+    date(2026,  4,  3), date(2026,  5, 25), date(2026,  6, 19),
+    date(2026,  7,  3), date(2026,  9,  7), date(2026, 11, 26),
+    date(2026, 12, 25),
+}
 SCAN_INTERVAL_MIN = 15
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
@@ -95,6 +102,8 @@ def is_market_hours() -> bool:
     n = now_et()
     if n.weekday() >= 5:
         return False
+    if n.date() in US_HOLIDAYS_2026:
+        return False
     open_  = n.replace(hour=9, minute=30, second=0, microsecond=0)
     close_ = n.replace(hour=20, minute=0,  second=0, microsecond=0)
     return open_ <= n <= close_
@@ -104,6 +113,8 @@ def is_eod_window() -> bool:
     """True 8:00–8:20pm ET — IBKR options stop trading at 8pm."""
     n = now_et()
     if n.weekday() >= 5:
+        return False
+    if n.date() in US_HOLIDAYS_2026:
         return False
     eod_start = n.replace(hour=20, minute=0, second=0, microsecond=0)
     eod_end   = n.replace(hour=20, minute=20, second=0, microsecond=0)
@@ -153,6 +164,22 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             'net_debit':    round(-(spread_mid - 0.05), 2),
         }
         exit_dollar = round(spread_mid * 100 * qty, 2)
+    elif strat == 'OPT_SCALP':
+        q = get_quote(sym, trade['expiry'], trade['long_strike'], trade['right'])
+        if not q:
+            return False
+        mid = round((q.get('bid', 0) + q.get('ask', 0)) / 2, 2)
+        payload = {
+            'symbol':      sym,
+            'expiry':      trade['expiry'],
+            'strike':      trade['long_strike'],
+            'right':       trade['right'],
+            'qty':         qty,
+            'action':      'SELL',
+            'order_type':  'LIMIT',
+            'limit_price': round(mid - 0.05, 2),
+        }
+        exit_dollar = round(mid * 100 * qty, 2)
     else:  # LEAP
         q = get_quote(sym, trade['expiry'], trade['strike'], trade['right'])
         if not q:
@@ -188,16 +215,18 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             'SELECT id, mc_ev_dollar, mc_win_rate FROM opt_calc_log WHERE trade_id=? LIMIT 1',
             (tid,))
         _row = _cur.fetchone()
-        _cur.execute('SELECT entry_date FROM options_trades WHERE id=?', (tid,))
+        _cur.execute('SELECT entry_date, premium_paid FROM options_trades WHERE id=?', (tid,))
         _erow = _cur.fetchone()
         _conn.close()
-        if _row:
-            _days = ((date.today() - date.fromisoformat(_erow[0])).days
-                     if _erow and _erow[0] else 0)
+        if _row and _erow:
+            _days    = ((date.today() - date.fromisoformat(_erow[0])).days
+                        if _erow[0] else 0)
+            _premium = _erow[1] or 0
+            _pnl     = round(exit_dollar - _premium, 2)   # actual P&L, not exit value
             log_trade_outcome(
                 trade_id=tid, calc_log_id=_row[0],
                 predicted_ev=_row[1], predicted_wr=_row[2],
-                actual_pnl=round(exit_dollar, 2),
+                actual_pnl=_pnl,
                 exit_reason=exit_reason,
                 days_held=_days,
             )
@@ -205,7 +234,58 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         pass
 
     print(f"[watchman] auto-closed {sym} trade #{tid} — exit ${exit_dollar:.0f} ({return_pct:+.1f}%)")
+    if strat == 'OPT_SCALP':
+        _check_scalp_milestone()
     return True
+
+
+def _check_scalp_milestone():
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        c    = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM options_trades WHERE strategy='OPT_SCALP' AND status!='OPEN'")
+        cnt = c.fetchone()[0]
+        conn.close()
+        if cnt > 0 and cnt % 10 == 0:
+            _send_scalp_report(cnt)
+    except Exception:
+        pass
+
+
+def _send_scalp_report(cnt: int):
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        c    = conn.cursor()
+        c.execute(
+            "SELECT exit_reason, return_pct FROM options_trades "
+            "WHERE strategy='OPT_SCALP' AND status!='OPEN'",
+        )
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            return
+        wins  = sum(1 for r in rows if (r[1] or 0) > 0)
+        wr    = round(wins / len(rows) * 100, 1)
+        avg_r = round(sum(r[1] or 0 for r in rows) / len(rows), 1)
+        exit_reasons: dict[str, int] = {}
+        for r in rows:
+            k = r[0] or 'UNKNOWN'
+            exit_reasons[k] = exit_reasons.get(k, 0) + 1
+        lines = [
+            f"⚡ *Scalp Report — {cnt} closed trades*",
+            f"WR: {wr}% | Avg: {avg_r:+.1f}%",
+            "",
+            "*Exit reasons:*",
+        ] + [f"   {k}: {v}" for k, v in sorted(exit_reasons.items(), key=lambda x: -x[1])]
+        if cnt < 30:
+            lines.append("\n⚠️ Advisory only — small sample (<30 trades)")
+        send_telegram("\n".join(lines))
+    except Exception as e:
+        print(f"[watchman] scalp report error: {e}")
 
 
 def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
@@ -278,12 +358,25 @@ def get_leap_value(trade: dict) -> float | None:
     return round(mid * 100, 2)  # per-contract dollar value
 
 
+def get_scalp_value(trade: dict) -> float | None:
+    """Return current mid-price of an OPT_SCALP single ATM call."""
+    q = get_quote(trade['symbol'], trade['expiry'],
+                  trade['long_strike'], trade['right'])
+    if not q:
+        return None
+    mid = (q.get('bid', 0) + q.get('ask', 0)) / 2
+    return round(mid * 100, 2)  # per-contract dollar value
+
+
 def get_contract_value(trade: dict) -> float | None:
     """Return TOTAL current value of the position (all contracts combined).
     premium_paid and stop_value in DB are also totals, so comparisons are consistent."""
     contracts = trade.get('contracts', 1) or 1
-    if trade['strategy'] == 'BULL_SPREAD':
+    strat     = trade.get('strategy', '')
+    if strat == 'BULL_SPREAD':
         val = get_spread_value(trade)
+    elif strat == 'OPT_SCALP':
+        val = get_scalp_value(trade)
     else:
         val = get_leap_value(trade)
     if val is None:
@@ -317,6 +410,10 @@ def compute_new_stop(trade: dict, current_value: float,
 
     Returns the stop that should be written to DB, along with the stage.
     """
+    # OPT_SCALP: stops are pre-set at entry as % of premium; don't promote stages
+    if trade.get('strategy') == 'OPT_SCALP':
+        return None, None
+
     premium   = trade['premium_paid']    # true entry cost incl. commissions
     max_profit = trade['max_profit'] or 0
     cur_stage  = trade['stop_stage'] or 1
@@ -460,6 +557,27 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                 f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
             )
             return alerts   # don't pile on other alerts when stop is hit
+
+    # ── OPT_SCALP: 3-day time stop (checked intraday + EOD) ──
+    if strat == 'OPT_SCALP' and 'SCALP_TIME' not in fired:
+        entry_date_str = trade.get('entry_date')
+        if entry_date_str:
+            days_held = (date.today() - date.fromisoformat(entry_date_str)).days
+            if days_held >= 3:
+                fired.add('SCALP_TIME')
+                closed = _auto_close_position(trade, current_value, exit_reason='SCALP_TIME')
+                if closed:
+                    alerts.append(
+                        f"⏰ *AUTO-CLOSED: {sym} SCALP* (trade #{tid})\n"
+                        f"3-day hold limit reached (Day {days_held})\n"
+                        f"Value: ${current_value:.2f} | Entry cost: ${prem:.2f}"
+                    )
+                else:
+                    alerts.append(
+                        f"⏰ *SCALP TIME STOP — {sym}* (trade #{tid})\n"
+                        f"3-day limit hit (Day {days_held}) — close now: `OPT CLOSE {sym}`"
+                    )
+                return alerts
 
     # ── T1: underlying > 3% move ──
     if underlying and prior_close and prior_close > 0:

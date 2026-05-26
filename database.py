@@ -4,7 +4,7 @@
 
 import sqlite3
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import os
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'trades.db')
@@ -42,8 +42,19 @@ def init_db():
         earnings_days   INTEGER,
         confidence      REAL,
         order_id        TEXT,
-        notes           TEXT
+        notes           TEXT,
+        max_gain_pct    REAL
     )''')
+    # Add max_gain_pct to existing DBs that predate this column
+    try:
+        c.execute('ALTER TABLE trades ADD COLUMN max_gain_pct REAL')
+    except Exception:
+        pass  # column already exists
+    # Add partial_exited to existing DBs — persists partial exit state across restarts
+    try:
+        c.execute('ALTER TABLE trades ADD COLUMN partial_exited INTEGER DEFAULT 0')
+    except Exception:
+        pass  # column already exists
 
     # ── Strategy weights — updated by learner ─────────────
     c.execute('''CREATE TABLE IF NOT EXISTS strategy_weights (
@@ -309,6 +320,33 @@ def init_db():
         updated_at  TEXT
     )''')
 
+    # ── Scan log — every graded candidate, win or lose, entered or skipped ──
+    c.execute('''CREATE TABLE IF NOT EXISTS scan_log (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_date        TEXT NOT NULL,
+        scan_time        TEXT NOT NULL,
+        symbol           TEXT NOT NULL,
+        direction        TEXT NOT NULL,
+        regime           TEXT,
+        price            REAL,
+        grade            TEXT,
+        score            INTEGER,
+        skip_reason      TEXT,
+        vol_ratio        REAL,
+        rsi              REAL,
+        intra_chg        REAL,
+        sector           TEXT,
+        is_catalyst      INTEGER DEFAULT 0,
+        entered          INTEGER DEFAULT 0,
+        entry_trade_id   INTEGER,
+        actual_day_pct   REAL,
+        actual_day_high_pct REAL,
+        actual_close     REAL,
+        enriched         INTEGER DEFAULT 0
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_scan_log_date ON scan_log(scan_date)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_scan_log_symbol ON scan_log(symbol, scan_date)')
+
     # Insert default strategy weights if none exist
     c.execute('SELECT COUNT(*) FROM strategy_weights')
     if c.fetchone()[0] == 0:
@@ -342,7 +380,7 @@ def log_trade_entry(symbol, entry_price, shares, target_price,
     conn.close()
     return trade_id
 
-def log_trade_exit(trade_id, exit_price, exit_reason):
+def log_trade_exit(trade_id, exit_price, exit_reason, max_gain_pct=None):
     conn = get_connection()
     c    = conn.cursor()
     now  = datetime.now()
@@ -364,11 +402,13 @@ def log_trade_exit(trade_id, exit_price, exit_reason):
 
     c.execute('''UPDATE trades SET
         exit_date=?, exit_time=?, exit_price=?,
-        pnl=?, pnl_pct=?, status=?, exit_reason=?
+        pnl=?, pnl_pct=?, status=?, exit_reason=?, max_gain_pct=?
         WHERE id=?''',
         (now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S'),
          exit_price, round(pnl, 2), round(pnl_pct, 2),
-         'WIN' if pnl > 0 else 'LOSS', exit_reason, trade_id))
+         'WIN' if pnl > 0 else 'LOSS', exit_reason,
+         round(max_gain_pct, 2) if max_gain_pct is not None else None,
+         trade_id))
     conn.commit()
     conn.close()
     return round(pnl, 2)
@@ -635,14 +675,15 @@ def log_options_trade(strategy, symbol, cap_type, underlying_price,
                       right='C', net_debit=None, catalyst_id=None, days_to_catalyst=None):
     conn       = get_connection()
     c          = conn.cursor()
-    # Stop: spread -50% of premium, LEAP -40% (keep 60%)
+    # Stop and target: strategy-specific
     if strategy == 'BULL_SPREAD':
         stop_value   = round(premium_paid * 0.50, 2)
-        # Target: 50% of max profit captured (same level stated in analysis message)
         target_value = round(premium_paid + (max_profit or 0) * 0.50, 2)
-    else:
+    elif strategy == 'OPT_SCALP':
+        stop_value   = round(premium_paid * 0.50, 2)   # -50% exit
+        target_value = round(premium_paid * 1.80, 2)   # +80% exit
+    else:  # LEAP
         stop_value   = round(premium_paid * 0.60, 2)
-        # LEAP target: 100% gain (double the cost)
         target_value = round(premium_paid * 2.0, 2)
     c.execute('''INSERT INTO options_trades
         (strategy, symbol, cap_type, underlying_price, strike, long_strike,
@@ -1218,7 +1259,7 @@ def get_kb_summary() -> dict:
         SELECT symbol, tier, score, signal_count, high_count,
                iv_rank, narrative, last_signal_at
         FROM ticker_conviction
-        WHERE tier IN ('HIGH','MEDIUM') AND direction='BULLISH'
+        WHERE tier IN ('HIGH','MEDIUM') AND direction='BULL'
         ORDER BY score DESC LIMIT 10
     ''')
     top_conviction = [dict(zip(
@@ -1393,6 +1434,137 @@ def fill_whatif_prices():
 
     conn.commit()
     conn.close()
+
+
+# ── Scan log operations ───────────────────────────────────────────────────────
+
+def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
+                       price, grade, score, skip_reason,
+                       vol_ratio, rsi, intra_chg, sector,
+                       is_catalyst=False, entered=False, entry_trade_id=None):
+    """Log every candidate that reaches the grading stage — win, lose, entered, or skipped."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''INSERT INTO scan_log
+        (scan_date, scan_time, symbol, direction, regime, price,
+         grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
+         is_catalyst, entered, entry_trade_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (scan_date, scan_time, symbol, direction, regime, price,
+         grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
+         int(is_catalyst), int(entered), entry_trade_id))
+    row_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def enrich_scan_log():
+    """
+    Nightly job: for each unenriched scan_log row, fetch actual day close/high
+    and compute actual_day_pct and actual_day_high_pct.
+    Runs after market close — fills in 'what actually happened' for what-if analysis.
+    """
+    import yfinance as yf
+
+    conn = get_connection()
+    c    = conn.cursor()
+
+    c.execute('''SELECT id, symbol, scan_date FROM scan_log
+                 WHERE enriched = 0
+                 ORDER BY scan_date DESC LIMIT 500''')
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return 0
+
+    # Group by (symbol, scan_date) to batch yf calls
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for row_id, symbol, scan_date in rows:
+        groups[(symbol, scan_date)].append(row_id)
+
+    updated = 0
+    for (symbol, scan_date), row_ids in groups.items():
+        try:
+            end_date = (date.fromisoformat(scan_date) + timedelta(days=1)).isoformat()
+            hist = yf.Ticker(symbol).history(start=scan_date, end=end_date, interval='1d')
+            if hist.empty:
+                # Mark enriched=1 with nulls so we don't retry forever
+                conn = get_connection()
+                conn.execute('UPDATE scan_log SET enriched=1 WHERE id IN (%s)'
+                             % ','.join('?' * len(row_ids)), row_ids)
+                conn.commit()
+                conn.close()
+                continue
+
+            open_p  = float(hist['Open'].iloc[0])
+            close_p = float(hist['Close'].iloc[0])
+            high_p  = float(hist['High'].iloc[0])
+
+            if open_p <= 0:
+                continue
+
+            day_pct      = (close_p - open_p) / open_p * 100
+            day_high_pct = (high_p  - open_p) / open_p * 100
+
+            conn = get_connection()
+            conn.execute('''UPDATE scan_log
+                            SET actual_day_pct=?, actual_day_high_pct=?,
+                                actual_close=?, enriched=1
+                            WHERE id IN (%s)''' % ','.join('?' * len(row_ids)),
+                         [day_pct, day_high_pct, close_p] + row_ids)
+            conn.commit()
+            conn.close()
+            updated += len(row_ids)
+
+        except Exception:
+            continue
+
+    return updated
+
+
+def backfill_scan_log_from_trades():
+    """
+    One-time backfill: seed scan_log with all historical trades from the trades table.
+    These are entered=1 rows — we know we traded them, we just don't have the SKIP rows.
+    Safe to call multiple times (skips already-backfilled rows via scan_date+symbol dedup).
+    """
+    conn = get_connection()
+    c    = conn.cursor()
+
+    c.execute('''SELECT id, symbol, entry_date, entry_time, side, entry_price,
+                        volume_ratio, rsi_at_entry, sector, confidence, setup_type
+                 FROM trades
+                 WHERE status IN ('WIN', 'LOSS', 'CLOSED', 'OPEN')
+                 ORDER BY entry_date, entry_time''')
+    trades = c.fetchall()
+
+    inserted = 0
+    for (tid, symbol, edate, etime, side, price,
+         vol_ratio, rsi, sector, confidence, setup_type) in trades:
+        # Skip if already in scan_log
+        c.execute('SELECT 1 FROM scan_log WHERE entry_trade_id=?', (tid,))
+        if c.fetchone():
+            continue
+
+        direction = side if side in ('LONG', 'SHORT') else 'LONG'
+        grade = 'A+' if (confidence or 0) >= 80 else ('A' if (confidence or 0) >= 65 else 'B')
+
+        c.execute('''INSERT INTO scan_log
+            (scan_date, scan_time, symbol, direction, regime, price,
+             grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
+             is_catalyst, entered, entry_trade_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (edate, etime or '10:30', symbol, direction, 'UNKNOWN', price,
+             grade, int(confidence or 0), None, vol_ratio, rsi, None, sector,
+             0, 1, tid))
+        inserted += 1
+
+    conn.commit()
+    conn.close()
+    return inserted
 
 
 if __name__ == '__main__':

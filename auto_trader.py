@@ -20,7 +20,7 @@ from database import (
     get_open_trades, get_daily_pnl, get_win_rate,
     update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades,
     get_strategy_weights, get_today_entry_counts,
-    get_sector_grade,
+    get_sector_grade, log_scan_candidate, enrich_scan_log,
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -33,7 +33,7 @@ TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 VIEWER_CHAT_IDS  = {5225043215}   # Ruhi — REGIME, STATUS, chart analysis only
 ANTHROPIC_KEY    = os.getenv('ANTHROPIC_KEY')
-BRIDGE           = 'http://127.0.0.1:8000'
+BRIDGE           = os.getenv("BRIDGE_URL", "http://127.0.0.1:8000")
 TG_API           = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 _ai              = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
@@ -89,6 +89,20 @@ AFTERNOON_GATE_THRESHOLD = TOTAL_CAPITAL * AFTERNOON_GATE_PCT / 100
 FIRST_BAR_QUALITY = True     # strong first 30-min bar → +15% capital + enable partial exit
 ORB_ENTRY_CUTOFF  = (11, 30) # ORB signal only valid before 11:30am — late breaks are just resistance
 
+# ── US Market Holidays 2026 (NYSE observed dates) ─────────
+US_HOLIDAYS_2026 = {
+    date(2026, 1,  1),   # New Year's Day
+    date(2026, 1, 19),   # MLK Day
+    date(2026, 2, 16),   # Presidents Day
+    date(2026, 4,  3),   # Good Friday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 6, 19),   # Juneteenth
+    date(2026, 7,  3),   # Independence Day (observed, Jul 4 = Saturday)
+    date(2026, 9,  7),   # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 12, 25),  # Christmas
+}
+
 # ── Persistence ───────────────────────────────────────────
 _DIR              = os.path.dirname(os.path.abspath(__file__))
 TRADED_TODAY_FILE = os.path.join(_DIR, 'traded_today.json')
@@ -119,6 +133,7 @@ first_bar_strong_trades = {}  # trade_id → bool — entry was on a strong firs
 _last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
 peak_session_pnl    = 0.0    # highest session P&L seen today (realized + unrealized)
 pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
+_morning_pnl_snap   = None   # P&L frozen at first post-noon scan — afternoon gate uses this
 
 # ── Bear exclusions — stocks with insufficient bear backtest WR ──
 BEAR_EXCLUDED = {'RDW'}   # RDW: 60% bear WR (below 80% threshold), bull-only addition
@@ -206,11 +221,56 @@ FULL_UNIVERSE = list(dict.fromkeys([
     # JOBY 87% WR $81 EV — eVTOL/aviation. Was dropped at 38% WR (gap-and-go only).
     #      Full stack (ORB+VWAP+RS+volume): 87% WR, all 6 years profitable, 13 trades/yr
     'JOBY',
+    # ── May 24 2026 — DNA-screened expansion (batch_backtest.py validated) ──
+    # 49/49 cleared: DNA screen + full 5yr backtest + IS/OOS split + stress test
+    # Avg WR 90.3% full, avg OOS_WR 89.5% | ⚠️ BSX/HOLX (OOS 60-67%), CIFR (N=22)
+    # HIGH_VOL (7): gap fills 70% — wait for VWAP reclaim, tight trail
+    'CLSK','WULF','HUT','ARRY','RIOT','EQT','CIFR',
+    # INSTITUTIONAL (24): gaps stick 75% — extended no-move timer
+    'CPNG','SITM','KTOS','ACLS','CTRA','CACI','FTNT','IBKR','ONTO','SAIC',
+    'BWXT','SAIA','HWM','GDDY','EW','KKR','TPR','GILD','GE','TXT',
+    'YUM','BSX','HOLX','TT',
+    # MOMENTUM (18): standard behavior
+    'UPST','CELH','HL','ZM','DUOL','RBLX','WFRD','TTD','TWLO','AG',
+    'DOCU','ZS','HUBS','OKTA','DECK','LULU','PANW','AEM',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
     # SMR(24%), SNOW(33%), CRWD(33%)
-    # PANW(43%), MS(43%), AFRM(43%), ACHR(44%)
+    # PANW(43% gap-and-go only → re-added May 24 via full A/A+ backtest: 93.2% WR)
+    # MS(43%), AFRM(43%), ACHR(44%)
     # SOFI(50% neg avg), HPE(50% neg avg)
 ]))
+
+# ── DNA Cluster sets (dna_analysis.py, May 2026 — re-run quarterly) ──────────
+# HIGH_VOL: gap fills 70% intraday, trend fades after big moves (ATR ~8%)
+#   → L1: require VWAP reclaim on gap-up days (penalise naked ORB)
+#   → L3: tighter ATR trail (1.0× vs 1.5×) — lock gains fast, don't wait for continuation
+HIGH_VOL_SYMBOLS = frozenset([
+    'AI','APLD','APP','BBAI','BEAM','CHPT','DNN','EOSE','INDI','IONQ',
+    'IREN','JOBY','LAC','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS',
+    'RDW','RGTI','RIVN','RKLB','RKT','SOUN','TOST','VERI',
+    # May 24 2026 additions (DNA batch)
+    'ARRY','CIFR','CLSK','EQT','HUT','RIOT','WULF',
+])
+# INSTITUTIONAL: gaps stick 75%, slow grind, multi-day continuation at 3d (ATR ~3%)
+#   → L3: extend no-move exit timer (300 min vs 240 min) — these consolidate before continuing
+INSTITUTIONAL_SYMBOLS = frozenset([
+    'AAPL','ABBV','AMAT','AVGO','AXON','BAC','C','CAT','CNQ','COST',
+    'CVX','DE','DVN','GOOGL','GS','HAL','HOOD','INTC','ISRG','ITA',
+    'JPM','KLAC','LMT','LRCX','MA','MSFT','NKE','NOC','OKLO','ON',
+    'OXY','PFE','QCOM','RTX','SBUX','SLB','SMH','UNH','V','VST',
+    'WFC','XBI','XLE','XOM',
+    # May 24 2026 additions (DNA batch)
+    'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
+    'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
+    'TPR','TT','TXT','YUM',
+])
+# MOMENTUM: standard behavior (gap-go 71%, ATR ~5%) — no cluster overrides needed
+# OUTLIER: USAR only — anomalous behavior, treat as MOMENTUM (baseline)
+
+def get_dna_cluster(symbol):
+    if symbol in HIGH_VOL_SYMBOLS:      return 'HIGH_VOL'
+    if symbol in INSTITUTIONAL_SYMBOLS: return 'INSTITUTIONAL'
+    return 'MOMENTUM'
 
 # ── Sector map ────────────────────────────────────────────
 SECTOR_MAP = {
@@ -269,6 +329,28 @@ SECTOR_MAP = {
     'ONDS':'DEFENCE',   # Ondas Holdings — drone/rail autonomy
     'RDW':'DEFENCE',    # Redwire Corp — space tech (BULL ONLY — bear 60% WR)
     'VERI':'TECH',      # Veritone — AI platform / voice AI
+    # ── May 24 2026 — DNA batch (49 symbols) ─────────────────
+    # HIGH_VOL cluster
+    'CLSK':'QUANTUM_CRYPTO','WULF':'QUANTUM_CRYPTO','HUT':'QUANTUM_CRYPTO',
+    'RIOT':'QUANTUM_CRYPTO','CIFR':'QUANTUM_CRYPTO',   # crypto miners
+    'ARRY':'CLEAN_ENERGY',                              # solar tracking
+    'EQT':'ENERGY',                                     # natural gas
+    # INSTITUTIONAL cluster
+    'KTOS':'DEFENCE','CACI':'DEFENCE','SAIC':'DEFENCE','BWXT':'DEFENCE',
+    'HWM':'DEFENCE','GE':'DEFENCE','TXT':'DEFENCE',     # defense/aerospace
+    'SITM':'SEMIS','ACLS':'SEMIS','ONTO':'SEMIS',       # semiconductor equipment
+    'FTNT':'TECH','GDDY':'TECH','IBKR':'FINTECH',
+    'KKR':'FINTECH','CPNG':'CONSUMER','SAIA':'CONSUMER',
+    'TPR':'CONSUMER','YUM':'CONSUMER','DECK':'CONSUMER',
+    'CTRA':'ENERGY',
+    'EW':'BIOTECH','GILD':'BIOTECH','BSX':'BIOTECH','HOLX':'BIOTECH',
+    'TT':'DEFENCE',   # Trane Technologies — industrial/HVAC
+    # MOMENTUM cluster
+    'UPST':'FINTECH','CELH':'CONSUMER','LULU':'CONSUMER',
+    'ZM':'TECH','DUOL':'TECH','RBLX':'TECH','TTD':'TECH','TWLO':'TECH',
+    'DOCU':'TECH','ZS':'TECH','HUBS':'TECH','OKTA':'TECH','PANW':'TECH',
+    'WFRD':'ENERGY',
+    'HL':'COMMODITIES','AG':'COMMODITIES','AEM':'COMMODITIES',
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────
@@ -378,6 +460,8 @@ def is_market_open():
     now = datetime.now(ET)
     if now.weekday() >= 5:
         return False
+    if now.date() in US_HOLIDAYS_2026:
+        return False
     if now.hour < 9 or (now.hour == 9 and now.minute < 31):
         return False
     if now.hour >= 16:
@@ -388,6 +472,8 @@ def is_premarket_window():
     """True 9:20–9:29am ET — final pre-open window for earnings gap entries."""
     now = datetime.now(ET)
     if now.weekday() >= 5:
+        return False
+    if now.date() in US_HOLIDAYS_2026:
         return False
     return now.hour == 9 and 20 <= now.minute <= 29
 
@@ -1126,6 +1212,24 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     if sig.get('hod_break'):
         score += 20; reasons.append('HOD break ✓')
 
+    # ── DNA cluster modifier (Layer 1) ────────────────────────
+    # HIGH_VOL: gaps fill 70% intraday. ORB at gap high = likely entering before pullback.
+    # Penalise naked ORB on gap-up days; reward VWAP reclaim (pullback confirmed + recovery).
+    # INSTITUTIONAL: gaps hold 75% — ORB more reliable, small bonus.
+    if symbol:
+        dna = get_dna_cluster(symbol)
+        if dna == 'HIGH_VOL':
+            if sig.get('orb_break') and not sig.get('vwap_reclaim'):
+                score -= 15
+                reasons.append('HIGH_VOL: ORB-15 — gap fills 70%, wait for VWAP reclaim')
+            if sig.get('vwap_reclaim'):
+                score += 15
+                reasons.append('HIGH_VOL: VWAP+15 — pullback confirmed ✓')
+        elif dna == 'INSTITUTIONAL':
+            if sig.get('orb_break'):
+                score += 5
+                reasons.append('INST: ORB+5 — gap sticks 75%')
+
     # ── Relative strength vs SPY ──────────────────────────────
     rs = sig.get('rs_vs_spy', 0)
     if rs >= 5:
@@ -1163,9 +1267,9 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         sec_name  = get_symbol_sector(symbol)
         sec_grade = get_sector_grade(sec_name)
         if sec_grade == 'STRONG':
-            score += 15; reasons.append(f'{sec_name} sector STRONG +15')
+            score += round(15 * w['sector']); reasons.append(f'{sec_name} sector STRONG +15')
         elif sec_grade == 'WEAK':
-            score -= 20; reasons.append(f'{sec_name} sector WEAK -20')
+            score -= round(20 * w['sector']); reasons.append(f'{sec_name} sector WEAK -20')
 
     if regime == 'STRONG':
         score += 15; reasons.append('Strong market')
@@ -1259,6 +1363,25 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
     if sig.get('is_bear_flag'):
         score += 20; reasons.append('Bear flag')
 
+    # ── DNA cluster modifier (Layer 1, short side) ────────────
+    # Mirror of bull-side logic — inverted direction.
+    # HIGH_VOL: gap-down fills back UP 70% of the time. ORB breakdown at the gap low
+    # = entering before the bounce. Require VWAP rejection (bounce happened, rejected) first.
+    # INSTITUTIONAL: gap-down sticks 75% — ORB breakdown more reliable, small bonus.
+    if symbol:
+        dna = get_dna_cluster(symbol)
+        if dna == 'HIGH_VOL':
+            if sig.get('orb_break_down') and not sig.get('vwap_rejection'):
+                score -= 15
+                reasons.append('HIGH_VOL: ORB↓-15 — gap fills 70%, wait for VWAP rejection')
+            if sig.get('vwap_rejection'):
+                score += 15
+                reasons.append('HIGH_VOL: VWAP reject+15 — bounce failed ✓')
+        elif dna == 'INSTITUTIONAL':
+            if sig.get('orb_break_down'):
+                score += 5
+                reasons.append('INST: ORB↓+5 — gap-down sticks 75%')
+
     # FVG count (gaps down = air pockets to fill)
     if sig['fvg_count'] >= 10:
         score += 20; reasons.append(f'{sig["fvg_count"]} FVGs (downside)')
@@ -1326,9 +1449,9 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
         sec_name  = get_symbol_sector(symbol)
         sec_grade = get_sector_grade(sec_name)
         if sec_grade == 'WEAK':
-            score += 15; reasons.append(f'{sec_name} sector WEAK (short-friendly) +15')
+            score += round(15 * w['sector']); reasons.append(f'{sec_name} sector WEAK (short-friendly) +15')
         elif sec_grade == 'STRONG':
-            score -= 20; reasons.append(f'{sec_name} sector STRONG (short-risky) -20')
+            score -= round(20 * w['sector']); reasons.append(f'{sec_name} sector STRONG (short-risky) -20')
 
     # WEAK regime confirmation
     score += 15; reasons.append('WEAK regime confirmed')
@@ -1455,7 +1578,9 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         atr = get_atr(sym) or (entry * 0.02)
 
         # ── ATR trailing stop ─────────────────────────────────
-        trail_mult = ATR_TRAIL_MULT
+        # HIGH_VOL cluster: tighter trail (1.0×) — trend fades fast (46.8% next-day continuation)
+        # All others: standard 1.5× trail
+        trail_mult = 1.0 if sym in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
         if is_short:
             trail_threshold = entry - atr              # 1 ATR of profit on short
             if price <= trail_threshold:
@@ -1558,6 +1683,14 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                 locked = round(pnl_usd / shares * half, 2)
                 partial_done_trades[tid] = locked
                 update_trade_shares(tid, shares - half)
+                try:
+                    import sqlite3 as _sq3p
+                    _cp = _sq3p.connect(os.path.join(_DIR, 'trades.db'))
+                    _cp.execute('UPDATE trades SET partial_exited=1 WHERE id=?', (tid,))
+                    _cp.commit()
+                    _cp.close()
+                except Exception:
+                    pass
                 tag = '↓SHORT' if is_short else ''
                 log(f"  {sym} {tag}: PARTIAL EXIT {half}sh @ ${price} +${locked:.0f} locked — trailing {shares - half}sh")
                 exits.append({'sym': sym, 'price': price, 'entry': entry,
@@ -1621,12 +1754,15 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                 if drop > ATR_FADE_MULT * atr:
                     exit_reason = f'Momentum fade {ATR_FADE_MULT}×ATR from high ({pnl_pct:+.1f}%)'
 
-        # 5. No-move exit (same 240min window both directions)
+        # 5. No-move exit
+        # INSTITUTIONAL cluster: 300 min — these consolidate longer before continuing (vol_clustering 0.26)
+        # All others: 240 min standard
         if not exit_reason and is_market_open():
             entry_dt = trade_entry_times.get(tid)
             if entry_dt:
                 mins_held = (now - entry_dt).total_seconds() / 60
-                if mins_held >= 240 and -0.3 <= pnl_pct <= 2.0:
+                no_move_limit = 300 if sym in INSTITUTIONAL_SYMBOLS else 240
+                if mins_held >= no_move_limit and -0.3 <= pnl_pct <= 2.0:
                     if pnl_usd > 0:
                         # Profitable but flat — lock breakeven as stop, hold for potential breakout
                         be_stop = round(entry * 1.0005, 2) if not is_short else round(entry * 0.9995, 2)
@@ -2759,8 +2895,14 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
 
     # ── Afternoon gate: protect morning gains, skip new longs after 12pm ──────
     # Afternoon LONG: 44.8% WR / -$0.91 avg on recycled capital (vs 58.5% morning)
+    # Snapshot P&L once at first post-noon scan — frozen for rest of day so afternoon
+    # losses from pre-noon trades don't re-open the gate
+    global _morning_pnl_snap
     now_et = datetime.now(ET)
-    morning_pnl = realized.get('pnl', 0)
+    if now_et.hour >= AFTERNOON_GATE_HOUR and _morning_pnl_snap is None:
+        _morning_pnl_snap = realized.get('pnl', 0)
+        log(f"⏰ Morning P&L snapshot: ${_morning_pnl_snap:.0f} (frozen at {now_et.strftime('%H:%M')})")
+    morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else realized.get('pnl', 0)
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
         log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new longs after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
@@ -2798,17 +2940,40 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
         grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr, symbol=symbol)
 
+        is_catalyst  = symbol in catalyst_priority
+        _now         = datetime.now(ET)
+        _sector      = get_symbol_sector(symbol)
+
         if grade in ('SKIP', 'C'):
+            try:
+                log_scan_candidate(
+                    _now.strftime('%Y-%m-%d'), _now.strftime('%H:%M'),
+                    symbol, 'LONG', regime, price, grade, score,
+                    reasons[0] if reasons else None,
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
+                    is_catalyst=is_catalyst, entered=False,
+                )
+            except Exception:
+                pass
             continue
         # SPY negative intraday → only take A+ setups
         if spy_chg < 0 and grade != 'A+':
+            try:
+                log_scan_candidate(
+                    _now.strftime('%Y-%m-%d'), _now.strftime('%H:%M'),
+                    symbol, 'LONG', regime, price, grade, score,
+                    'SPY negative — A+ only',
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
+                    is_catalyst=is_catalyst, entered=False,
+                )
+            except Exception:
+                pass
             continue
 
         # Dynamic (unknown) stocks require A+ regardless — too risky at lower grades
         if symbol in dynamic_picks and grade != 'A+':
             continue
 
-        is_catalyst  = symbol in catalyst_priority
         is_sympathy  = symbol in active_sympathy_triggers
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
@@ -2818,6 +2983,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'is_sympathy': is_sympathy,
             'first_bar_strong': sig.get('first_bar_strong', False),
+            'sector': _sector, 'scan_time': _now.strftime('%H:%M'),
+            'scan_date': _now.strftime('%Y-%m-%d'),
         })
 
     # Sort: sympathy A+ first, then catalyst A+, then by grade + score
@@ -2830,6 +2997,19 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     ))
 
     log(f"Found {len(candidates)} valid setups ({sum(1 for c in candidates if c['is_catalyst'])} catalyst)")
+
+    # Log all qualified candidates to scan_log — some will be entered, some capped out
+    _cap_reason = 'Qualified — awaiting slot'
+    for _c in candidates:
+        try:
+            log_scan_candidate(
+                _c['scan_date'], _c['scan_time'], _c['symbol'], 'LONG', regime,
+                _c['price'], _c['grade'], _c['score'], _cap_reason,
+                _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
+                is_catalyst=_c['is_catalyst'], entered=False,
+            )
+        except Exception:
+            pass
 
     entries       = []
     open_count    = len(open_trades)
@@ -2899,6 +3079,18 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 daily_sympathy_count += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector, 'tag': tag})
+            # Update scan_log: mark this candidate as entered and link trade_id
+            try:
+                import sqlite3 as _sq3
+                _conn = _sq3.connect('trades.db')
+                _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?, skip_reason=NULL
+                                 WHERE symbol=? AND scan_date=? AND direction='LONG' AND entered=0
+                                 ORDER BY id DESC LIMIT 1''',
+                              (trade_id, sym, pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))))
+                _conn.commit()
+                _conn.close()
+            except Exception:
+                pass
         else:
             traded_today.add(sym)
             save_traded_today()
@@ -2943,8 +3135,13 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
 
     # ── Afternoon gate: no new shorts after 12pm if morning was profitable ────
     # Afternoon SHORT: 18.2% WR / -$6.56 avg — catastrophic vs 51.5% morning
+    # Uses same frozen snapshot as bull gate — set once at first post-noon scan
+    global _morning_pnl_snap
     now_et = datetime.now(ET)
-    morning_pnl = realized.get('pnl', 0)
+    if now_et.hour >= AFTERNOON_GATE_HOUR and _morning_pnl_snap is None:
+        _morning_pnl_snap = realized.get('pnl', 0)
+        log(f"⏰ Morning P&L snapshot: ${_morning_pnl_snap:.0f} (frozen at {now_et.strftime('%H:%M')})")
+    morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else realized.get('pnl', 0)
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
         log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new shorts after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
@@ -2975,13 +3172,36 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, 'SHORT')
         grade, reasons, score = grade_bear_setup(sig, regime, sl, target, price, rr, symbol=symbol)
 
+        is_catalyst  = symbol in catalyst_priority
+        _now_b       = datetime.now(ET)
+        _sector_b    = get_symbol_sector(symbol)
+
         if grade in ('SKIP', 'C'):
+            try:
+                log_scan_candidate(
+                    _now_b.strftime('%Y-%m-%d'), _now_b.strftime('%H:%M'),
+                    symbol, 'SHORT', regime, price, grade, score,
+                    reasons[0] if reasons else None,
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector_b,
+                    is_catalyst=is_catalyst, entered=False,
+                )
+            except Exception:
+                pass
             continue
         # SPY recovering intraday → only highest-conviction shorts
         if spy_chg > 0 and grade != 'A+':
+            try:
+                log_scan_candidate(
+                    _now_b.strftime('%Y-%m-%d'), _now_b.strftime('%H:%M'),
+                    symbol, 'SHORT', regime, price, grade, score,
+                    'SPY recovering — A+ only',
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector_b,
+                    is_catalyst=is_catalyst, entered=False,
+                )
+            except Exception:
+                pass
             continue
 
-        is_catalyst = symbol in catalyst_priority
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
             'side': 'SHORT', 'sl': sl, 'target': target, 'risk_pct': risk_pct, 'rr': rr,
@@ -2989,12 +3209,25 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'first_bar_strong': sig.get('first_bar_strong', False),
+            'sector': _sector_b, 'scan_time': _now_b.strftime('%H:%M'),
+            'scan_date': _now_b.strftime('%Y-%m-%d'),
         })
 
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
     candidates.sort(key=lambda x: (grade_order.get(x['grade'], 3), -x['score']))
 
     log(f"Bear scan: {len(candidates)} short candidates")
+
+    for _c in candidates:
+        try:
+            log_scan_candidate(
+                _c['scan_date'], _c['scan_time'], _c['symbol'], 'SHORT', regime,
+                _c['price'], _c['grade'], _c['score'], 'Qualified — awaiting slot',
+                _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
+                is_catalyst=_c['is_catalyst'], entered=False,
+            )
+        except Exception:
+            pass
 
     entries       = []
     open_count    = len(open_trades)
@@ -3046,6 +3279,17 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             daily_bear_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
+            try:
+                import sqlite3 as _sq3
+                _conn = _sq3.connect('trades.db')
+                _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?, skip_reason=NULL
+                                 WHERE symbol=? AND scan_date=? AND direction='SHORT' AND entered=0
+                                 ORDER BY id DESC LIMIT 1''',
+                              (trade_id, sym, pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))))
+                _conn.commit()
+                _conn.close()
+            except Exception:
+                pass
             time.sleep(2)
         else:
             traded_today.add(sym)
@@ -3089,6 +3333,9 @@ def get_premarket_pct(sym):
 
 def premarket_early_scan():
     """4:30am ET — first look at pre-market movers. Pros scan here."""
+    if date.today() in US_HOLIDAYS_2026:
+        log("PRE-MARKET SCAN skipped — market holiday")
+        return
     global catalyst_priority
     log("PRE-MARKET SCAN (4:30am) — identifying overnight movers...")
     scan_universe = list(dict.fromkeys(FULL_UNIVERSE))
@@ -3124,6 +3371,9 @@ def premarket_early_scan():
         send_telegram("🌅 Pre-market: quiet — no movers >2% yet")
 
 def morning_catalyst_scan():
+    if date.today() in US_HOLIDAYS_2026:
+        log("CATALYST SCAN skipped — market holiday")
+        return
     global catalyst_priority
     log("CATALYST SCAN (8:15am) — refreshing watchlist before open...")
 
@@ -3238,6 +3488,8 @@ def morning_catalyst_scan():
     send_telegram('\n\n'.join(msg_parts))
 
 def morning_voice_summary():
+    if date.today() in US_HOLIDAYS_2026:
+        return
     log("Morning voice summary")
     try:
         r       = requests.get(f"{BRIDGE}/account", timeout=10)
@@ -3261,6 +3513,9 @@ def morning_voice_summary():
         log(f"Voice summary error: {e}")
 
 def evening_summary():
+    if date.today() in US_HOLIDAYS_2026:
+        log("Evening summary skipped — market holiday")
+        return
     log("Evening summary")
     daily      = get_daily_pnl()
     wr_30      = get_win_rate(days=30)
@@ -3278,6 +3533,9 @@ def evening_summary():
     )
 
 def nightly_learning():
+    if date.today() in US_HOLIDAYS_2026:
+        log("Nightly learning skipped — market holiday")
+        return
     log("NIGHTLY LEARNING — analysing trades...")
     try:
         run_learning_cycle()
@@ -3292,6 +3550,14 @@ def nightly_learning():
     except Exception as e:
         log(f"Learning error: {e}")
 
+    # Enrich today's scan_log with actual day outcomes
+    try:
+        enriched = enrich_scan_log()
+        if enriched:
+            log(f"Scan log enriched: {enriched} candidates updated with actual day performance")
+    except Exception as e:
+        log(f"Scan log enrichment error: {e}")
+
     # Options side — runs independently after equity learner
     try:
         run_options_learning_cycle()
@@ -3301,6 +3567,8 @@ def nightly_learning():
 def chart_gate_weekly_review():
     """Every Friday 4:30pm — parse CHART GATE LOG lines, cross-ref DB outcomes,
     send Telegram checkpoint so we don't forget to evaluate the gate."""
+    if date.today() in US_HOLIDAYS_2026:
+        return
     try:
         log_file = os.path.join(_DIR, 'logs', 'auto_trader.log')
         if not os.path.exists(log_file):
@@ -3384,6 +3652,7 @@ def reset_daily_state():
     sector_strength     = {}
     peak_session_pnl    = 0.0
     pl_protect_active   = False
+    _morning_pnl_snap   = None
     save_traded_today()
     log("Daily state reset for new trading day")
 
@@ -3391,6 +3660,11 @@ def reset_daily_state():
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────
 if __name__ == '__main__':
+    if os.getenv('TRADING_MODE', 'paper') == 'live':
+        if os.getenv('PROD_EQUITY_ENABLED', 'false').lower() != 'true':
+            log("PROD_EQUITY_ENABLED is not 'true' in .env — exiting. Set it to enable live equity trading.")
+            sys.exit(0)
+
     init_db()
     traded_today = load_traded_today()
     if traded_today:
@@ -3401,22 +3675,26 @@ if __name__ == '__main__':
     if daily_bull_count or daily_bear_count:
         log(f"Restored daily counts: Bull {daily_bull_count} Bear {daily_bear_count}")
 
-    # Restore trade_entry_times for open trades — prevents no-move timer reset on restart
+    # Restore trade_entry_times and partial_done_trades for open trades
     import sqlite3 as _sqlite3
     _conn = _sqlite3.connect(os.path.join(_DIR, 'trades.db'))
     _rows = _conn.execute(
-        "SELECT id, entry_date, entry_time FROM trades WHERE status='OPEN'"
+        "SELECT id, entry_date, entry_time, partial_exited FROM trades WHERE status='OPEN'"
     ).fetchall()
     _conn.close()
-    for _tid, _edate, _etime in _rows:
+    for _tid, _edate, _etime, _partial in _rows:
         try:
             _dt_str = f"{_edate} {_etime}" if _etime else f"{_edate} 09:30:00"
             _naive  = datetime.strptime(_dt_str, '%Y-%m-%d %H:%M:%S')
             trade_entry_times[_tid] = ET.localize(_naive)
         except Exception:
             pass
+        if _partial:
+            partial_done_trades[_tid] = 0.0  # locked amount unknown after restart, use 0
     if trade_entry_times:
         log(f"Restored entry times for {len(trade_entry_times)} open trades")
+    if partial_done_trades:
+        log(f"Restored partial_done_trades: {len(partial_done_trades)} trades already partially exited")
 
     print("\n🤖 Auto Trader v2 — Consolidated")
     print("=" * 55)

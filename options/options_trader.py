@@ -95,10 +95,34 @@ MID_CAP_UNIVERSE = {
 }
 AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales to this)
 
+# ── OPT_SCALP constants ───────────────────────────────────────────────────────
+SCALP_UNIVERSE = {
+    'IONQ', 'MARA', 'WULF', 'RIOT', 'SOUN', 'RKLB', 'HIMS', 'AFRM',
+    'CELH', 'UPST', 'RIVN', 'RDW', 'JOBY', 'HOOD', 'NOK',
+}
+SCALP_BUDGET_TOTAL  = float(os.getenv('SCALP_BUDGET_TOTAL',  '1000'))
+SCALP_TRADE_SIZE    = float(os.getenv('SCALP_TRADE_SIZE',    '250'))
+MAX_SCALP_POSITIONS = int(os.getenv('MAX_SCALP_POSITIONS',   '2'))
+SCALP_PROFIT_MULT   = 1.80   # close at 180% of cost (+80%)
+SCALP_STOP_MULT     = 0.50   # close at 50% of cost (-50%)
+SCALP_MAX_DAYS      = 3
+SCALP_MIN_DTE       = 7
+SCALP_MAX_DTE       = 12
+SCALP_DELTA_MIN     = 0.38
+SCALP_DELTA_MAX     = 0.60
+SCALP_MAX_SPREAD    = 0.30   # bid-ask spread gate
+SCALP_MAX_IV_RANK   = 75
+SCALP_MAX_PREMIUM   = 1.50   # per-contract mid price gate
+SCALP_ENTRY_HOUR_START  = (10, 0)
+SCALP_ENTRY_HOUR_CUTOFF = (13, 30)
+SCALP_NEWS_HOURS    = 4      # Mode B: conviction signal must be within this many hours
+
 # ── Global state ──────────────────────────────────────────────────────────────
 _paused          = False
 _pending: dict   = {}       # chat_id → {action, symbol, qty, templates, leap, expires_at}
 _last_update_id  = 0
+_scalp_triggered: dict[str, datetime] = {}   # sym → last trigger time (4h cooldown)
+_scalp_scan_counter: int = 0
 
 def _is_paper() -> bool:
     """Return True if connected to IBKR paper account (port 4002)."""
@@ -633,7 +657,7 @@ def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
     direction     = conviction.get('direction', 'MIXED')
     signal_count  = conviction.get('signal_count', 0)
     narrative     = conviction.get('narrative', '')
-    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULLISH')
+    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULL')
 
     # LEAP: 15-24 month expiry (450–730 DTE)
     expiry = _find_expiry(expiries, 450, 730)
@@ -887,7 +911,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     direction     = conviction.get('direction', 'MIXED')
     signal_count  = conviction.get('signal_count', 0)
     narrative     = conviction.get('narrative', '')
-    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULLISH')
+    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULL')
 
     # ── Expiry selection (catalyst-driven or balanced DTE) ────────────────
     if catalyst_days and 21 <= catalyst_days <= 75:
@@ -1461,6 +1485,23 @@ def _execute_close_bg(trade: dict, chat_id: str):
             'net_debit':    round(-(spread_mid - 0.05), 2),  # negative = credit
         }
         exit_value = round(spread_mid * 100 * qty, 2)
+    elif strat == 'OPT_SCALP':
+        q = get_quote(sym, trade['expiry'], trade['long_strike'], trade['right'])
+        if not q:
+            send_telegram(f"❌ Cannot fetch quote for {sym} SCALP to close", chat_id)
+            return
+        mid = round((q['bid'] + q['ask']) / 2, 2)
+        payload = {
+            'symbol':      sym,
+            'expiry':      trade['expiry'],
+            'strike':      trade['long_strike'],
+            'right':       trade['right'],
+            'qty':         qty,
+            'action':      'SELL',
+            'order_type':  'LIMIT',
+            'limit_price': round(mid - 0.05, 2),
+        }
+        exit_value = round(mid * 100 * qty, 2)
     else:  # LEAP
         q = get_quote(sym, trade['expiry'], trade['strike'], trade['right'])
         if not q:
@@ -1502,19 +1543,19 @@ def _execute_close_bg(trade: dict, chat_id: str):
         _cur.execute('''SELECT id, mc_ev_dollar, mc_win_rate
                         FROM opt_calc_log WHERE trade_id=? LIMIT 1''', (tid,))
         _row = _cur.fetchone()
-        _cur.execute('''SELECT entry_date FROM options_trades WHERE id=?''', (tid,))
+        _cur.execute('''SELECT entry_date, premium_paid FROM options_trades WHERE id=?''', (tid,))
         _erow = _cur.fetchone()
         _conn.close()
-        if _row:
+        if _row and _erow:
             from datetime import date as _date
-            _entry_date = _erow[0] if _erow else None
-            _days = ((_date.today() - _date.fromisoformat(_entry_date)).days
-                     if _entry_date else 0)
-            _actual_pnl = exit_value - (_row[1] or 0)
+            _days    = ((_date.today() - _date.fromisoformat(_erow[0])).days
+                        if _erow[0] else 0)
+            _premium = _erow[1] or 0
+            _pnl     = round(exit_value - _premium, 2)   # actual P&L, not exit value
             log_trade_outcome(
                 trade_id=tid, calc_log_id=_row[0],
                 predicted_ev=_row[1], predicted_wr=_row[2],
-                actual_pnl=round(exit_value, 2),
+                actual_pnl=_pnl,
                 exit_reason='MANUAL',
                 days_held=_days,
             )
@@ -1600,6 +1641,360 @@ def _run_learning_analysis(chat_id: str):
     send_telegram("\n".join(lines), chat_id)
 
 
+# ── OPT_SCALP: calculator ────────────────────────────────────────────────────
+
+def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
+    """
+    Scalp calculator: find ATM weekly call (DTE 7-12), check 6 gates.
+    mode: 'A' (equity A+ trigger) or 'B' (HIGH news conviction trigger)
+    Returns dict with verdict='ENTER' or error key.
+    """
+    sym = symbol.upper()
+
+    underlying = get_underlying_price(sym)
+    if not underlying:
+        return {'error': f'Cannot fetch price for {sym}'}
+
+    iv_data  = get_iv_rank(sym)
+    iv_rank  = (iv_data.get('iv_rank', 50.0) if iv_data else 50.0) or 50.0
+
+    chain_data = get_chain(sym)
+    if not chain_data or 'chain' not in chain_data:
+        return {'error': f'Cannot fetch option chain for {sym}'}
+
+    expiries = [item['expiry'] for item in chain_data['chain']]
+    expiry   = _find_expiry(expiries, SCALP_MIN_DTE, SCALP_MAX_DTE)
+    if not expiry:
+        return {'error': f'{sym}: no expiry in DTE {SCALP_MIN_DTE}-{SCALP_MAX_DTE}'}
+
+    dte    = days_to_expiry(expiry)
+    avail  = _actual_strikes(sym, expiry)
+    strike = _find_nearest_strike(avail, underlying) if avail else round(underlying, 0)
+
+    q = get_quote(sym, expiry, strike)
+    if not q:
+        return {'error': f'Cannot fetch quote for {sym} {strike}'}
+
+    bid = float(q.get('bid') or 0)
+    ask = float(q.get('ask') or 0)
+    if bid <= 0 or ask <= 0:
+        return {'error': f'No valid bid/ask for {sym} {strike}'}
+
+    mid       = round((bid + ask) / 2, 4)
+    ba_spread = round(ask - bid, 4)
+    delta     = q.get('delta')
+
+    contracts  = max(1, int(SCALP_TRADE_SIZE / (mid * 100)))
+    total_cost = round(mid * 100 * contracts, 2)
+
+    # 6 gates
+    dte_gate     = SCALP_MIN_DTE <= dte <= SCALP_MAX_DTE
+    delta_gate   = (delta is not None and SCALP_DELTA_MIN <= abs(delta) <= SCALP_DELTA_MAX)
+    spread_gate  = ba_spread <= SCALP_MAX_SPREAD
+    ivrank_gate  = iv_rank < SCALP_MAX_IV_RANK
+    premium_gate = mid <= SCALP_MAX_PREMIUM
+    size_gate    = total_cost <= 300
+
+    gates      = {'dte': dte_gate, 'delta': delta_gate, 'spread': spread_gate,
+                  'iv_rank': ivrank_gate, 'premium': premium_gate, 'size': size_gate}
+    gates_pass = sum(gates.values())
+    verdict    = 'ENTER' if gates_pass == 6 else 'SKIP'
+
+    stop_value   = round(total_cost * SCALP_STOP_MULT, 2)
+    target_value = round(total_cost * SCALP_PROFIT_MULT, 2)
+
+    return {
+        'strategy':     'OPT_SCALP',
+        'symbol':       sym,
+        'mode':         mode,
+        'underlying':   underlying,
+        'expiry':       expiry,
+        'dte':          dte,
+        'strike':       strike,
+        'iv_rank':      iv_rank,
+        'bid':          bid,
+        'ask':          ask,
+        'mid':          mid,
+        'ba_spread':    ba_spread,
+        'delta':        delta,
+        'contracts':    contracts,
+        'total_cost':   total_cost,
+        'stop_value':   stop_value,
+        'target_value': target_value,
+        'gates':        gates,
+        'gates_pass':   gates_pass,
+        'verdict':      verdict,
+    }
+
+
+# ── OPT_SCALP: trigger scanners ───────────────────────────────────────────────
+
+def _mode_a_scan() -> list[str]:
+    """Return SCALP_UNIVERSE symbols with an A+ LONG scan entry in the last 10 min."""
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn   = sqlite3.connect(DB_PATH)
+        c      = conn.cursor()
+        today  = date.today().isoformat()
+        cutoff = (datetime.now(ET) - timedelta(minutes=10)).strftime('%H:%M:%S')
+        c.execute(
+            "SELECT DISTINCT symbol FROM scan_log "
+            "WHERE scan_date=? AND scan_time>=? AND grade='A+' AND direction='LONG'",
+            (today, cutoff),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0] in SCALP_UNIVERSE]
+    except Exception as e:
+        print(f"[scalp] mode_a_scan error: {e}")
+        return []
+
+
+def _mode_b_scan() -> list[str]:
+    """Return SCALP_UNIVERSE symbols with HIGH BULL conviction in last SCALP_NEWS_HOURS."""
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn   = sqlite3.connect(DB_PATH)
+        c      = conn.cursor()
+        cutoff = (datetime.now() - timedelta(hours=SCALP_NEWS_HOURS)).isoformat()
+        c.execute(
+            "SELECT symbol FROM ticker_conviction "
+            "WHERE tier='HIGH' AND direction='BULL' AND last_signal_at>=?",
+            (cutoff,),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0] in SCALP_UNIVERSE]
+    except Exception as e:
+        print(f"[scalp] mode_b_scan error: {e}")
+        return []
+
+
+# ── OPT_SCALP: execution ──────────────────────────────────────────────────────
+
+def _execute_scalp_bg(sym: str, calc: dict, chat_id: str):
+    """Buy ATM weekly call. Logs to options_trades with strategy='OPT_SCALP'."""
+    expiry    = calc['expiry']
+    strike    = calc['strike']
+    contracts = calc['contracts']
+    mid       = calc['mid']
+
+    filled_at = None
+    for attempt in range(MAX_FILL_TRIES):
+        limit_price = round(mid + attempt * 0.05, 2)
+        if attempt > 0:
+            send_telegram(
+                f"⏳ *{sym} scalp* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f}",
+                chat_id,
+            )
+        payload = {
+            'symbol':      sym,
+            'expiry':      expiry,
+            'strike':      strike,
+            'right':       'C',
+            'qty':         contracts,
+            'action':      'BUY',
+            'order_type':  'LIMIT',
+            'limit_price': limit_price,
+        }
+        resp = bridge_post('/options/order', payload)
+        if not resp or 'orderId' not in resp:
+            err = (resp or {}).get('error', 'bridge unreachable')
+            send_telegram(f"❌ *{sym} scalp order failed* (attempt {attempt+1}): {err}", chat_id)
+            return
+        order_id = resp['orderId']
+        time.sleep(FILL_WAIT_SEC)
+
+        status = get_order_status(order_id)
+        if status and status.get('filled', 0) >= contracts:
+            filled_at = limit_price
+            break
+        if status and status.get('status') in ('Submitted', 'PreSubmitted') and _is_paper():
+            filled_at = limit_price   # paper fill
+            break
+        if attempt < MAX_FILL_TRIES - 1:
+            cancel_all_orders()
+            time.sleep(2)
+
+    if filled_at is None:
+        cancel_all_orders()
+        send_telegram(
+            f"❌ *{sym} scalp order cancelled*\nNot filled within ${MAX_SLIPPAGE:.2f} slippage",
+            chat_id,
+        )
+        return
+
+    premium_dollar = round(filled_at * 100 * contracts, 2)
+    stop_value     = round(premium_dollar * SCALP_STOP_MULT, 2)
+    target_value   = round(premium_dollar * SCALP_PROFIT_MULT, 2)
+
+    trade_id = log_options_trade(
+        strategy='OPT_SCALP',
+        symbol=sym,
+        cap_type='SCALP',
+        underlying_price=calc.get('underlying'),
+        expiry=expiry,
+        contracts=contracts,
+        delta_entry=calc.get('delta'),
+        iv_rank_entry=calc.get('iv_rank'),
+        iv_pct_entry=None,
+        premium_paid=premium_dollar,
+        max_profit=None,
+        max_loss=premium_dollar,
+        entry_grade='SCALP',
+        entry_thesis=f"OPT_SCALP Mode {calc.get('mode','?')} · ATM ${strike} · {calc.get('dte','?')}d",
+        long_strike=strike,
+        right='C',
+    )
+
+    mode_label = 'A+ equity scan' if calc.get('mode') == 'A' else 'HIGH news conviction'
+    send_telegram(
+        f"✅ *{sym} SCALP entered* [trade #{trade_id}]\n"
+        f"Mode {calc.get('mode','?')} ({mode_label})\n"
+        f"ATM ${strike} call · {calc.get('dte')}d · {contracts} contract(s)\n"
+        f"Fill: ${filled_at:.2f} = ${premium_dollar:.0f} deployed\n"
+        f"Target: ${target_value:.0f} (+80%) | Stop: ${stop_value:.0f} (-50%) | Max hold: 3 days",
+        chat_id,
+    )
+    _check_scalp_learning_milestone(chat_id)
+
+
+def _check_scalp_learning_milestone(chat_id: str):
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        c    = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM options_trades WHERE strategy='OPT_SCALP' AND status!='OPEN'")
+        cnt = c.fetchone()[0]
+        conn.close()
+        if cnt > 0 and cnt % 10 == 0:
+            _run_scalp_learning_report(chat_id, cnt)
+    except Exception:
+        pass
+
+
+def _run_scalp_learning_report(chat_id: str, cnt: int):
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        c    = conn.cursor()
+        c.execute(
+            "SELECT exit_reason, return_pct, entry_thesis FROM options_trades "
+            "WHERE strategy='OPT_SCALP' AND status!='OPEN'",
+        )
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            return
+        wins  = sum(1 for r in rows if (r[1] or 0) > 0)
+        wr    = round(wins / len(rows) * 100, 1)
+        avg_r = round(sum(r[1] or 0 for r in rows) / len(rows), 1)
+        exit_reasons: dict[str, int] = {}
+        for r in rows:
+            k = r[0] or 'UNKNOWN'
+            exit_reasons[k] = exit_reasons.get(k, 0) + 1
+        lines = [
+            f"⚡ *Scalp Learning Report — {cnt} closed trades*",
+            f"WR: {wr}% | Avg return: {avg_r:+.1f}%",
+            "",
+            "*Exit reasons:*",
+        ] + [f"   {k}: {v}" for k, v in sorted(exit_reasons.items(), key=lambda x: -x[1])]
+        if cnt < 30:
+            lines.append("\n⚠️ Advisory only — small sample (<30 trades)")
+        send_telegram("\n".join(lines), chat_id)
+    except Exception as e:
+        print(f"[scalp] learning report error: {e}")
+
+
+# ── OPT_SCALP: main scan loop (called every ~5 min) ──────────────────────────
+
+def scalp_scan_loop():
+    """Check Mode A (equity A+) and Mode B (HIGH news) triggers. Auto-execute on 6/6 gates."""
+    global _scalp_triggered
+
+    n     = datetime.now(ET)
+    start = n.replace(hour=SCALP_ENTRY_HOUR_START[0],  minute=SCALP_ENTRY_HOUR_START[1],
+                      second=0, microsecond=0)
+    cutoff = n.replace(hour=SCALP_ENTRY_HOUR_CUTOFF[0], minute=SCALP_ENTRY_HOUR_CUTOFF[1],
+                       second=0, microsecond=0)
+    if not (start <= n <= cutoff):
+        return
+
+    if _paused:
+        return
+
+    OPT_CHAT = os.getenv('OPTIONS_TELEGRAM_CHAT_ID', '')
+    if not OPT_CHAT:
+        return
+
+    # Budget gate: count open OPT_SCALP positions
+    open_trades  = get_open_options_trades()
+    open_scalps  = [t for t in open_trades if t.get('strategy') == 'OPT_SCALP']
+    if len(open_scalps) >= MAX_SCALP_POSITIONS:
+        return
+
+    # Expire 4-hour cooldown entries
+    now   = datetime.now()
+    stale = [sym for sym, ts in list(_scalp_triggered.items())
+             if (now - ts).total_seconds() > 4 * 3600]
+    for sym in stale:
+        del _scalp_triggered[sym]
+
+    # Gather candidates from both modes; Mode A takes priority
+    seen: set[str] = set()
+    candidates: list[tuple[str, str]] = []
+    for sym in _mode_a_scan():
+        if sym not in _scalp_triggered and sym not in seen:
+            candidates.append((sym, 'A'))
+            seen.add(sym)
+    for sym in _mode_b_scan():
+        if sym not in _scalp_triggered and sym not in seen:
+            candidates.append((sym, 'B'))
+            seen.add(sym)
+
+    if not candidates:
+        return
+
+    sym, mode = candidates[0]   # one trade per scan cycle
+
+    calc = run_scalp_calculator(sym, mode)
+    if 'error' in calc:
+        print(f"[scalp] {sym} mode {mode}: {calc['error']}")
+        return
+
+    failed = [k for k, v in calc['gates'].items() if not v]
+    mode_label = 'A+ equity' if mode == 'A' else 'HIGH news'
+
+    if calc['verdict'] != 'ENTER':
+        print(f"[scalp] {sym} mode {mode}: SKIP — {', '.join(failed)} gate(s) failed")
+        send_telegram(
+            f"⚡ *Scalp signal: {sym}* (Mode {mode} — {mode_label})\n"
+            f"SKIP — {', '.join(failed)} gate{'s' if len(failed) > 1 else ''} failed\n"
+            f"Mid ${calc['mid']:.2f} | delta {calc.get('delta') or '?'} | IVR {calc['iv_rank']:.0f}%",
+            OPT_CHAT,
+        )
+        _scalp_triggered[sym] = now
+        return
+
+    # All 6 gates pass — auto-execute
+    _scalp_triggered[sym] = now
+    send_telegram(
+        f"⚡ *Scalp trigger: {sym}* (Mode {mode} — {mode_label})\n"
+        f"ATM ${calc['strike']} call · {calc['dte']}d · {calc['contracts']} contract(s)\n"
+        f"Mid ${calc['mid']:.2f} | delta {calc.get('delta') or '?'} | IVR {calc['iv_rank']:.0f}%\n"
+        f"Total: ${calc['total_cost']:.0f} | Stop: ${calc['stop_value']:.0f} | "
+        f"Target: ${calc['target_value']:.0f}\n"
+        f"⏳ Auto-executing...",
+        OPT_CHAT,
+    )
+    t = threading.Thread(target=_execute_scalp_bg, args=(sym, calc, OPT_CHAT), daemon=True)
+    t.start()
+
+
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 def cmd_buy(sym: str, qty: int, chat_id: str):
@@ -1639,9 +2034,34 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
     msg = format_calc_message(calc)
     send_telegram(msg, chat_id)
 
-    # Only add to pending if verdict allows trading (ENTER or ENTER_REDUCED)
-    verdict = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
-    if verdict in ('ENTER', 'ENTER_REDUCED'):
+    verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+    calc_log_id = calc.get('calc_log_id')
+    strategy    = calc.get('strategy', 'BULL_SPREAD')
+
+    if verdict == 'ENTER':
+        # Phase 1: 5/5 gates → auto-execute immediately, no CONFIRM needed
+        trade = calc.get('trade')
+        if trade:
+            new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
+            if can_open_position(new_premium, chat_id):
+                send_telegram(
+                    f"⚡ *Auto-executing {sym}* — 5/5 gates passed, no confirmation needed",
+                    chat_id,
+                )
+                if strategy == 'LEAP':
+                    threading.Thread(
+                        target=_execute_leap_bg,
+                        args=(sym, trade, chat_id, calc_log_id),
+                        daemon=True,
+                    ).start()
+                else:
+                    threading.Thread(
+                        target=_execute_spread_bg,
+                        args=(sym, trade, chat_id, calc_log_id),
+                        daemon=True,
+                    ).start()
+    elif verdict == 'ENTER_REDUCED':
+        # 4/5 gates → send CONFIRM prompt as before
         _pending[chat_id] = {
             'action':     'spread_confirm',
             'symbol':     sym,
@@ -2197,7 +2617,36 @@ def _process_pending_suggestions():
     except Exception:
         pass
 
-    if verdict in ('ENTER', 'ENTER_REDUCED'):
+    if verdict == 'ENTER':
+        # Phase 1: 5/5 gates → auto-execute immediately
+        msg = format_calc_message(calc)
+        send_telegram(msg, OPT_CHAT)
+        update_suggestion_status(sug_id, 'SENT')
+        trade = calc.get('trade')
+        if trade:
+            new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
+            if can_open_position(new_premium):
+                send_telegram(
+                    f"⚡ *Auto-executing {sym}* — 5/5 gates passed (HIGH conviction auto-suggest)",
+                    OPT_CHAT,
+                )
+                strategy = calc.get('strategy', 'BULL_SPREAD')
+                if strategy == 'LEAP':
+                    threading.Thread(
+                        target=_execute_leap_bg,
+                        args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
+                        daemon=True,
+                    ).start()
+                else:
+                    threading.Thread(
+                        target=_execute_spread_bg,
+                        args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
+                        daemon=True,
+                    ).start()
+            else:
+                update_suggestion_status(sug_id, 'NO_TRADE')
+    elif verdict == 'ENTER_REDUCED':
+        # 4/5 gates → send CONFIRM prompt
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
         _pending[OPT_CHAT] = {
@@ -2227,8 +2676,14 @@ def _process_pending_suggestions():
 
 def main():
     global _last_update_id
+    if os.getenv('TRADING_MODE', 'paper') == 'live':
+        if os.getenv('PROD_OPTIONS_ENABLED', 'false').lower() != 'true':
+            print("PROD_OPTIONS_ENABLED is not 'true' in .env — exiting.")
+            sys.exit(0)
+
     print("[options_trader] started — polling Telegram")
     _suggestion_check_counter = 0
+    _scalp_counter            = 0
     while True:
         try:
             # Purge expired pending entries; mark timed-out suggestions EXPIRED
@@ -2250,6 +2705,15 @@ def main():
                     _process_pending_suggestions()
                 except Exception as _se:
                     print(f"[options_trader] suggestion poller error: {_se}")
+
+            # Scalp scan every ~5 min (30 × 10s sleep)
+            _scalp_counter += 1
+            if _scalp_counter >= 30:
+                _scalp_counter = 0
+                try:
+                    scalp_scan_loop()
+                except Exception as _sce:
+                    print(f"[options_trader] scalp scan error: {_sce}")
 
             updates = poll_telegram()
             for update in updates:
