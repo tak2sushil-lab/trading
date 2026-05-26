@@ -1,6 +1,6 @@
 # Claude Code — Trading System Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: May 25 2026
+Last updated: May 26 2026
 
 ---
 
@@ -145,7 +145,8 @@ Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 1
 
 | Date | Holiday |
 |------|---------|
-| May 25 | Memorial Day ← **next closed day** |
+| ~~May 25~~ | ~~Memorial Day~~ |
+| Jun 19 | Juneteenth ← **next closed day** |
 | Jun 19 | Juneteenth |
 | Jul 3 | Independence Day (observed) |
 | Sep 7 | Labor Day |
@@ -156,6 +157,24 @@ Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 1
 
 ---
 
+## Go-Live Pre-Flight Checklist (before June 25% capital phase)
+
+These must be verified/built before any real-money trading begins. Do NOT go live until all are ticked.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | **Gateway reconnect simulation test** | ⬜ pending | Kill bridge mid-scan, confirm freeze Telegram fires, no orders placed |
+| 2 | **Partial fill handling in place_trade()** | ⬜ pending | Prod orders can partially fill; paper always fills 100%. Add `filled_qty` tracking before 50% capital phase |
+| 3 | **IBKR market data subscriptions** | ⬜ pending | Paper uses `reqMarketDataType(3)` (delayed). Prod needs live subscriptions for all 159 symbols. Verify none return Error 10089 |
+| 4 | **Buying power pre-check** | ⬜ pending | Paper ignores buying power limits; prod hard-rejects. Add pre-order check: `available_cash >= position_cost` before submitting |
+| 5 | **TFSA isolation double-check** | ⬜ pending | Confirm `BRIDGE_URL` in prod `.env` targets port 4002 Individual account (U22303375), never 4001 TFSA (U15022563). CRA compliance |
+| 6 | **PROD_EQUITY_ENABLED flag test** | ⬜ pending | Flip flag in dry-run, confirm orders reach paper Individual account, not TFSA |
+| 7 | **Prod `.env` credentials audit** | ⬜ pending | Never overwritten by `deploy_to_prod.sh` — verify before each deploy |
+| 8 | **watchman.py exit logging** | ⬜ pending | Wire `log_trade_outcome()` before options paper trading generates real outcomes |
+| 9 | **backtester_options.py Phase 5** | ⬜ pending | Complete after first options paper trade closes |
+
+---
+
 ## Known Issues (Active)
 
 | Issue | Status |
@@ -163,6 +182,25 @@ Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 1
 | watchman.py exits not logged | Wire log_trade_outcome() |
 | backtester_options.py Phase 5 | After first paper trade |
 | Short side WR gap (50% vs 77% long) | Monitor 60-day window; 3-scan fix + DNA modifiers now in place |
+
+## Changes Applied May 26 2026 (May 25 incident postmortem)
+
+Root cause: gateway reconnect mid-scan → filled orders returned Cancelled → reconcile adopted orphans → 24 phantom trades.
+
+| Change | Details |
+|--------|---------|
+| place_trade() Cancelled verify | Before treating Cancelled as failure, check IBKR portfolio; record fill if position exists |
+| reconcile: close orphans immediately | Market order → limit order (yfinance price) → Telegram alert. No more adoption of phantom positions |
+| reconcile: handle short orphans | Was checking `qty > 0` only. Now handles `qty < 0` (BUY to close) |
+| MAX_OPEN bypass fix | `attempted` counter in all 4 order-placing loops (bull, bear, pre-market, catalyst override) so failed orders count toward cap |
+| 3-layer gateway stability gate | Layer 1: bridge connected check. Layer 2: 10-min post-reconnect freeze. Layer 3: IBKR/DB parity check. All block new entries; monitoring always runs |
+| Telegram backoff (options_trader) | DNS failures back off to 60s max; was hammering every 10s causing 4 service restarts and zero options messages all day |
+| RECONCILED exclusion | All trades queries in database.py and learner.py filter `setup_type != 'RECONCILED'` — phantom trades never touch WR or nightly learner weights |
+| USAR close | Limit BUY order (yfinance price) cleared the orphan short position; market orders fail with Error 10089 (no data subscription) — limit order bypasses this |
+
+**Data note:** Today's 26 trades are all setup_type='RECONCILED'. They are excluded from all WR, P&L, sector grade, and learner calculations. Real strategy P&L for May 26 = $0.
+
+---
 
 ## Changes Applied May 22 2026 (postmortem-driven)
 
