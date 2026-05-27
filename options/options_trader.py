@@ -2792,11 +2792,18 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
     label = 'HIGH conviction auto-suggest' if source == 'queue' else 'proactive recycle'
 
     if verdict == 'ENTER':
+        trade = calc.get('trade')
+        # Guard: net_debit=0 means options pricing couldn't be fetched (bridge timeout).
+        # Never place a $0 order — treat as transient data error and re-queue.
+        if not trade or not trade.get('net_debit'):
+            print(f"[options_trader] {sym} ENTER blocked — net_debit=0 (pricing unavailable), re-queuing")
+            if sug_id:
+                update_suggestion_status(sug_id, 'PENDING')
+            return
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
         if sug_id:
             update_suggestion_status(sug_id, 'SENT')
-        trade = calc.get('trade')
         if trade:
             new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
             if can_open_position(new_premium):
@@ -2883,18 +2890,9 @@ def _proactive_recycle(OPT_CHAT: str):
     sym = candidates[0]
     _proactive_cooldown[sym] = now   # claim cooldown before network calls
 
-    liq_note = session_liquidity_note()
-    send_telegram(
-        f"♻️ *Proactive recycle: {sym}* (slot free — HIGH conviction)\n"
-        f"⏳ Running SPREAD vs LEAP analysis..."
-        + (f"\n{liq_note}" if liq_note else "")
-        + f"\n_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
-        OPT_CHAT,
-    )
-
     calc = run_strategy_comparison(sym, 1)
     if 'error' in calc:
-        send_telegram(f"❌ {sym} proactive error: {calc['error']}", OPT_CHAT)
+        print(f"[options_trader] {sym} proactive error: {calc['error']} — cooldown applied")
         return
 
     calc        = _auto_qty_calc(calc)
@@ -2902,16 +2900,8 @@ def _proactive_recycle(OPT_CHAT: str):
     verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
 
     if verdict == 'SKIP':
-        gs     = calc.get('entry_gates', {})
-        mc     = calc.get('mc_ev', {})
-        gates  = gs.get('gates_pass', 0)
-        ev     = mc.get('ev_dollar')
-        ev_str = f"MC EV ${ev:+.0f}" if ev is not None else "no EV"
-        send_telegram(
-            f"📊 *{sym} recycle scan: SKIP* ({gates}/5 gates, {ev_str})\n"
-            f"Setup not ready — 3h cooldown applied.",
-            OPT_CHAT,
-        )
+        gates = (calc.get('entry_gates') or {}).get('gates_pass', 0)
+        print(f"[options_trader] {sym} proactive SKIP ({gates}/5 gates) — silent")
         return
 
     _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id, source='recycle')
