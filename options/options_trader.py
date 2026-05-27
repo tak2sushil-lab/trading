@@ -2743,32 +2743,17 @@ def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
         return
 
     if not can_open_position():
-        cs = capital_status()
-        send_telegram(
-            f"📋 *{sym}* queued — {cs['slots_used']}/{MAX_OPTIONS_POSITIONS} slots used, "
-            f"${cs['available']:.0f} available. Will evaluate when a position closes.",
-            OPT_CHAT,
-        )
+        print(f"[options_trader] {sym} queued — no slots available, will retry")
         update_suggestion_status(sug_id, 'PENDING')
         return
-
-    liq_note = session_liquidity_note()
-    cs       = capital_status()
-    send_telegram(
-        f"📡 *Auto-analysis: {sym}* (HIGH conviction)\n"
-        f"⏳ Running SPREAD vs LEAP comparison..."
-        + (f"\n{liq_note}" if liq_note else "")
-        + f"\n_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
-        OPT_CHAT,
-    )
 
     calc = run_strategy_comparison(sym, 1)
     if 'error' in calc:
         err = calc['error']
-        # Bridge/data outages are transient — reset to PENDING so it retries next cycle
+        # Bridge/data outages are transient — reset to PENDING silently, no Telegram noise
         is_transient = any(w in str(err).lower() for w in ('connection', 'timeout', 'bridge', 'empty'))
         if is_transient:
-            send_telegram(f"⚠️ {sym} temporary data error — will retry: {err}", OPT_CHAT)
+            print(f"[options_trader] {sym} transient error, will retry: {err}")
             update_suggestion_status(sug_id, 'PENDING')
         else:
             send_telegram(f"❌ {sym} calculator error: {err}", OPT_CHAT)
@@ -2787,16 +2772,8 @@ def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
 
     if verdict == 'SKIP':
         gs     = calc.get('entry_gates', {})
-        mc     = calc.get('mc_ev', {})
         gates  = gs.get('gates_pass', 0)
-        ev     = mc.get('ev_dollar')
-        ev_str = f"MC EV ${ev:+.0f}" if ev is not None else "no EV"
-        cmp_note = f"\n_{comparison}_" if comparison else ""
-        send_telegram(
-            f"📊 *{sym} auto-analysis: SKIP* ({gates}/5 gates, {ev_str}){cmp_note}\n"
-            f"Conviction is HIGH but setup not ready. No action needed.",
-            OPT_CHAT,
-        )
+        print(f"[options_trader] {sym} SKIP ({gates}/5 gates) — HIGH conviction but setup not ready, silent")
         update_suggestion_status(sug_id, 'NO_TRADE')
     else:
         _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id,
