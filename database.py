@@ -418,7 +418,8 @@ def get_open_trades():
     c      = conn.cursor()
     c.execute('''SELECT id, symbol, entry_price, shares, target_price,
                         stop_price, setup_type, confidence, side
-                 FROM trades WHERE status='OPEN' ''')
+                 FROM trades WHERE status='OPEN'
+                   AND setup_type != 'RECONCILED' ''')
     rows   = c.fetchall()
     conn.close()
     trades = []

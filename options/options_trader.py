@@ -1688,7 +1688,7 @@ def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
         return {'error': f'Cannot fetch price for {sym}'}
 
     iv_data  = get_iv_rank(sym)
-    iv_rank  = (iv_data.get('iv_rank', 50.0) if iv_data else 50.0) or 50.0
+    iv_rank  = iv_data.get('iv_rank', 50.0) if iv_data else 50.0
 
     chain_data = get_chain(sym)
     if not chain_data or 'chain' not in chain_data:
@@ -1757,6 +1757,72 @@ def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
         'gates_pass':   gates_pass,
         'verdict':      verdict,
     }
+
+
+# ── OPT_SCALP: cooldown persistence ──────────────────────────────────────────
+
+def _scalp_cooldown_init():
+    """Create scalp_cooldown table and load persisted entries into _scalp_triggered."""
+    global _scalp_triggered
+    import sqlite3
+    from database import DB_PATH
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scalp_cooldown "
+            "(symbol TEXT PRIMARY KEY, triggered_at TEXT NOT NULL)"
+        )
+        conn.commit()
+        # Load non-expired entries — 4h window
+        cutoff = (datetime.now(ET) - timedelta(hours=4)).isoformat()
+        rows = conn.execute(
+            "SELECT symbol, triggered_at FROM scalp_cooldown WHERE triggered_at >= ?",
+            (cutoff,)
+        ).fetchall()
+        conn.close()
+        for sym, ts_str in rows:
+            try:
+                _scalp_triggered[sym] = datetime.fromisoformat(ts_str)
+            except Exception:
+                pass
+        if _scalp_triggered:
+            print(f"[scalp] restored cooldown for {len(_scalp_triggered)} symbol(s): {list(_scalp_triggered)}")
+    except Exception as e:
+        print(f"[scalp] cooldown init error (non-fatal): {e}")
+
+
+def _scalp_cooldown_set(sym: str, ts: datetime):
+    """Record a trigger in memory and DB."""
+    _scalp_triggered[sym] = ts
+    import sqlite3
+    from database import DB_PATH
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "INSERT OR REPLACE INTO scalp_cooldown (symbol, triggered_at) VALUES (?, ?)",
+            (sym, ts.isoformat())
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[scalp] cooldown write error (non-fatal): {e}")
+
+
+def _scalp_cooldown_expire(stale_syms: list):
+    """Remove expired symbols from memory and DB."""
+    for sym in stale_syms:
+        _scalp_triggered.pop(sym, None)
+    if not stale_syms:
+        return
+    import sqlite3
+    from database import DB_PATH
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.executemany("DELETE FROM scalp_cooldown WHERE symbol=?", [(s,) for s in stale_syms])
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[scalp] cooldown expire error (non-fatal): {e}")
 
 
 # ── OPT_SCALP: trigger scanners ───────────────────────────────────────────────
@@ -1978,8 +2044,7 @@ def scalp_scan_loop():
     now   = n
     stale = [sym for sym, ts in list(_scalp_triggered.items())
              if (now - ts).total_seconds() > 4 * 3600]
-    for sym in stale:
-        del _scalp_triggered[sym]
+    _scalp_cooldown_expire(stale)
 
     # Gather candidates from both modes; Mode A takes priority
     seen: set[str] = set()
@@ -2014,11 +2079,11 @@ def scalp_scan_loop():
             f"Mid ${calc['mid']:.2f} | delta {calc.get('delta') or '?'} | IVR {calc['iv_rank']:.0f}%",
             OPT_CHAT,
         )
-        _scalp_triggered[sym] = now
+        _scalp_cooldown_set(sym, now)
         return
 
     # All 6 gates pass — auto-execute
-    _scalp_triggered[sym] = now
+    _scalp_cooldown_set(sym, now)
     send_telegram(
         f"⚡ *Scalp trigger: {sym}* (Mode {mode} — {mode_label})\n"
         f"ATM ${calc['strike']} call · {calc['dte']}d · {calc['contracts']} contract(s)\n"
@@ -2880,6 +2945,7 @@ def main():
             print("PROD_OPTIONS_ENABLED is not 'true' in .env — exiting.")
             sys.exit(0)
 
+    _scalp_cooldown_init()   # restore 4h dedup from DB (survives restarts)
     print("[options_trader] started — polling Telegram")
     _suggestion_check_counter = 0
     _scalp_counter            = 0
@@ -2945,8 +3011,9 @@ def main():
             print(f"[options_trader] loop error: {e}")
             traceback.print_exc()
             import sys; sys.stdout.flush(); sys.stderr.flush()
-        # Back off during Telegram outages: cap at 60s so scalp scan still fires roughly on time
-        sleep_s = min(60, 10 + _tg_fail_streak * 2) if _tg_fail_streak > 5 else 10
+        # Back off during Telegram outages: ramp quickly (×2 per failure), cap at 60s
+        # Reaches 60s by ~6th failure — prevents the service-restart storm from May 26
+        sleep_s = min(60, 10 * (2 ** min(_tg_fail_streak, 3))) if _tg_fail_streak > 0 else 10
         time.sleep(sleep_s)
 
 

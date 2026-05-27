@@ -3730,7 +3730,7 @@ def reset_daily_state():
     global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
     global partial_done_trades, first_bar_strong_trades, key_levels, sector_strength
     global daily_sympathy_count, active_sympathy_triggers, sympathy_scan_done
-    global peak_session_pnl, pl_protect_active
+    global peak_session_pnl, pl_protect_active, _morning_pnl_snap
     traded_today             = set()
     daily_bull_count         = 0
     daily_bear_count         = 0
