@@ -604,18 +604,20 @@ def classify_headlines_batch(symbol: str,
         symbol=symbol, context=context, headlines=numbered
     )
     try:
-        text = _llm_call(prompt, max_tokens=80 * len(headlines))
+        text = _llm_call(prompt, max_tokens=200 * len(headlines))
         if '```' in text:
             parts = text.split('```')
             text  = parts[1].lstrip('json').strip() if len(parts) > 1 else text
         results = json.loads(text)
         if isinstance(results, list) and len(results) == len(headlines):
             return results
-        print(f"[LLM] {symbol} batch length mismatch ({len(results)} vs {len(headlines)}) — falling back")
-        return [None] * len(headlines)
+        print(f"[LLM] {symbol} batch length mismatch ({len(results)} vs {len(headlines)}) — retrying individually")
     except Exception as e:
-        print(f"[LLM] {symbol} batch classify error: {e}")
-        return [None] * len(headlines)
+        print(f"[LLM] {symbol} batch classify error: {e} — retrying individually")
+
+    # Fallback: classify each headline individually so a token-limit truncation
+    # doesn't zero out the entire batch.
+    return [classify_headline(symbol, it['title'], it.get('av_sentiment')) for it in headlines]
 
 
 # ── Per-ticker daily alert dedup ──────────────────────────────────────────────
