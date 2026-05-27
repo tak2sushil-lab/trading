@@ -76,6 +76,7 @@ OPTIONS_ACCOUNT_SIZE    = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
 OPTIONS_CIRCUIT_BREAKER = float(os.getenv('OPTIONS_CIRCUIT_BREAKER', '2000'))  # max realized loss
 OPTIONS_TOTAL_CAPITAL   = float(os.getenv('OPTIONS_TOTAL_CAPITAL',   '5000'))  # total pool
 MAX_OPTIONS_POSITIONS   = int(os.getenv('MAX_OPTIONS_POSITIONS',     '4'))     # max concurrent
+LEAP_ENABLED            = False   # LEAP needs more capital — re-enable when spread pool grows
 
 ET               = ZoneInfo('America/New_York')
 COMMISSION_RT    = 3.60    # round-trip per spread (2 legs × open + close)
@@ -814,7 +815,7 @@ def _auto_qty_calc(calc: dict) -> dict:
     calc['qty'] = auto_qty
     calc['net_debit_$']  = round(calc['net_debit'] * 100 * auto_qty, 2)
     if calc.get('max_profit_$') is not None:
-        calc['max_profit_$'] = round((calc.get('max_profit') or 0) * 100 * auto_qty, 2)
+        calc['max_profit_$'] = round((calc.get('max_profit_$') or 0) * auto_qty, 2)
     if calc.get('max_loss_$') is not None:
         calc['max_loss_$']   = round(calc['net_debit'] * 100 * auto_qty, 2)
     if isinstance(calc.get('trade'), dict):
@@ -832,11 +833,17 @@ def _auto_qty_calc(calc: dict) -> dict:
 
 def run_strategy_comparison(symbol: str, qty: int = 1) -> dict:
     """
-    Run both BULL_SPREAD and LEAP calculators. Return the one with higher MC EV
-    (or better gate score if EV is tied/unavailable). Attaches comparison summary.
+    Run BULL_SPREAD (always) and LEAP (when LEAP_ENABLED) calculators.
+    Returns the one with higher MC EV, or spread-only when LEAP is disabled.
     """
     sym = symbol.upper()
     spread_calc = run_calculator(sym, qty)
+
+    if not LEAP_ENABLED:
+        if 'error' not in spread_calc:
+            spread_calc['_comparison'] = 'SPREAD only (LEAP disabled)'
+        return spread_calc
+
     leap_calc   = run_leap_calculator(sym, qty)
 
     spread_err = 'error' in spread_calc
