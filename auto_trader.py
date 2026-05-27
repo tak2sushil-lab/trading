@@ -630,8 +630,11 @@ def get_regime():
             raise ValueError("SPY intraday bars empty or incomplete — market may not have opened yet")
         spy_price = float(spy_intra['Close'].iloc[-1])
 
-        # Prev close: IBKR daily bars exclude the incomplete current-day bar
-        spy_prev = float(spy_daily['Close'].iloc[-1]) if not spy_daily.empty else float(spy_intra['Open'].iloc[0])
+        # Prev close: exclude today's bar (present after close in both IBKR and yfinance daily)
+        today_d = datetime.now(ET).date()
+        spy_daily_prev = spy_daily[spy_daily.index.date < today_d] if not spy_daily.empty else spy_daily
+        spy_prev = (float(spy_daily_prev['Close'].iloc[-1]) if not spy_daily_prev.empty
+                    else float(spy_intra['Open'].iloc[0]))
         spy_chg  = (spy_price - spy_prev) / spy_prev * 100
         vix_val  = float(vix_intra['Close'].iloc[-1])
 
