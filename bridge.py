@@ -172,7 +172,7 @@ async def get_portfolio():
             "marketValue":   None,
             "unrealizedPnL": None,
             "realizedPnL":   None,
-        } for p in positions if p.position != 0]
+        } for p in positions if p.position != 0 and p.contract.secType == 'STK']
 
     # Fallback: portfolio cache (populated after reqAccountUpdates settles)
     items = ib.portfolio()
@@ -184,7 +184,7 @@ async def get_portfolio():
         "marketValue":   clean(p.marketValue),
         "unrealizedPnL": clean(p.unrealizedPNL),
         "realizedPnL":   clean(p.realizedPNL),
-    } for p in items if p.position != 0]
+    } for p in items if p.position != 0 and p.contract.secType == 'STK']
 
 # ── Get account summary ───────────────────────────────────
 @app.get("/account")

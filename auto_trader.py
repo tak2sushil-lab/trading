@@ -764,7 +764,7 @@ def reconcile_with_ibkr():
                         r_lmt = requests.post(
                             f"{BRIDGE}/order",
                             json={'symbol': sym, 'qty': close_qty,
-                                  'side': close_side, 'order_type': 'LMT',
+                                  'side': close_side, 'order_type': 'LIMIT',
                                   'limit_price': lmt},
                             timeout=10,
                         )
@@ -2239,7 +2239,7 @@ def poll_telegram_commands():
                         try:
                             # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
                             pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
-                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
+                            pnl_pct = ((t['entry_price'] - price) if is_short else (price - t['entry_price'])) / t['entry_price'] * 100
                             if ibkr_qty > 0:
                                 requests.post(f"{BRIDGE}/order",
                                               json={'symbol': sym, 'qty': qty,
@@ -2278,7 +2278,7 @@ def poll_telegram_commands():
                         try:
                             # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
                             pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
-                            pnl_pct = (price - t['entry_price']) / t['entry_price'] * 100
+                            pnl_pct = ((t['entry_price'] - price) if is_short else (price - t['entry_price'])) / t['entry_price'] * 100
                             if ibkr_qty > 0:
                                 requests.post(f"{BRIDGE}/order",
                                               json={'symbol': sym, 'qty': qty,
