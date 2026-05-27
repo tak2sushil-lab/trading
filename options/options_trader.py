@@ -1108,12 +1108,12 @@ def format_calc_message(calc: dict) -> str:
     gates_pass = gs.get('gates_pass', 0)
     ls         = calc.get('long_strike')
     ss         = calc.get('short_strike')
-    nd         = calc.get('net_debit', 0)
-    nd_dol     = calc.get('net_debit_$', 0)
-    mp_dol     = calc.get('max_profit_$', 0)
-    be         = calc.get('breakeven', 0)
-    be_pct     = calc.get('breakeven_pct', 0)
-    qty        = calc.get('qty', 1)
+    nd         = calc.get('net_debit') or 0
+    nd_dol     = calc.get('net_debit_$') or 0
+    mp_dol     = calc.get('max_profit_$') or 0
+    be         = calc.get('breakeven') or 0
+    be_pct     = calc.get('breakeven_pct') or 0
+    qty        = calc.get('qty') or 1
 
     # ── Expiry label ──────────────────────────────────────────────────────
     try:
@@ -2068,6 +2068,7 @@ def scalp_scan_loop():
     calc = run_scalp_calculator(sym, mode)
     if 'error' in calc:
         print(f"[scalp] {sym} mode {mode}: {calc['error']}")
+        _scalp_cooldown_set(sym, now)   # prevent tight retry on structural errors (no expiry etc.)
         return
 
     failed = [k for k, v in calc['gates'].items() if not v]

@@ -2153,35 +2153,43 @@ def poll_telegram_commands():
             elif text == 'STATUS':
                 ibkr    = get_ibkr_positions()
                 wr      = get_win_rate(days=30)
-                # Live P&L: sum unrealised from IBKR + realised from DB today
                 live_positions = {s: p for s, p in ibkr.items() if (p.get('qty') or 0) != 0}
-                live_upnl   = sum(p.get('unrealizedPnL', 0) or 0 for p in live_positions.values())
                 daily_rpnl  = get_daily_pnl()
-                total_pnl   = round(live_upnl + daily_rpnl['pnl'], 2)
-                total_invest = sum(
-                    (p.get('avgCost', 0) or 0) * abs(p.get('qty', 0) or 0)
-                    for p in live_positions.values()
-                )
                 losses = daily_rpnl['trades'] - daily_rpnl['wins']
                 n_open = len(live_positions)
+                pos_lines = []
+                live_upnl = 0.0
+                total_invest = 0.0
+                for sym, pos in sorted(live_positions.items()):
+                    qty      = int(abs(pos.get('qty', 0) or 0))
+                    avg      = pos.get('avgCost', 0) or 0
+                    mkt      = pos.get('marketPrice') or 0
+                    # IBKR doesn't push marketPrice immediately after restart — use live quote
+                    if not mkt and avg:
+                        mkt = get_live_price(sym) or avg
+                    is_short = (pos.get('qty', 0) or 0) < 0
+                    upnl     = pos.get('unrealizedPnL') or 0
+                    if not upnl and avg and mkt:
+                        upnl = (avg - mkt if is_short else mkt - avg) * qty
+                    live_upnl    += upnl
+                    total_invest += avg * qty
+                    pnl_pct = ((mkt - avg) / avg * 100) if avg else 0
+                    if is_short:
+                        pnl_pct = -pnl_pct
+                    side_tag = '(S)' if is_short else ''
+                    pos_lines.append(
+                        f"{sym}{side_tag} x{qty}  ${mkt:.2f}"
+                        f"  {upnl:+.0f} ({pnl_pct:+.1f}%)"
+                    )
+                total_pnl = round(live_upnl + daily_rpnl['pnl'], 2)
                 lines = [
                     f"Status | {datetime.now(ET).strftime('%H:%M ET')}",
                     f"P&L {total_pnl:+.2f} | R: {daily_rpnl['pnl']:+.2f} | uPnL: {live_upnl:+.2f}",
                     f"Trades: {daily_rpnl['trades']} ({daily_rpnl['wins']}W {losses}L) | Open: {n_open} | 30d WR: {wr:.0f}%",
                 ]
-                if live_positions:
+                if pos_lines:
                     lines.append('')
-                    for sym, pos in sorted(live_positions.items()):
-                        qty     = int(abs(pos.get('qty', 0) or 0))
-                        avg     = pos.get('avgCost', 0) or 0
-                        mkt     = pos.get('marketPrice', 0) or 0
-                        upnl    = pos.get('unrealizedPnL', 0) or 0
-                        pnl_pct = ((mkt - avg) / avg * 100) if avg else 0
-                        side_tag = '(S)' if (pos.get('qty', 0) or 0) < 0 else ''
-                        lines.append(
-                            f"{sym}{side_tag} x{qty}  ${mkt:.2f}"
-                            f"  {upnl:+.0f} ({pnl_pct:+.1f}%)"
-                        )
+                    lines.extend(pos_lines)
                     lines.append(f"Invested: ${total_invest:,.0f}")
                 else:
                     lines.append('No open positions.')

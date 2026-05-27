@@ -46,6 +46,13 @@ _CACHE_TTL  = {
     '1 min':     60,
 }
 
+# ── IV Rank cache ──────────────────────────────────────────
+# key: symbol  value: {'ts': datetime, 'result': dict}
+# IBKR reqHistoricalDataAsync for 1Y of daily IV takes 30-60s under pacing.
+# Cache for 4 hours — IV rank doesn't change meaningfully intraday.
+_iv_rank_cache: dict = {}
+_IV_RANK_CACHE_TTL = 4 * 3600  # 4 hours
+
 # Allow browser to connect
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +83,7 @@ async def _reconnect_loop():
         await asyncio.sleep(30)
         if not ib.isConnected():
             _hist_cache.clear()      # stale prices must not be served after reconnect
+            _iv_rank_cache.clear()
             _disconnect_count += 1
             print("[RECONNECT] IBKR disconnected — flushing cache and reconnecting...")
             if _disconnect_count == 1:
@@ -652,12 +660,21 @@ async def get_iv_rank(symbol: str):
     """
     Calculate IV Rank = (current_IV - 52w_low) / (52w_high - 52w_low) × 100
     Uses IBKR historical OPTION_IMPLIED_VOLATILITY bars for the underlying stock.
+    Result is cached 4 hours — IBKR reqHistoricalDataAsync takes 30-60s under pacing.
     """
-    sym      = symbol.upper()
-    stk      = Stock(sym, 'SMART', 'USD')
+    sym = symbol.upper()
+
+    # Serve cached value if still fresh
+    cached = _iv_rank_cache.get(sym)
+    if cached:
+        age = (datetime.utcnow() - cached['ts']).total_seconds()
+        if age < _IV_RANK_CACHE_TTL:
+            return cached['result']
+
+    stk = Stock(sym, 'SMART', 'USD')
     await ib.qualifyContractsAsync(stk)
 
-    bars     = await ib.reqHistoricalDataAsync(
+    bars = await ib.reqHistoricalDataAsync(
         stk, endDateTime='', durationStr='1 Y',
         barSizeSetting='1 day', whatToShow='OPTION_IMPLIED_VOLATILITY',
         useRTH=True, formatDate=1, keepUpToDate=False
@@ -665,21 +682,23 @@ async def get_iv_rank(symbol: str):
     if not bars or len(bars) < 20:
         return {"symbol": sym, "iv_rank": None, "error": "Insufficient IV history"}
 
-    iv_vals       = [b.close for b in bars if b.close and b.close > 0]
-    current_iv    = round(iv_vals[-1] * 100, 2)    # convert to % e.g. 0.38 → 38%
-    iv_52w_high   = round(max(iv_vals) * 100, 2)
-    iv_52w_low    = round(min(iv_vals) * 100, 2)
-    iv_rank       = round((iv_vals[-1] - min(iv_vals)) /
-                          (max(iv_vals) - min(iv_vals)) * 100, 1) if max(iv_vals) != min(iv_vals) else 50.0
+    iv_vals    = [b.close for b in bars if b.close and b.close > 0]
+    current_iv = round(iv_vals[-1] * 100, 2)
+    iv_52w_high = round(max(iv_vals) * 100, 2)
+    iv_52w_low  = round(min(iv_vals) * 100, 2)
+    iv_rank     = round((iv_vals[-1] - min(iv_vals)) /
+                        (max(iv_vals) - min(iv_vals)) * 100, 1) if max(iv_vals) != min(iv_vals) else 50.0
 
-    return {
-        "symbol":     sym,
-        "current_iv": current_iv,
+    result = {
+        "symbol":      sym,
+        "current_iv":  current_iv,
         "iv_52w_high": iv_52w_high,
         "iv_52w_low":  iv_52w_low,
         "iv_rank":     iv_rank,
         "note":        "buy when rank<30, sell when rank>60",
     }
+    _iv_rank_cache[sym] = {'ts': datetime.utcnow(), 'result': result}
+    return result
 
 
 @app.get("/options/iv_history/{symbol}")
