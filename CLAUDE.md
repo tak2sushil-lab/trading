@@ -12,7 +12,7 @@ Last updated: May 26 2026
 - **DB:** `trades.db` (primary), `trading.db`
 - **Bridge:** `http://localhost:8000`
 - **Clean run since:** May 1 2026 — do NOT change parameters without explicit user approval
-- **Universe:** 159 symbols (was 110 — 49 added May 24 2026 via DNA batch)
+- **Universe:** 163 symbols (159 after May 24 DNA batch + 4 added May 26: AEHR/APD/HXL/SSYS)
 
 ---
 
@@ -20,7 +20,7 @@ Last updated: May 26 2026
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.sushil.trading.<name>
-# Services: gateway | bridge | autotrader | news_engine | options_trader
+# Services: gateway | bridge | autotrader | news_engine | options_trader | watchman
 curl -s http://localhost:8000/   # verify bridge is up
 ```
 
@@ -47,7 +47,7 @@ options/
   engine.py                  — HV30, 5-gate, Greeks, MC EV
   news_engine.py             — Groq/Llama-3.3-70b (free), 30-min scan
   options_trader.py          — OPT commands + calculator + OPT_SCALP auto-scalp engine
-  watchman.py                — 15-min monitor (start manually when first position opens)
+  watchman.py                — 15-min monitor (launchd-managed, always running — KeepAlive=true)
   learner_options.py         — nightly what-if analysis
   backtester_options.py      — B-S backtest [Phase 5 update pending]
 
@@ -338,7 +338,7 @@ All 6 phases complete + OPT_SCALP live. Paper trading active.
 - Strategy C: OPT_SCALP ATM weekly calls, auto-execute both modes
 - Capital: $4,000 spread/LEAP pool (4 slots) + $1,000 scalp pool (2 slots)
 - IBKR paper: use `reqMarketDataType(3)` for delayed IV/delta
-- watchman.py: start manually when first options position is open
+- watchman.py: launchd-managed (KeepAlive=true), always running — no manual start needed
 
 **Macro risk until VIX circuit breaker built:** VIX >25 AND SPY below 20MA → manual `OPT PAUSE`
 
