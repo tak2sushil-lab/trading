@@ -67,9 +67,18 @@ async def _connect_ibkr() -> bool:
     for cid in range(10, 20):
         try:
             await ib.connectAsync(host=IBKR_HOST, port=IBKR_PORT, clientId=cid)
-            # Subscribe to account updates so ib.portfolio() cache is populated
+            # reqAccountUpdates populates ib.portfolio() with prices + P&L
             ib.reqAccountUpdates(True, '')
             await asyncio.sleep(3)
+            # Subscribe streaming market data for any held positions so portfolio
+            # prices stay live (reqAccountUpdates alone doesn't guarantee price pushes)
+            for pos in ib.positions():
+                if pos.position != 0 and pos.contract.secType == 'STK':
+                    try:
+                        await ib.qualifyContractsAsync(pos.contract)
+                        ib.reqMktData(pos.contract, '', False, False)
+                    except Exception:
+                        pass
             return True
         except Exception:
             continue
@@ -163,27 +172,38 @@ async def get_quote(symbol: str):
 # ── Get portfolio positions ───────────────────────────────
 @app.get("/portfolio")
 async def get_portfolio():
-    # reqPositions() is the reliable explicit request; portfolio() cache may be empty
-    # if reqAccountUpdates subscription hasn't pushed data yet (e.g. weekend reconnects)
-    if not ib.positions():
-        ib.reqPositions()
-        await asyncio.sleep(2)
+    # ib.portfolio() has live prices via reqAccountUpdates; prefer it.
+    # ib.positions() is more reliable for qty/cost but has no price data.
+    # Merge: use portfolio() prices when available, positions() as qty fallback.
+    pf_items  = ib.portfolio()
+    price_map = {p.contract.symbol: p for p in pf_items}
 
     positions = ib.positions()
-    if positions:
-        return [{
-            "account":       p.account,
-            "symbol":        p.contract.symbol,
-            "qty":           p.position,
-            "avgCost":       clean(p.avgCost),
-            "marketPrice":   None,
-            "marketValue":   None,
-            "unrealizedPnL": None,
-            "realizedPnL":   None,
-        } for p in positions if p.position != 0 and p.contract.secType == 'STK']
+    if not positions:
+        ib.reqPositions()
+        await asyncio.sleep(2)
+        positions = ib.positions()
 
-    # Fallback: portfolio cache (populated after reqAccountUpdates settles)
-    items = ib.portfolio()
+    if positions:
+        result = []
+        for p in positions:
+            if p.position == 0 or p.contract.secType != 'STK':
+                continue
+            sym = p.contract.symbol
+            pf  = price_map.get(sym)
+            result.append({
+                "account":       p.account,
+                "symbol":        sym,
+                "qty":           p.position,
+                "avgCost":       clean(p.avgCost),
+                "marketPrice":   clean(pf.marketPrice)   if pf else None,
+                "marketValue":   clean(pf.marketValue)   if pf else None,
+                "unrealizedPnL": clean(pf.unrealizedPNL) if pf else None,
+                "realizedPnL":   clean(pf.realizedPNL)   if pf else None,
+            })
+        return result
+
+    # Last resort: portfolio cache only (no positions() data)
     return [{
         "symbol":        p.contract.symbol,
         "qty":           p.position,
@@ -192,7 +212,7 @@ async def get_portfolio():
         "marketValue":   clean(p.marketValue),
         "unrealizedPnL": clean(p.unrealizedPNL),
         "realizedPnL":   clean(p.realizedPNL),
-    } for p in items if p.position != 0 and p.contract.secType == 'STK']
+    } for p in pf_items if p.position != 0 and p.contract.secType == 'STK']
 
 # ── Get account summary ───────────────────────────────────
 @app.get("/account")
