@@ -234,6 +234,12 @@ FULL_UNIVERSE = list(dict.fromkeys([
     # MOMENTUM (18): standard behavior
     'UPST','CELH','HL','ZM','DUOL','RBLX','WFRD','TTD','TWLO','AG',
     'DOCU','ZS','HUBS','OKTA','DECK','LULU','PANW','AEM',
+    # ── May 26 2026 — deep-validated additions (bull+bear+OOS+stress+DNA) ─────
+    # AEHR  90.4% WR bull (N=73) / 100% WR bear (N=14) — SEMIS, MOMENTUM cluster
+    # APD   100% WR bull (N=9)  / 100% WR bear (N=9)  — COMMODITIES, INSTITUTIONAL — ⚠️ N=9, ~1.4 trades/yr, monitor to N=30
+    # HXL   95% WR bull (N=20) / 100% WR bear (N=26) — DEFENCE, INSTITUTIONAL — monitor to N=30
+    # SSYS  94.4% WR bull (N=54) / 89.7% WR bear (N=29) — TECH, MOMENTUM cluster
+    'AEHR', 'APD', 'HXL', 'SSYS',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
     # SMR(24%), SNOW(33%), CRWD(33%)
     # PANW(43% gap-and-go only → re-added May 24 via full A/A+ backtest: 93.2% WR)
@@ -264,6 +270,8 @@ INSTITUTIONAL_SYMBOLS = frozenset([
     'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
     'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
     'TPR','TT','TXT','YUM',
+    # May 26 2026 additions — ATR ~2-3%, gap_fill 0.46-0.48, institutional grind
+    'APD','HXL',
 ])
 # MOMENTUM: standard behavior (gap-go 71%, ATR ~5%) — no cluster overrides needed
 # OUTLIER: USAR only — anomalous behavior, treat as MOMENTUM (baseline)
@@ -352,6 +360,11 @@ SECTOR_MAP = {
     'DOCU':'TECH','ZS':'TECH','HUBS':'TECH','OKTA':'TECH','PANW':'TECH',
     'WFRD':'ENERGY',
     'HL':'COMMODITIES','AG':'COMMODITIES','AEM':'COMMODITIES',
+    # ── May 26 2026 — new additions ───────────────────────────────────────────
+    'AEHR':'SEMIS',         # semiconductor burn-in test equipment (STRONG +15)
+    'APD':'COMMODITIES',    # industrial gases (O2, H2, N2) — INSTITUTIONAL, neutral
+    'HXL':'DEFENCE',        # carbon fiber composites for F-35/Airbus/military (STRONG +15)
+    'SSYS':'TECH',          # industrial 3D printing systems — MOMENTUM (STRONG +15)
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────

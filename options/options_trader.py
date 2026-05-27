@@ -97,8 +97,10 @@ AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales 
 
 # ── OPT_SCALP constants ───────────────────────────────────────────────────────
 SCALP_UNIVERSE = {
-    'IONQ', 'MARA', 'WULF', 'RIOT', 'SOUN', 'RKLB', 'HIMS', 'AFRM',
-    'CELH', 'UPST', 'RIVN', 'RDW', 'JOBY', 'HOOD', 'NOK',
+    'IONQ', 'MARA', 'WULF', 'RIOT', 'SOUN', 'HIMS', 'AFRM',
+    'CELH', 'UPST', 'RIVN', 'JOBY', 'HOOD', 'NOK',
+    # RKLB removed May 26 2026 — price $143, premium $10.85 structurally fails gates 5+6
+    # RDW  removed May 26 2026 — IV 173% chronic, options market too illiquid
 }
 SCALP_BUDGET_TOTAL  = float(os.getenv('SCALP_BUDGET_TOTAL',  '1000'))
 SCALP_TRADE_SIZE    = float(os.getenv('SCALP_TRADE_SIZE',    '250'))
