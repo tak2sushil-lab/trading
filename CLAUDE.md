@@ -171,6 +171,7 @@ These must be verified/built before any real-money trading begins. Do NOT go liv
 | 7 | **Prod `.env` credentials audit** | ⬜ pending | Never overwritten by `deploy_to_prod.sh` — verify before each deploy |
 | 8 | **watchman.py exit logging** | ⬜ pending | Wire `log_trade_outcome()` before options paper trading generates real outcomes |
 | 9 | **backtester_options.py Phase 5** | ⬜ pending | Complete after first options paper trade closes |
+| 10 | **Prod gateway launchd bootstrap** | ⬜ pending | Gateway was shut down (stuck on IBKR notification page). Re-enable before go-live: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sushil.trading-prod.gateway.plist` |
 
 ---
 
