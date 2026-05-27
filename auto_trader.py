@@ -599,6 +599,23 @@ def get_regime():
         qqq_intra = _bridge_df('QQQ', '1 D', '5 mins')
         spy_daily = _bridge_df('SPY', '5 D', '1 day')
 
+        # SPY/QQQ — yfinance fallback when bridge returns empty (after close or post-restart)
+        if spy_intra.empty or len(spy_intra) < 2:
+            spy_raw = yf.Ticker('SPY').history(period='1d', interval='5m')
+            if not spy_raw.empty:
+                spy_raw.index = spy_raw.index.tz_convert(ET)
+                spy_intra = spy_raw
+        if qqq_intra.empty or len(qqq_intra) < 2:
+            qqq_raw = yf.Ticker('QQQ').history(period='1d', interval='5m')
+            if not qqq_raw.empty:
+                qqq_raw.index = qqq_raw.index.tz_convert(ET)
+                qqq_intra = qqq_raw
+        if spy_daily.empty:
+            spy_d_raw = yf.Ticker('SPY').history(period='5d', interval='1d')
+            if not spy_d_raw.empty:
+                spy_d_raw.index = spy_d_raw.index.tz_localize(ET) if spy_d_raw.index.tzinfo is None else spy_d_raw.index.tz_convert(ET)
+                spy_daily = spy_d_raw
+
         # VIX — bridge (Index contract) with yfinance fallback if no CBOE subscription
         try:
             vix_intra = _bridge_df('VIX', '1 D', '5 mins')
