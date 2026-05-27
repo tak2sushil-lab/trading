@@ -2829,6 +2829,12 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
                     update_suggestion_status(sug_id, 'NO_TRADE')
 
     elif verdict == 'ENTER_REDUCED':
+        trade = calc.get('trade') or {}
+        if not trade.get('net_debit'):
+            print(f"[options_trader] {sym} ENTER_REDUCED blocked — net_debit=0 (pricing unavailable), re-queuing")
+            if sug_id:
+                update_suggestion_status(sug_id, 'PENDING')
+            return
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
         _pending[OPT_CHAT] = {
