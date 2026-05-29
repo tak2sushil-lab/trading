@@ -1691,7 +1691,8 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 import sqlite3 as _sq
                 _mdb = _sq.connect(os.path.join(_DIR, 'market_data.db'))
                 _now_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
-                _rth_start = datetime.now(ET).strftime('%Y-%m-%d') + ' 13:30'  # 9:30 ET = 13:30 UTC (May)
+                _rth_et = ET.localize(datetime(datetime.now(ET).year, datetime.now(ET).month, datetime.now(ET).day, 9, 30))
+                _rth_start = _rth_et.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M')
                 _hod_row = _mdb.execute(
                     "SELECT MAX(high) FROM bars_5m WHERE symbol=? AND ts_utc>=? AND ts_utc<=?",
                     (symbol, _rth_start, _now_utc + ':59')
@@ -3320,13 +3321,18 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector, 'tag': tag})
             # Update scan_log: mark this candidate as entered and link trade_id
+            # SQLite doesn't support ORDER BY/LIMIT in UPDATE directly — use subquery
             try:
                 import sqlite3 as _sq3
+                _scan_date = pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))
                 _conn = _sq3.connect('trades.db')
                 _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?, skip_reason=NULL
-                                 WHERE symbol=? AND scan_date=? AND direction='LONG' AND entered=0
-                                 ORDER BY id DESC LIMIT 1''',
-                              (trade_id, sym, pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))))
+                                 WHERE id = (
+                                     SELECT id FROM scan_log
+                                     WHERE symbol=? AND scan_date=? AND direction='LONG' AND entered=0
+                                     ORDER BY id DESC LIMIT 1
+                                 )''',
+                              (trade_id, sym, _scan_date))
                 _conn.commit()
                 _conn.close()
             except Exception:
@@ -3535,11 +3541,15 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             entries.append(pick | {'shares': shares, 'sector': sector})
             try:
                 import sqlite3 as _sq3
+                _scan_date = pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))
                 _conn = _sq3.connect('trades.db')
                 _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?, skip_reason=NULL
-                                 WHERE symbol=? AND scan_date=? AND direction='SHORT' AND entered=0
-                                 ORDER BY id DESC LIMIT 1''',
-                              (trade_id, sym, pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))))
+                                 WHERE id = (
+                                     SELECT id FROM scan_log
+                                     WHERE symbol=? AND scan_date=? AND direction='SHORT' AND entered=0
+                                     ORDER BY id DESC LIMIT 1
+                                 )''',
+                              (trade_id, sym, _scan_date))
                 _conn.commit()
                 _conn.close()
             except Exception:

@@ -1,6 +1,6 @@
 # Claude Code — Trading System Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: May 26 2026
+Last updated: May 28 2026
 
 ---
 
@@ -182,6 +182,25 @@ These must be verified/built before any real-money trading begins. Do NOT go liv
 | watchman.py exits not logged | Wire log_trade_outcome() |
 | backtester_options.py Phase 5 | After first paper trade |
 | Short side WR gap (50% vs 77% long) | Monitor 60-day window; 3-scan fix + DNA modifiers now in place |
+
+## Changes Applied May 28 2026 (fine-tuning session — 136 trades, 2 months data)
+
+| Change | Details |
+|--------|---------|
+| Burst timing scoring | Fresh burst 30-90m = baseline; aging 90-150m = -10pts; stale >150m = -20pts; 2-4 consec new highs = +10pts; 1 consec = -5pts; 0 consec = -10pts. Short side: stale >150m = -20pts, aging = -10pts |
+| Afternoon gate fix | Now uses `peak_session_pnl` (realized + unrealized) instead of realized-only; would have blocked 6 junk entries today saving -$97 |
+| Recycled slot gate | No new longs/shorts after 12:30 if any slot was vacated today. Data: 15.4% WR / -$11 avg → +$145/May, ~+$1,743/yr |
+| ENERGY blocked for shorts | 0% WR, 4 trades, -$17.73 avg — sector fully blocked on bear side |
+| Restart resilience | `peak_session_pnl` + `_morning_pnl_snap` restored from trades.db + live portfolio on startup; no more broken afternoon gate after mid-day restart |
+| HOD capture | `hod_at_entry` written from `bars_5m` on every new trade entry (best-effort, non-blocking) |
+| Options: PendingSubmit/Unknown/Cancelled fix | Portfolio check confirms fill before DB write on all pending states |
+| Options: perpetual re-queue fix | Suggestions now expire after 15 min instead of looping forever |
+| Options: OPT STATUS / OPT POSITIONS | Live uPnL per position from bridge added to both commands |
+| Texture gate — refined design | May 28 confirmed choppy (SPY ORB 0.16%, drift +0.01%) but CATALYST stocks ran strongly. **Do NOT build blunt 5→3 cap.** Correct design: catalyst entries always 5 slots; ambient scanner capped at 3 on choppy days. Needs re-backtest before building. |
+
+**Data note:** Texture gate NOT being built yet — needs re-backtest with catalyst-exempt split logic. $168/60d result was blunt version; refined version unknown.
+
+---
 
 ## Changes Applied May 26 2026 (May 25 incident postmortem)
 
