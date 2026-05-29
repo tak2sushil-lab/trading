@@ -1153,6 +1153,7 @@ def get_intraday_signals(symbol, spy_chg=0):
             'is_doji': is_doji, 'aligned_15m': aligned_15m,
             'aligned_15m_bear': aligned_15m_bear,
             'today_open': today_open_price, 'today_lod': today_lod,
+            'today_hod':  round(hod, 2),
             'first_bar_strong': first_bar_strong,
             'burst_age_min':    burst_age_min,
             'consec_new_highs': consec_new_highs,
@@ -3236,7 +3237,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'is_sympathy': is_sympathy,
             'first_bar_strong': sig.get('first_bar_strong', False),
-            'burst_age_min': sig.get('burst_age_min', 999),
+            'burst_age_min':    sig.get('burst_age_min', 999),
+            'consec_new_highs': sig.get('consec_new_highs', 0),
+            'today_hod':        sig.get('today_hod', price),
             'sector': _sector, 'scan_time': _now.strftime('%H:%M'),
             'scan_date': _now.strftime('%Y-%m-%d'),
         })
@@ -3272,6 +3275,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             _reason = f"Slot #{_rank+1} in batting order"
         else:
             _reason = f"Bench #{_rank+1} — awaiting slot"
+        _hod  = _c.get('today_hod', _c['price'])
+        _pvh  = round(_c['price'] / _hod * 100, 1) if _hod else None
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'LONG', regime,
@@ -3279,6 +3284,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
                 is_catalyst=_c['is_catalyst'], entered=False,
                 burst_age_min=_c.get('burst_age_min', 999),
+                consec_new_highs=_c.get('consec_new_highs', 0),
+                today_hod=_hod,
+                price_vs_hod_pct=_pvh,
             )
         except Exception:
             pass
@@ -3500,7 +3508,9 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'first_bar_strong': sig.get('first_bar_strong', False),
-            'burst_age_min': sig.get('burst_age_min', 999),
+            'burst_age_min':    sig.get('burst_age_min', 999),
+            'consec_new_highs': sig.get('consec_new_highs', 0),
+            'today_hod':        sig.get('today_hod', price),
             'sector': _sector_b, 'scan_time': _now_b.strftime('%H:%M'),
             'scan_date': _now_b.strftime('%Y-%m-%d'),
         })
@@ -3520,6 +3530,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     for _rank_b, _c in enumerate(candidates):
         _reason_b = (f"Slot #{_rank_b+1} in batting order" if _rank_b < MAX_OPEN_TRADES
                      else f"Bench #{_rank_b+1} — awaiting slot")
+        _hod_b = _c.get('today_hod', _c['price'])
+        _pvh_b = round(_c['price'] / _hod_b * 100, 1) if _hod_b else None
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'SHORT', regime,
@@ -3527,6 +3539,9 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
                 _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
                 is_catalyst=_c['is_catalyst'], entered=False,
                 burst_age_min=_c.get('burst_age_min', 999),
+                consec_new_highs=_c.get('consec_new_highs', 0),
+                today_hod=_hod_b,
+                price_vs_hod_pct=_pvh_b,
             )
         except Exception:
             pass

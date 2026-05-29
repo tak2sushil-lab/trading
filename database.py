@@ -342,14 +342,27 @@ def init_db():
         actual_day_pct   REAL,
         actual_day_high_pct REAL,
         actual_close     REAL,
-        enriched         INTEGER DEFAULT 0,
-        burst_age_min    REAL
+        enriched             INTEGER DEFAULT 0,
+        burst_age_min        REAL,
+        consec_new_highs     INTEGER,
+        today_hod            REAL,
+        price_vs_hod_pct     REAL,
+        actual_30m_pct       REAL,
+        actual_60m_pct       REAL
     )''')
-    # Migrate existing DBs: add burst_age_min if not present
-    try:
-        c.execute('ALTER TABLE scan_log ADD COLUMN burst_age_min REAL')
-    except Exception:
-        pass  # column already exists
+    # Migrate existing DBs — add columns if not present
+    for _col, _typ in [
+        ('burst_age_min',    'REAL'),
+        ('consec_new_highs', 'INTEGER'),
+        ('today_hod',        'REAL'),
+        ('price_vs_hod_pct', 'REAL'),
+        ('actual_30m_pct',   'REAL'),
+        ('actual_60m_pct',   'REAL'),
+    ]:
+        try:
+            c.execute(f'ALTER TABLE scan_log ADD COLUMN {_col} {_typ}')
+        except Exception:
+            pass  # column already exists
     c.execute('CREATE INDEX IF NOT EXISTS idx_scan_log_date ON scan_log(scan_date)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_scan_log_symbol ON scan_log(symbol, scan_date)')
 
@@ -1457,19 +1470,22 @@ def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
                        price, grade, score, skip_reason,
                        vol_ratio, rsi, intra_chg, sector,
                        is_catalyst=False, entered=False, entry_trade_id=None,
-                       burst_age_min=None):
-    """Log every candidate — entered, benched, or skipped — with full batting context."""
+                       burst_age_min=None, consec_new_highs=None,
+                       today_hod=None, price_vs_hod_pct=None):
+    """Log every candidate — entered, benched, or skipped — with full energy context."""
     conn = get_connection()
     c    = conn.cursor()
     c.execute('''INSERT INTO scan_log
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
-         is_catalyst, entered, entry_trade_id, burst_age_min)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         is_catalyst, entered, entry_trade_id,
+         burst_age_min, consec_new_highs, today_hod, price_vs_hod_pct)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
          int(is_catalyst), int(entered), entry_trade_id,
-         burst_age_min if burst_age_min != 999 else None))
+         burst_age_min if burst_age_min != 999 else None,
+         consec_new_highs, today_hod, price_vs_hod_pct))
     row_id = c.lastrowid
     conn.commit()
     conn.close()
@@ -1478,16 +1494,16 @@ def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
 
 def enrich_scan_log():
     """
-    Nightly job: for each unenriched scan_log row, fetch actual day close/high
-    and compute actual_day_pct and actual_day_high_pct.
-    Runs after market close — fills in 'what actually happened' for what-if analysis.
+    Nightly job: enrich scan_log rows with actual outcomes.
+    Per row: actual_day_pct, actual_day_high_pct (full day), actual_30m_pct,
+    actual_60m_pct (forward returns from scan time using bars_5m where available).
     """
-    import yfinance as yf
+    import yfinance as yf, sqlite3 as _sq3
+    import os as _os
 
     conn = get_connection()
     c    = conn.cursor()
-
-    c.execute('''SELECT id, symbol, scan_date FROM scan_log
+    c.execute('''SELECT id, symbol, scan_date, scan_time FROM scan_log
                  WHERE enriched = 0
                  ORDER BY scan_date DESC LIMIT 2000''')
     rows = c.fetchall()
@@ -1496,50 +1512,162 @@ def enrich_scan_log():
     if not rows:
         return 0
 
-    # Group by (symbol, scan_date) to batch yf calls
+    # Open bars_5m for forward return lookup
+    _bars_db_path = _os.path.join(_os.path.dirname(__file__), 'market_data.db')
+    try:
+        _mconn = _sq3.connect(_bars_db_path)
+    except Exception:
+        _mconn = None
+
     from collections import defaultdict
     groups = defaultdict(list)
-    for row_id, symbol, scan_date in rows:
-        groups[(symbol, scan_date)].append(row_id)
+    for row_id, symbol, scan_date, scan_time in rows:
+        groups[(symbol, scan_date)].append((row_id, scan_time))
 
     updated = 0
-    for (symbol, scan_date), row_ids in groups.items():
+    for (symbol, scan_date), id_times in groups.items():
         try:
             end_date = (date.fromisoformat(scan_date) + timedelta(days=1)).isoformat()
             hist = yf.Ticker(symbol).history(start=scan_date, end=end_date, interval='1d')
             if hist.empty:
-                # Mark enriched=1 with nulls so we don't retry forever
                 conn = get_connection()
                 conn.execute('UPDATE scan_log SET enriched=1 WHERE id IN (%s)'
-                             % ','.join('?' * len(row_ids)), row_ids)
-                conn.commit()
-                conn.close()
-                continue
+                             % ','.join('?'*len(id_times)), [r for r,_ in id_times])
+                conn.commit(); conn.close(); continue
 
             open_p  = float(hist['Open'].iloc[0])
             close_p = float(hist['Close'].iloc[0])
             high_p  = float(hist['High'].iloc[0])
-
-            if open_p <= 0:
-                continue
+            if open_p <= 0: continue
 
             day_pct      = (close_p - open_p) / open_p * 100
             day_high_pct = (high_p  - open_p) / open_p * 100
 
             conn = get_connection()
-            conn.execute('''UPDATE scan_log
-                            SET actual_day_pct=?, actual_day_high_pct=?,
-                                actual_close=?, enriched=1
-                            WHERE id IN (%s)''' % ','.join('?' * len(row_ids)),
-                         [day_pct, day_high_pct, close_p] + row_ids)
-            conn.commit()
-            conn.close()
-            updated += len(row_ids)
+            for row_id, scan_time in id_times:
+                r30 = r60 = None
+                # Forward returns from bars_5m if available
+                if _mconn and scan_time:
+                    try:
+                        # Convert scan_time HH:MM ET to UTC for bars_5m lookup
+                        # EDT offset = 4h; scan bars are stored in UTC
+                        h, m = int(scan_time[:2]), int(scan_time[3:5])
+                        utc_h = h + 4  # EDT→UTC (approximate; accurate Mar-Nov)
+                        scan_ts = f"{scan_date} {utc_h:02d}:{m:02d}"
+                        # Price at scan time (closest bar)
+                        p_scan = _mconn.execute(
+                            "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>=? LIMIT 1",
+                            (symbol, scan_ts)).fetchone()
+                        p_30 = _mconn.execute(
+                            "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>=? LIMIT 1",
+                            (symbol, f"{scan_date} {utc_h:02d}:{(m+30)%60:02d}")).fetchone()
+                        p_60 = _mconn.execute(
+                            "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>=? LIMIT 1",
+                            (symbol, f"{scan_date} {utc_h:02d}:{(m+60)%60:02d}")).fetchone()
+                        if p_scan and p_scan[0] and p_30 and p_30[0]:
+                            r30 = round((float(p_30[0])/float(p_scan[0])-1)*100, 3)
+                        if p_scan and p_scan[0] and p_60 and p_60[0]:
+                            r60 = round((float(p_60[0])/float(p_scan[0])-1)*100, 3)
+                    except Exception:
+                        pass
+
+                conn.execute('''UPDATE scan_log
+                                SET actual_day_pct=?, actual_day_high_pct=?,
+                                    actual_close=?, actual_30m_pct=?,
+                                    actual_60m_pct=?, enriched=1
+                                WHERE id=?''',
+                             (day_pct, day_high_pct, close_p, r30, r60, row_id))
+
+            conn.commit(); conn.close()
+            updated += len(id_times)
 
         except Exception:
             continue
 
+    if _mconn:
+        try: _mconn.close()
+        except: pass
+
     return updated
+
+
+def backfill_energy_signals():
+    """
+    Backfill consec_new_highs, today_hod, price_vs_hod_pct, actual_30m_pct,
+    actual_60m_pct for all historical scan_log rows that are missing them.
+    Uses market_data.db bars_5m — covers the 62 trading days already seeded.
+    Safe to call multiple times (skips rows where consec_new_highs IS NOT NULL).
+    """
+    import sqlite3 as _sq3, os as _os
+    import math as _math
+
+    bars_path = _os.path.join(_os.path.dirname(__file__), 'market_data.db')
+    try:
+        mconn = _sq3.connect(bars_path)
+    except Exception as e:
+        return 0, f"Cannot open market_data.db: {e}"
+
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT id, symbol, scan_date, scan_time, price
+        FROM scan_log
+        WHERE consec_new_highs IS NULL AND scan_date >= '2026-03-01'
+        ORDER BY scan_date DESC LIMIT 5000
+    """).fetchall()
+
+    updated = 0
+    for row_id, symbol, scan_date, scan_time, price in rows:
+        try:
+            if not scan_time: continue
+            h, m = int(scan_time[:2]), int(scan_time[3:5])
+            utc_h = h + 4  # EDT offset
+            rth_start = f"{scan_date} {13:02d}:{30:02d}"   # 9:30 ET = 13:30 UTC
+            scan_ts   = f"{scan_date} {utc_h:02d}:{m:02d}"
+
+            # Bars from 9:30 to scan time
+            pre_bars = mconn.execute(
+                "SELECT high, close, volume FROM bars_5m "
+                "WHERE symbol=? AND ts_utc>=? AND ts_utc<=? ORDER BY ts_utc",
+                (symbol, rth_start, scan_ts)).fetchall()
+
+            if len(pre_bars) < 2: continue
+
+            hod    = max(float(r[0]) for r in pre_bars)
+            p_at_scan = float(pre_bars[-1][1])
+            pvh    = round(p_at_scan / hod * 100, 1) if hod else None
+
+            # consec_new_highs (last 5 bars)
+            last5 = pre_bars[-5:]; rmax=0.0; consec=0
+            for r in last5:
+                if float(r[0]) > rmax: rmax=float(r[0]); consec+=1
+                else: consec=0
+
+            # Forward returns
+            p30 = mconn.execute(
+                "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>? ORDER BY ts_utc LIMIT 1",
+                (symbol, f"{scan_date} {utc_h:02d}:{(m+28)%60:02d}")).fetchone()
+            p60 = mconn.execute(
+                "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>? ORDER BY ts_utc LIMIT 1",
+                (symbol, f"{scan_date} {utc_h:02d}:{(m+58)%60:02d}")).fetchone()
+            r30 = round((float(p30[0])/p_at_scan-1)*100,3) if p30 and p_at_scan else None
+            r60 = round((float(p60[0])/p_at_scan-1)*100,3) if p60 and p_at_scan else None
+
+            conn.execute("""
+                UPDATE scan_log
+                SET consec_new_highs=?, today_hod=?, price_vs_hod_pct=?,
+                    actual_30m_pct=?, actual_60m_pct=?
+                WHERE id=?
+            """, (consec, round(hod,2), pvh, r30, r60, row_id))
+
+            updated += 1
+            if updated % 500 == 0:
+                conn.commit()
+
+        except Exception:
+            continue
+
+    conn.commit(); conn.close(); mconn.close()
+    return updated, "OK"
 
 
 def backfill_scan_log_from_trades():
