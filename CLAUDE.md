@@ -190,6 +190,7 @@ These must be verified/built before any real-money trading begins. Do NOT go liv
 | Burst timing scoring | Fresh burst 30-90m = baseline; aging 90-150m = -10pts; stale >150m = -20pts; 2-4 consec new highs = +10pts; 1 consec = -5pts; 0 consec = -10pts. Short side: stale >150m = -20pts, aging = -10pts |
 | Afternoon gate fix | Now uses `peak_session_pnl` (realized + unrealized) instead of realized-only; would have blocked 6 junk entries today saving -$97 |
 | Recycled slot gate | No new longs/shorts after 12:30 if any slot was vacated today. Data: 15.4% WR / -$11 avg → +$145/May, ~+$1,743/yr |
+| **Power-play batting order** | Slot selection now ranked (not first-in-scan-order). Sort: tier (sympathy→catalyst A+→catalyst A→universe) → sector strength → `intra_chg` DESC → `vol_ratio` DESC → score. CONSUMER sector last. Data: catalyst flag predicts top movers 2×; `intra_chg` at scan time is the pitch report. scan_log now records "Slot #N in batting order" for top-5 vs "awaiting slot" for rest. |
 | ENERGY blocked for shorts | 0% WR, 4 trades, -$17.73 avg — sector fully blocked on bear side |
 | Restart resilience | `peak_session_pnl` + `_morning_pnl_snap` restored from trades.db + live portfolio on startup; no more broken afternoon gate after mid-day restart |
 | HOD capture | `hod_at_entry` written from `bars_5m` on every new trade entry (best-effort, non-blocking) |
