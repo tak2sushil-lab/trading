@@ -3236,6 +3236,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'is_sympathy': is_sympathy,
             'first_bar_strong': sig.get('first_bar_strong', False),
+            'burst_age_min': sig.get('burst_age_min', 999),
             'sector': _sector, 'scan_time': _now.strftime('%H:%M'),
             'scan_date': _now.strftime('%Y-%m-%d'),
         })
@@ -3265,15 +3266,19 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         + " | ".join(f"{c['symbol']}({c['intra_chg']:+.1f}%{'⚡' if c['is_catalyst'] else ''})"
                      for c in candidates[:8]))
 
-    # Log all qualified candidates to scan_log with their batting position
+    # Log all qualified candidates with exact batting rank so bench players are traceable
     for _rank, _c in enumerate(candidates):
-        _reason = f"Slot #{_rank+1} in batting order" if _rank < MAX_OPEN_TRADES else 'Qualified — awaiting slot'
+        if _rank < MAX_OPEN_TRADES:
+            _reason = f"Slot #{_rank+1} in batting order"
+        else:
+            _reason = f"Bench #{_rank+1} — awaiting slot"
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'LONG', regime,
                 _c['price'], _c['grade'], _c['score'], _reason,
                 _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
                 is_catalyst=_c['is_catalyst'], entered=False,
+                burst_age_min=_c.get('burst_age_min', 999),
             )
         except Exception:
             pass
@@ -3495,6 +3500,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             'vol_ratio': sig['vol_ratio'], 'rsi': sig['rsi'],
             'intra_chg': sig['intra_chg'], 'is_catalyst': is_catalyst,
             'first_bar_strong': sig.get('first_bar_strong', False),
+            'burst_age_min': sig.get('burst_age_min', 999),
             'sector': _sector_b, 'scan_time': _now_b.strftime('%H:%M'),
             'scan_date': _now_b.strftime('%Y-%m-%d'),
         })
@@ -3511,13 +3517,16 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
 
     log(f"Bear scan: {len(candidates)} short candidates")
 
-    for _c in candidates:
+    for _rank_b, _c in enumerate(candidates):
+        _reason_b = (f"Slot #{_rank_b+1} in batting order" if _rank_b < MAX_OPEN_TRADES
+                     else f"Bench #{_rank_b+1} — awaiting slot")
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'SHORT', regime,
-                _c['price'], _c['grade'], _c['score'], 'Qualified — awaiting slot',
+                _c['price'], _c['grade'], _c['score'], _reason_b,
                 _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
                 is_catalyst=_c['is_catalyst'], entered=False,
+                burst_age_min=_c.get('burst_age_min', 999),
             )
         except Exception:
             pass

@@ -342,8 +342,14 @@ def init_db():
         actual_day_pct   REAL,
         actual_day_high_pct REAL,
         actual_close     REAL,
-        enriched         INTEGER DEFAULT 0
+        enriched         INTEGER DEFAULT 0,
+        burst_age_min    REAL
     )''')
+    # Migrate existing DBs: add burst_age_min if not present
+    try:
+        c.execute('ALTER TABLE scan_log ADD COLUMN burst_age_min REAL')
+    except Exception:
+        pass  # column already exists
     c.execute('CREATE INDEX IF NOT EXISTS idx_scan_log_date ON scan_log(scan_date)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_scan_log_symbol ON scan_log(symbol, scan_date)')
 
@@ -1450,18 +1456,20 @@ def fill_whatif_prices():
 def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
                        price, grade, score, skip_reason,
                        vol_ratio, rsi, intra_chg, sector,
-                       is_catalyst=False, entered=False, entry_trade_id=None):
-    """Log every candidate that reaches the grading stage — win, lose, entered, or skipped."""
+                       is_catalyst=False, entered=False, entry_trade_id=None,
+                       burst_age_min=None):
+    """Log every candidate — entered, benched, or skipped — with full batting context."""
     conn = get_connection()
     c    = conn.cursor()
     c.execute('''INSERT INTO scan_log
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
-         is_catalyst, entered, entry_trade_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         is_catalyst, entered, entry_trade_id, burst_age_min)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
-         int(is_catalyst), int(entered), entry_trade_id))
+         int(is_catalyst), int(entered), entry_trade_id,
+         burst_age_min if burst_age_min != 999 else None))
     row_id = c.lastrowid
     conn.commit()
     conn.close()
