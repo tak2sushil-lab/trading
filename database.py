@@ -1481,7 +1481,7 @@ def enrich_scan_log():
 
     c.execute('''SELECT id, symbol, scan_date FROM scan_log
                  WHERE enriched = 0
-                 ORDER BY scan_date DESC LIMIT 500''')
+                 ORDER BY scan_date DESC LIMIT 2000''')
     rows = c.fetchall()
     conn.close()
 
