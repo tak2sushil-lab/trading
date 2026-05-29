@@ -1316,14 +1316,24 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         time.sleep(FILL_WAIT_SEC)
 
         status = get_order_status(order_id)
+        st = (status or {}).get('status', 'Unknown')
+        print(f"[options] {sym} spread attempt {attempt+1}: orderId={order_id} status={st} filled={( status or {}).get('filled',0)}")
         if status and status.get('filled', 0) >= qty:
             filled_at = limit_price
             break
 
         # Paper account: BAG fill simulation often stays at Submitted — treat as filled
-        if status and status.get('status') in ('Submitted', 'PreSubmitted') and _is_paper():
+        if status and st in ('Submitted', 'PreSubmitted') and _is_paper():
             filled_at = limit_price   # paper fill at limit
             break
+
+        # Paper fallback: order not yet confirmed — verify via portfolio for all ambiguous statuses
+        if _is_paper() and st in ('Unknown', 'Cancelled', 'PendingSubmit'):
+            opts_pos = get_portfolio_options()
+            if any(p.get('symbol') == sym for p in opts_pos):
+                print(f"[options] {sym} status={st} but position confirmed in portfolio — recording fill")
+                filled_at = limit_price
+                break
 
         # Not filled yet — cancel before trying next increment
         if attempt < MAX_FILL_TRIES - 1:
@@ -1420,13 +1430,23 @@ def _execute_leap_bg(sym: str, leap: dict, chat_id: str,
         time.sleep(FILL_WAIT_SEC)
 
         status = get_order_status(order_id)
+        st = (status or {}).get('status', 'Unknown')
+        print(f"[options] {sym} LEAP attempt {attempt+1}: orderId={order_id} status={st} filled={(status or {}).get('filled',0)}")
         if status and status.get('filled', 0) >= qty:
             filled_at = limit_price
             break
         # Paper account: single-leg options stay at Submitted — treat as filled
-        if status and status.get('status') in ('Submitted', 'PreSubmitted') and _is_paper():
+        if status and st in ('Submitted', 'PreSubmitted', 'PendingSubmit') and _is_paper():
             filled_at = limit_price
             break
+
+        # Paper fallback: order settled out of ib.trades() — verify via portfolio
+        if _is_paper() and st in ('Unknown', 'Cancelled'):
+            opts_pos = get_portfolio_options()
+            if any(p.get('symbol') == sym for p in opts_pos):
+                print(f"[options] {sym} LEAP status={st} but position confirmed in portfolio — recording fill")
+                filled_at = limit_price
+                break
 
         if attempt < MAX_FILL_TRIES - 1:
             cancel_all_orders()
@@ -1915,12 +1935,23 @@ def _execute_scalp_bg(sym: str, calc: dict, chat_id: str):
         time.sleep(FILL_WAIT_SEC)
 
         status = get_order_status(order_id)
+        st = (status or {}).get('status', 'Unknown')
+        print(f"[options] {sym} scalp attempt {attempt+1}: orderId={order_id} status={st} filled={(status or {}).get('filled',0)}")
         if status and status.get('filled', 0) >= contracts:
             filled_at = limit_price
             break
-        if status and status.get('status') in ('Submitted', 'PreSubmitted') and _is_paper():
+        if status and st in ('Submitted', 'PreSubmitted', 'PendingSubmit') and _is_paper():
             filled_at = limit_price   # paper fill
             break
+
+        # Paper fallback: order settled out of ib.trades() — verify via portfolio
+        if _is_paper() and st in ('Unknown', 'Cancelled'):
+            opts_pos = get_portfolio_options()
+            if any(p.get('symbol') == sym for p in opts_pos):
+                print(f"[options] {sym} scalp status={st} but position confirmed in portfolio — recording fill")
+                filled_at = limit_price
+                break
+
         if attempt < MAX_FILL_TRIES - 1:
             cancel_all_orders()
             time.sleep(2)
@@ -2183,33 +2214,57 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
         }
 
 
+def _live_pnl_by_symbol() -> dict:
+    """Fetch live options portfolio and return {symbol: unrealizedPnL} summed across legs."""
+    try:
+        legs = get_portfolio_options()
+        pnl_map = {}
+        for leg in legs:
+            sym = leg.get('symbol', '')
+            pnl_map[sym] = pnl_map.get(sym, 0) + (leg.get('unrealizedPnL') or 0)
+        return pnl_map
+    except Exception:
+        return {}
+
+
 def cmd_status(chat_id: str):
-    trades  = get_open_options_trades()
-    closed  = get_closed_options_count()
-    cats    = get_upcoming_catalysts(days=30)
-    paused  = "PAUSED" if _paused else "ACTIVE"
-    cs      = capital_status()
+    trades    = get_open_options_trades()
+    closed    = get_closed_options_count()
+    cats      = get_upcoming_catalysts(days=30)
+    paused    = "PAUSED" if _paused else "ACTIVE"
+    cs        = capital_status()
     total_pnl = get_options_total_pnl()
+    live_pnl  = _live_pnl_by_symbol()
 
     bar_filled = round(cs['deployed'] / cs['total'] * 10) if cs['total'] else 0
     cap_bar    = '█' * bar_filled + '░' * (10 - bar_filled)
+
+    open_upnl = sum(live_pnl.get(t['symbol'], 0) for t in trades)
 
     lines = [f"📊 *Options Status — {paused}*\n"]
     lines.append(
         f"Capital: [{cap_bar}] ${cs['deployed']:.0f} deployed / ${cs['available']:.0f} free\n"
         f"Slots: {cs['slots_used']}/{MAX_OPTIONS_POSITIONS} | "
-        f"Closed: {closed} | Net P&L: ${total_pnl:+.0f}"
+        f"Closed: {closed} | Net P&L: ${total_pnl:+.0f} | Open uPnL: ${open_upnl:+.0f}"
     )
 
     if trades:
         lines.append("")
         for t in trades:
-            prem = t['premium_paid'] or 0
-            stop = t['stop_value']
-            dte  = days_to_expiry(t['expiry'])
+            prem  = t['premium_paid'] or 0
+            stop  = t['stop_value']
+            dte   = days_to_expiry(t['expiry'])
+            upnl  = live_pnl.get(t['symbol'], None)
+            if upnl is not None:
+                pct      = upnl / prem * 100 if prem else 0
+                pnl_str  = f"${upnl:+.0f} ({pct:+.1f}%)"
+                icon     = "🟢" if upnl >= 0 else "🔴"
+            else:
+                pnl_str, icon = "n/a", "⚪"
             lines.append(
-                f"• *{t['symbol']}* [{t['strategy']}] {t['entry_grade']} — "
-                f"${prem:.0f} in | stop {'${:.0f}'.format(stop) if stop is not None else 'n/a'} | {dte}d"
+                f"{icon} *{t['symbol']}* [{t['strategy']}] {t['entry_grade']} — "
+                f"${prem:.0f} in | uPnL: {pnl_str} | "
+                f"stop {'${:.0f}'.format(stop) if stop is not None else 'n/a'} | {dte}d"
             )
     else:
         lines.append("\nNo open positions — capital ready to deploy.")
@@ -2223,15 +2278,16 @@ def cmd_status(chat_id: str):
 
 
 def cmd_positions(chat_id: str):
-    trades = get_open_options_trades()
+    trades   = get_open_options_trades()
     if not trades:
         send_telegram("No open options positions.", chat_id)
         return
-    lines = [f"📋 *Positions ({len(trades)} open)*\n"]
+    live_pnl = _live_pnl_by_symbol()
+    lines    = [f"📋 *Positions ({len(trades)} open)*\n"]
     for t in trades:
-        prem = t['premium_paid'] or 0
-        stop = t['stop_value']
-        dte  = days_to_expiry(t['expiry'])
+        prem      = t['premium_paid'] or 0
+        stop      = t['stop_value']
+        dte       = days_to_expiry(t['expiry'])
         stage_map = {1: 'hard', 2: 'breakeven', 3: 'trail'}
         stage_lbl = stage_map.get(t['stop_stage'], '?')
         if t['strategy'] == 'BULL_SPREAD':
@@ -2239,9 +2295,15 @@ def cmd_positions(chat_id: str):
         else:
             leg_str = f"${t['strike']} LEAP"
         expiry_flag = " ⚠️ EXPIRING SOON" if dte <= 7 else ""
+        upnl = live_pnl.get(t['symbol'], None)
+        if upnl is not None:
+            pct     = upnl / prem * 100 if prem else 0
+            pnl_str = f"${upnl:+.0f} ({pct:+.1f}%)"
+        else:
+            pnl_str = "n/a"
         lines += [
             f"*{t['symbol']}* [{t['entry_grade']}] — {leg_str}{expiry_flag}",
-            f"  Exp: {t['expiry']} ({dte}d) | Entry: ${prem:.0f}",
+            f"  Exp: {t['expiry']} ({dte}d) | Entry: ${prem:.0f} | uPnL: {pnl_str}",
             f"  Stop: {'${:.0f}'.format(stop) if stop is not None else 'n/a'} ({stage_lbl}) | Δ: {t['delta_entry'] or '?'}",
             f"  IV@entry: {t['iv_rank_entry'] or '?'}%",
             "",
@@ -2802,11 +2864,28 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
     if verdict == 'ENTER':
         trade = calc.get('trade')
         # Guard: net_debit=0 means options pricing couldn't be fetched (bridge timeout).
-        # Never place a $0 order — treat as transient data error and re-queue.
+        # Expire after 15 min to prevent infinite re-queue loop; otherwise retry next cycle.
         if not trade or not trade.get('net_debit'):
-            print(f"[options_trader] {sym} ENTER blocked — net_debit=0 (pricing unavailable), re-queuing")
+            age_min = 0
             if sug_id:
-                update_suggestion_status(sug_id, 'PENDING')
+                try:
+                    import sqlite3 as _sq2
+                    _sdb2 = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trading.db'))
+                    _sc2  = _sq2.connect(_sdb2)
+                    row   = _sc2.execute("SELECT suggested_at FROM opt_suggestions WHERE id=?", (sug_id,)).fetchone()
+                    _sc2.close()
+                    if row and row[0]:
+                        age_min = (datetime.now() - datetime.fromisoformat(row[0])).total_seconds() / 60
+                except Exception:
+                    pass
+            if age_min > 15:
+                print(f"[options_trader] {sym} ENTER blocked: pricing unavailable for {age_min:.0f}min — expiring")
+                if sug_id:
+                    update_suggestion_status(sug_id, 'EXPIRED')
+            else:
+                print(f"[options_trader] {sym} ENTER blocked — net_debit=0 (pricing unavailable), re-queuing ({age_min:.0f}min old)")
+                if sug_id:
+                    update_suggestion_status(sug_id, 'PENDING')
             return
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
@@ -2839,9 +2918,26 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
     elif verdict == 'ENTER_REDUCED':
         trade = calc.get('trade') or {}
         if not trade.get('net_debit'):
-            print(f"[options_trader] {sym} ENTER_REDUCED blocked — net_debit=0 (pricing unavailable), re-queuing")
+            age_min = 0
             if sug_id:
-                update_suggestion_status(sug_id, 'PENDING')
+                try:
+                    import sqlite3 as _sq2
+                    _sdb2 = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trading.db'))
+                    _sc2  = _sq2.connect(_sdb2)
+                    row   = _sc2.execute("SELECT suggested_at FROM opt_suggestions WHERE id=?", (sug_id,)).fetchone()
+                    _sc2.close()
+                    if row and row[0]:
+                        age_min = (datetime.now() - datetime.fromisoformat(row[0])).total_seconds() / 60
+                except Exception:
+                    pass
+            if age_min > 15:
+                print(f"[options_trader] {sym} ENTER_REDUCED blocked: pricing unavailable for {age_min:.0f}min — expiring")
+                if sug_id:
+                    update_suggestion_status(sug_id, 'EXPIRED')
+            else:
+                print(f"[options_trader] {sym} ENTER_REDUCED blocked — net_debit=0 (pricing unavailable), re-queuing ({age_min:.0f}min old)")
+                if sug_id:
+                    update_suggestion_status(sug_id, 'PENDING')
             return
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)

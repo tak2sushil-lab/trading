@@ -7,7 +7,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import os, json, time, requests, yfinance as yf, pandas as pd, numpy as np
+import os, json, time, requests, yfinance as yf, pandas as pd, numpy as np, subprocess
 from datetime import datetime, date, timedelta
 import pytz, pyttsx3, io, base64, threading
 import matplotlib
@@ -595,9 +595,19 @@ def get_regime():
     global _last_regime
     try:
         # ── Primary signals — real-time IBKR data via bridge ─────────────────
-        spy_intra = _bridge_df('SPY', '1 D', '5 mins')
-        qqq_intra = _bridge_df('QQQ', '1 D', '5 mins')
-        spy_daily = _bridge_df('SPY', '5 D', '1 day')
+        # Wrap each call: timeout/error → empty DataFrame so yfinance fallback fires
+        try:
+            spy_intra = _bridge_df('SPY', '1 D', '5 mins')
+        except Exception:
+            spy_intra = pd.DataFrame()
+        try:
+            qqq_intra = _bridge_df('QQQ', '1 D', '5 mins')
+        except Exception:
+            qqq_intra = pd.DataFrame()
+        try:
+            spy_daily = _bridge_df('SPY', '5 D', '1 day')
+        except Exception:
+            spy_daily = pd.DataFrame()
 
         # SPY/QQQ — yfinance fallback when bridge returns empty (after close or post-restart)
         if spy_intra.empty or len(spy_intra) < 2:
@@ -1078,6 +1088,40 @@ def get_intraday_signals(symbol, spy_chg=0):
         day_open_fbq = float(df5_today['Open'].iloc[0]) if len(df5_today) > 0 else 0
         first_bar_strong = check_first_bar_quality(df5_today, day_open_fbq, float(avg_vol)) if day_open_fbq > 0 else False
 
+        # ── Burst timing signals (validated May 2026, 136 trades) ─────────────
+        # burst_age_min:    minutes since first high-volume ignition bar (999=none found)
+        # consec_new_highs: consecutive bars making new HODs in last 5 bars (long momentum)
+        # consec_new_lows:  consecutive bars making new LODs in last 5 bars (short momentum)
+        burst_age_min    = 999
+        consec_new_highs = 0
+        consec_new_lows  = 0
+        if not _rth_today.empty and len(_rth_today) >= 5:
+            try:
+                _avg_bar_vol = float(_rth_today['Volume'].mean())
+                _ignition_thresh = _avg_bar_vol * 2.0
+                _now_et = datetime.now(ET)
+                for _bt, _bar in _rth_today.iterrows():
+                    if float(_bar['Volume']) > _ignition_thresh:
+                        burst_age_min = round((_now_et - _bt).total_seconds() / 60, 1)
+                        break
+                # Consecutive new highs (long): count from end of last 5 bars
+                _last5 = _rth_today.tail(5)
+                _rmax = 0.0
+                for _, _b in _last5.iterrows():
+                    if float(_b['High']) > _rmax:
+                        _rmax = float(_b['High']); consec_new_highs += 1
+                    else:
+                        consec_new_highs = 0
+                # Consecutive new lows (short): mirror
+                _rmin = float('inf')
+                for _, _b in _last5.iterrows():
+                    if float(_b['Low']) < _rmin:
+                        _rmin = float(_b['Low']); consec_new_lows += 1
+                    else:
+                        consec_new_lows = 0
+            except Exception:
+                pass  # burst signals are informational — never block on failure
+
         return {
             'price': round(price, 2), 'intra_chg': round(intra_chg, 2),
             'prev_chg': round(prev_chg, 2), 'vol_ratio': round(vol_ratio, 2),
@@ -1096,6 +1140,9 @@ def get_intraday_signals(symbol, spy_chg=0):
             'aligned_15m_bear': aligned_15m_bear,
             'today_open': today_open_price, 'today_lod': today_lod,
             'first_bar_strong': first_bar_strong,
+            'burst_age_min':    burst_age_min,
+            'consec_new_highs': consec_new_highs,
+            'consec_new_lows':  consec_new_lows,
         }
     except:
         return None
@@ -1378,6 +1425,26 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
         score += SYMPATHY_SCORE_BOOST
         reasons.append(f"Sympathy: {info['trigger']} +{info['trigger_move']:.0f}% earnings ✓ (+{SYMPATHY_SCORE_BOOST})")
 
+    # ── Burst timing (fine-tuning May 2026, 136 trades validated) ────────────
+    # Data: burst 30-90m → 71.1% WR; stale >150m → 41.9% WR | 2 consec highs → 75% WR
+    _burst = sig.get('burst_age_min', 999)
+    _chod  = sig.get('consec_new_highs', 0)
+    if _burst < 30:
+        score -= 5;  reasons.append(f'Burst {_burst:.0f}m (unconfirmed <30m, -5)')
+    elif _burst <= 90:
+        pass  # sweet spot — no change
+    elif _burst <= 150:
+        score -= 10; reasons.append(f'Burst aging {_burst:.0f}m (-10)')
+    elif _burst < 999:
+        score -= 20; reasons.append(f'Stale burst {_burst:.0f}m (>150m, -20)')
+    if _chod >= 2 and _chod <= 4:
+        score += 10; reasons.append(f'{_chod} consec new highs ✓ (+10)')
+    elif _chod == 1:
+        score -= 5;  reasons.append('1 consec high (false breakout risk, -5)')
+    elif _chod == 0:
+        score -= 10; reasons.append('No consec new highs (momentum stalled, -10)')
+    # _chod == 5: extended run, 46.2% WR — no bonus, no penalty
+
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
     return grade, reasons, score
 
@@ -1541,6 +1608,15 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
     elif rr >= MIN_RR:
         score += 5;  reasons.append(f'R:R 1:{rr}')
 
+    # ── Burst timing for shorts (age validated: stale >150m → 18.2% WR) ──────
+    _burst_s = sig.get('burst_age_min', 999)
+    if _burst_s <= 90:
+        pass  # fresh burst — no change
+    elif _burst_s <= 150:
+        score -= 10; reasons.append(f'Short burst aging {_burst_s:.0f}m (-10)')
+    elif _burst_s < 999:
+        score -= 20; reasons.append(f'Short stale burst {_burst_s:.0f}m (>150m, -20)')
+
     grade = 'A+' if score >= 80 else 'A' if score >= 65 else 'B' if score >= 50 else 'C'
     return grade, reasons, score
 
@@ -1610,6 +1686,24 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
         )
         if trade_id:
             trade_entry_times[trade_id] = datetime.now(ET)
+            # Capture HOD at entry from 5-min bars (best-effort, non-blocking)
+            try:
+                import sqlite3 as _sq
+                _mdb = _sq.connect(os.path.join(_DIR, 'market_data.db'))
+                _now_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+                _rth_start = datetime.now(ET).strftime('%Y-%m-%d') + ' 13:30'  # 9:30 ET = 13:30 UTC (May)
+                _hod_row = _mdb.execute(
+                    "SELECT MAX(high) FROM bars_5m WHERE symbol=? AND ts_utc>=? AND ts_utc<=?",
+                    (symbol, _rth_start, _now_utc + ':59')
+                ).fetchone()
+                _mdb.close()
+                if _hod_row and _hod_row[0]:
+                    _conn = __import__('sqlite3').connect(os.path.join(_DIR, 'trades.db'))
+                    _conn.execute('UPDATE trades SET hod_at_entry=? WHERE id=?', (_hod_row[0], trade_id))
+                    _conn.commit()
+                    _conn.close()
+            except Exception:
+                pass  # HOD capture is optional — never block a trade entry
         return trade_id
     except Exception as e:
         log(f"Place trade error {symbol}: {e}")
@@ -3034,12 +3128,22 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     global _morning_pnl_snap
     now_et = datetime.now(ET)
     if now_et.hour >= AFTERNOON_GATE_HOUR and _morning_pnl_snap is None:
-        _morning_pnl_snap = realized.get('pnl', 0)
-        log(f"⏰ Morning P&L snapshot: ${_morning_pnl_snap:.0f} (frozen at {now_et.strftime('%H:%M')})")
-    morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else realized.get('pnl', 0)
+        _morning_pnl_snap = peak_session_pnl  # session peak (realized + unrealized) — not realized-only
+        log(f"⏰ Morning P&L snapshot: ${_morning_pnl_snap:.0f} peak session (frozen at {now_et.strftime('%H:%M')})")
+    morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else peak_session_pnl
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
-        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new longs after 12pm")
+        log(f"⏰ Afternoon gate: morning peak ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new longs after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
+
+    # ── Recycled slot gate: block new longs after 12:30 if any slot was vacated ──
+    # Recycled LONG after 12:30: 15.4% WR / -$11.17 avg (vs 61.3% baseline, May 2026)
+    RECYCLED_CUTOFF_HOUR, RECYCLED_CUTOFF_MIN = 12, 30
+    if (now_et.hour > RECYCLED_CUTOFF_HOUR or
+            (now_et.hour == RECYCLED_CUTOFF_HOUR and now_et.minute >= RECYCLED_CUTOFF_MIN)):
+        open_count = len(open_trades)
+        if daily_bull_count > open_count:  # a slot was vacated today
+            log(f"⏰ Recycled slot gate: {daily_bull_count} long entries today, {open_count} open — no new longs after 12:30")
+            return monitor_open_trades(regime, confirmed_scans)
 
     # Dynamic picks = symbols in catalyst_priority but NOT in fixed FULL_UNIVERSE
     dynamic_picks = [s for s in catalyst_priority if s not in FULL_UNIVERSE]
@@ -3275,12 +3379,22 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     global _morning_pnl_snap
     now_et = datetime.now(ET)
     if now_et.hour >= AFTERNOON_GATE_HOUR and _morning_pnl_snap is None:
-        _morning_pnl_snap = realized.get('pnl', 0)
-        log(f"⏰ Morning P&L snapshot: ${_morning_pnl_snap:.0f} (frozen at {now_et.strftime('%H:%M')})")
-    morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else realized.get('pnl', 0)
+        _morning_pnl_snap = peak_session_pnl  # session peak (realized + unrealized) — not realized-only
+        log(f"⏰ Morning P&L snapshot: ${_morning_pnl_snap:.0f} peak session (frozen at {now_et.strftime('%H:%M')})")
+    morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else peak_session_pnl
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
-        log(f"⏰ Afternoon gate: morning realized ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new shorts after 12pm")
+        log(f"⏰ Afternoon gate: morning peak ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new shorts after 12pm")
         return monitor_open_trades(regime, confirmed_scans)
+
+    # ── Recycled slot gate: block new shorts after 12:30 if any slot was vacated ──
+    # Recycled SHORT after 12:30: 16-20% WR (vs 60.7% at 10am, May 2026)
+    RECYCLED_CUTOFF_HOUR, RECYCLED_CUTOFF_MIN = 12, 30
+    if (now_et.hour > RECYCLED_CUTOFF_HOUR or
+            (now_et.hour == RECYCLED_CUTOFF_HOUR and now_et.minute >= RECYCLED_CUTOFF_MIN)):
+        open_count = len(open_trades)
+        if daily_bear_count > open_count:  # a slot was vacated today
+            log(f"⏰ Recycled slot gate: {daily_bear_count} short entries today, {open_count} open — no new shorts after 12:30")
+            return monitor_open_trades(regime, confirmed_scans)
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
     candidates = []
@@ -3289,6 +3403,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
         if symbol in traded_today:
             continue
         if symbol in BEAR_EXCLUDED:
+            continue
+        if get_symbol_sector(symbol) == 'ENERGY':  # 0% WR short, -$17.73 avg (4 trades May 2026)
             continue
         if any(t['symbol'] == symbol for t in open_trades):
             continue
@@ -3508,12 +3624,58 @@ def premarket_early_scan():
         log("  No significant pre-market movers (all <2%)")
         send_telegram("🌅 Pre-market: quiet — no movers >2% yet")
 
+def _bridge_health_check():
+    """
+    Test that IBKR is actually serving SPY bars — not just that the bridge process is up.
+    Called at 8:15am before any scanning. Auto-restarts bridge once if data is stale/empty.
+    Returns True if healthy, False if restart also failed (Telegram alert sent).
+    """
+    def _spy_bar_count(timeout_s=6):
+        try:
+            r = requests.get(f"{BRIDGE}/history/SPY",
+                             params={'duration': '1 D', 'bar_size': '5 mins'},
+                             timeout=timeout_s)
+            return len(r.json()) if r.status_code == 200 else 0
+        except Exception:
+            return 0
+
+    bars = _spy_bar_count()
+    if bars >= 5:
+        log(f"  Bridge health: OK ({bars} SPY bars)")
+        return True
+
+    log(f"  Bridge health: SPY returned {bars} bars — restarting bridge...")
+    send_telegram("⚠️ Bridge pre-flight: SPY data unavailable — auto-restarting bridge now...")
+    try:
+        uid = os.getuid()
+        subprocess.run(
+            ['launchctl', 'kickstart', '-k', f'gui/{uid}/com.sushil.trading.bridge'],
+            timeout=15, check=True
+        )
+    except Exception as e:
+        log(f"  Bridge restart failed: {e}")
+        send_telegram(f"❌ Bridge restart failed: {e} — monitor manually")
+        return False
+
+    time.sleep(20)
+    bars_after = _spy_bar_count(timeout_s=10)
+    if bars_after >= 5:
+        log(f"  Bridge restarted successfully ({bars_after} SPY bars)")
+        send_telegram(f"✅ Bridge restarted — {bars_after} SPY bars. Good to go.")
+        return True
+
+    log(f"  Bridge still unhealthy after restart ({bars_after} bars) — regime will use yfinance fallback")
+    send_telegram("⚠️ Bridge still slow after restart — running on yfinance fallback today. Monitor.")
+    return False
+
+
 def morning_catalyst_scan():
     if date.today() in US_HOLIDAYS_2026:
         log("CATALYST SCAN skipped — market holiday")
         return
     global catalyst_priority
     log("CATALYST SCAN (8:15am) — refreshing watchlist before open...")
+    _bridge_health_check()
 
     # ── 0. Refresh pre-market (now closer to open, more accurate) ─
     premarket_lines = []
@@ -3876,6 +4038,34 @@ if __name__ == '__main__':
         log(f"Restored partial_done_trades: {len(partial_done_trades)} trades already partially exited")
     if session_high or session_low:
         log(f"Seeded session_high/low for {len(session_high) + len(session_low)} open positions")
+
+    # Restore peak_session_pnl and afternoon gate from today's realized trades + current unrealized.
+    # Without this, a mid-day restart resets peak to 0, breaking P&L protection and the afternoon gate.
+    try:
+        import sqlite3 as _sqlite3
+        _pr_conn = _sqlite3.connect(os.path.join(_DIR, 'trades.db'))
+        _realized_snap = (_pr_conn.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM trades "
+            "WHERE entry_date=date('now') AND status IN ('WIN','LOSS','CLOSED') AND setup_type!='RECONCILED'"
+        ).fetchone() or [0])[0] or 0.0
+        _pr_conn.close()
+        try:
+            _pf_snap = requests.get(f"{BRIDGE}/portfolio", timeout=5).json()
+            _unreal_snap = sum((p.get('unrealizedPnL') or 0) for p in _pf_snap if (p.get('qty') or 0) != 0)
+        except Exception:
+            _unreal_snap = 0.0
+        _restored_peak = float(_realized_snap) + float(_unreal_snap)
+        if _restored_peak > peak_session_pnl:
+            peak_session_pnl = _restored_peak
+            log(f"Restored peak_session_pnl: ${peak_session_pnl:.0f} "
+                f"(realized ${_realized_snap:.0f} + unrealized ${_unreal_snap:.0f})")
+        # Seed afternoon gate if restarting after noon
+        _now_et_r = datetime.now(ET)
+        if _now_et_r.hour >= AFTERNOON_GATE_HOUR and _morning_pnl_snap is None and peak_session_pnl > 0:
+            _morning_pnl_snap = peak_session_pnl
+            log(f"Restored _morning_pnl_snap: ${_morning_pnl_snap:.0f} (post-noon restart — gate active)")
+    except Exception as _pe:
+        log(f"Warning: could not restore peak_session_pnl: {_pe}")
 
     print("\n🤖 Auto Trader v2 — Consolidated")
     print("=" * 55)
