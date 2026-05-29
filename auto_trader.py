@@ -103,6 +103,20 @@ US_HOLIDAYS_2026 = {
     date(2026, 12, 25),  # Christmas
 }
 
+# ── Power-play batting order: sector priority for slot allocation ─────────────
+# Lower number = higher priority (gets a slot first in morning power-play window)
+# Built from 3-day scan_log data: catalyst stocks 2× more likely to be top movers;
+# CONSUMER historically weakest (67% WR, +2.7% avg max vs 100% WR for other sectors).
+# STRONG sectors (SEMIS/NUCLEAR/DEFENCE) open; CONSUMER protects tail.
+# Revisit quarterly as scan_log.actual_day_high_pct data accumulates.
+_SLOT_SECTOR_PRIORITY = {
+    'SEMIS': 0, 'NUCLEAR': 0, 'DEFENCE': 0,   # STRONG — open the innings
+    'TECH': 1, 'QUANTUM_CRYPTO': 1,             # STRONG/NEUTRAL — top-order
+    'CLEAN_ENERGY': 1, 'COMMODITIES': 1, 'OTHER': 1,  # mid-order
+    'BIOTECH': 2, 'FINTECH': 2,                 # WEAK — lower-order
+    'CONSUMER': 3,                               # tail — weakest mover historically
+}
+
 # ── Persistence ───────────────────────────────────────────
 _DIR              = os.path.dirname(os.path.abspath(__file__))
 TRADED_TODAY_FILE = os.path.join(_DIR, 'traded_today.json')
@@ -3226,24 +3240,38 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'scan_date': _now.strftime('%Y-%m-%d'),
         })
 
-    # Sort: sympathy A+ first, then catalyst A+, then by grade + score
+    # ── Power-play batting order ────────────────────────────────────────────────
+    # Tier: sympathy A+ → catalyst A+ → catalyst A → universe A+ → universe A
+    # Within tier: sector strength (pitch report) → intra_chg (player form today)
+    #              → vol_ratio (fitness/conviction) → score (player rating)
+    # Data: catalyst flag predicts top-half movers at 53% vs 25% for ambient.
+    # intra_chg is the individual "pitch report" — how fast is this stock already
+    # moving? Score does NOT discriminate at A+ level (both halves avg ~215).
+    # CONSUMER deprioritised: 67% WR, +2.7% avg max vs 100%/10%+ for other sectors.
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
     candidates.sort(key=lambda x: (
-        0 if x['is_sympathy'] and x['grade'] in ('A+', 'A') else
-        1 if x['is_catalyst'] and x['grade'] in ('A+', 'A') else 2,
-        grade_order.get(x['grade'], 3),
-        -x['score']
+        0 if (x['is_sympathy'] and x['grade'] == 'A+') else
+        1 if (x['is_catalyst'] and x['grade'] == 'A+') else
+        2 if (x['is_catalyst'] and x['grade'] == 'A')  else
+        3 if x['grade'] == 'A+' else 4,
+        _SLOT_SECTOR_PRIORITY.get(x.get('sector', 'OTHER'), 1),  # pitch report
+        -x['intra_chg'],   # player form: harder mover goes first
+        -x['vol_ratio'],   # fitness: volume conviction
+        -x['score'],       # player rating: tiebreaker only
     ))
 
-    log(f"Found {len(candidates)} valid setups ({sum(1 for c in candidates if c['is_catalyst'])} catalyst)")
+    _n_cat = sum(1 for c in candidates if c['is_catalyst'])
+    log(f"Found {len(candidates)} valid setups ({_n_cat} catalyst) — batting order: "
+        + " | ".join(f"{c['symbol']}({c['intra_chg']:+.1f}%{'⚡' if c['is_catalyst'] else ''})"
+                     for c in candidates[:8]))
 
-    # Log all qualified candidates to scan_log — some will be entered, some capped out
-    _cap_reason = 'Qualified — awaiting slot'
-    for _c in candidates:
+    # Log all qualified candidates to scan_log with their batting position
+    for _rank, _c in enumerate(candidates):
+        _reason = f"Slot #{_rank+1} in batting order" if _rank < MAX_OPEN_TRADES else 'Qualified — awaiting slot'
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'LONG', regime,
-                _c['price'], _c['grade'], _c['score'], _cap_reason,
+                _c['price'], _c['grade'], _c['score'], _reason,
                 _c['vol_ratio'], _c['rsi'], _c['intra_chg'], _c.get('sector'),
                 is_catalyst=_c['is_catalyst'], entered=False,
             )
@@ -3471,8 +3499,15 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             'scan_date': _now_b.strftime('%Y-%m-%d'),
         })
 
+    # Bear batting order: biggest fallers first within grade — mirrors LONG power-play logic
+    # intra_chg is negative for shorts; sort ascending (most negative = biggest fall = first)
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
-    candidates.sort(key=lambda x: (grade_order.get(x['grade'], 3), -x['score']))
+    candidates.sort(key=lambda x: (
+        grade_order.get(x['grade'], 3),
+        x['intra_chg'],    # most negative (biggest faller) first — no negation
+        -x['vol_ratio'],
+        -x['score'],
+    ))
 
     log(f"Bear scan: {len(candidates)} short candidates")
 
