@@ -110,11 +110,11 @@ US_HOLIDAYS_2026 = {
 # STRONG sectors (SEMIS/NUCLEAR/DEFENCE) open; CONSUMER protects tail.
 # Revisit quarterly as scan_log.actual_day_high_pct data accumulates.
 _SLOT_SECTOR_PRIORITY = {
-    'SEMIS': 0, 'NUCLEAR': 0, 'DEFENCE': 0,   # STRONG — open the innings
-    'TECH': 1, 'QUANTUM_CRYPTO': 1,             # STRONG/NEUTRAL — top-order
-    'CLEAN_ENERGY': 1, 'COMMODITIES': 1, 'OTHER': 1,  # mid-order
-    'BIOTECH': 2, 'FINTECH': 2,                 # WEAK — lower-order
-    'CONSUMER': 3,                               # tail — weakest mover historically
+    'SEMIS': 0, 'SEMI': 0, 'NUCLEAR': 0, 'DEFENCE': 0,  # STRONG — open the innings
+    'TECH': 1, 'AI_TECH': 1, 'CLOUD': 1, 'QUANTUM_CRYPTO': 1,  # top-order
+    'CLEAN_ENERGY': 1, 'COMMODITIES': 1, 'OTHER': 1,    # mid-order
+    'BIOTECH': 2, 'ENERGY': 2, 'FINTECH': 2,             # WEAK — lower-order
+    'CONSUMER': 3,                                        # tail — weakest mover historically
 }
 
 # ── Persistence ───────────────────────────────────────────
