@@ -3359,7 +3359,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 import sqlite3 as _sq3
                 _scan_date = pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))
                 _conn = _sq3.connect('trades.db')
-                _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?, skip_reason=NULL
+                _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?
                                  WHERE id = (
                                      SELECT id FROM scan_log
                                      WHERE symbol=? AND scan_date=? AND direction='LONG' AND entered=0
@@ -3587,7 +3587,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
                 import sqlite3 as _sq3
                 _scan_date = pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))
                 _conn = _sq3.connect('trades.db')
-                _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?, skip_reason=NULL
+                _conn.execute('''UPDATE scan_log SET entered=1, entry_trade_id=?
                                  WHERE id = (
                                      SELECT id FROM scan_log
                                      WHERE symbol=? AND scan_date=? AND direction='SHORT' AND entered=0
