@@ -1549,21 +1549,23 @@ def enrich_scan_log():
                 # Forward returns from bars_5m if available
                 if _mconn and scan_time:
                     try:
-                        # Convert scan_time HH:MM ET to UTC for bars_5m lookup
-                        # EDT offset = 4h; scan bars are stored in UTC
+                        from datetime import datetime as _dt, timedelta as _td
                         h, m = int(scan_time[:2]), int(scan_time[3:5])
-                        utc_h = h + 4  # EDT→UTC (approximate; accurate Mar-Nov)
-                        scan_ts = f"{scan_date} {utc_h:02d}:{m:02d}"
-                        # Price at scan time (closest bar)
+                        # Correct ET→UTC: EDT (UTC-4) Apr-Oct, EST (UTC-5) Nov-Mar
+                        utc_off = 4 if 4 <= int(scan_date[5:7]) <= 10 else 5
+                        base = _dt.strptime(f"{scan_date} {h:02d}:{m:02d}", "%Y-%m-%d %H:%M")
+                        scan_ts = (base + _td(hours=utc_off)).strftime("%Y-%m-%d %H:%M")
+                        ts_30   = (base + _td(hours=utc_off, minutes=30)).strftime("%Y-%m-%d %H:%M")
+                        ts_60   = (base + _td(hours=utc_off, minutes=60)).strftime("%Y-%m-%d %H:%M")
                         p_scan = _mconn.execute(
                             "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>=? LIMIT 1",
                             (symbol, scan_ts)).fetchone()
                         p_30 = _mconn.execute(
                             "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>=? LIMIT 1",
-                            (symbol, f"{scan_date} {utc_h:02d}:{(m+30)%60:02d}")).fetchone()
+                            (symbol, ts_30)).fetchone()
                         p_60 = _mconn.execute(
                             "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>=? LIMIT 1",
-                            (symbol, f"{scan_date} {utc_h:02d}:{(m+60)%60:02d}")).fetchone()
+                            (symbol, ts_60)).fetchone()
                         if p_scan and p_scan[0] and p_30 and p_30[0]:
                             r30 = round((float(p_30[0])/float(p_scan[0])-1)*100, 3)
                         if p_scan and p_scan[0] and p_60 and p_60[0]:
@@ -1582,6 +1584,8 @@ def enrich_scan_log():
             updated += len(id_times)
 
         except Exception:
+            try: conn.close()
+            except Exception: pass
             continue
 
     if _mconn:
@@ -1599,7 +1603,7 @@ def backfill_energy_signals():
     Safe to call multiple times (skips rows where consec_new_highs IS NOT NULL).
     """
     import sqlite3 as _sq3, os as _os
-    import math as _math
+    from datetime import datetime as _dt, timedelta as _td
 
     bars_path = _os.path.join(_os.path.dirname(__file__), 'market_data.db')
     try:
@@ -1620,9 +1624,11 @@ def backfill_energy_signals():
         try:
             if not scan_time: continue
             h, m = int(scan_time[:2]), int(scan_time[3:5])
-            utc_h = h + 4  # EDT offset
-            rth_start = f"{scan_date} {13:02d}:{30:02d}"   # 9:30 ET = 13:30 UTC
-            scan_ts   = f"{scan_date} {utc_h:02d}:{m:02d}"
+            # Correct ET→UTC: EDT (UTC-4) Apr-Oct, EST (UTC-5) Nov-Mar
+            utc_off   = 4 if 4 <= int(scan_date[5:7]) <= 10 else 5
+            base      = _dt.strptime(f"{scan_date} {h:02d}:{m:02d}", "%Y-%m-%d %H:%M")
+            rth_start = f"{scan_date} {9 + utc_off:02d}:30"   # 9:30 ET → UTC
+            scan_ts   = (base + _td(hours=utc_off)).strftime("%Y-%m-%d %H:%M")
 
             # Bars from 9:30 to scan time
             pre_bars = mconn.execute(
@@ -1647,13 +1653,15 @@ def backfill_energy_signals():
                 if float(r[0]) > rmax: rmax = float(r[0]); consec += 1
                 else: consec = 0
 
-            # Forward returns
+            # Forward returns — use timedelta to correctly advance hour boundary
+            ts_30 = (base + _td(hours=utc_off, minutes=30)).strftime("%Y-%m-%d %H:%M")
+            ts_60 = (base + _td(hours=utc_off, minutes=60)).strftime("%Y-%m-%d %H:%M")
             p30 = mconn.execute(
                 "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>? ORDER BY ts_utc LIMIT 1",
-                (symbol, f"{scan_date} {utc_h:02d}:{(m+28)%60:02d}")).fetchone()
+                (symbol, ts_30)).fetchone()
             p60 = mconn.execute(
                 "SELECT close FROM bars_5m WHERE symbol=? AND ts_utc>? ORDER BY ts_utc LIMIT 1",
-                (symbol, f"{scan_date} {utc_h:02d}:{(m+58)%60:02d}")).fetchone()
+                (symbol, ts_60)).fetchone()
             r30 = round((float(p30[0])/p_at_scan-1)*100,3) if p30 and p_at_scan else None
             r60 = round((float(p60[0])/p_at_scan-1)*100,3) if p60 and p_at_scan else None
 
