@@ -68,18 +68,35 @@ def fetch_prices(symbol: str) -> pd.DataFrame | None:
         print(f"    price error: {e}")
         return None
 
-def fetch_iv(symbol: str) -> pd.Series | None:
+def fetch_iv(symbol: str, prices: pd.DataFrame | None = None) -> pd.Series | None:
+    """
+    Try IBKR bridge first (accurate historical IV).
+    Fall back to realized-volatility proxy from price history:
+      IV ≈ HV30 × 1.20  (20% vol-risk-premium is conservative market average)
+    This makes the backtester fully self-contained — no gateway required.
+    """
     try:
-        r = requests.get(f"{BRIDGE_URL}/options/iv_history/{symbol}", timeout=30)
-        if r.status_code != 200:
+        r = requests.get(f"{BRIDGE_URL}/options/iv_history/{symbol}", timeout=10)
+        if r.status_code == 200:
+            bars = r.json().get('bars', [])
+            if bars:
+                s = pd.Series({pd.Timestamp(b['date']): b['iv'] for b in bars if b.get('iv')})
+                if len(s) >= 20:
+                    return s.sort_index()
+    except Exception:
+        pass
+
+    # Fallback: compute 30-day realized vol from price history, scale by 1.20
+    if prices is None or len(prices) < 35:
+        return None
+    try:
+        log_ret = prices['close'].pct_change().apply(lambda x: x + 1).apply(lambda x: __import__('math').log(x))
+        hv30    = log_ret.rolling(30).std() * (252 ** 0.5)   # annualized
+        iv_proxy = (hv30 * 1.20).dropna()
+        if len(iv_proxy) < 20:
             return None
-        bars = r.json().get('bars', [])
-        if not bars:
-            return None
-        s = pd.Series({pd.Timestamp(b['date']): b['iv'] for b in bars if b.get('iv')})
-        return s.sort_index()
-    except Exception as e:
-        print(f"    IV error: {e}")
+        return iv_proxy
+    except Exception:
         return None
 
 # ── IV rank ────────────────────────────────────────────────────────────────────
@@ -277,14 +294,15 @@ def run_backtest(symbols: list[str], strategy: str) -> list[dict]:
     for sym in symbols:
         print(f"  {sym:<6} ", end='', flush=True)
         prices = fetch_prices(sym)
-        ivs    = fetch_iv(sym)
-
         if prices is None or len(prices) < 200:
             print("✗ no price data")
             continue
+        ivs = fetch_iv(sym, prices)
         if ivs is None or len(ivs) < 20:
             print("✗ no IV data")
             continue
+        src = "ibkr" if ivs.index[0] in prices.index else "hv30"
+        print(f"[{src}] ", end='', flush=True)
 
         common = prices.index.intersection(ivs.index)
         if len(common) < 20:

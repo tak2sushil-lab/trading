@@ -851,10 +851,11 @@ async def place_options_order(req: OptionsOrderRequest):
     order.transmit = True
     if IBKR_ACCOUNT:
         order.account = IBKR_ACCOUNT
-    # Paper account needs type=1 to trigger fill simulation on BAG orders
+    # type=1 triggers paper fill simulation for BAG orders.
+    # Keep it active for 15s — resetting too early kills the simulator before it fills.
     ib.reqMarketDataType(1)
     trade = ib.placeOrder(combo, order)
-    await asyncio.sleep(3)   # give paper sim time to match
+    await asyncio.sleep(15)  # paper BAG fill simulation typically needs 5-15s
     ib.reqMarketDataType(3)  # restore delayed for option quotes
     return {
         "status":      "submitted",

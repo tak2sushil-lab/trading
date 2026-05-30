@@ -80,9 +80,9 @@ LEAP_ENABLED            = False   # LEAP needs more capital — re-enable when s
 
 ET               = ZoneInfo('America/New_York')
 COMMISSION_RT    = 3.60    # round-trip per spread (2 legs × open + close)
-MAX_SLIPPAGE     = 0.15    # max $ above mid before cancel
-FILL_WAIT_SEC    = 45      # seconds between fill checks
-MAX_FILL_TRIES   = 4       # attempts: mid, mid+.05, mid+.10, mid+.15
+MAX_SLIPPAGE     = 0.30    # max $ above mid before cancel (widened from 0.15 — spreads need room)
+FILL_WAIT_SEC    = 60      # seconds between fill checks (increased: bridge now waits 15s for BAG sim)
+MAX_FILL_TRIES   = 4       # attempts: mid, mid+.10, mid+.20, mid+.30
 
 LARGE_CAP_UNIVERSE = {
     # Mega/large cap >$100B — deep options liquidity, expensive contracts, qty=1
@@ -1307,7 +1307,7 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
     order_id = None
     filled_at = None
     for attempt in range(MAX_FILL_TRIES):
-        limit_price = round(mid + attempt * 0.05, 2)
+        limit_price = round(mid + attempt * 0.10, 2)  # mid, mid+.10, mid+.20, mid+.30
         if attempt > 0:
             send_telegram(
                 f"⏳ *{sym} spread* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f}",
@@ -1336,25 +1336,23 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
 
         status = get_order_status(order_id)
         st = (status or {}).get('status', 'Unknown')
-        print(f"[options] {sym} spread attempt {attempt+1}: orderId={order_id} status={st} filled={( status or {}).get('filled',0)}")
+        print(f"[options] {sym} spread attempt {attempt+1}: orderId={order_id} status={st} filled={(status or {}).get('filled',0)}")
+
+        # Always verify via portfolio — status alone is unreliable for BAG/combo orders.
+        # paper fill simulation may show Submitted/PreSubmitted without actual position,
+        # or show Cancelled/Unknown when position DID fill (race condition on reconnect).
+        opts_pos = get_portfolio_options()
+        if any(p.get('symbol') == sym for p in opts_pos):
+            print(f"[options] {sym} position confirmed in portfolio (status={st}) — recording fill")
+            filled_at = limit_price
+            break
+
+        # Also accept clean Filled status as authoritative
         if status and status.get('filled', 0) >= qty:
             filled_at = limit_price
             break
 
-        # Paper account: BAG fill simulation often stays at Submitted — treat as filled
-        if status and st in ('Submitted', 'PreSubmitted') and _is_paper():
-            filled_at = limit_price   # paper fill at limit
-            break
-
-        # Paper fallback: order not yet confirmed — verify via portfolio for all ambiguous statuses
-        if _is_paper() and st in ('Unknown', 'Cancelled', 'PendingSubmit'):
-            opts_pos = get_portfolio_options()
-            if any(p.get('symbol') == sym for p in opts_pos):
-                print(f"[options] {sym} status={st} but position confirmed in portfolio — recording fill")
-                filled_at = limit_price
-                break
-
-        # Not filled yet — cancel before trying next increment
+        # Not filled — cancel before trying next increment
         if attempt < MAX_FILL_TRIES - 1:
             cancel_all_orders()
             time.sleep(2)
