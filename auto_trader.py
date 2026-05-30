@@ -149,6 +149,7 @@ _last_regime        = None   # last valid get_regime() result — held when SPY 
 peak_session_pnl    = 0.0    # highest session P&L seen today (realized + unrealized)
 pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
 _morning_pnl_snap   = None   # P&L frozen at first post-noon scan — afternoon gate uses this
+_daily_loss_alerted = False  # ensures circuit breaker Telegram fires once per day only
 
 # ── Bear exclusions — stocks with insufficient bear backtest WR ──
 BEAR_EXCLUDED = {'RDW'}   # RDW: 60% bear WR (below 80% threshold), bull-only addition
@@ -3187,6 +3188,10 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     daily_total = realized.get('pnl', 0) + unrealized
     if daily_total <= -MAX_DAILY_LOSS:
         log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
+        global _daily_loss_alerted
+        if not _daily_loss_alerted:
+            send_telegram(f"⛔ Daily loss limit hit: ${daily_total:.0f} (limit -${MAX_DAILY_LOSS})\nNo new entries for rest of day.")
+            _daily_loss_alerted = True
         return monitor_open_trades(regime, confirmed_scans)
 
     # ── Afternoon gate: protect morning gains, skip new longs after 12pm ──────
@@ -3482,6 +3487,10 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     daily_total = realized.get('pnl', 0) + unrealized
     if daily_total <= -MAX_DAILY_LOSS:
         log(f"⛔ Daily max loss hit (${daily_total:.0f}) — protecting capital, no new entries")
+        global _daily_loss_alerted
+        if not _daily_loss_alerted:
+            send_telegram(f"⛔ Daily loss limit hit: ${daily_total:.0f} (limit -${MAX_DAILY_LOSS})\nNo new entries for rest of day.")
+            _daily_loss_alerted = True
         return monitor_open_trades(regime, confirmed_scans)
 
     # ── Afternoon gate: no new shorts after 12pm if morning was profitable ────
@@ -4076,7 +4085,7 @@ def reset_daily_state():
     global atr_cache, regime_history, spy_open_price, trade_entry_times, earnings_cache
     global partial_done_trades, first_bar_strong_trades, key_levels, sector_strength
     global daily_sympathy_count, active_sympathy_triggers, sympathy_scan_done
-    global peak_session_pnl, pl_protect_active, _morning_pnl_snap
+    global peak_session_pnl, pl_protect_active, _morning_pnl_snap, _daily_loss_alerted
     traded_today             = set()
     daily_bull_count         = 0
     daily_bear_count         = 0
@@ -4096,6 +4105,7 @@ def reset_daily_state():
     peak_session_pnl    = 0.0
     pl_protect_active   = False
     _morning_pnl_snap   = None
+    _daily_loss_alerted = False
     save_traded_today()
     log("Daily state reset for new trading day")
 
