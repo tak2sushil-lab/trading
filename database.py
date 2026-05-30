@@ -55,6 +55,11 @@ def init_db():
         c.execute('ALTER TABLE trades ADD COLUMN partial_exited INTEGER DEFAULT 0')
     except Exception:
         pass  # column already exists
+    # Add hod_at_entry — HOD at time of entry, used for energy gate analysis
+    try:
+        c.execute('ALTER TABLE trades ADD COLUMN hod_at_entry REAL')
+    except Exception:
+        pass  # column already exists
 
     # ── Strategy weights — updated by learner ─────────────
     c.execute('''CREATE TABLE IF NOT EXISTS strategy_weights (

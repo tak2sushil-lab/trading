@@ -853,11 +853,12 @@ def reconcile_with_ibkr():
                 send_telegram(f"🚨 Reconcile: {sym} orphan could not be closed — MANUAL ACTION REQUIRED")
                 log(f"Reconcile: {sym} all close attempts failed — manual close required")
 
-    # DB has open trade, IBKR doesn't → closed externally
+    # DB has open trade, IBKR doesn't → closed externally (manual close, partial fill, etc.)
     for sym, trade in db_symbols.items():
         if sym not in ibkr:
             price = get_live_price(sym) or trade['entry_price']
             log(f"Reconcile: {sym} in DB but gone from IBKR → marking closed")
+            send_telegram(f"⚠️ Reconcile: {sym} closed outside auto_trader (manual? partial fill?) — marking closed at ${price:.2f}")
             log_trade_exit(trade['id'], price, 'Position closed outside auto_trader')
             if sym in open_positions:
                 del open_positions[sym]
@@ -1145,8 +1146,9 @@ def get_intraday_signals(symbol, spy_chg=0):
                         _rmax = float(_b['High']); consec_new_highs += 1
                     else:
                         consec_new_highs = 0
-                # Consecutive new lows (short): mirror
-                _rmin = float('inf')
+                # Consecutive new lows (short): mirror — baseline from prior bars
+                # (same pattern as consec_new_highs — prevents first bar always counting)
+                _rmin = float(_prior['Low'].min()) if not _prior.empty else float('inf')
                 for _, _b in _last5.iterrows():
                     if float(_b['Low']) < _rmin:
                         _rmin = float(_b['Low']); consec_new_lows += 1

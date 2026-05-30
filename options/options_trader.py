@@ -1521,8 +1521,15 @@ def _execute_close_bg(trade: dict, chat_id: str):
         if not lq or not sq:
             send_telegram(f"❌ Cannot fetch quotes for {sym} to close", chat_id)
             return
-        long_mid  = (lq['bid'] + lq['ask']) / 2
-        short_mid = (sq['bid'] + sq['ask']) / 2
+        long_bid  = lq.get('bid') or 0
+        long_ask  = lq.get('ask') or 0
+        short_bid = sq.get('bid') or 0
+        short_ask = sq.get('ask') or 0
+        if not (long_bid or long_ask) or not (short_bid or short_ask):
+            send_telegram(f"❌ {sym} spread close: no valid bid/ask from broker — try again", chat_id)
+            return
+        long_mid  = (long_bid + long_ask) / 2
+        short_mid = (short_bid + short_ask) / 2
         spread_mid = round(long_mid - short_mid, 2)
         # Close a bull spread = sell it back
         payload = {
@@ -1543,7 +1550,12 @@ def _execute_close_bg(trade: dict, chat_id: str):
         if not q:
             send_telegram(f"❌ Cannot fetch quote for {sym} SCALP to close", chat_id)
             return
-        mid = round((q['bid'] + q['ask']) / 2, 2)
+        _bid = q.get('bid') or 0
+        _ask = q.get('ask') or 0
+        if not (_bid or _ask):
+            send_telegram(f"❌ {sym} SCALP close: no valid bid/ask from broker — try again", chat_id)
+            return
+        mid = round((_bid + _ask) / 2, 2)
         payload = {
             'symbol':      sym,
             'expiry':      trade['expiry'],
@@ -1560,7 +1572,12 @@ def _execute_close_bg(trade: dict, chat_id: str):
         if not q:
             send_telegram(f"❌ Cannot fetch quote for {sym} LEAP to close", chat_id)
             return
-        mid = round((q['bid'] + q['ask']) / 2, 2)
+        _bid = q.get('bid') or 0
+        _ask = q.get('ask') or 0
+        if not (_bid or _ask):
+            send_telegram(f"❌ {sym} LEAP close: no valid bid/ask from broker — try again", chat_id)
+            return
+        mid = round((_bid + _ask) / 2, 2)
         payload = {
             'symbol':      sym,
             'expiry':      trade['expiry'],
@@ -1592,8 +1609,11 @@ def _execute_close_bg(trade: dict, chat_id: str):
         send_telegram(f"⚠️ {sym} close order not confirmed — check IBKR manually. DB NOT updated.", chat_id)
         return
 
-    return_pct = close_options_trade(tid, exit_value, exit_reason='MANUAL') or 0
-    sign       = '+' if return_pct >= 0 else ''
+    return_pct = close_options_trade(tid, exit_value, exit_reason='MANUAL')
+    if return_pct is None:
+        send_telegram(f"⚠️ {sym} IBKR close placed but DB write failed (trade #{tid} not found) — check trading.db", chat_id)
+        return
+    sign = '+' if return_pct >= 0 else ''
 
     # KB: log actual outcome vs predicted EV
     try:
