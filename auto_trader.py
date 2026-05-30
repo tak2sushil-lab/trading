@@ -1704,18 +1704,22 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 if d.get('status') == 'Filled':
                     # Use actual fill qty and price — live orders can partially fill.
                     # Paper always fills 100% so these will match what was requested.
-                    # Use explicit None check: 0 is a valid (bad) fill qty, not a missing value.
+                    # Explicit None check: 0 is a valid (bad) fill qty, not a missing value.
                     _fqty  = d.get('filled')
                     _fpx   = d.get('avgFillPrice')
                     filled_qty   = int(_fqty)   if _fqty  is not None else shares
-                    filled_price = float(_fpx)  if _fpx   is not None else price
+                    filled_price = float(_fpx)  if (_fpx  is not None and float(_fpx) > 0) else price
+                    # Zero-qty fill = IBKR reporting a bad state — skip before partial check
+                    if filled_qty == 0:
+                        log(f"  {symbol}: Zero-qty fill reported — skipping")
+                        return None
                     if filled_qty < shares:
                         log(f"  {symbol}: Partial fill {filled_qty}/{shares} sh @ ${filled_price:.2f} — recording actual qty")
                         send_telegram(f"⚠️ {symbol}: Partial fill {filled_qty}/{shares} shares @ ${filled_price:.2f}")
                         shares = filled_qty
-                    if filled_qty == 0:
-                        log(f"  {symbol}: Zero-qty fill reported — skipping")
-                        return None
+                    elif filled_qty > shares:
+                        log(f"  {symbol}: Overfill {filled_qty}/{shares} sh — capping at requested qty")
+                        filled_qty = shares
                     price = filled_price
                     filled = True
                     break
@@ -3560,6 +3564,16 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             except Exception:
                 pass
             continue
+
+        # Float gate: scanner-discovered short candidates need tradeable float
+        if symbol not in FULL_UNIVERSE:
+            try:
+                _float = yf.Ticker(symbol).info.get('floatShares', 0) or 0
+                if 0 < _float < 500_000:
+                    log(f"  SKIP {symbol} SHORT — float {_float/1e3:.0f}K too thin for position sizing")
+                    continue
+            except Exception:
+                pass
 
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
