@@ -162,16 +162,18 @@ These must be verified/built before any real-money trading begins. Do NOT go liv
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | **Gateway reconnect simulation test** | ⬜ pending | Kill bridge mid-scan, confirm freeze Telegram fires, no orders placed |
-| 2 | **Partial fill handling in place_trade()** | ⬜ pending | Prod orders can partially fill; paper always fills 100%. Add `filled_qty` tracking before 50% capital phase |
-| 3 | **IBKR market data subscriptions** | ⬜ pending | Paper uses `reqMarketDataType(3)` (delayed). Prod needs live subscriptions for all 159 symbols. Verify none return Error 10089 |
-| 4 | **Buying power pre-check** | ⬜ pending | Paper ignores buying power limits; prod hard-rejects. Add pre-order check: `available_cash >= position_cost` before submitting |
-| 5 | **TFSA isolation double-check** | ⬜ pending | Confirm `BRIDGE_URL` in prod `.env` targets port 4002 Individual account (U22303375), never 4001 TFSA (U15022563). CRA compliance |
-| 6 | **PROD_EQUITY_ENABLED flag test** | ⬜ pending | Flip flag in dry-run, confirm orders reach paper Individual account, not TFSA |
-| 7 | **Prod `.env` credentials audit** | ⬜ pending | Never overwritten by `deploy_to_prod.sh` — verify before each deploy |
-| 8 | **watchman.py exit logging** | ⬜ pending | Wire `log_trade_outcome()` before options paper trading generates real outcomes |
-| 9 | **backtester_options.py Phase 5** | ⬜ pending | Complete after first options paper trade closes |
-| 10 | **Prod gateway launchd bootstrap** | ⬜ pending | Gateway was shut down (stuck on IBKR notification page). Re-enable before go-live: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sushil.trading-prod.gateway.plist` |
+| 1 | **Gateway reconnect simulation test** | ⬜ pending | Kill bridge mid-scan, confirm freeze Telegram fires, no orders placed. Manual test. |
+| 2 | **Partial fill handling in place_trade()** | ✅ done May 29 | Reads `filled` qty + `avgFillPrice` from bridge. Partial fill → Telegram alert. Zero-qty fill returns None. |
+| 3 | **IBKR market data subscriptions** | ⬜ pre-go-live | User to subscribe live data before go-live. Bridge streaming fix (May 29) ensures correct monitoring once subscribed. |
+| 4 | **Buying power pre-check** | ✅ done May 29 | Pre-order BP check vs position_cost×1.05. Fails open on account query error. Paper account ($3.5M) never triggers. |
+| 5 | **TFSA isolation double-check** | ✅ confirmed | Bridge pins IBKR_ACCOUNT on every order. Individual account already identified and saved. |
+| 6 | **PROD_EQUITY_ENABLED flag test** | ⬜ pending | Flip flag in dry-run, confirm orders reach paper Individual account, not TFSA. Flag infrastructure already in auto_trader.py:4104. |
+| 7 | **Prod `.env` credentials audit** | ⬜ pre-go-live | User to audit before deploy — never automated. |
+| 8 | **watchman.py exit logging** | ✅ wired | log_trade_outcome() present. Options-side only — equity go-live not blocked. |
+| 9 | **backtester_options.py Phase 5** | ⬜ post-go-live | Options-side item. Equity go-live not blocked. |
+| 10 | **Prod gateway launchd bootstrap** | ⬜ pre-go-live | Re-enable before go-live: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sushil.trading-prod.gateway.plist` |
+| 11 | **Bridge streaming subscriptions** | ✅ done May 29 | reqMktData after every place_order (commit f2cd105). Prevents stale monitoring on intraday entries. |
+| 12 | **Float gate for scanner stocks** | ✅ done May 29 | float < 500K shares → skip for IBKR scanner-discovered stocks not in 166-symbol universe. |
 
 ---
 
