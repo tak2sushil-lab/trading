@@ -323,6 +323,13 @@ async def place_order(req: OrderRequest):
         order.account = IBKR_ACCOUNT   # pin to Individual account — never TFSA
 
     trade = ib.placeOrder(contract, order)
+
+    # Subscribe persistent streaming data so get_live_price() sees live prices
+    # for the entire session — covers both LONG entries and SHORT entries.
+    # Idempotent: ib_insync silently reuses an existing subscription for the
+    # same contract, so exit orders (which share the same contract) are harmless.
+    ib.reqMktData(contract, '', False, False)
+
     await asyncio.sleep(1)
     return {
         "status":    "submitted",
