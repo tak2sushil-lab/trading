@@ -68,14 +68,32 @@ _av_called_today: set = set()   # 'SYMBOL|YYYY-MM-DD' keys
 
 # ── Options universe to monitor ──────────────────────────
 OPTIONS_SYMBOLS = [
-    # Tier 1 — large-cap, deep options liquidity, anchor positions
+    # ── Tier 1: mega/large-cap, deepest options liquidity ────
     'NVDA', 'META', 'AMZN', 'MSFT', 'AAPL',
     'TSLA', 'AMD',  'GOOGL', 'ORCL', 'COIN',
-    # Tier 2 — mid-cap momentum, active options, strong narratives
+    # ── Tier 2: mid-cap momentum, liquid options ─────────────
     'PLTR', 'APP',  'CRWD', 'AXON', 'ARM',
     'HIMS', 'HOOD', 'SMCI', 'MARA', 'SHOP',
-    # Tier 3 — high-conviction, higher IV, bigger moves
+    # ── Tier 3: high-IV, catalyst-driven ─────────────────────
     'RKLB', 'IONQ', 'CELH', 'AFRM', 'SOFI',
+    # ── Expanded: full equity universe coverage ───────────────
+    # Semis / AI infra
+    'MRVL', 'QCOM', 'MU', 'AVGO', 'ON', 'AMAT', 'LRCX', 'KLAC',
+    # Software / cloud
+    'PANW', 'OKTA', 'DDOG', 'MDB', 'CRM', 'ZS', 'HUBS', 'DOCU', 'TWLO', 'TTD',
+    # Fintech / crypto
+    'MSTR', 'RIOT', 'WULF', 'HOOD', 'NU',
+    # Energy / clean
+    'FSLR', 'VST', 'APLD', 'CHPT', 'RIVN', 'NIO',
+    # Biotech / healthcare
+    'LLY', 'MRNA', 'HIMS', 'DXCM',
+    # Space / defence / emerging
+    'JOBY', 'SOUN', 'BBAI', 'RGTI', 'QBTS',
+    # Nuclear / uranium
+    'CCJ', 'UUUU', 'OKLO',
+    # Other equity universe names with liquid options
+    'NFLX', 'COST', 'UBER', 'SBUX', 'GS', 'JPM', 'V', 'MA',
+    'RTX', 'LMT', 'CAT', 'UPST', 'RBRK', 'AI',
 ]
 
 # ── Domain knowledge primes ───────────────────────────────

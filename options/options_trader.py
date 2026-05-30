@@ -98,10 +98,18 @@ AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales 
 
 # ── OPT_SCALP constants ───────────────────────────────────────────────────────
 SCALP_UNIVERSE = {
+    # Original high-IV volatile names
     'IONQ', 'MARA', 'WULF', 'RIOT', 'SOUN', 'HIMS', 'AFRM',
     'CELH', 'UPST', 'RIVN', 'JOBY', 'HOOD', 'NOK',
-    # RKLB removed May 26 2026 — price $143, premium $10.85 structurally fails gates 5+6
-    # RDW  removed May 26 2026 — IV 173% chronic, options market too illiquid
+    # Liquid large/mega-cap — weekly options, good IV, tight spreads
+    'NVDA', 'AMD', 'META', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL',
+    # Mid-cap momentum with liquid weeklies
+    'PLTR', 'ARM', 'APP', 'COIN', 'SMCI', 'CRWD', 'AXON',
+    'SHOP', 'SOFI', 'MSTR', 'RKLB', 'APLD', 'ORCL',
+    # From equity universe expansion — liquid options markets
+    'MRVL', 'MU', 'QCOM', 'PANW', 'OKTA', 'DDOG', 'TTD',
+    # RKLB restored — $1000 cost gate now handles premium sizing
+    # RDW excluded — IV 173% chronic, options market too illiquid
 }
 SCALP_BUDGET_TOTAL  = float(os.getenv('SCALP_BUDGET_TOTAL',  '1000'))
 SCALP_TRADE_SIZE    = float(os.getenv('SCALP_TRADE_SIZE',    '250'))
@@ -2229,16 +2237,13 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
     calc_log_id = calc.get('calc_log_id')
     strategy    = calc.get('strategy', 'BULL_SPREAD')
 
-    if verdict == 'ENTER':
-        # Phase 1: 5/5 gates → auto-execute immediately, no CONFIRM needed
+    if verdict in ('ENTER', 'ENTER_REDUCED'):
         trade = calc.get('trade')
         if trade:
             new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
             if can_open_position(new_premium, chat_id):
-                send_telegram(
-                    f"⚡ *Auto-executing {sym}* — 5/5 gates passed, no confirmation needed",
-                    chat_id,
-                )
+                label = "5/5 gates — full size" if verdict == 'ENTER' else "4/5 gates — reduced size"
+                send_telegram(f"⚡ *Auto-executing {sym}* — {label}", chat_id)
                 if strategy == 'LEAP':
                     threading.Thread(
                         target=_execute_leap_bg,
@@ -2251,15 +2256,6 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
                         args=(sym, trade, chat_id, calc_log_id),
                         daemon=True,
                     ).start()
-    elif verdict == 'ENTER_REDUCED':
-        # 4/5 gates → send CONFIRM prompt as before
-        _pending[chat_id] = {
-            'action':     'spread_confirm',
-            'symbol':     sym,
-            'qty':        qty,
-            'calc':       calc,
-            'expires_at': datetime.now() + timedelta(minutes=30),
-        }
 
 
 def _live_pnl_by_symbol() -> dict:
@@ -2989,16 +2985,30 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
             return
         msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
-        _pending[OPT_CHAT] = {
-            'action':        'spread_confirm',
-            'symbol':        sym,
-            'qty':           calc.get('qty', 1),
-            'calc':          calc,
-            'suggestion_id': sug_id,
-            'expires_at':    datetime.now() + timedelta(minutes=30),
-        }
         if sug_id:
             update_suggestion_status(sug_id, 'SENT')
+        # 4/5 gates → auto-execute at reduced size (qty=1), no CONFIRM wait
+        if can_open_position(trade.get('net_debit', 0) * 100 * trade.get('qty', 1)):
+            send_telegram(
+                f"⚡ *Auto-executing {sym}* — 4/5 gates ({label}, reduced size)",
+                OPT_CHAT,
+            )
+            strategy = calc.get('strategy', 'BULL_SPREAD')
+            if strategy == 'LEAP':
+                threading.Thread(
+                    target=_execute_leap_bg,
+                    args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
+                    daemon=True,
+                ).start()
+            else:
+                threading.Thread(
+                    target=_execute_spread_bg,
+                    args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
+                    daemon=True,
+                ).start()
+        else:
+            if sug_id:
+                update_suggestion_status(sug_id, 'NO_TRADE')
 
 
 def _proactive_recycle(OPT_CHAT: str):
