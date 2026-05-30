@@ -254,6 +254,14 @@ FULL_UNIVERSE = list(dict.fromkeys([
     # HXL   95% WR bull (N=20) / 100% WR bear (N=26) — DEFENCE, INSTITUTIONAL — monitor to N=30
     # SSYS  94.4% WR bull (N=54) / 89.7% WR bear (N=29) — TECH, MOMENTUM cluster
     'AEHR', 'APD', 'HXL', 'SSYS',
+    # ── May 29 2026 — friend-sourced candidates (batch_backtest + bear validated) ──
+    # CRDO  93.3% bull WR / 100% bear / OOS 90.9% — AI networking silicon, $794/yr
+    # OUST  85.9% bull WR / 96% bear  / OOS 88.6% — Lidar/autonomy, $1216/yr
+    # AXTI  89.1% bull WR / 100% bear / OOS 79.2% — Compound semis (GaAs), $893/yr
+    # MU    84.8% bull WR / 100% bear / OOS 80.5% — Micron DRAM, 79 trades, $660/yr
+    # NBIS  86.1% bull WR / 100% bear / OOS 86.1% — Nebius AI cloud ⚠️ listed Sep 2024
+    # FPS   SKIPPED — 3 months history only (IPO Feb 2026), N=5 trades
+    'CRDO', 'OUST', 'AXTI', 'MU', 'NBIS',
     # DROPPED — confirmed underperformers (gap-and-go backtest):
     # SMR(24%), SNOW(33%), CRWD(33%)
     # PANW(43% gap-and-go only → re-added May 24 via full A/A+ backtest: 93.2% WR)
@@ -286,6 +294,8 @@ INSTITUTIONAL_SYMBOLS = frozenset([
     'TPR','TT','TXT','YUM',
     # May 26 2026 additions — ATR ~2-3%, gap_fill 0.46-0.48, institutional grind
     'APD','HXL',
+    # May 29 2026 — large-cap, institutional-grade semis
+    'MU',
 ])
 # MOMENTUM: standard behavior (gap-go 71%, ATR ~5%) — no cluster overrides needed
 # OUTLIER: USAR only — anomalous behavior, treat as MOMENTUM (baseline)
@@ -379,6 +389,12 @@ SECTOR_MAP = {
     'APD':'COMMODITIES',    # industrial gases (O2, H2, N2) — INSTITUTIONAL, neutral
     'HXL':'DEFENCE',        # carbon fiber composites for F-35/Airbus/military (STRONG +15)
     'SSYS':'TECH',          # industrial 3D printing systems — MOMENTUM (STRONG +15)
+    # ── May 29 2026 additions ────────────────────────────────────────────────────
+    'CRDO':'SEMIS',         # Credo Technology — AI networking silicon (SerDes/AEC) (STRONG +15)
+    'OUST':'TECH',          # Ouster — lidar sensors, autonomous vehicles
+    'AXTI':'SEMIS',         # AXT Inc — compound semiconductor substrates (GaAs/InP/Ge) (STRONG +15)
+    'MU'  :'SEMIS',         # Micron Technology — DRAM/NAND memory semis (STRONG +15)
+    'NBIS':'TECH',          # Nebius Group — AI cloud infra (ex-Yandex) ⚠️ Sep 2024 IPO, monitor
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────

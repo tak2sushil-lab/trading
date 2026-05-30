@@ -27,7 +27,12 @@ warnings.filterwarnings('ignore')
 START_DATE        = '2020-01-01'
 END_DATE          = date.today().isoformat()
 SYMBOLS           = sys.argv[1:] if len(sys.argv) > 1 else [
-    'NVDA', 'PLTR', 'TSLA', 'AMD', 'HOOD', 'SMCI', 'IONQ', 'META', 'AMZN', 'GOOGL'
+    # Original validated universe
+    'NVDA', 'PLTR', 'TSLA', 'AMD', 'HOOD', 'SMCI', 'IONQ', 'META', 'AMZN', 'GOOGL',
+    # Live short symbols May 2026 — added after short-side diagnosis
+    'UUUU', 'OKLO', 'HIMS', 'CHPT', 'MP', 'USAR', 'MSTR', 'AXON', 'COHR',
+    'AI',   'TOST', 'NIO',  'RIVN', 'EOSE', 'CCJ',  'VST',  'CLS',
+    'QBTS', 'APLD', 'DXCM', 'NTLA', 'ONDS',
 ]
 CAPITAL_PER_TRADE = 2000
 ATR_PERIOD        = 14
