@@ -11,18 +11,29 @@ __pycache__/
 dist/
 build/
 
+# ── Databases (all DBs — data not code) ───────────────────
+*.db
+*.sqlite
+
 # ── Runtime state (regenerated each session) ──────────────
-trades.db
 traded_today.json
 guardian_state.json
 pending_CNC.json
 processed_msgs.json
 catalyst_picks.json
 trading_blocked.json
+auto_trader.lock
+portfolio.csv
+options/.alerted_today.json
 
 # ── Logs ──────────────────────────────────────────────────
 logs/
+velocity_logs/
 *.log
+
+# ── Generated backtest / analysis output ──────────────────
+backtest_results.json
+velocity_data.db
 
 # ── macOS ─────────────────────────────────────────────────
 .DS_Store
