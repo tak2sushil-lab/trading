@@ -1660,6 +1660,20 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG',
                 limit_price=None, outside_rth=False):
     try:
+        # Buying power pre-check — prevents hard-reject on live account.
+        # Paper has $3M+ paper BP so this never blocks in paper mode.
+        # Adds a 5% buffer over position cost to account for spread/price movement.
+        try:
+            _acct  = requests.get(f"{BRIDGE}/account", timeout=4).json()
+            _bp    = float(_acct.get('BuyingPower', 999999) or 999999)
+            _cost  = price * shares * 1.05  # 5% buffer
+            if _bp < _cost:
+                log(f"  {symbol}: Buying power ${_bp:,.0f} < position cost ${_cost:,.0f} — skipping")
+                send_telegram(f"⚠️ Buying power insufficient: {symbol} needs ${_cost:,.0f}, have ${_bp:,.0f}")
+                return None
+        except Exception:
+            pass  # If account query fails, proceed rather than block a valid trade
+
         order_side = 'BUY' if side == 'LONG' else 'SELL'
         payload = {'symbol': symbol, 'qty': shares, 'side': order_side, 'order_type': 'MARKET'}
         if limit_price:
@@ -1688,6 +1702,21 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 r2 = requests.get(f"{BRIDGE}/order/{order_id}/status", timeout=5)
                 d  = r2.json()
                 if d.get('status') == 'Filled':
+                    # Use actual fill qty and price — live orders can partially fill.
+                    # Paper always fills 100% so these will match what was requested.
+                    # Use explicit None check: 0 is a valid (bad) fill qty, not a missing value.
+                    _fqty  = d.get('filled')
+                    _fpx   = d.get('avgFillPrice')
+                    filled_qty   = int(_fqty)   if _fqty  is not None else shares
+                    filled_price = float(_fpx)  if _fpx   is not None else price
+                    if filled_qty < shares:
+                        log(f"  {symbol}: Partial fill {filled_qty}/{shares} sh @ ${filled_price:.2f} — recording actual qty")
+                        send_telegram(f"⚠️ {symbol}: Partial fill {filled_qty}/{shares} shares @ ${filled_price:.2f}")
+                        shares = filled_qty
+                    if filled_qty == 0:
+                        log(f"  {symbol}: Zero-qty fill reported — skipping")
+                        return None
+                    price = filled_price
                     filled = True
                     break
                 if d.get('status') in ('Cancelled', 'Inactive'):
@@ -1699,7 +1728,8 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                     position_match = (side == 'LONG' and ibkr_qty > 0) or (side == 'SHORT' and ibkr_qty < 0)
                     if position_match:
                         log(f"  {symbol}: Order {order_id} {d['status']} but {side} position confirmed in IBKR — recording fill")
-                        price = ibkr_chk[symbol].get('avgCost', price)
+                        price  = ibkr_chk[symbol].get('avgCost', price)
+                        shares = abs(int(ibkr_qty))   # use actual filled qty from IBKR
                         filled = True
                         break
                     log(f"  {symbol}: Order {order_id} {d['status']} — not recording")
@@ -3245,6 +3275,18 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         # Dynamic (unknown) stocks require A+ regardless — too risky at lower grades
         if symbol in dynamic_picks and grade != 'A+':
             continue
+
+        # Float gate for scanner-discovered stocks not in validated universe.
+        # Very low float (<500K shares) = can't fill $1,400+ without large slippage.
+        # Universe symbols are pre-validated and bypass this check.
+        if symbol in dynamic_picks:
+            try:
+                _float = yf.Ticker(symbol).info.get('floatShares', 0) or 0
+                if 0 < _float < 500_000:
+                    log(f"  SKIP {symbol} — float {_float/1e3:.0f}K too thin for position sizing")
+                    continue
+            except Exception:
+                pass  # if yfinance fails, allow — don't block on data fetch failure
 
         is_sympathy  = symbol in active_sympathy_triggers
         candidates.append({
