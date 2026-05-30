@@ -20,12 +20,18 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 BRIDGE_URL = os.getenv('BRIDGE_URL', 'http://127.0.0.1:8000')
 
+# Same as FULL_UNIVERSE / OPTIONS_SYMBOLS — gates filter on execution
 DEFAULT_SYMBOLS = [
-    'NVDA', 'META', 'AMZN', 'MSFT', 'AAPL',
-    'TSLA', 'AMD',  'GOOGL', 'ORCL', 'COIN',
-    'PLTR', 'APP',  'CRWD', 'AXON', 'ARM',
-    'HIMS', 'HOOD', 'SMCI', 'MARA', 'SHOP',
-    'RKLB', 'IONQ', 'CELH', 'AFRM', 'SOFI',
+    'AAPL', 'PLTR', 'IONQ', 'HOOD', 'JPM', 'VST', 'NFLX', 'ORCL', 'OKLO',
+    'AMZN', 'GOOGL', 'CRM', 'QBTS', 'AVGO', 'CLS', 'RKLB', 'AMD', 'MSFT',
+    'META', 'GS', 'SMCI', 'AI', 'RGTI', 'FSLR', 'CCJ', 'UUUU', 'APLD',
+    'SOUN', 'ON', 'LRCX', 'DDOG', 'MDB', 'NVDA', 'INTC', 'TSLA', 'CVX',
+    'XOM', 'UNH', 'MRNA', 'HIMS', 'COST', 'NKE', 'UBER', 'BAC', 'V', 'MA',
+    'COIN', 'RTX', 'LMT', 'QCOM', 'MRVL', 'AMAT', 'MU', 'RIVN', 'NIO',
+    'APP', 'MARA', 'ARM', 'AXON', 'SHOP', 'MSTR', 'JOBY', 'WULF', 'RIOT',
+    'FTNT', 'IBKR', 'KKR', 'GILD', 'GE', 'BSX', 'TT', 'UPST', 'CELH',
+    'DUOL', 'RBLX', 'TTD', 'TWLO', 'DOCU', 'ZS', 'OKTA', 'LULU', 'PANW',
+    'CRWD', 'AFRM', 'SOFI', 'PLTR', 'COIN',
 ]
 
 # ── Black-Scholes ──────────────────────────────────────────────────────────────

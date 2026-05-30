@@ -97,19 +97,29 @@ MID_CAP_UNIVERSE = {
 AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales to this)
 
 # ── OPT_SCALP constants ───────────────────────────────────────────────────────
+# Full equity universe — gates handle liquidity/premium filtering.
+# DTE gate (7-12d), spread gate ($0.30), cost gate ($1000) will reject
+# symbols without liquid weekly options. RDW excluded: IV 173% chronic.
 SCALP_UNIVERSE = {
-    # Original high-IV volatile names
-    'IONQ', 'MARA', 'WULF', 'RIOT', 'SOUN', 'HIMS', 'AFRM',
-    'CELH', 'UPST', 'RIVN', 'JOBY', 'HOOD', 'NOK',
-    # Liquid large/mega-cap — weekly options, good IV, tight spreads
-    'NVDA', 'AMD', 'META', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL',
-    # Mid-cap momentum with liquid weeklies
-    'PLTR', 'ARM', 'APP', 'COIN', 'SMCI', 'CRWD', 'AXON',
-    'SHOP', 'SOFI', 'MSTR', 'RKLB', 'APLD', 'ORCL',
-    # From equity universe expansion — liquid options markets
-    'MRVL', 'MU', 'QCOM', 'PANW', 'OKTA', 'DDOG', 'TTD',
-    # RKLB restored — $1000 cost gate now handles premium sizing
-    # RDW excluded — IV 173% chronic, options market too illiquid
+    'AAPL', 'PLTR', 'COHR', 'IONQ', 'HOOD', 'JPM', 'IREN', 'NUTX',
+    'LITE', 'VST', 'ITA', 'NFLX', 'ORCL', 'OKLO', 'AMZN', 'GOOGL',
+    'CRM', 'QBTS', 'TOST', 'AVGO', 'NBIS', 'CLS', 'RKLB', 'CNQ',
+    'AMD', 'RKT', 'NU', 'MSFT', 'META', 'GS', 'CRWV', 'SMCI', 'RBRK',
+    'AI', 'RGTI', 'USAR', 'FSLR', 'CCJ', 'UUUU', 'DNN', 'LLY', 'NTLA',
+    'BEAM', 'APLD', 'SOUN', 'BBAI', 'ON', 'LRCX', 'DDOG', 'MDB', 'POET',
+    'EOSE', 'INDI', 'NVDA', 'INTC', 'TSLA', 'CVX', 'XOM', 'OXY', 'SLB',
+    'HAL', 'DVN', 'XLE', 'UNH', 'MRNA', 'PFE', 'ABBV', 'ISRG', 'DXCM',
+    'HIMS', 'XBI', 'COST', 'NKE', 'SBUX', 'CMG', 'UBER', 'BAC', 'C',
+    'WFC', 'V', 'MA', 'COIN', 'RTX', 'LMT', 'NOC', 'CAT', 'DE', 'QCOM',
+    'MRVL', 'KLAC', 'AMAT', 'MU', 'SMH', 'LAC', 'RIVN', 'NIO', 'CHPT',
+    'FCX', 'NEM', 'MP', 'APP', 'MARA', 'ARM', 'AXON', 'SHOP', 'MSTR',
+    'ONDS', 'VERI', 'JOBY', 'CLSK', 'WULF', 'HUT', 'ARRY', 'RIOT', 'EQT',
+    'CIFR', 'CPNG', 'SITM', 'KTOS', 'ACLS', 'CTRA', 'CACI', 'FTNT', 'IBKR',
+    'ONTO', 'SAIC', 'BWXT', 'SAIA', 'HWM', 'GDDY', 'EW', 'KKR', 'TPR',
+    'GILD', 'GE', 'TXT', 'YUM', 'BSX', 'HOLX', 'TT', 'UPST', 'CELH', 'HL',
+    'ZM', 'DUOL', 'RBLX', 'WFRD', 'TTD', 'TWLO', 'AG', 'DOCU', 'ZS', 'HUBS',
+    'OKTA', 'DECK', 'LULU', 'PANW', 'AEM', 'AEHR', 'APD', 'HXL', 'SSYS',
+    'CRDO', 'OUST', 'AXTI', 'CRWD', 'AFRM', 'SOFI', 'NOK',
 }
 SCALP_BUDGET_TOTAL  = float(os.getenv('SCALP_BUDGET_TOTAL',  '1000'))
 SCALP_TRADE_SIZE    = float(os.getenv('SCALP_TRADE_SIZE',    '250'))

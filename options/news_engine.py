@@ -67,33 +67,29 @@ DEDUP_HOURS       = 24     # dedup window: must be >= MAX_AGE_HOURS to prevent r
 _av_called_today: set = set()   # 'SYMBOL|YYYY-MM-DD' keys
 
 # ── Options universe to monitor ──────────────────────────
+# Full equity universe — same symbols as FULL_UNIVERSE in auto_trader.py.
+# Gates handle quality filtering; no pre-filtering needed here.
+# RDW excluded: IV 173% chronic, options market confirmed illiquid.
 OPTIONS_SYMBOLS = [
-    # ── Tier 1: mega/large-cap, deepest options liquidity ────
-    'NVDA', 'META', 'AMZN', 'MSFT', 'AAPL',
-    'TSLA', 'AMD',  'GOOGL', 'ORCL', 'COIN',
-    # ── Tier 2: mid-cap momentum, liquid options ─────────────
-    'PLTR', 'APP',  'CRWD', 'AXON', 'ARM',
-    'HIMS', 'HOOD', 'SMCI', 'MARA', 'SHOP',
-    # ── Tier 3: high-IV, catalyst-driven ─────────────────────
-    'RKLB', 'IONQ', 'CELH', 'AFRM', 'SOFI',
-    # ── Expanded: full equity universe coverage ───────────────
-    # Semis / AI infra
-    'MRVL', 'QCOM', 'MU', 'AVGO', 'ON', 'AMAT', 'LRCX', 'KLAC',
-    # Software / cloud
-    'PANW', 'OKTA', 'DDOG', 'MDB', 'CRM', 'ZS', 'HUBS', 'DOCU', 'TWLO', 'TTD',
-    # Fintech / crypto
-    'MSTR', 'RIOT', 'WULF', 'HOOD', 'NU',
-    # Energy / clean
-    'FSLR', 'VST', 'APLD', 'CHPT', 'RIVN', 'NIO',
-    # Biotech / healthcare
-    'LLY', 'MRNA', 'HIMS', 'DXCM',
-    # Space / defence / emerging
-    'JOBY', 'SOUN', 'BBAI', 'RGTI', 'QBTS',
-    # Nuclear / uranium
-    'CCJ', 'UUUU', 'OKLO',
-    # Other equity universe names with liquid options
-    'NFLX', 'COST', 'UBER', 'SBUX', 'GS', 'JPM', 'V', 'MA',
-    'RTX', 'LMT', 'CAT', 'UPST', 'RBRK', 'AI',
+    'AAPL', 'PLTR', 'COHR', 'IONQ', 'HOOD', 'JPM', 'IREN', 'NUTX',
+    'LITE', 'VST', 'ITA', 'NFLX', 'ORCL', 'OKLO', 'AMZN', 'GOOGL',
+    'CRM', 'QBTS', 'TOST', 'AVGO', 'NBIS', 'CLS', 'RKLB', 'CNQ',
+    'AMD', 'RKT', 'NU', 'MSFT', 'META', 'GS', 'CRWV', 'SMCI', 'RBRK',
+    'AI', 'RGTI', 'USAR', 'FSLR', 'CCJ', 'UUUU', 'DNN', 'LLY', 'NTLA',
+    'BEAM', 'APLD', 'SOUN', 'BBAI', 'ON', 'LRCX', 'DDOG', 'MDB', 'POET',
+    'EOSE', 'INDI', 'NVDA', 'INTC', 'TSLA', 'CVX', 'XOM', 'OXY', 'SLB',
+    'HAL', 'DVN', 'XLE', 'UNH', 'MRNA', 'PFE', 'ABBV', 'ISRG', 'DXCM',
+    'HIMS', 'XBI', 'COST', 'NKE', 'SBUX', 'CMG', 'UBER', 'BAC', 'C',
+    'WFC', 'V', 'MA', 'COIN', 'RTX', 'LMT', 'NOC', 'CAT', 'DE', 'QCOM',
+    'MRVL', 'KLAC', 'AMAT', 'MU', 'SMH', 'LAC', 'RIVN', 'NIO', 'CHPT',
+    'FCX', 'NEM', 'MP', 'APP', 'MARA', 'ARM', 'AXON', 'SHOP', 'MSTR',
+    'ONDS', 'VERI', 'JOBY', 'CLSK', 'WULF', 'HUT', 'ARRY', 'RIOT', 'EQT',
+    'CIFR', 'CPNG', 'SITM', 'KTOS', 'ACLS', 'CTRA', 'CACI', 'FTNT', 'IBKR',
+    'ONTO', 'SAIC', 'BWXT', 'SAIA', 'HWM', 'GDDY', 'EW', 'KKR', 'TPR',
+    'GILD', 'GE', 'TXT', 'YUM', 'BSX', 'HOLX', 'TT', 'UPST', 'CELH', 'HL',
+    'ZM', 'DUOL', 'RBLX', 'WFRD', 'TTD', 'TWLO', 'AG', 'DOCU', 'ZS', 'HUBS',
+    'OKTA', 'DECK', 'LULU', 'PANW', 'AEM', 'AEHR', 'APD', 'HXL', 'SSYS',
+    'CRDO', 'OUST', 'AXTI', 'CRWD', 'AFRM', 'SOFI',
 ]
 
 # ── Domain knowledge primes ───────────────────────────────
