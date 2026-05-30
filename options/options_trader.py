@@ -115,7 +115,8 @@ SCALP_DELTA_MIN     = 0.38
 SCALP_DELTA_MAX     = 0.60
 SCALP_MAX_SPREAD    = 0.30   # bid-ask spread gate
 SCALP_MAX_IV_RANK   = 75
-SCALP_MAX_PREMIUM   = 1.50   # per-contract mid price gate
+SCALP_MAX_TOTAL_COST = 1000  # single size gate: replaces separate premium + $300 cap
+                              # allows mid-cap options ($3-8 ATM premium) at 1 contract
 SCALP_ENTRY_HOUR_START  = (10, 0)
 SCALP_ENTRY_HOUR_CUTOFF = (13, 30)
 SCALP_NEWS_HOURS    = 4      # Mode B: conviction signal must be within this many hours
@@ -1765,21 +1766,45 @@ def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
     ba_spread = round(ask - bid, 4)
     delta     = q.get('delta')
 
+    # Delta fallback: IBKR delayed data sometimes returns None for modelGreeks
+    # (bridge fix: genericTickList='100' + 10s wait helps, but not guaranteed).
+    # If None, compute Black-Scholes delta using market IV from the option chain —
+    # this is a proper calculation, not a guess.
+    delta_source = 'ibkr'
+    if delta is None:
+        try:
+            from math import log, sqrt
+            from scipy.stats import norm as _norm
+            iv_chain = float(q.get('iv') or 0)
+            if iv_chain <= 0:
+                # try yfinance impliedVolatility from chain row
+                _df = _yf_option_chain(sym, expiry, 'C')
+                _row = _df[abs(_df['strike'] - strike) < 0.5]
+                if not _row.empty:
+                    iv_chain = float(_row.iloc[0].get('impliedVolatility') or 0)
+            if iv_chain > 0 and dte > 0:
+                T  = dte / 365.0
+                r  = 0.05
+                d1 = (log(underlying / strike) + (r + iv_chain**2 / 2) * T) / (iv_chain * sqrt(T))
+                delta = round(_norm.cdf(d1), 4)
+                delta_source = 'bs'
+        except Exception:
+            pass
+
     contracts  = max(1, int(SCALP_TRADE_SIZE / (mid * 100)))
     total_cost = round(mid * 100 * contracts, 2)
 
-    # 6 gates
-    dte_gate     = SCALP_MIN_DTE <= dte <= SCALP_MAX_DTE
-    delta_gate   = (delta is not None and SCALP_DELTA_MIN <= abs(delta) <= SCALP_DELTA_MAX)
-    spread_gate  = ba_spread <= SCALP_MAX_SPREAD
-    ivrank_gate  = iv_rank < SCALP_MAX_IV_RANK
-    premium_gate = mid <= SCALP_MAX_PREMIUM
-    size_gate    = total_cost <= 300
+    # 5 gates (premium + size merged into single total_cost gate)
+    dte_gate    = SCALP_MIN_DTE <= dte <= SCALP_MAX_DTE
+    delta_gate  = (delta is not None and SCALP_DELTA_MIN <= abs(delta) <= SCALP_DELTA_MAX)
+    spread_gate = ba_spread <= SCALP_MAX_SPREAD
+    ivrank_gate = iv_rank < SCALP_MAX_IV_RANK
+    cost_gate   = total_cost <= SCALP_MAX_TOTAL_COST
 
     gates      = {'dte': dte_gate, 'delta': delta_gate, 'spread': spread_gate,
-                  'iv_rank': ivrank_gate, 'premium': premium_gate, 'size': size_gate}
+                  'iv_rank': ivrank_gate, 'cost': cost_gate}
     gates_pass = sum(gates.values())
-    verdict    = 'ENTER' if gates_pass == 6 else 'SKIP'
+    verdict    = 'ENTER' if gates_pass == 5 else 'SKIP'
 
     stop_value   = round(total_cost * SCALP_STOP_MULT, 2)
     target_value = round(total_cost * SCALP_PROFIT_MULT, 2)
@@ -1798,6 +1823,7 @@ def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
         'mid':          mid,
         'ba_spread':    ba_spread,
         'delta':        delta,
+        'delta_source': delta_source,
         'contracts':    contracts,
         'total_cost':   total_cost,
         'stop_value':   stop_value,
@@ -2132,23 +2158,25 @@ def scalp_scan_loop():
     failed = [k for k, v in calc['gates'].items() if not v]
     mode_label = 'A+ equity' if mode == 'A' else 'HIGH news'
 
+    delta_tag = f"{calc.get('delta') or '?'}" + (" (bs)" if calc.get('delta_source')=='bs' else "")
     if calc['verdict'] != 'ENTER':
         print(f"[scalp] {sym} mode {mode}: SKIP — {', '.join(failed)} gate(s) failed")
         send_telegram(
             f"⚡ *Scalp signal: {sym}* (Mode {mode} — {mode_label})\n"
             f"SKIP — {', '.join(failed)} gate{'s' if len(failed) > 1 else ''} failed\n"
-            f"Mid ${calc['mid']:.2f} | delta {calc.get('delta') or '?'} | IVR {calc['iv_rank']:.0f}%",
+            f"Mid ${calc['mid']:.2f} | delta {delta_tag} | IVR {calc['iv_rank']:.0f}% | "
+            f"cost ${calc['total_cost']:.0f}",
             OPT_CHAT,
         )
         _scalp_cooldown_set(sym, now)
         return
 
-    # All 6 gates pass — auto-execute
+    # All 5 gates pass — auto-execute
     _scalp_cooldown_set(sym, now)
     send_telegram(
         f"⚡ *Scalp trigger: {sym}* (Mode {mode} — {mode_label})\n"
         f"ATM ${calc['strike']} call · {calc['dte']}d · {calc['contracts']} contract(s)\n"
-        f"Mid ${calc['mid']:.2f} | delta {calc.get('delta') or '?'} | IVR {calc['iv_rank']:.0f}%\n"
+        f"Mid ${calc['mid']:.2f} | delta {delta_tag} | IVR {calc['iv_rank']:.0f}%\n"
         f"Total: ${calc['total_cost']:.0f} | Stop: ${calc['stop_value']:.0f} | "
         f"Target: ${calc['target_value']:.0f}\n"
         f"⏳ Auto-executing...",

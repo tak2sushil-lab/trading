@@ -647,8 +647,11 @@ async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
         return {"error": f"Could not qualify {sym} {expiry} {strike} {right}"}
 
     ib.reqMarketDataType(3)   # delayed — works without OPRA on paper account
-    ticker   = ib.reqMktData(q, genericTickList='', snapshot=True)
-    await asyncio.sleep(4)
+    # genericTickList='100' requests option model computation (tick type 53 → modelGreeks).
+    # Without it, IBKR may not push Greeks at all on a snapshot request.
+    # 10s wait: delayed data needs underlying price first, then model calc — 4s was too short.
+    ticker   = ib.reqMktData(q, genericTickList='100', snapshot=True)
+    await asyncio.sleep(10)
     ib.reqMarketDataType(1)   # reset to live for equity quotes
 
     bid  = clean(ticker.bid)
