@@ -1634,13 +1634,18 @@ def backfill_energy_signals():
 
             hod    = max(float(r[0]) for r in pre_bars)
             p_at_scan = float(pre_bars[-1][1])
-            pvh    = round(p_at_scan / hod * 100, 1) if hod else None
+            # pct below HOD at scan time (negative = below, 0 = at HOD)
+            pvh    = round((p_at_scan - hod) / hod * 100, 2) if hod else None
 
-            # consec_new_highs (last 5 bars)
-            last5 = pre_bars[-5:]; rmax=0.0; consec=0
+            # consec_new_highs: consecutive new HODs in last 5 bars
+            # baseline = HOD of all bars before the last 5 (not 0.0)
+            last5 = pre_bars[-5:]
+            prior = pre_bars[:-5]
+            rmax  = max(float(r[0]) for r in prior) if prior else 0.0
+            consec = 0
             for r in last5:
-                if float(r[0]) > rmax: rmax=float(r[0]); consec+=1
-                else: consec=0
+                if float(r[0]) > rmax: rmax = float(r[0]); consec += 1
+                else: consec = 0
 
             # Forward returns
             p30 = mconn.execute(

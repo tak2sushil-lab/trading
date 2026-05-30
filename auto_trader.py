@@ -1119,8 +1119,10 @@ def get_intraday_signals(symbol, spy_chg=0):
                         burst_age_min = round((_now_et - _bt).total_seconds() / 60, 1)
                         break
                 # Consecutive new highs (long): count from end of last 5 bars
+                # Baseline = HOD before the last 5 bars so we measure *fresh* highs
                 _last5 = _rth_today.tail(5)
-                _rmax = 0.0
+                _prior = _rth_today.iloc[:-5]
+                _rmax  = float(_prior['High'].max()) if not _prior.empty else 0.0
                 for _, _b in _last5.iterrows():
                     if float(_b['High']) > _rmax:
                         _rmax = float(_b['High']); consec_new_highs += 1
@@ -3275,8 +3277,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             _reason = f"Slot #{_rank+1} in batting order"
         else:
             _reason = f"Bench #{_rank+1} — awaiting slot"
-        _hod  = _c.get('today_hod', _c['price'])
-        _pvh  = round(_c['price'] / _hod * 100, 1) if _hod else None
+        _hod  = _c.get('today_hod') or _c['price']
+        _pvh  = round((_c['price'] - _hod) / _hod * 100, 2) if _hod else None
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'LONG', regime,
@@ -3530,8 +3532,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     for _rank_b, _c in enumerate(candidates):
         _reason_b = (f"Slot #{_rank_b+1} in batting order" if _rank_b < MAX_OPEN_TRADES
                      else f"Bench #{_rank_b+1} — awaiting slot")
-        _hod_b = _c.get('today_hod', _c['price'])
-        _pvh_b = round(_c['price'] / _hod_b * 100, 1) if _hod_b else None
+        _hod_b = _c.get('today_hod') or _c['price']
+        _pvh_b = round((_c['price'] - _hod_b) / _hod_b * 100, 2) if _hod_b else None
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'SHORT', regime,
