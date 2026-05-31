@@ -16,6 +16,25 @@ Last updated: May 28 2026
 
 ---
 
+## Knowledge Graph (graphify)
+
+A knowledge graph of the entire codebase lives at `graphify-out/graph.json` (1,155 nodes, 2,275 edges, 93 communities).
+
+**Session start:** Before reading files, use the graphify skill to orient:
+```
+/graphify query "where is X defined"
+/graphify query "how does auto_trader connect to bridge"
+```
+
+**After significant code changes:** The `graphify_watch` launchd service auto-syncs the graph on every `.py` save (AST only — free, no LLM cost). To force a full rebuild (e.g. after adding new files):
+```bash
+ANTHROPIC_API_KEY=$(grep ANTHROPIC_KEY .env | grep -v "^#" | cut -d= -f2) venv/bin/graphify . --backend claude --update
+```
+
+**Services:** graphify_watch is launchd-managed (`com.sushil.trading.graphify_watch`). Restart it the same way as other services if needed.
+
+---
+
 ## Service Restart (always use launchctl — never ask user to do it manually)
 
 ```bash
