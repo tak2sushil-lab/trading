@@ -308,22 +308,25 @@ async def get_futures_history(
 ):
     """
     Fetch continuous futures bars from IBKR.
-    Uses the front-month contract (no expiry specified → IBKR picks active).
+    Uses ContFuture (IBKR continuous contract) for clean historical data.
+    useRTH defaults False — futures trade 23h/day, RTH filter removes most bars.
     Returns bars as {ts, open, high, low, close, volume} for collect_bars.py.
     """
-    from ib_async import Future
+    from ib_async import ContFuture
     sym = symbol.upper()   # e.g. 'MNQ'
 
     exchanges = {'MNQ': 'CME', 'NQ': 'CME', 'ES': 'CME', 'MES': 'CME',
                  'YM': 'CBOT', 'MYM': 'CBOT', 'RTY': 'CME', 'M2K': 'CME'}
     exchange  = exchanges.get(sym, 'CME')
 
-    # Front-month continuous: no lastTradeDateOrContractMonth → IBKR picks active
-    contract = Future(sym, exchange=exchange, currency='USD')
+    # ContFuture = IBKR's continuous adjusted contract — best for backtesting
+    contract = ContFuture(sym, exchange=exchange, currency='USD')
     try:
-        await ib.qualifyContractsAsync(contract)
-    except Exception:
-        return {'error': f'Cannot qualify futures contract {sym}', 'bars': []}
+        qualified = await ib.qualifyContractsAsync(contract)
+        if not qualified:
+            return {'error': f'Could not qualify ContFuture {sym}', 'bars': []}
+    except Exception as e:
+        return {'error': f'Contract qualification failed: {e}', 'bars': []}
 
     def _bar_to_dict(b):
         d = b.date
@@ -336,11 +339,13 @@ async def get_futures_history(
             'volume': int(b.volume) if b.volume else 0,
         }
 
+    # useRTH=False: futures trade 23h — RTH filter would drop nearly all intraday bars
+    use_rth = rth if bar_size == '1 day' else False
     try:
         bars = await ib.reqHistoricalDataAsync(
             contract, endDateTime='', durationStr=duration,
             barSizeSetting=bar_size, whatToShow='TRADES',
-            useRTH=rth, formatDate=1, keepUpToDate=False
+            useRTH=use_rth, formatDate=1, keepUpToDate=False
         )
         return {'symbol': sym, 'bars': [_bar_to_dict(b) for b in (bars or [])]}
     except Exception as e:
