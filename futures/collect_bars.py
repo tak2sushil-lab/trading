@@ -341,11 +341,12 @@ def load_bars(start: str | None = None, end: str | None = None,
         params.append(end)
     q += ' ORDER BY ts_utc'
 
-    df = pd.read_sql_query(q, conn, params=params, index_col='ts_utc',
-                           parse_dates={'ts_utc': {'utc': True}})
+    df = pd.read_sql_query(q, conn, params=params, index_col='ts_utc')
     conn.close()
 
-    df.index = df.index.tz_convert(ET)
+    # Mixed formats: yfinance stores plain UTC strings, IBKR stores tz-aware ISO strings
+    # utc=True handles both by assuming naive strings are UTC
+    df.index = pd.to_datetime(df.index, utc=True, format='mixed').tz_convert(ET)
     df.columns = [c.lower() for c in df.columns]
     return df
 
