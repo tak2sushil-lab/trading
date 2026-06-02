@@ -644,10 +644,10 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
           f'losers avg: {np.mean(loss_mfes):.1f}pts')
 
     # Stop placement recommendation
-    current_stop = cfg.atr_stop_mult
-    suggested_atr = mae_p75 / (np.mean([t['atr'] for t in trades]) or 1)
-    print(f'    Suggested ATR stop mult: {suggested_atr:.2f}× '
-          f'(to contain 75% of adverse moves)  [current: {current_stop}×]')
+    avg_atr = np.mean([t['atr'] for t in trades]) or 1
+    suggested_ib_frac = mae_p75 / (np.mean([t.get('ib_range', avg_atr) for t in trades]) or 1)
+    print(f'    IB stop frac to contain 75% MAE: {suggested_ib_frac:.2f}× IB range'
+          f'  [current: {cfg.stop_ib_frac:.2f}×]')
 
     print()
 
