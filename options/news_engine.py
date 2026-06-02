@@ -941,12 +941,12 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
         update_conviction_iv(symbol, round(iv_data['iv_rank'], 1))
         print(f"[IV] {symbol} iv_rank={iv_data['iv_rank']:.1f}%")
 
-    # Alert only on tier upgrades (LOW→MEDIUM or MEDIUM→HIGH), cap at 5/day
+    # Alert only on HIGH tier upgrades, cap at 5/day — MEDIUM is silent
     tier         = conviction['tier']
     tier_changed = conviction['tier_changed']
     should_alert = (
         tier_changed
-        and tier in ('MEDIUM', 'HIGH')
+        and tier == 'HIGH'
         and _alerts_sent_today < 5
     )
 
