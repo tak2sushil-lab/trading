@@ -26,6 +26,8 @@ Usage:
 import os
 import sys
 import sqlite3
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 import argparse
 import requests
 from datetime import datetime, timedelta, timezone, date
@@ -227,13 +229,13 @@ def estimate_databento_cost(start: str = '2024-01-01') -> None:
         cost   = client.metadata.get_cost(
             dataset  = DATABENTO_DATASET,
             symbols  = [DATABENTO_SYMBOL],
+            stype_in = 'continuous',
             schema   = 'ohlcv-1m',
             start    = start,
         )
         print(f'[databento] Cost estimate for 1-min OHLCV {DATABENTO_SYMBOL}'
               f' from {start}: ${cost:.4f}')
-        bal = client.metadata.get_billing_info()
-        print(f'[databento] Account credits available: ${bal.get("balance_usd", "?"):.2f}')
+        print(f'[databento] Account has $125 free credits — this download uses ${cost:.4f}')
     except Exception as e:
         print(f'[databento] Cost estimate error: {e}')
 
@@ -253,7 +255,12 @@ def fetch_databento(start: str = '2024-01-01', end: str | None = None) -> tuple[
         print('[databento] DATABENTO_API_KEY not set — skipping')
         return [], []
 
-    end_str = end or datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    # Use yesterday as default end — Databento requires a small lag before recent data is available
+    if end:
+        end_str = end
+    else:
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+        end_str = yesterday
 
     print(f'[databento] fetching 1-min OHLCV {DATABENTO_SYMBOL} {start} → {end_str}...')
 
@@ -264,6 +271,7 @@ def fetch_databento(start: str = '2024-01-01', end: str | None = None) -> tuple[
         data = client.timeseries.get_range(
             dataset  = DATABENTO_DATASET,
             symbols  = [DATABENTO_SYMBOL],
+            stype_in = 'continuous',
             schema   = 'ohlcv-1m',
             start    = start,
             end      = end_str,
@@ -285,14 +293,14 @@ def fetch_databento(start: str = '2024-01-01', end: str | None = None) -> tuple[
             else:
                 df.index = df.index.tz_convert('UTC')
 
-        # Rename Databento OHLCV columns to our standard
-        col_map = {'open': 'open', 'high': 'high', 'low': 'low',
-                   'close': 'close', 'volume': 'volume'}
-        df = df.rename(columns=col_map)
+        # Keep only OHLCV columns (Databento also returns rtype, publisher_id, etc.)
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col not in df.columns:
+                raise ValueError(f'Missing column {col} in Databento response')
         df = df[['open', 'high', 'low', 'close', 'volume']].copy()
 
-        # Scale: Databento delivers prices in fixed-point (×1e-9 for CME)
-        # Check if prices look like futures prices (~20,000) or need scaling
+        # Databento CME prices: already in correct point format (~20,000–30,000 for NQ/MNQ)
+        # If somehow in fixed-point (> 1,000,000), scale down
         if df['close'].median() > 1_000_000:
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = df[col] / 1e9

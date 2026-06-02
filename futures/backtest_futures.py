@@ -768,12 +768,13 @@ if __name__ == '__main__':
     parser.add_argument('--ab',     action='store_true', help='A/B parameter comparison')
 
     # Config overrides
-    parser.add_argument('--ib',       type=int,   default=60,   help='IB window minutes')
-    parser.add_argument('--stop-frac',type=float, default=0.50, help='Stop as fraction of IB range')
-    parser.add_argument('--tgt-mult', type=float, default=1.5,  help='Target = IB_range × mult')
-    parser.add_argument('--slip',     type=float, default=1.0,  help='Slippage ticks per side')
-    parser.add_argument('--min-ib',   type=float, default=50.0, help='Min IB range (pts)')
-    parser.add_argument('--gap',      type=float, default=1.5,  help='Max gap% to trade')
+    parser.add_argument('--ib',              type=int,   default=60,   help='IB window minutes')
+    parser.add_argument('--stop-frac',       type=float, default=0.50, help='Stop as fraction of IB range')
+    parser.add_argument('--tgt-mult',        type=float, default=1.5,  help='Target = IB_range × mult')
+    parser.add_argument('--slip',            type=float, default=1.0,  help='Slippage ticks per side')
+    parser.add_argument('--min-ib',          type=float, default=50.0, help='Min IB range (pts)')
+    parser.add_argument('--gap',             type=float, default=1.5,  help='Max gap% to trade')
+    parser.add_argument('--no-entry-after',  type=int,   default=14,   help='No new entries after this hour ET (e.g. 11 = stop at 11am)')
 
     args = parser.parse_args()
 
@@ -788,6 +789,7 @@ if __name__ == '__main__':
         slippage_ticks  = args.slip,
         min_ib_range    = args.min_ib,
         gap_max_pct     = args.gap,
+        no_entry_after  = time(args.no_entry_after, 0),
     )
 
     print(f'Loading MNQ 5-min bars (start={args.start or "all"})...')
