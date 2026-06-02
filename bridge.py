@@ -298,6 +298,55 @@ async def get_history(
     _hist_cache[cache_key] = {'ts': datetime.utcnow(), 'bars': result}
     return result
 
+# ── Futures historical bars ───────────────────────────────
+@app.get("/history/futures/{symbol}")
+async def get_futures_history(
+    symbol:   str,
+    duration: str = Query(default="1 Y",   description="e.g. '60 D', '6 M', '1 Y'"),
+    bar_size: str = Query(default="5 mins", description="e.g. '5 mins', '1 hour', '1 day'"),
+    rth:      bool = Query(default=True,   description="Regular trading hours only"),
+):
+    """
+    Fetch continuous futures bars from IBKR.
+    Uses the front-month contract (no expiry specified → IBKR picks active).
+    Returns bars as {ts, open, high, low, close, volume} for collect_bars.py.
+    """
+    from ib_async import Future
+    sym = symbol.upper()   # e.g. 'MNQ'
+
+    exchanges = {'MNQ': 'CME', 'NQ': 'CME', 'ES': 'CME', 'MES': 'CME',
+                 'YM': 'CBOT', 'MYM': 'CBOT', 'RTY': 'CME', 'M2K': 'CME'}
+    exchange  = exchanges.get(sym, 'CME')
+
+    # Front-month continuous: no lastTradeDateOrContractMonth → IBKR picks active
+    contract = Future(sym, exchange=exchange, currency='USD')
+    try:
+        await ib.qualifyContractsAsync(contract)
+    except Exception:
+        return {'error': f'Cannot qualify futures contract {sym}', 'bars': []}
+
+    def _bar_to_dict(b):
+        d = b.date
+        return {
+            'ts':     d.isoformat() if hasattr(d, 'isoformat') else str(d),
+            'open':   clean(b.open),
+            'high':   clean(b.high),
+            'low':    clean(b.low),
+            'close':  clean(b.close),
+            'volume': int(b.volume) if b.volume else 0,
+        }
+
+    try:
+        bars = await ib.reqHistoricalDataAsync(
+            contract, endDateTime='', durationStr=duration,
+            barSizeSetting=bar_size, whatToShow='TRADES',
+            useRTH=rth, formatDate=1, keepUpToDate=False
+        )
+        return {'symbol': sym, 'bars': [_bar_to_dict(b) for b in (bars or [])]}
+    except Exception as e:
+        return {'error': str(e), 'bars': []}
+
+
 # ── Place an order ────────────────────────────────────────
 class OrderRequest(BaseModel):
     symbol:      str
@@ -646,10 +695,10 @@ async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
     if not q or not getattr(q, 'conId', None):
         return {"error": f"Could not qualify {sym} {expiry} {strike} {right}"}
 
-    ib.reqMarketDataType(3)   # delayed — works without OPRA on paper account
+    ib.reqMarketDataType(3)   # delayed — OPRA subscription active, may need until next market open
     # genericTickList='100' requests option model computation (tick type 53 → modelGreeks).
     # Without it, IBKR may not push Greeks at all on a snapshot request.
-    # 10s wait: delayed data needs underlying price first, then model calc — 4s was too short.
+    # 10s wait: underlying price needed first, then model calc
     ticker   = ib.reqMktData(q, genericTickList='100', snapshot=True)
     await asyncio.sleep(10)
     ib.reqMarketDataType(1)   # reset to live for equity quotes
@@ -856,7 +905,7 @@ async def place_options_order(req: OptionsOrderRequest):
     ib.reqMarketDataType(1)
     trade = ib.placeOrder(combo, order)
     await asyncio.sleep(15)  # paper BAG fill simulation typically needs 5-15s
-    ib.reqMarketDataType(3)  # restore delayed for option quotes
+    # stay on type 1 — OPRA subscription now active
     return {
         "status":      "submitted",
         "type":        "bull_spread",

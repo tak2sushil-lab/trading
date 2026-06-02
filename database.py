@@ -380,6 +380,60 @@ def init_db():
             VALUES (?, 1.0, 1.0, 1.0, 1.0, 1.0, 'initial defaults')''',
             (date.today().isoformat(),))
 
+    # ── Futures trades ────────────────────────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS futures_trades (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol          TEXT NOT NULL DEFAULT 'MNQ',
+        contract        TEXT,
+        entry_date      TEXT,
+        entry_time      TEXT,
+        entry_price     REAL,
+        exit_date       TEXT,
+        exit_time       TEXT,
+        exit_price      REAL,
+        contracts       INTEGER DEFAULT 1,
+        side            TEXT DEFAULT 'LONG',
+        target_price    REAL,
+        stop_price      REAL,
+        pnl             REAL,
+        pnl_ticks       REAL,
+        status          TEXT DEFAULT 'OPEN',
+        exit_reason     TEXT,
+        setup_type      TEXT,
+        session         TEXT,
+        order_id        TEXT,
+        notes           TEXT,
+        max_gain_ticks  REAL
+    )''')
+
+    # ── Prop account state — one row per eval ─────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS prop_account_state (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        eval_date               TEXT,
+        eod_balance             REAL,
+        high_water_mark         REAL,
+        daily_pnl               REAL,
+        total_realized_profit   REAL,
+        status                  TEXT DEFAULT 'ACTIVE',
+        notes                   TEXT
+    )''')
+
+    # ── Futures scan log ──────────────────────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS futures_scan_log (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_time       TEXT,
+        scan_date       TEXT,
+        symbol          TEXT DEFAULT 'MNQ',
+        session         TEXT,
+        regime          TEXT,
+        score           INTEGER,
+        grade           TEXT,
+        signal          TEXT,
+        entry_price     REAL,
+        action          TEXT,
+        notes           TEXT
+    )''')
+
     conn.commit()
     conn.close()
     print("✅ Database initialized")
