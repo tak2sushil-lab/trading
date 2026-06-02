@@ -302,8 +302,9 @@ async def get_history(
 @app.get("/history/futures/{symbol}")
 async def get_futures_history(
     symbol:   str,
-    duration: str = Query(default="1 Y",   description="e.g. '60 D', '6 M', '1 Y'"),
+    duration: str = Query(default="60 D",  description="e.g. '60 D', '6 M'. Max 60D for 5-min."),
     bar_size: str = Query(default="5 mins", description="e.g. '5 mins', '1 hour', '1 day'"),
+    end_dt:   str = Query(default="",      description="End datetime YYYYMMDD HH:MM:SS. Empty = now."),
     rth:      bool = Query(default=True,   description="Regular trading hours only"),
 ):
     """
@@ -340,10 +341,11 @@ async def get_futures_history(
         }
 
     # useRTH=False: futures trade 23h — RTH filter would drop nearly all intraday bars
-    use_rth = rth if bar_size == '1 day' else False
+    use_rth  = rth if bar_size == '1 day' else False
+    end_date = end_dt.strip() if end_dt and end_dt.strip() else ''
     try:
         bars = await ib.reqHistoricalDataAsync(
-            contract, endDateTime='', durationStr=duration,
+            contract, endDateTime=end_date, durationStr=duration,
             barSizeSetting=bar_size, whatToShow='TRADES',
             useRTH=use_rth, formatDate=1, keepUpToDate=False
         )

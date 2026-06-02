@@ -184,17 +184,19 @@ def fetch_yf_daily(years_back: int = 10) -> list[dict]:
 
 # ── IBKR bridge helper ────────────────────────────────────────────────────────
 
-def fetch_ibkr_5min(duration: str = '1 Y') -> list[dict]:
+def fetch_ibkr_5min() -> list[dict]:
     """
-    Fetch MNQ 5-min bars from IBKR bridge via /history/futures/MNQ.
-    Bridge must be running. Returns [] if bridge unavailable.
-    Duration: '1 Y', '6 M', '60 D', etc.
+    Fetch MNQ 5-min bars from IBKR bridge (most recent 55 days).
+
+    IBKR ContFuture limitation: endDateTime is not supported for continuous
+    contracts — only current-window requests work. For longer history, use
+    yfinance (fetch_yf_1h for 2yr context, fetch_yf_daily for 10yr).
     """
     try:
         resp = requests.get(
             f'{BRIDGE_URL}/history/futures/MNQ',
-            params={'duration': duration, 'bar_size': '5 mins'},
-            timeout=30,
+            params={'duration': '55 D', 'bar_size': '5 mins'},
+            timeout=90,
         )
         if resp.status_code != 200:
             print(f'[ibkr] bridge returned {resp.status_code} — skipping')
@@ -215,7 +217,7 @@ def fetch_ibkr_5min(duration: str = '1 Y') -> list[dict]:
                 })
             except Exception:
                 pass
-        print(f'[ibkr] 5-min: {len(rows)} bars')
+        print(f'[ibkr] 5-min: {len(rows)} bars (55 days)')
         return rows
     except requests.exceptions.ConnectionError:
         print('[ibkr] bridge not reachable — skipping IBKR source')
@@ -237,10 +239,10 @@ def bootstrap():
     print('=== BOOTSTRAP: seeding MNQ historical data ===')
     print()
 
-    # 1. IBKR 5-min (best quality, up to 1 year)
-    rows = fetch_ibkr_5min(duration='1 Y')
+    # 1. IBKR 5-min (best quality, last 55 days — ContFuture limit)
+    rows = fetch_ibkr_5min()
     if rows:
-        n = store_bars(conn, rows, 'futures_bars_5m')
+        store_bars(conn, rows, 'futures_bars_5m')
         total_5m += len(rows)
         print(f'  stored {len(rows)} IBKR 5-min bars')
 
@@ -282,7 +284,7 @@ def update():
         store_bars(conn, rows, 'futures_bars_5m')
         print(f'  stored {len(rows)} 5-min bars')
 
-    rows = fetch_ibkr_5min(duration='3 D')
+    rows = fetch_ibkr_5min()
     if rows:
         store_bars(conn, rows, 'futures_bars_5m')
         print(f'  stored {len(rows)} IBKR 5-min bars (deduped)')
