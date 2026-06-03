@@ -400,17 +400,19 @@ SECTOR_MAP = {
 
 # ── Sector ETF proxies for relative strength ─────────────────
 SECTOR_ETF_MAP = {
-    'TECH':          'XLK',
-    'SEMIS':         'SMH',
-    'FINTECH':       'XLF',
-    'ENERGY':        'XLE',
-    'BIOTECH':       'XBI',
-    'NUCLEAR':       'NLR',
-    'DEFENCE':       'ITA',
-    'QUANTUM_CRYPTO':'QQQ',
-    'CONSUMER':      'XLY',
-    'CLEAN_ENERGY':  'ICLN',
-    'COMMODITIES':   'GLD',
+    # Data-driven from 2yr correlation analysis (backtest_enhanced.py, Jun 2 2026)
+    # Correlation vs previous choice shown where upgraded
+    'TECH':          'XLK',    # 0.511 corr — confirmed best (unchanged)
+    'SEMIS':         'SOXX',   # 0.646 corr — upgraded from SMH (0.632)
+    'FINTECH':       'XLF',    # 0.637 corr — confirmed best (unchanged)
+    'ENERGY':        'XLE',    # 0.617 corr — confirmed best (unchanged)
+    'BIOTECH':       'IBB',    # 0.366 corr — upgraded from XBI (0.334)
+    'NUCLEAR':       'URA',    # 0.783 corr — upgraded from NLR (0.778)
+    'DEFENCE':       'XAR',    # 0.521 corr — upgraded from ITA (0.501)
+    'QUANTUM_CRYPTO':'BITQ',   # 0.703 corr — major upgrade from QQQ (0.432)
+    'CONSUMER':      'XRT',    # 0.387 corr — upgraded from XLY (0.386, marginal)
+    'CLEAN_ENERGY':  'QCLN',   # 0.496 corr — upgraded from ICLN (0.413)
+    'COMMODITIES':   'GDX',    # 0.618 corr — upgraded from GLD (0.472)
     'OTHER':         'SPY',
 }
 
@@ -1237,7 +1239,7 @@ def get_days_to_earnings(symbol):
 # ─────────────────────────────────────────────────────────
 # GRADE SETUP
 # ─────────────────────────────────────────────────────────
-def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
+def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=False):
     score   = 0
     reasons = []
     w = get_strategy_weights()  # learner-adjusted multipliers (default 1.0)
@@ -1248,8 +1250,15 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     if symbol and symbol not in ETF_SYMBOLS:
         dte = get_days_to_earnings(symbol)
         if dte is None:
-            return 'SKIP', ['Earnings date unknown — skipping (no data)'], 0
-        if 0 <= dte <= 3:
+            # Fix 2: unknown date → allow if stock already running hard (post-earnings move resolved).
+            # Conservative skip hurt COHR +13%, AEHR +11% (Jun 2 2026). Stock up >5% on 3x+ vol
+            # with unknown earnings = calendar gap, not upcoming binary event.
+            intra = sig.get('intra_chg', 0) or 0
+            vol   = sig.get('vol_ratio', 1) or 1
+            if intra < 5.0 or vol < 3.0:
+                return 'SKIP', ['Earnings date unknown — skip (low conviction, unknown risk)'], 0
+            # else: running hard → likely post-earnings, allow with note
+        elif 0 <= dte <= 3:
             return 'SKIP', [f'Earnings in {dte}d — skip binary event'], 0
 
     if not sig['above_ma']:
@@ -1263,7 +1272,10 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None):
     if rr < MIN_RR:
         return 'SKIP', [f'R:R 1:{rr} below min 1:{MIN_RR}'], 0
     if regime in ('CHOPPY', 'CAUTIOUS'):
-        return 'SKIP', [f'{regime} — no trades'], 0
+        if is_catalyst:
+            pass  # Fix 1: catalyst stocks bypass CAUTIOUS/CHOPPY — market-independent move
+        else:
+            return 'SKIP', [f'{regime} — no trades'], 0
     # Must be moving today — no entering flat or declining stocks
     today_gain = sig.get('prev_chg', 0)
     if today_gain < MIN_TODAY_GAIN:
@@ -1496,7 +1508,8 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
     if symbol and symbol not in ETF_SYMBOLS:
         dte = get_days_to_earnings(symbol)
         if dte is None:
-            return 'SKIP', ['Earnings date unknown — skipping (no data)'], 0
+            # Bears: unknown earnings = skip (could gap up on surprise, killing short)
+            return 'SKIP', ['Earnings date unknown — skipping short (gap-up risk)'], 0
         if 0 <= dte <= 3:
             return 'SKIP', [f'Earnings in {dte}d — skip binary event'], 0
 
@@ -3251,9 +3264,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             continue
 
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
-        grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr, symbol=symbol)
-
         is_catalyst  = symbol in catalyst_priority
+        grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr, symbol=symbol, is_catalyst=is_catalyst)
+
         _now         = datetime.now(ET)
         _sector      = get_symbol_sector(symbol)
 
@@ -3544,9 +3557,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             continue
 
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, 'SHORT')
-        grade, reasons, score = grade_bear_setup(sig, regime, sl, target, price, rr, symbol=symbol)
-
         is_catalyst  = symbol in catalyst_priority
+        grade, reasons, score = grade_bear_setup(sig, regime, sl, target, price, rr, symbol=symbol)
         _now_b       = datetime.now(ET)
         _sector_b    = get_symbol_sector(symbol)
 
