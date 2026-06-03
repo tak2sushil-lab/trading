@@ -26,14 +26,29 @@ warnings.filterwarnings('ignore')
 # ── Config ─────────────────────────────────────────────────────────────
 START_DATE        = '2020-01-01'
 END_DATE          = date.today().isoformat()
-SYMBOLS           = sys.argv[1:] if len(sys.argv) > 1 else [
-    # Original validated universe
-    'NVDA', 'PLTR', 'TSLA', 'AMD', 'HOOD', 'SMCI', 'IONQ', 'META', 'AMZN', 'GOOGL',
-    # Live short symbols May 2026 — added after short-side diagnosis
-    'UUUU', 'OKLO', 'HIMS', 'CHPT', 'MP', 'USAR', 'MSTR', 'AXON', 'COHR',
-    'AI',   'TOST', 'NIO',  'RIVN', 'EOSE', 'CCJ',  'VST',  'CLS',
-    'QBTS', 'APLD', 'DXCM', 'NTLA', 'ONDS',
-]
+
+# ── Sector map — import from auto_trader for single source of truth ────
+try:
+    sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent))
+    from auto_trader import SECTOR_MAP as _SM
+    _FULL_UNIVERSE = sorted(_SM.keys())
+except Exception:
+    _FULL_UNIVERSE = []
+
+_raw_args = [a for a in sys.argv[1:] if not a.startswith('--')]
+if '--universe' in sys.argv:
+    SYMBOLS = _FULL_UNIVERSE or ['NVDA', 'PLTR', 'TSLA']
+elif _raw_args:
+    SYMBOLS = _raw_args
+else:
+    SYMBOLS = [
+        # Original validated universe
+        'NVDA', 'PLTR', 'TSLA', 'AMD', 'HOOD', 'SMCI', 'IONQ', 'META', 'AMZN', 'GOOGL',
+        # Live short symbols May 2026 — added after short-side diagnosis
+        'UUUU', 'OKLO', 'HIMS', 'CHPT', 'MP', 'USAR', 'MSTR', 'AXON', 'COHR',
+        'AI',   'TOST', 'NIO',  'RIVN', 'EOSE', 'CCJ',  'VST',  'CLS',
+        'QBTS', 'APLD', 'DXCM', 'NTLA', 'ONDS',
+    ]
 CAPITAL_PER_TRADE = 2000
 ATR_PERIOD        = 14
 STOP_PCT          = 5.0           # 5% above entry = SL
@@ -303,6 +318,16 @@ def print_results(df_all):
     ).assign(wr=lambda d: d['wins'] / d['trades'] * 100)
     for yr, row in by_year.iterrows():
         print(f"  {yr}: {int(row['trades']):>3} trades  WR {row['wr']:.0f}%  P&L ${row['pnl']:,.0f}")
+
+    print(f"\n── By Year-Month (time series) {'─'*25}")
+    df_all['ym'] = df_all['date'].str[:7]
+    print(f"  {'YearMon':<9} {'N':>5} {'WR':>6} {'AvgPnL':>9} {'MonthPnL':>11}  Flag")
+    print(f"  {'─'*52}")
+    for ym, g in df_all.groupby('ym'):
+        swr  = (g['pnl_usd'] > 0).sum() / len(g) * 100
+        mpnl = g['pnl_usd'].sum()
+        flag = '✅' if mpnl > 0 else '❌'
+        print(f"  {ym:<9} {len(g):>5} {swr:>5.0f}% {g['pnl_usd'].mean():>+9.2f} {mpnl:>+11,.0f}  {flag}")
 
     print(f"\n── By Symbol {'─'*43}")
     by_sym = df_all.groupby('symbol').agg(
