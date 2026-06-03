@@ -517,7 +517,7 @@ def _stats(df):
     win_pnl  = df[df['win']]['pnl'].mean() if wins > 0 else 0
     loss_pnl = df[~df['win']]['pnl'].mean() if (n - wins) > 0 else 0
     pf = abs(win_pnl * wins / (loss_pnl * (n - wins))) if (n - wins) > 0 and loss_pnl != 0 else float('inf')
-    fivemin_pct = df[df['source'] == '5min'].shape[0] / n * 100 if '5min' in df.columns else 0
+    fivemin_pct = df[df['source'] == '5min'].shape[0] / n * 100 if 'source' in df.columns else 0
     return {'n': n, 'wr': wins/n*100, 'pnl': df['pnl'].sum(),
             'avg': df['pnl'].mean(), 'win': win_pnl, 'loss': loss_pnl,
             'pf': pf, 'sharpe': sh, 'maxdd': dd, 'fivemin_pct': fivemin_pct}
@@ -541,7 +541,7 @@ def print_by_year(df, label):
     for yr, g in df.groupby('year'):
         daily = g.groupby('date')['pnl'].sum()
         sh = daily.mean() / daily.std() * np.sqrt(252) if daily.std() > 0 else 0
-        fivemin = f'{g[g["source"]=="5min"].shape[0]/len(g)*100:.0f}%' if 'source' in g else '-'
+        fivemin = f'{g[g["source"]=="5min"].shape[0]/len(g)*100:.0f}%' if 'source' in g.columns else '-'
         print(f'  {yr:<6} {len(g):>7,} {g["win"].mean()*100:>6.1f}% ${g["pnl"].sum():>9,.0f} {sh:>8.2f} {fivemin:>6}')
 
 
@@ -576,6 +576,253 @@ def print_sector_breakdown(df, label):
         print(f'  {sec:<16} {len(g):>7,} {g["win"].mean()*100:>6.1f}% ${g["pnl"].sum():>9,.0f} {etf:>6}')
 
 
+# ── Part 5: Bear / Short side ─────────────────────────────────────────────────
+
+def simulate_day_5min_bear(bars_5m, entry_after='10:00', stop_price=None, trail_mult=1.5, atr=None):
+    """Mirror of simulate_day_5min for SHORT entries. Entry on ORB breakdown."""
+    if bars_5m.empty or len(bars_5m) < 3:
+        return None, None, None
+
+    orb_bars = bars_5m.between_time('09:30', '09:55')
+    if orb_bars.empty:
+        return None, None, None
+    orb_high = orb_bars['high'].max()
+    orb_low  = orb_bars['low'].min()
+    orb_mid  = (orb_high + orb_low) / 2
+
+    post_orb = bars_5m.between_time(entry_after, '14:55')
+    if post_orb.empty:
+        return None, 'no_breakdown', None
+
+    entry_bar = None
+    entry_price = None
+    for ts, row in post_orb.iterrows():
+        if row['close'] < orb_low and row['volume'] > 0:
+            entry_bar   = ts
+            entry_price = row['close']
+            break
+
+    if entry_price is None:
+        return None, 'no_breakdown', None
+
+    stop  = stop_price if stop_price else orb_mid
+    if stop <= entry_price:
+        stop = entry_price * 1.05  # fallback 5% stop
+
+    peak = entry_price  # for shorts, peak = lowest price reached
+
+    after_entry = bars_5m[bars_5m.index > entry_bar]
+    exit_price  = None
+    exit_reason = 'eod'
+
+    for ts, row in after_entry.iterrows():
+        if ts.time() >= datetime.strptime('15:45', '%H:%M').time():
+            exit_price  = row['close']
+            exit_reason = 'eod'
+            break
+        if row['high'] >= stop:
+            exit_price  = stop
+            exit_reason = 'stop'
+            break
+        if atr and (entry_price - peak) / entry_price > 0.01:
+            trail_stop = peak + trail_mult * atr
+            if row['high'] >= trail_stop:
+                exit_price  = min(trail_stop, row['high'])
+                exit_reason = 'trail'
+                break
+        peak = min(peak, row['low'])
+
+    if exit_price is None:
+        exit_price = after_entry.iloc[-1]['close'] if not after_entry.empty else entry_price
+        exit_reason = 'eod'
+
+    pnl_pct = (entry_price - exit_price) / entry_price * 100  # profit when price falls
+    return pnl_pct, exit_reason, entry_price
+
+
+def simulate_symbol_bear(symbol, daily, spy, etf_gap, sector_etf, mode):
+    """Short side simulation. Mirrors simulate_symbol for WEAK days."""
+    trades = []
+    if daily.empty or len(daily) < 25:
+        return trades
+
+    sector = SECTOR_MAP.get(symbol, 'OTHER')
+    etf    = sector_etf.get(sector, 'SPY')
+    bars5  = load_5min_from_db(symbol, daily.index[0].strftime('%Y-%m-%d'))
+
+    for i in range(21, len(daily)):
+        row   = daily.iloc[i]
+        prev  = daily.iloc[i - 1]
+        d     = daily.index[i]
+
+        if d not in spy.index:
+            continue
+
+        spy_row = spy.loc[d]
+        regime  = spy_row['regime']
+        if regime != 'WEAK':
+            continue  # short side only on WEAK SPY days
+
+        price    = float(row['Open'])
+        ma20     = float(row['ma20']) if not pd.isna(row['ma20']) else None
+        avg_vol  = float(daily['avg_vol'].iloc[i - 1]) if not pd.isna(daily['avg_vol'].iloc[i - 1]) else None
+        atr      = float(row['atr']) if not pd.isna(row['atr']) else None
+        prev_close = float(prev['Close'])
+
+        if price < 3 or not ma20 or price > ma20:
+            continue  # for shorts: below MA20 is required
+
+        today_gain = (float(row['Close']) - prev_close) / prev_close * 100
+        if today_gain > -MIN_TODAY_GAIN:  # stock must be DOWN ≥3%
+            continue
+
+        vol_ratio = float(row['Volume'] / avg_vol) if avg_vol and avg_vol > 0 else 1.0
+        if vol_ratio < MIN_VOL_RATIO:
+            continue
+
+        # Catalyst on bear side: stock DOWN >5% on heavy vol (news-driven sell)
+        catalyst = vol_ratio >= 3.0 and today_gain <= -5.0
+
+        # Short side regime gate: Mode B allows catalyst shorts on bad SPY days
+        # No ETF gate for shorts (Mode C ETF gate is for longs on choppy days)
+
+        # ── 5-min or daily exit simulation ───────────────────────────────────
+        day_bars = pd.DataFrame()
+        if not bars5.empty:
+            day_bars = bars5[bars5.index.date == d.date()]
+
+        if not day_bars.empty:
+            orb_bars = day_bars.between_time('09:30', '09:55')
+            orb_mid  = (orb_bars['high'].max() + orb_bars['low'].min()) / 2 if not orb_bars.empty else price * 1.05
+            pnl_pct, exit_reason, entry_price = simulate_day_5min_bear(day_bars, stop_price=orb_mid, atr=atr)
+            if pnl_pct is None or exit_reason == 'no_breakdown':
+                continue
+            source = '5min'
+        else:
+            entry_price = price
+            stop  = price * (1 + STOP_PCT / 100)
+            day_high  = float(row['High'])
+            day_close = float(row['Close'])
+            if day_high >= stop:
+                pnl_pct    = -STOP_PCT
+                exit_reason = 'stop'
+            else:
+                pnl_pct    = (entry_price - day_close) / entry_price * 100
+                exit_reason = 'eod'
+            source = 'daily'
+
+        pnl = pnl_pct / 100 * CAPITAL_PER_TRADE
+
+        trades.append({
+            'date':        d, 'year': d.year, 'month': d.to_period('M'),
+            'symbol':      symbol, 'sector': sector, 'etf': etf,
+            'regime':      regime, 'choppy': False, 'catalyst': catalyst,
+            'vol_ratio':   round(vol_ratio, 1), 'today_gain': round(today_gain, 1),
+            'pnl_pct':     round(pnl_pct, 2), 'pnl': round(pnl, 2),
+            'exit_reason': exit_reason, 'source': source, 'side': 'SHORT', 'win': pnl > 0,
+        })
+
+    return trades
+
+
+def run_backtest_bear(mode, start=START_DATE):
+    spy = load_spy(start)
+    all_trades = []
+    print(f'  Bear {mode}: ', end='', flush=True)
+    for sym in FULL_UNIVERSE:
+        daily = load_daily_context(sym, start)
+        if daily.empty:
+            continue
+        trades = simulate_symbol_bear(sym, daily, spy, {}, SECTOR_ETF_MAP, mode)
+        all_trades.extend(trades)
+        print('.', end='', flush=True)
+    print(f' {len(all_trades):,} SHORT trades')
+    return pd.DataFrame(all_trades) if all_trades else pd.DataFrame()
+
+
+# ── Part 6: Walk-Forward Analysis ─────────────────────────────────────────────
+
+# IS/OOS split on our 2yr Databento window
+WFA_WINDOWS = [
+    # (is_start, is_end, oos_start, oos_end, label)
+    ('2024-01-01', '2024-12-31', '2025-01-01', '2025-06-30', '2024-IS / 2025-H1-OOS'),
+    ('2024-01-01', '2025-06-30', '2025-07-01', END_DATE,     '18m-IS / Latest-OOS'),
+    ('2024-07-01', '2025-06-30', '2025-07-01', END_DATE,     '12m-IS / Latest-OOS'),
+]
+
+
+def run_wfa(mode='C'):
+    print(f'\n  ── Walk-Forward Analysis (Mode {mode}) ─────────────────────────')
+    print(f'  {"Window":<32} {"IS trades":>9} {"IS WR%":>7} {"IS P&L":>9}'
+          f' {"OOS trades":>10} {"OOS WR%":>8} {"OOS P&L":>9} {"Hold":>5}')
+
+    spy_full = load_spy(START_DATE)
+    _, etf_gap_full = load_etfs(SECTOR_ETF_MAP, START_DATE)
+    all_trades_cache = {}
+    for sym in FULL_UNIVERSE:
+        daily = load_daily_context(sym, START_DATE)
+        if daily.empty:
+            continue
+        trades = simulate_symbol(sym, daily, spy_full, etf_gap_full, SECTOR_ETF_MAP, mode)
+        for t in trades:
+            dt = t['date']
+            all_trades_cache.setdefault(dt, []).append(t)
+
+    all_df = pd.DataFrame([t for ts in all_trades_cache.values() for t in ts])
+    if all_df.empty:
+        print('  No trades to analyze.')
+        return
+
+    all_df['date'] = pd.to_datetime(all_df['date'])
+
+    profitable_oos = 0
+    for is_s, is_e, oos_s, oos_e, label in WFA_WINDOWS:
+        is_df  = all_df[(all_df['date'] >= is_s)  & (all_df['date'] <= is_e)]
+        oos_df = all_df[(all_df['date'] >= oos_s) & (all_df['date'] <= oos_e)]
+        if is_df.empty or oos_df.empty:
+            continue
+        is_wr  = is_df['win'].mean()  * 100
+        oos_wr = oos_df['win'].mean() * 100
+        hold   = '✅' if oos_df['pnl'].sum() > 0 else '❌'
+        if oos_df['pnl'].sum() > 0:
+            profitable_oos += 1
+        print(f'  {label:<32} {len(is_df):>9,} {is_wr:>7.1f}% ${is_df["pnl"].sum():>8,.0f}'
+              f' {len(oos_df):>10,} {oos_wr:>8.1f}% ${oos_df["pnl"].sum():>8,.0f} {hold:>5}')
+
+    pct = profitable_oos / len(WFA_WINDOWS) * 100
+    print(f'\n  OOS profitable: {profitable_oos}/{len(WFA_WINDOWS)} windows ({pct:.0f}%)')
+    return all_df
+
+
+# ── Part 7: Stress Period Tests ────────────────────────────────────────────────
+
+# Stress periods within our 2024-2026 Databento data window
+STRESS_PERIODS = [
+    ('Japan Carry Unwind',   '2024-07-31', '2024-08-16'),
+    ('AI Rotation Selloff',  '2024-09-03', '2024-09-10'),
+    ('Post-Election Surge',  '2024-11-05', '2024-11-30'),   # STRONG regime stress test
+    ('DeepSeek Shock',       '2025-01-27', '2025-02-07'),
+    ('Liberation Day Crash', '2025-04-03', '2025-04-11'),
+    ('Recovery Rally',       '2025-04-22', '2025-05-30'),
+]
+
+
+def run_stress(df_full):
+    """Test each mode's full-run trades against stress periods."""
+    print(f'\n  ── Stress Period Analysis ────────────────────────────────────────')
+    print(f'  {"Period":<26} {"Dates":<24} {"Trades":>7} {"WR%":>6} {"P&L":>9} {"Avg$":>6}')
+    df = df_full.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    for name, s, e in STRESS_PERIODS:
+        g = df[(df['date'] >= s) & (df['date'] <= e)]
+        if g.empty:
+            print(f'  {name:<26} {s[:10]}→{e[:10]}  no trades')
+            continue
+        flag = '✅' if g['pnl'].sum() > 0 else '❌'
+        print(f'  {name:<26} {s[:10]}→{e[:10]} {len(g):>7,} '
+              f'{g["win"].mean()*100:>6.1f}% ${g["pnl"].sum():>8,.0f} ${g["pnl"].mean():>5.0f} {flag}')
+
+
 def compare(results):
     print('\n' + '=' * 78)
     print('  A / B / C  COMPARISON')
@@ -599,9 +846,12 @@ def compare(results):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Enhanced strategy backtest')
-    parser.add_argument('--corr-only', action='store_true')
-    parser.add_argument('--start',     default=START_DATE)
-    parser.add_argument('--mode',      default='ABC', help='A | B | C | AB | ABC')
+    parser.add_argument('--corr-only',    action='store_true', help='ETF correlation only')
+    parser.add_argument('--no-bear',      action='store_true', help='Skip short side')
+    parser.add_argument('--no-wfa',       action='store_true', help='Skip walk-forward')
+    parser.add_argument('--no-stress',    action='store_true', help='Skip stress tests')
+    parser.add_argument('--start',        default=START_DATE)
+    parser.add_argument('--mode',         default='ABC', help='A | B | C | AB | ABC')
     args = parser.parse_args()
 
     print('\n' + '=' * 78)
@@ -610,18 +860,18 @@ if __name__ == '__main__':
     print(f'  Capital: ${CAPITAL_PER_TRADE:,}/trade  |  Stop: {STOP_PCT}%  |  Min gain: {MIN_TODAY_GAIN}%')
     print('=' * 78)
 
-    # Step 1: ETF correlation
+    # ── Step 1: ETF correlation ───────────────────────────────────────────────
     run_etf_correlation(start=args.start)
     if args.corr_only:
         sys.exit(0)
 
-    # Step 2: Backtests
+    # ── Step 2: Long side A/B/C backtests ────────────────────────────────────
     print('\n' + '=' * 78)
-    print('  BACKTEST MODES')
-    print('  A — Baseline:  CAUTIOUS/CHOPPY blocks all entries; earnings unknown = skip')
-    print('  B — Fixes:     Catalyst bypass CAUTIOUS; earnings unknown+hot = allow')
-    print('  C — ETF gate:  B + sector ETF gap >0.5% at open unlocks sector stocks')
-    print('  All modes use 5-min ORB simulation where Databento bars available.')
+    print('  LONG SIDE — BULL ENTRIES (ORB breakout, NORMAL/STRONG days)')
+    print('  A — Baseline:  CAUTIOUS/CHOPPY blocks all; earnings unknown = skip')
+    print('  B — Fixes:     Catalyst bypass CAUTIOUS; earnings unknown + hot = allow')
+    print('  C — ETF gate:  B + sector ETF gap >0.5% unlocks choppy-day sector stocks')
+    print('  5-min ORB simulation used where Databento bars available; daily fallback.')
     print('=' * 78)
 
     modes_to_run = [m for m in args.mode.upper() if m in ('A', 'B', 'C')]
@@ -641,14 +891,12 @@ if __name__ == '__main__':
         s['label'] = labels[mode]
         all_results.append(s)
 
-    # Detailed yearly + monthly for all modes
     for mode in modes_to_run:
         df = all_dfs[mode]
         if not df.empty:
             print_by_year(df, labels[mode])
             print_by_month(df, labels[mode])
 
-    # Regime and sector breakdown for Mode A and C (comparison)
     if 'A' in all_dfs and not all_dfs['A'].empty:
         print_regime_breakdown(all_dfs['A'], 'Mode A')
     if 'C' in all_dfs and not all_dfs['C'].empty:
@@ -657,12 +905,67 @@ if __name__ == '__main__':
 
     compare(all_results)
 
-    # What are we still missing?
-    print('\n  ── Additional opportunities to explore ────────────────────────')
-    print('  1. VIX regime filter — high VIX (>25) = different stock behavior, wider stops needed')
-    print('  2. Sector concentration cap — max 2 open slots per sector (correlated drawdown risk)')
-    print('  3. Multi-day momentum — stocks up >5% yesterday carry over morning (continuation bias)')
-    print('  4. Price vs HOD at entry — buying 2%+ below HOD vs fresh HOD break: very different WR')
-    print('  5. Failed ORB rate — how often does entry bar fail to follow through (5-min data tells us)')
-    print('  6. Options on catalyst days — MRVL +14% equity = +200%+ call option (leverage opportunity)')
-    print('  7. Sector ETF as position-sizing signal (not just on/off) — bigger position when ETF surging')
+    # ── Step 3: Short side ────────────────────────────────────────────────────
+    if not args.no_bear:
+        print('\n' + '=' * 78)
+        print('  SHORT SIDE — BEAR ENTRIES (ORB breakdown, WEAK days only)')
+        print('  Same 3 modes. Mirrors bull logic: below MA20, down ≥3%, vol ≥1.3x.')
+        print('  Catalyst bear: stock down >5% on 3x+ vol (news-driven sell).')
+        print('=' * 78)
+        bear_results = []
+        bear_dfs     = {}
+        for mode in modes_to_run:
+            df_b = run_backtest_bear(mode, start=args.start)
+            bear_dfs[mode] = df_b
+            s_b = print_summary(df_b, f'SHORT Mode {mode}')
+            if s_b:
+                s_b['label'] = f'SHORT {labels[mode]}'
+                bear_results.append(s_b)
+        for mode in modes_to_run:
+            if not bear_dfs.get(mode, pd.DataFrame()).empty:
+                print_by_year(bear_dfs[mode], f'SHORT Mode {mode}')
+                print_by_month(bear_dfs[mode], f'SHORT Mode {mode}')
+        if bear_results:
+            compare(bear_results)
+
+        # Combined long + short P&L
+        print('\n  ── Combined Long + Short (Mode C) ─────────────────────────────')
+        long_c  = all_dfs.get('C', pd.DataFrame())
+        short_c = bear_dfs.get('C', pd.DataFrame())
+        combined = pd.concat([long_c, short_c]) if not long_c.empty or not short_c.empty else pd.DataFrame()
+        if not combined.empty:
+            s_c = _stats(combined)
+            print(f'  Long trades: {len(long_c):,}  |  Short trades: {len(short_c):,}')
+            print(f'  Combined WR: {s_c["wr"]:.1f}%  |  Combined P&L: ${s_c["pnl"]:,.0f}')
+            print(f'  Sharpe: {s_c["sharpe"]:.2f}  |  MaxDD: ${s_c["maxdd"]:,.0f}')
+
+    # ── Step 4: Walk-Forward Analysis ─────────────────────────────────────────
+    if not args.no_wfa:
+        print('\n' + '=' * 78)
+        print('  WALK-FORWARD ANALYSIS (in-sample / out-of-sample validation)')
+        print('  Tests whether gains in IS training windows hold in OOS periods.')
+        print('=' * 78)
+        wfa_df = run_wfa(mode='C')
+        if wfa_df is not None and not wfa_df.empty and not args.no_stress:
+            run_stress(wfa_df)
+
+    # ── Step 5: Summary and open questions ───────────────────────────────────
+    print('\n' + '=' * 78)
+    print('  WHAT ELSE CAN IMPROVE THE SYSTEM')
+    print('=' * 78)
+    print('  Tested today:')
+    print('  ✅ Fix 1: Catalyst stocks bypass CAUTIOUS/CHOPPY regime block')
+    print('  ✅ Fix 2: Earnings date unknown + running hard >5%/3x vol → allow')
+    print('  ✅ Fix 3: Data-driven sector ETF map (8/11 sectors upgraded)')
+    print('  ✅ Fix 4: ETF gap-up at open → unlock sector on choppy SPY days')
+    print()
+    print('  Not yet built — further research needed:')
+    print('  1. VIX regime filter: VIX>25 = widen stops or pause entries (different market dynamics)')
+    print('  2. Sector concentration cap: max 2 slots per sector → reduces correlated drawdown risk')
+    print('  3. Multi-day momentum: yesterday up >5%? → continuation bias, lower entry threshold today')
+    print('  4. Price vs HOD at scan: stock 2%+ below HOD = fading pattern, different from fresh HOD break')
+    print('  5. Failed ORB rate: use 5-min data to measure how often ORB breaks fail (tune stop placement)')
+    print('  6. Options on catalyst moves: MRVL +14% equity = +200-300% call → options system integration')
+    print('  7. ETF as position-sizing signal: 1.5x capital when sector ETF up >2%, normal otherwise')
+    print('  8. Short side: 3-scan WEAK confirmation before bear entries (mirrors live system rule)')
+    print('  9. Earnings play mode: stocks running on day-0 post-earnings = catalyst override with halved size')

@@ -114,9 +114,22 @@ Three DNA clusters assigned in `auto_trader.py` — re-run `dna_analysis.py` qua
 
 ---
 
+## Regime + Entry Gates (updated Jun 2 2026)
+
+### Changes applied Jun 2 2026 (backtest-validated):
+- **Fix 1:** Catalyst stocks (is_catalyst=True) now bypass CAUTIOUS/CHOPPY regime block. Previously all entries blocked on CAUTIOUS. Catalyst = market-independent move (earnings/news). `grade_setup()` accepts `is_catalyst` param; `_scan_and_enter` computes it BEFORE calling grade_setup.
+- **Fix 2:** Earnings date unknown + stock running >5% on 3x+ vol → allow (previously hard skip). Unknown earnings calendar = likely post-earnings gap (binary event resolved). Bears: still skip on unknown (gap-up risk).
+- **SECTOR_ETF_MAP:** 8/11 sectors upgraded to data-driven ETFs (2yr correlation analysis Jun 2). Key: QUANTUM_CRYPTO QQQ→BITQ (corr 0.43→0.70), NUCLEAR NLR→URA, COMMODITIES GLD→GDX, SEMIS SMH→SOXX.
+
+### Sector ETF regime (backtest validated, NOT yet in live auto_trader):
+- When sector ETF gaps up >0.5% at open on a choppy SPY day → allow sector stocks
+- Adds ~$4-9K P&L over 2.5yr | WR drops 2% (tradeoff: more trades, lower quality)
+- Implement in auto_trader after further review
+
 ## Bull Entry (NORMAL/STRONG regime)
 
 Hard gates: earnings 0-3d | price < MA20 | vol low | gain < 3% | R:R < 2.5 | gap-and-crap | failed ORB
+Catalyst gate: earnings unknown + running >5%/3x vol → allow (post-earnings catalyst)
 Patterns: ORB | VWAP reclaim | bull flag | HOD break | strong momo ≥5%
 Score: A+ ≥80pts | A ≥65pts
 
@@ -305,16 +318,20 @@ Grades reset nightly from last 30 days, min 5 trades. Affects entry scoring dire
 
 ```bash
 venv/bin/python sim_today.py                # REQUIRED after every code change
-venv/bin/python backtest_strategy.py        # bull edge
-venv/bin/python backtest_bear.py            # bear edge
-venv/bin/python backtest_walkforward.py     # OOS (8 windows)
+venv/bin/python backtest_strategy.py        # bull edge (daily bars, 5yr)
+venv/bin/python backtest_bear.py            # bear edge (daily bars, 5yr)
+venv/bin/python backtest_walkforward.py     # OOS walk-forward (8 windows)
 venv/bin/python backtest_stress.py          # crisis periods
 venv/bin/python monte_carlo.py              # ruin risk
 venv/bin/python batch_backtest.py           # full suite for new candidates
 venv/bin/python dna_analysis.py             # re-cluster universe (quarterly)
-venv/bin/python collect_bars.py --bootstrap # one-time: seed 60 days of 5-min history
-venv/bin/python collect_bars.py --summary   # show DB row counts and date ranges
-venv/bin/python backtest_scalp.py           # OPT_SCALP Mode A backtest (grows as scan_log accumulates)
+venv/bin/python backtest_enhanced.py        # NEW: 5-min Databento bars, A/B/C modes, long+short+WFA+stress
+venv/bin/python backtest_enhanced.py --corr-only   # ETF correlation analysis only
+venv/bin/python backtest_enhanced.py --mode A      # single mode
+venv/bin/python backtest_enhanced.py --no-wfa --no-stress   # long+short only (faster)
+venv/bin/python collect_bars.py --summary   # equity 5-min bar counts and date ranges
+venv/bin/python futures/collect_bars.py --summary  # futures bar counts (MNQ/ES/RTY)
+venv/bin/python backtest_scalp.py           # OPT_SCALP Mode A backtest
 ```
 
 ---
