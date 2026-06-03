@@ -39,22 +39,13 @@ MIN_TODAY_GAIN     = 3.0         # matches live auto_trader — stock must close
 SKIP_WEAK_DAYS     = True        # no trades on WEAK SPY days
 FIRST_BAR_QUALITY  = True        # strong first-bar day: +15% capital + conditional partial exit
 
-# ── ETF Regime Gate (Jun 2 2026) ─────────────────────────────────────────
-# On flat SPY days (abs(chg) < CHOPPY_SPY_MAX), require the stock's sector ETF
-# to be up > ETF_THRESHOLD% that day before allowing entry.
-# Catalyst proxy (vol ≥3× + gain ≥5%) always bypasses this gate.
-USE_ETF_REGIME  = '--etf' in sys.argv   # enabled with --etf flag
-CHOPPY_SPY_MAX  = 0.30   # SPY flat if |daily%| < this
-ETF_THRESHOLD   = 1.50   # sector ETF must be up > this% on the choppy day
-
 # ── Sector map — import from auto_trader for single source of truth ─────
 try:
     sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent))
-    from auto_trader import SECTOR_MAP as _SM, SECTOR_ETF_MAP as _SEM
-    SECTOR_MAP     = _SM
-    SECTOR_ETF_MAP = _SEM
+    from auto_trader import SECTOR_MAP as _SM
+    SECTOR_MAP = _SM
 except Exception:
-    SECTOR_MAP = {}; SECTOR_ETF_MAP = {}
+    SECTOR_MAP = {}
 
 # ── Symbol selection ─────────────────────────────────────────────────────
 _raw_args = [a for a in sys.argv[1:] if not a.startswith('--')]
@@ -83,21 +74,6 @@ INSTITUTIONAL_SYMBOLS = frozenset([
     'TPR','TT','TXT','YUM',
 ])
 
-# ── Build sector ETF daily returns (for ETF regime gate) ────────────────
-def build_etf_returns(start, end):
-    """Download daily returns for all sector ETFs. Returns dict: {ticker: pd.Series}."""
-    if not USE_ETF_REGIME or not SECTOR_ETF_MAP:
-        return {}
-    etfs = list(set(SECTOR_ETF_MAP.values()))
-    raw  = yf.download(etfs, start=start, end=end, auto_adjust=True, progress=False)
-    cls  = raw['Close'] if 'Close' in raw else raw
-    if isinstance(cls.columns, pd.MultiIndex):
-        cls.columns = cls.columns.get_level_values(0)
-    if len(etfs) == 1:
-        cls = cls.to_frame(name=etfs[0])
-    ret = cls.pct_change() * 100
-    return {col: ret[col].dropna() for col in ret.columns}
-
 # ── Build SPY daily regime ───────────────────────────────────────────────
 def build_spy_regime(start, end):
     spy = yf.download('SPY', start=start, end=end, progress=False, auto_adjust=True)
@@ -119,7 +95,7 @@ def add_atr(df):
     return df
 
 # ── Grade a day's setup ──────────────────────────────────────────────────
-def grade_day(i, df, spy_chg, regime, symbol=None, etf_return=None):
+def grade_day(i, df, spy_chg, regime, symbol=None):
     row      = df.iloc[i]
     prev_row = df.iloc[i - 1]
     df_upto  = df.iloc[:i + 1]
@@ -148,14 +124,6 @@ def grade_day(i, df, spy_chg, regime, symbol=None, etf_return=None):
     vol_ratio = float(row['Volume'] / avg_vol) if avg_vol and avg_vol > 0 else 1.0
     if vol_ratio < MIN_VOLUME_RATIO:
         return 'SKIP', 0, [], False
-
-    # ── ETF Regime Gate (Jun 2 2026) ──────────────────────────────────────
-    # On flat SPY days, require sector ETF confirmation. Catalyst plays bypass.
-    if USE_ETF_REGIME and regime == 'NORMAL' and abs(spy_chg) < CHOPPY_SPY_MAX:
-        catalyst_proxy = vol_ratio >= 3.0 and today_gain >= 5.0
-        if not catalyst_proxy:
-            if etf_return is None or float(etf_return) < ETF_THRESHOLD:
-                return 'SKIP', 0, [], False
 
     # R:R check with fixed 3% intraday stop
     risk_pct  = STOP_PCT
@@ -297,7 +265,7 @@ def simulate_trade(row, atr, first_bar_strong=False, _always_partial=False, symb
     return result, round(total_pnl / capital * 100, 2), total_pnl, row['Close']
 
 # ── Backtest one symbol ──────────────────────────────────────────────────
-def backtest_symbol(symbol, spy_regime, etf_returns=None):
+def backtest_symbol(symbol, spy_regime):
     df = yf.download(symbol, start=START_DATE, end=END_DATE,
                      progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
@@ -310,26 +278,14 @@ def backtest_symbol(symbol, spy_regime, etf_returns=None):
     merged['spy_chg'] = merged['spy_chg'].fillna(0)
     merged['regime']  = merged['regime'].fillna('NORMAL')
 
-    # Resolve sector ETF for this symbol
-    sector  = SECTOR_MAP.get(symbol, 'OTHER') if SECTOR_MAP else 'OTHER'
-    etf_sym = SECTOR_ETF_MAP.get(sector, 'SPY') if SECTOR_ETF_MAP else 'SPY'
-    etf_ser = (etf_returns or {}).get(etf_sym)
-
     trades = []
     for i in range(22, len(merged)):
         row     = merged.iloc[i]
         spy_chg = float(row['spy_chg'])
         regime  = str(row['regime'])
-        date    = merged.index[i]
-
-        # Get ETF daily return for this date (NaN → None → gate skips)
-        etf_ret = None
-        if etf_ser is not None and date in etf_ser.index:
-            v = etf_ser.loc[date]
-            etf_ret = float(v) if not pd.isna(v) else None
 
         grade, score, reasons, first_bar_strong = grade_day(
-            i, merged, spy_chg, regime, symbol, etf_return=etf_ret)
+            i, merged, spy_chg, regime, symbol)
         if grade == 'SKIP':
             continue
 
@@ -553,22 +509,15 @@ def print_results(df_all):
 
 # ── Main ─────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    etf_flag = ' [ETF regime gate ON]' if USE_ETF_REGIME else ''
-    print(f"\nLoading SPY regime {START_DATE} → {END_DATE}...{etf_flag}")
+    print(f"\nLoading SPY regime {START_DATE} → {END_DATE}...")
     spy_regime = build_spy_regime(START_DATE, END_DATE)
     spy_reg_cnt = spy_regime['regime'].value_counts()
     print(f"  SPY: STRONG {spy_reg_cnt.get('STRONG',0)}d  NORMAL {spy_reg_cnt.get('NORMAL',0)}d  WEAK {spy_reg_cnt.get('WEAK',0)}d\n")
 
-    etf_returns = {}
-    if USE_ETF_REGIME:
-        print(f"Loading sector ETF returns ({len(set(SECTOR_ETF_MAP.values()))} ETFs)...")
-        etf_returns = build_etf_returns(START_DATE, END_DATE)
-        print(f"  Loaded: {', '.join(etf_returns.keys())}\n")
-
     all_trades = []
     for sym in SYMBOLS:
         print(f"Backtesting {sym}...", end=' ', flush=True)
-        df_sym = backtest_symbol(sym, spy_regime, etf_returns=etf_returns)
+        df_sym = backtest_symbol(sym, spy_regime)
         if not df_sym.empty:
             all_trades.append(df_sym)
             wr_sym = len(df_sym[df_sym['pnl_usd'] > 0]) / len(df_sym) * 100
@@ -583,7 +532,7 @@ if __name__ == '__main__':
         print_results(df_all)
         # ── Year-month time series (the main comparison table) ──────────
         print(f"\n{'='*68}")
-        print(f"  BY YEAR-MONTH (time series){'  ← ETF gate ON' if USE_ETF_REGIME else '  ← baseline'}")
+        print(f"  BY YEAR-MONTH (time series)")
         print(f"{'='*68}")
         print(f"  {'YearMon':<9} {'N':>5} {'WR':>6} {'AvgPnL':>9} {'MonthPnL':>11}  Flag")
         print(f"  {'─'*52}")
