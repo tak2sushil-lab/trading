@@ -134,7 +134,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                  prev_close: float, avg_vol: dict,
                  prop: PropRulesSimulator, cfg: Config,
                  daily_bias: str = 'BOTH',
-                 contracts: int = 1) -> list[dict]:
+                 contracts: int = 1,
+                 es_day_df: pd.DataFrame | None = None) -> list[dict]:
     """
     daily_bias: 'LONG' | 'SHORT' | 'BOTH'
       Filters entry direction based on higher-timeframe daily trend.
@@ -319,6 +320,15 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 
         vwap  = float(bar['vwap'])
 
+        # ── ES confirmation: compute ES IB levels once per day ───────
+        # ES must be breaking the same direction as MNQ at entry time.
+        es_ib_high = es_ib_low = None
+        if es_day_df is not None and not es_day_df.empty:
+            es_ib_bars = es_day_df[es_day_df.index.time < ib_end_t]
+            if len(es_ib_bars) >= 4:
+                es_ib_high = float(es_ib_bars['high'].max())
+                es_ib_low  = float(es_ib_bars['low'].min())
+
         # ── LONG: IB high breakout ───────────────────────────────────
         # Skip if daily trend says SHORT-only
         # Entry gate:
@@ -326,13 +336,22 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
         #   2. ib_confirm_bars consecutive closes above IB (no false break)
         #   3. EMA fast > slow on 5-min (intraday uptrend)
         #   4. Close above VWAP (bullish session bias)
+        #   5. ES above its own IB high [if --es-confirm]
         # Stop: IB midpoint (entry - IB_range × stop_frac)
         # Target: entry + IB_range × target_mult  (IB extension)
+        _es_bars_now = (es_day_df[es_day_df.index <= ts]
+                        if es_day_df is not None and not es_day_df.empty else None)
+        es_price_now = float(_es_bars_now['close'].iloc[-1]) if (_es_bars_now is not None and len(_es_bars_now)) else None
+
+        _es_long_ok  = (es_ib_high is None or es_price_now is None or es_price_now > es_ib_high)
+        _es_short_ok = (es_ib_low  is None or es_price_now is None or es_price_now < es_ib_low)
+
         if (daily_bias != 'SHORT'
                 and price > ib_high
                 and above_ib_closes >= cfg.ib_confirm_bars
                 and float(bar['ema_fast']) > float(bar['ema_slow'])
-                and price > vwap):
+                and price > vwap
+                and _es_long_ok):
 
             entry_raw = price
             entry     = price + cfg.slippage_pts      # entry slippage: fills above ask
@@ -355,7 +374,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                 and price < ib_low
                 and below_ib_closes >= cfg.ib_confirm_bars
                 and float(bar['ema_fast']) < float(bar['ema_slow'])
-                and price < vwap):
+                and price < vwap
+                and _es_short_ok):
 
             entry_raw = price
             entry     = price - cfg.slippage_pts      # entry slippage: fills below bid
@@ -409,7 +429,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 
 def run_backtest(start: str | None = None, end: str | None = None,
                  mode: str = 'TC', cfg: Config | None = None,
-                 contracts: int = 1) -> list[dict]:
+                 contracts: int = 1, es_confirm: bool = False) -> list[dict]:
     if cfg is None:
         cfg = Config()
 
@@ -437,6 +457,16 @@ def run_backtest(start: str | None = None, end: str | None = None,
             else:
                 daily_bias_map[d] = 'BOTH'
 
+    # ES bars for directional confirmation (--es-confirm flag)
+    es_ny: pd.DataFrame = pd.DataFrame()
+    if es_confirm:
+        es_df = load_bars(symbol='ES', start=start, end=end, table='futures_bars_5m')
+        if not es_df.empty:
+            es_ny = filter_ny_session(add_indicators(es_df, cfg))
+            print(f'  ES data loaded: {len(es_ny):,} NY session bars for confirmation')
+        else:
+            print('  ⚠️  ES data not found — running without ES confirmation')
+
     prop  = PropRulesSimulator(mode=mode)
     trades: list[dict] = []
     days  = sorted(ny_df.index.normalize().unique())
@@ -459,6 +489,10 @@ def run_backtest(start: str | None = None, end: str | None = None,
         yesterday = (day_ts.date() - timedelta(days=1)).isoformat()
         daily_bias = daily_bias_map.get(yesterday, 'BOTH')
 
+        # ES day bars for confirmation
+        es_day_bars = (es_ny[es_ny.index.date == day_ts.date()]
+                       if es_confirm and not es_ny.empty else pd.DataFrame())
+
         # Reset prop if MLL was hit — simulates restarting TC after a blown attempt.
         # Without this, one bad multi-contract run in year 1 silences all future years.
         can_trade, reason = prop.check_can_trade()
@@ -469,7 +503,7 @@ def run_backtest(start: str | None = None, end: str | None = None,
         prop.new_day(day_str)
         day_trades = simulate_day(day_bars, atr_open, prev_close,
                                   avg_vol, prop, cfg, daily_bias,
-                                  contracts=contracts)
+                                  contracts=contracts, es_day_df=es_day_bars)
         trades.extend(day_trades)
 
         if not day_bars.empty:
@@ -787,14 +821,19 @@ if __name__ == '__main__':
     parser.add_argument('--stop-frac',       type=float, default=0.50, help='Stop as fraction of IB range')
     parser.add_argument('--tgt-mult',        type=float, default=1.5,  help='Target = IB_range × mult')
     parser.add_argument('--slip',            type=float, default=1.0,  help='Slippage ticks per side')
-    parser.add_argument('--min-ib',          type=float, default=50.0, help='Min IB range (pts)')
-    parser.add_argument('--gap',             type=float, default=1.5,  help='Max gap% to trade')
-    parser.add_argument('--no-entry-after',  type=int,   default=14,   help='No new entries after this hour ET (e.g. 11 = stop at 11am)')
+    parser.add_argument('--min-ib',          type=float, default=50.0,  help='Min IB range (pts) — skip narrow chop days')
+    parser.add_argument('--max-ib',          type=float, default=600.0, help='Max IB range (pts) — skip extreme vol days (pro: 200)')
+    parser.add_argument('--gap',             type=float, default=1.5,   help='Max gap% to trade')
+    parser.add_argument('--no-entry-after',  type=int,   default=14,    help='No new entries after this hour ET (e.g. 11 = stop at 11am)')
+    parser.add_argument('--min-rvol',        type=float, default=0.7,   help='Min relative volume on entry bar (pro: 1.3)')
     # Contract sizing — scales raw P&L and commission.
     # Practical max for TC $50K: DLL_SOFT ($700) / risk_per_contract.
     # At stop=30% IB, typical IB=130pts → stop=39pts × $2/pt = $78/contract → max ~9 contracts.
     # Platform hard cap (TC_MAX_CONTRACTS) = 50 MNQ per TopStepX $50K rules.
-    parser.add_argument('--contracts',       type=int,   default=1,    help='MNQ contracts per trade (default 1; scale for TC sizing)')
+    parser.add_argument('--contracts',       type=int,   default=1,     help='MNQ contracts per trade (default 1; scale for TC sizing)')
+    # ES confirmation: require ES to be breaking the same IB direction as MNQ at entry time.
+    # Filters out MNQ-only moves that ES doesn't confirm — typically false breaks.
+    parser.add_argument('--es-confirm',      action='store_true',       help='Require ES to confirm MNQ IB break direction at entry')
 
     args = parser.parse_args()
 
@@ -808,8 +847,10 @@ if __name__ == '__main__':
         target_ib_mult  = args.tgt_mult,
         slippage_ticks  = args.slip,
         min_ib_range    = args.min_ib,
+        max_ib_range    = args.max_ib,
         gap_max_pct     = args.gap,
         no_entry_after  = time(args.no_entry_after, 0),
+        min_rvol        = args.min_rvol,
     )
 
     print(f'Loading MNQ 5-min bars (start={args.start or "all"})...')
@@ -823,7 +864,7 @@ if __name__ == '__main__':
     print(f'  {len(sorted(ny_df.index.normalize().unique()))} trading days\n')
 
     trades = run_backtest(start=args.start, end=args.end, mode=args.mode, cfg=cfg,
-                          contracts=args.contracts)
+                          contracts=args.contracts, es_confirm=args.es_confirm)
     print_report(trades, cfg, mode=args.mode, contracts=args.contracts)
 
     if args.tc_sim and trades:
