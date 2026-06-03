@@ -544,14 +544,17 @@ def simulate(symbol, regime, spy_chg):
                 })
         # ── END VELOCITY COLLECTION ────────────────────────────────────────────
 
-        blocked = {'CHOPPY', 'WEAK'} | ({'CAUTIOUS'} if BLOCK_CAUTIOUS else set())
-        if regime in blocked:
-            continue
-
-        # Early catalyst: gap ≥6% + vol ≥3x at 9:35–9:59am → bypass 10am + 75-bar guards
+        # Fix 1 (Jun 2 2026): catalyst stocks bypass CHOPPY/CAUTIOUS — market-independent move.
+        # Mirrors auto_trader.py grade_setup() fix: is_catalyst bypasses regime block.
+        # Catalyst proxy: stock up ≥5% from prev_close on pace ≥3× avg volume.
         gap_pct_now   = (price - prev_close) / prev_close * 100
         mins_open_now = max(1, (ts.hour - 9) * 60 + ts.minute - 30)
         vol_early     = round(df5.iloc[:i+1]['Volume'].sum() * (390 / mins_open_now) / avg_vol, 2) if avg_vol else 0.0
+        is_catalyst_now = gap_pct_now >= 5.0 and vol_early >= 3.0
+
+        blocked = {'CHOPPY', 'WEAK'} | ({'CAUTIOUS'} if BLOCK_CAUTIOUS else set())
+        if regime in blocked and not is_catalyst_now:
+            continue
         is_early_catalyst = (EARLY_ENTRY_ENABLED and i >= 1 and
                               t[0] == 9 and t[1] >= 35 and
                               gap_pct_now >= EARLY_ENTRY_GAP_PCT and
