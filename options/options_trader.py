@@ -217,7 +217,7 @@ def poll_telegram(timeout: int = 0) -> list[dict]:
 
 def bridge_get(path: str) -> dict | None:
     try:
-        r = requests.get(f"{BRIDGE_URL}{path}", timeout=12)
+        r = requests.get(f"{BRIDGE_URL}{path}", timeout=20)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -227,7 +227,7 @@ def bridge_get(path: str) -> dict | None:
 
 def bridge_post(path: str, payload: dict) -> dict | None:
     try:
-        r = requests.post(f"{BRIDGE_URL}{path}", json=payload, timeout=12)
+        r = requests.post(f"{BRIDGE_URL}{path}", json=payload, timeout=20)
         if r.status_code == 200:
             return r.json()
     except Exception as e:

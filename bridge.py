@@ -691,8 +691,8 @@ async def get_options_chain(
 @app.get("/options/quote/{symbol}/{expiry}/{strike}/{right}")
 async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
     """
-    Delayed bid/ask/mid + Greeks for a single option contract.
-    Uses reqMarketDataType(3) — 15-min delayed, no OPRA subscription required.
+    Live (type 1) then delayed (type 3) bid/ask/mid + Greeks for a single option contract.
+    Tries OPRA live first — if bid/ask null, retries with delayed.
     expiry: YYYYMMDD, right: C or P
     """
     sym      = symbol.upper()
@@ -702,41 +702,54 @@ async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
     if not q or not getattr(q, 'conId', None):
         return {"error": f"Could not qualify {sym} {expiry} {strike} {right}"}
 
-    ib.reqMarketDataType(3)   # delayed — OPRA subscription active, may need until next market open
-    # genericTickList='100' requests option model computation (tick type 53 → modelGreeks).
-    # Without it, IBKR may not push Greeks at all on a snapshot request.
-    # 10s wait: underlying price needed first, then model calc
-    ticker   = ib.reqMktData(q, genericTickList='100', snapshot=True)
-    await asyncio.sleep(10)
-    ib.reqMarketDataType(1)   # reset to live for equity quotes
+    def _extract(ticker):
+        bid    = clean(ticker.bid)
+        ask    = clean(ticker.ask)
+        last   = clean(ticker.last)
+        mid    = round((bid + ask) / 2, 4) if bid and ask else None
+        greeks = ticker.modelGreeks
+        return {
+            "bid":   bid,   "ask":   ask,   "mid":   mid,   "last":  last,
+            "delta": clean(greeks.delta)      if greeks else None,
+            "gamma": clean(greeks.gamma)      if greeks else None,
+            "theta": clean(greeks.theta)      if greeks else None,
+            "vega":  clean(greeks.vega)       if greeks else None,
+            "iv":    clean(greeks.impliedVol) if greeks else None,
+        }
 
-    bid  = clean(ticker.bid)
-    ask  = clean(ticker.ask)
-    last = clean(ticker.last)
-    mid  = round((bid + ask) / 2, 4) if bid and ask else None
+    # Try type 1 (live OPRA) first — 3s probe is enough; IBKR responds immediately if subscribed
+    ib.reqMarketDataType(1)
+    ticker = ib.reqMktData(q, genericTickList='100', snapshot=True)
+    await asyncio.sleep(3)
+    data   = _extract(ticker)
+    source = 'live'
 
-    greeks = ticker.modelGreeks
-    delta  = clean(greeks.delta)  if greeks else None
-    gamma  = clean(greeks.gamma)  if greeks else None
-    theta  = clean(greeks.theta)  if greeks else None
-    vega   = clean(greeks.vega)   if greeks else None
-    iv     = clean(greeks.impliedVol) if greeks else None
+    # Fall back to type 3 (delayed) if live returned no bid/ask
+    if not data['bid'] and not data['ask']:
+        ib.reqMarketDataType(3)
+        ticker = ib.reqMktData(q, genericTickList='100', snapshot=True)
+        await asyncio.sleep(10)
+        data   = _extract(ticker)
+        source = 'delayed'
+
+    ib.reqMarketDataType(1)   # always restore to live for equity quotes
 
     return {
         "symbol":  sym,
         "expiry":  expiry,
         "strike":  strike,
         "right":   right.upper(),
-        "bid":     bid,
-        "ask":     ask,
-        "mid":     mid,
-        "last":    last,
-        "spread":  round(ask - bid, 4) if bid and ask else None,
-        "delta":   delta,
-        "gamma":   gamma,
-        "theta":   theta,
-        "vega":    vega,
-        "iv":      iv,
+        "bid":     data['bid'],
+        "ask":     data['ask'],
+        "mid":     data['mid'],
+        "last":    data['last'],
+        "spread":  round(data['ask'] - data['bid'], 4) if data['bid'] and data['ask'] else None,
+        "delta":   data['delta'],
+        "gamma":   data['gamma'],
+        "theta":   data['theta'],
+        "vega":    data['vega'],
+        "iv":      data['iv'],
+        "source":  source,
     }
 
 

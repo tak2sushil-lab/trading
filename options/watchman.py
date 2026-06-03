@@ -125,7 +125,7 @@ def is_eod_window() -> bool:
 
 def _bridge_post(path: str, payload: dict) -> dict | None:
     try:
-        r = requests.post(f"{BRIDGE_URL}{path}", json=payload, timeout=15)
+        r = requests.post(f"{BRIDGE_URL}{path}", json=payload, timeout=20)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -135,7 +135,7 @@ def _bridge_post(path: str, payload: dict) -> dict | None:
 
 def _bridge_get(path: str) -> dict | None:
     try:
-        r = requests.get(f"{BRIDGE_URL}{path}", timeout=10)
+        r = requests.get(f"{BRIDGE_URL}{path}", timeout=20)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -320,7 +320,7 @@ def _send_scalp_report(cnt: int):
 def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
     try:
         url = f"{BRIDGE_URL}/options/quote/{symbol}/{expiry}/{strike}/{right}"
-        r   = requests.get(url, timeout=10)
+        r   = requests.get(url, timeout=20)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -330,7 +330,7 @@ def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | Non
 
 def get_iv_rank(symbol: str) -> dict | None:
     try:
-        r = requests.get(f"{BRIDGE_URL}/options/iv_rank/{symbol}", timeout=10)
+        r = requests.get(f"{BRIDGE_URL}/options/iv_rank/{symbol}", timeout=20)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -341,7 +341,7 @@ def get_iv_rank(symbol: str) -> dict | None:
 def get_underlying_price(symbol: str) -> float | None:
     """Fetch current underlying price via bridge stock quote endpoint."""
     try:
-        r = requests.get(f"{BRIDGE_URL}/quote/{symbol}", timeout=10)
+        r = requests.get(f"{BRIDGE_URL}/quote/{symbol}", timeout=20)
         if r.status_code == 200:
             d = r.json()
             return d.get('last') or d.get('mid') or d.get('bid')
@@ -353,7 +353,7 @@ def get_underlying_price(symbol: str) -> float | None:
 def get_prior_close(symbol: str) -> float | None:
     """Fetch prior day close via bridge endpoint."""
     try:
-        r = requests.get(f"{BRIDGE_URL}/quote/{symbol}", timeout=10)
+        r = requests.get(f"{BRIDGE_URL}/quote/{symbol}", timeout=20)
         if r.status_code == 200:
             return r.json().get('close')
     except Exception as e:
