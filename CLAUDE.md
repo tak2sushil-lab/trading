@@ -1,6 +1,6 @@
 # Claude Code — Trading System Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: May 28 2026
+Last updated: Jun 2 2026
 
 ---
 
@@ -121,10 +121,12 @@ Three DNA clusters assigned in `auto_trader.py` — re-run `dna_analysis.py` qua
 - **Fix 2:** Earnings date unknown + stock running >5% on 3x+ vol → allow (previously hard skip). Unknown earnings calendar = likely post-earnings gap (binary event resolved). Bears: still skip on unknown (gap-up risk).
 - **SECTOR_ETF_MAP:** 8/11 sectors upgraded to data-driven ETFs (2yr correlation analysis Jun 2). Key: QUANTUM_CRYPTO QQQ→BITQ (corr 0.43→0.70), NUCLEAR NLR→URA, COMMODITIES GLD→GDX, SEMIS SMH→SOXX.
 
-### Sector ETF regime (backtest validated, NOT yet in live auto_trader):
-- When sector ETF gaps up >0.5% at open on a choppy SPY day → allow sector stocks
-- Adds ~$4-9K P&L over 2.5yr | WR drops 2% (tradeoff: more trades, lower quality)
-- Implement in auto_trader after further review
+### ETF gate — decided NOT to build (Jun 2 2026 full backtest):
+- Tested 4 modes: baseline / EOD gate / intraday 10am gate / position sizing
+- Result: ALL ETF variants trail baseline ($626K). System's A+/A scoring already captures sector momentum.
+- **Decision: do not add ETF gate to auto_trader.py.** SECTOR_ETF_MAP upgrade (Fix 3) is sufficient — it improves the nightly learner's sector grade benchmark, which is already live.
+- `sim_today.py` updated (commit 2dbc087): catalyst bypass CHOPPY/CAUTIOUS now mirrors auto_trader Fix 1.
+- `backtest_enhanced.py` deleted (commit d44879a). `backtest_strategy.py` ETF code removed.
 
 ## Bull Entry (NORMAL/STRONG regime)
 
@@ -325,10 +327,6 @@ venv/bin/python backtest_stress.py          # crisis periods
 venv/bin/python monte_carlo.py              # ruin risk
 venv/bin/python batch_backtest.py           # full suite for new candidates
 venv/bin/python dna_analysis.py             # re-cluster universe (quarterly)
-venv/bin/python backtest_enhanced.py        # NEW: 5-min Databento bars, A/B/C modes, long+short+WFA+stress
-venv/bin/python backtest_enhanced.py --corr-only   # ETF correlation analysis only
-venv/bin/python backtest_enhanced.py --mode A      # single mode
-venv/bin/python backtest_enhanced.py --no-wfa --no-stress   # long+short only (faster)
 venv/bin/python collect_bars.py --summary   # equity 5-min bar counts and date ranges
 venv/bin/python futures/collect_bars.py --summary  # futures bar counts (MNQ/ES/RTY)
 venv/bin/python backtest_scalp.py           # OPT_SCALP Mode A backtest
