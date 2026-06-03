@@ -128,6 +128,28 @@ def build_avg_vol(ny_df: pd.DataFrame) -> dict:
     return ny_df.groupby('time_key')['volume'].mean().to_dict()
 
 
+# ── Dynamic contract sizing ────────────────────────────────────────────────────
+
+MAX_TRADE_CONTRACTS = 5   # TopStepX $50K account hard limit for MNQ micro
+
+def _dynamic_contracts(base: int, rvol: float, ib_range: float,
+                       had_loss_today: bool) -> int:
+    """
+    Scale contracts based on signal conviction.
+      RVOL 2.0–3.0×  → +1 contract  (strong institutional momentum)
+      RVOL ≥ 3.0×    → +2 contracts (exceptional conviction)
+      IB range ≥ 150pts → +1 contract (clear trending day, less reversal risk)
+      After a losing trade today → -1 contract (protect MLL buffer)
+    Clamps to [1, MAX_TRADE_CONTRACTS].
+    """
+    n = base
+    if rvol >= 2.0: n += 1
+    if rvol >= 3.0: n += 1
+    if ib_range >= 150: n += 1
+    if had_loss_today: n -= 1
+    return max(1, min(n, MAX_TRADE_CONTRACTS))
+
+
 # ── Single-day simulation ──────────────────────────────────────────────────────
 
 def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
@@ -135,7 +157,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                  prop: PropRulesSimulator, cfg: Config,
                  daily_bias: str = 'BOTH',
                  contracts: int = 1,
-                 es_day_df: pd.DataFrame | None = None) -> list[dict]:
+                 es_day_df: pd.DataFrame | None = None,
+                 scale_contracts: bool = False) -> list[dict]:
     """
     daily_bias: 'LONG' | 'SHORT' | 'BOTH'
       Filters entry direction based on higher-timeframe daily trend.
@@ -191,11 +214,12 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 
     atr = atr_at_open if atr_at_open and atr_at_open > 0 else ib_range
 
-    trades:      list[dict] = []
-    position:    Optional[dict] = None
-    bars_held    = 0
-    session_high = float(day_df['high'].iloc[0])
-    session_low  = float(day_df['low'].iloc[0])
+    trades:         list[dict] = []
+    position:       Optional[dict] = None
+    bars_held       = 0
+    session_high    = float(day_df['high'].iloc[0])
+    session_low     = float(day_df['low'].iloc[0])
+    had_loss_today  = False   # for dynamic sizing: scale down after a loss
 
     # IB confirmation tracking
     above_ib_closes = 0
@@ -273,15 +297,19 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                 else:
                     exit_price += slip
 
+                n_ct    = position.get('n_ct', contracts)
                 raw_pnl = ((exit_price - entry) if dir_ == 'LONG'
-                           else (entry - exit_price)) * POINT_VALUE * contracts
-                net_pnl = prop.record_trade(raw_pnl, contracts=contracts)
+                           else (entry - exit_price)) * POINT_VALUE * n_ct
+                net_pnl = prop.record_trade(raw_pnl, contracts=n_ct)
+                if net_pnl < 0:
+                    had_loss_today = True
 
                 trades.append({
                     'date':        ts.date().isoformat(),
                     'entry_time':  position['entry_time'].strftime('%H:%M'),
                     'exit_time':   t.strftime('%H:%M'),
                     'hour':        position['entry_time'].hour,
+                    'contracts':   n_ct,
                     'direction':   dir_,
                     'entry':       position['entry_raw'],   # pre-slippage entry
                     'exit':        exit_price,
@@ -363,10 +391,12 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
             if risk > 0 and (target - entry) / risk < cfg.min_rr:
                 continue
 
+            n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today)
+                    if scale_contracts else contracts)
             position = {
                 'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
                 'entry_time': t, 'stop': stop, 'stop_init': stop,
-                'target': target, 'mae': 0.0, 'mfe': 0.0,
+                'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
             }
 
         # ── SHORT: IB low breakdown ───────────────────────────────────
@@ -387,10 +417,12 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
             if risk > 0 and (entry - target) / risk < cfg.min_rr:
                 continue
 
+            n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today)
+                    if scale_contracts else contracts)
             position = {
                 'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
                 'entry_time': t, 'stop': stop, 'stop_init': stop,
-                'target': target, 'mae': 0.0, 'mfe': 0.0,
+                'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
             }
 
         # Update IB confirmation counters after IB window
@@ -403,13 +435,15 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
         ep   = float(last['close'])
         slip = cfg.slippage_pts
         ep   = ep - slip if position['direction'] == 'LONG' else ep + slip
+        n_ct = position.get('n_ct', contracts)
         raw  = ((ep - position['entry']) if position['direction'] == 'LONG'
-                else (position['entry'] - ep)) * POINT_VALUE * contracts
-        net  = prop.record_trade(raw, contracts=contracts)
+                else (position['entry'] - ep)) * POINT_VALUE * n_ct
+        net  = prop.record_trade(raw, contracts=n_ct)
         trades.append({
             'date':        day_df.index[-1].date().isoformat(),
             'entry_time':  position['entry_time'].strftime('%H:%M'),
             'exit_time':   '15:10', 'hour': position['entry_time'].hour,
+            'contracts':   n_ct,
             'direction':   position['direction'],
             'entry':       position['entry_raw'], 'exit': ep,
             'stop_init':   position['stop_init'], 'target': position['target'],
@@ -429,7 +463,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 
 def run_backtest(start: str | None = None, end: str | None = None,
                  mode: str = 'TC', cfg: Config | None = None,
-                 contracts: int = 1, es_confirm: bool = False) -> list[dict]:
+                 contracts: int = 1, es_confirm: bool = False,
+                 scale_contracts: bool = False) -> list[dict]:
     if cfg is None:
         cfg = Config()
 
@@ -503,7 +538,8 @@ def run_backtest(start: str | None = None, end: str | None = None,
         prop.new_day(day_str)
         day_trades = simulate_day(day_bars, atr_open, prev_close,
                                   avg_vol, prop, cfg, daily_bias,
-                                  contracts=contracts, es_day_df=es_day_bars)
+                                  contracts=contracts, es_day_df=es_day_bars,
+                                  scale_contracts=scale_contracts)
         trades.extend(day_trades)
 
         if not day_bars.empty:
@@ -572,7 +608,7 @@ def walk_forward(df_5m: pd.DataFrame, cfg: Config,
 # ── Report ─────────────────────────────────────────────────────────────────────
 
 def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str = '',
-                 contracts: int = 1):
+                 contracts: int = 1, scale_contracts: bool = False):
     if not trades:
         print('No trades.')
         return
@@ -642,9 +678,18 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
     print('=' * 65)
     print(hdr)
     print('=' * 65)
+    sizing_str = f'dynamic 1-{MAX_TRADE_CONTRACTS}ct (base={contracts})' if scale_contracts else f'{contracts}ct'
     print(f'  Config:        IB={cfg.ib_window_min}min | stop={cfg.stop_ib_frac*100:.0f}%IB '
           f'| target={cfg.target_ib_mult}×IB | slip={cfg.slippage_ticks}tk | gap<{cfg.gap_max_pct}%'
-          f' | contracts={contracts}')
+          f' | sizing={sizing_str}')
+    if scale_contracts and trades:
+        ct_dist = {}
+        for t in trades:
+            n = t.get('contracts', contracts)
+            ct_dist[n] = ct_dist.get(n, 0) + 1
+        avg_ct = sum(t.get('contracts', contracts) for t in trades) / len(trades)
+        dist_str = '  '.join(f'{k}ct:{v}' for k, v in sorted(ct_dist.items()))
+        print(f'  Avg contracts: {avg_ct:.2f}  ({dist_str})')
     print()
     print(f'  Trades:        {total}  ({len(daily)} trading days, {total/len(daily):.1f}/day avg)')
     print(f'  Win rate:      {wr:.1f}%  ({len(wins)}W / {len(losses)}L)')
@@ -833,7 +878,11 @@ if __name__ == '__main__':
     parser.add_argument('--contracts',       type=int,   default=1,     help='MNQ contracts per trade (default 1; scale for TC sizing)')
     # ES confirmation: require ES to be breaking the same IB direction as MNQ at entry time.
     # Filters out MNQ-only moves that ES doesn't confirm — typically false breaks.
-    parser.add_argument('--es-confirm',      action='store_true',       help='Require ES to confirm MNQ IB break direction at entry')
+    parser.add_argument('--es-confirm',       action='store_true',      help='Require ES to confirm MNQ IB break direction at entry')
+    # Dynamic contract sizing: scale up on high-RVOL / large-IB days, down after losses.
+    # Base = --contracts N. Scale: RVOL≥2.0 +1ct, RVOL≥3.0 +2ct, IB≥150pts +1ct,
+    # after loss -1ct. Clamps to [1, MAX_TRADE_CONTRACTS=5].
+    parser.add_argument('--scale-contracts',  action='store_true',      help='Dynamic sizing: scale contracts [1-5] based on RVOL/IB/loss')
 
     args = parser.parse_args()
 
@@ -864,8 +913,10 @@ if __name__ == '__main__':
     print(f'  {len(sorted(ny_df.index.normalize().unique()))} trading days\n')
 
     trades = run_backtest(start=args.start, end=args.end, mode=args.mode, cfg=cfg,
-                          contracts=args.contracts, es_confirm=args.es_confirm)
-    print_report(trades, cfg, mode=args.mode, contracts=args.contracts)
+                          contracts=args.contracts, es_confirm=args.es_confirm,
+                          scale_contracts=args.scale_contracts)
+    print_report(trades, cfg, mode=args.mode, contracts=args.contracts,
+                 scale_contracts=args.scale_contracts)
 
     if args.tc_sim and trades:
         simulate_tc_eval(trades)
