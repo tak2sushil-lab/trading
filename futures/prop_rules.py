@@ -334,8 +334,9 @@ class PropRulesSimulator:
 
         return True, 'ok'
 
-    def record_trade(self, pnl: float):
-        net = round(pnl - COMMISSION, 2)   # deduct commission
+    def record_trade(self, pnl: float, contracts: int = 1):
+        """pnl = raw gross P&L for N contracts (no commission yet)."""
+        net = round(pnl - COMMISSION * contracts, 2)   # commission scales with contracts
         self.session_pnl  = round(self.session_pnl + net, 2)
         self.total_profit = round(self.total_profit + net, 2)
         self.balance      = round(self.balance + net, 2)

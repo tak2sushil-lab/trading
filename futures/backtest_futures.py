@@ -133,7 +133,8 @@ def build_avg_vol(ny_df: pd.DataFrame) -> dict:
 def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                  prev_close: float, avg_vol: dict,
                  prop: PropRulesSimulator, cfg: Config,
-                 daily_bias: str = 'BOTH') -> list[dict]:
+                 daily_bias: str = 'BOTH',
+                 contracts: int = 1) -> list[dict]:
     """
     daily_bias: 'LONG' | 'SHORT' | 'BOTH'
       Filters entry direction based on higher-timeframe daily trend.
@@ -272,8 +273,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                     exit_price += slip
 
                 raw_pnl = ((exit_price - entry) if dir_ == 'LONG'
-                           else (entry - exit_price)) * POINT_VALUE
-                net_pnl = prop.record_trade(raw_pnl)
+                           else (entry - exit_price)) * POINT_VALUE * contracts
+                net_pnl = prop.record_trade(raw_pnl, contracts=contracts)
 
                 trades.append({
                     'date':        ts.date().isoformat(),
@@ -383,8 +384,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
         slip = cfg.slippage_pts
         ep   = ep - slip if position['direction'] == 'LONG' else ep + slip
         raw  = ((ep - position['entry']) if position['direction'] == 'LONG'
-                else (position['entry'] - ep)) * POINT_VALUE
-        net  = prop.record_trade(raw)
+                else (position['entry'] - ep)) * POINT_VALUE * contracts
+        net  = prop.record_trade(raw, contracts=contracts)
         trades.append({
             'date':        day_df.index[-1].date().isoformat(),
             'entry_time':  position['entry_time'].strftime('%H:%M'),
@@ -407,7 +408,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 # ── Full backtest ──────────────────────────────────────────────────────────────
 
 def run_backtest(start: str | None = None, end: str | None = None,
-                 mode: str = 'TC', cfg: Config | None = None) -> list[dict]:
+                 mode: str = 'TC', cfg: Config | None = None,
+                 contracts: int = 1) -> list[dict]:
     if cfg is None:
         cfg = Config()
 
@@ -438,6 +440,7 @@ def run_backtest(start: str | None = None, end: str | None = None,
     prop  = PropRulesSimulator(mode=mode)
     trades: list[dict] = []
     days  = sorted(ny_df.index.normalize().unique())
+    resets = 0   # count how many times MLL reset the prop (blown TC attempts)
 
     prev_close = 0.0
     for day_ts in days:
@@ -456,14 +459,24 @@ def run_backtest(start: str | None = None, end: str | None = None,
         yesterday = (day_ts.date() - timedelta(days=1)).isoformat()
         daily_bias = daily_bias_map.get(yesterday, 'BOTH')
 
+        # Reset prop if MLL was hit — simulates restarting TC after a blown attempt.
+        # Without this, one bad multi-contract run in year 1 silences all future years.
+        can_trade, reason = prop.check_can_trade()
+        if not can_trade and 'MLL' in reason:
+            prop = PropRulesSimulator(mode=mode)
+            resets += 1
+
         prop.new_day(day_str)
         day_trades = simulate_day(day_bars, atr_open, prev_close,
-                                  avg_vol, prop, cfg, daily_bias)
+                                  avg_vol, prop, cfg, daily_bias,
+                                  contracts=contracts)
         trades.extend(day_trades)
 
         if not day_bars.empty:
             prev_close = float(day_bars['close'].iloc[-1])
 
+    if resets:
+        print(f'  (MLL triggered {resets}× — prop reset each time, simulating TC restart)')
     return trades
 
 
@@ -524,7 +537,8 @@ def walk_forward(df_5m: pd.DataFrame, cfg: Config,
 
 # ── Report ─────────────────────────────────────────────────────────────────────
 
-def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str = ''):
+def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str = '',
+                 contracts: int = 1):
     if not trades:
         print('No trades.')
         return
@@ -595,7 +609,8 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
     print(hdr)
     print('=' * 65)
     print(f'  Config:        IB={cfg.ib_window_min}min | stop={cfg.stop_ib_frac*100:.0f}%IB '
-          f'| target={cfg.target_ib_mult}×IB | slip={cfg.slippage_ticks}tk | gap<{cfg.gap_max_pct}%')
+          f'| target={cfg.target_ib_mult}×IB | slip={cfg.slippage_ticks}tk | gap<{cfg.gap_max_pct}%'
+          f' | contracts={contracts}')
     print()
     print(f'  Trades:        {total}  ({len(daily)} trading days, {total/len(daily):.1f}/day avg)')
     print(f'  Win rate:      {wr:.1f}%  ({len(wins)}W / {len(losses)}L)')
@@ -775,6 +790,11 @@ if __name__ == '__main__':
     parser.add_argument('--min-ib',          type=float, default=50.0, help='Min IB range (pts)')
     parser.add_argument('--gap',             type=float, default=1.5,  help='Max gap% to trade')
     parser.add_argument('--no-entry-after',  type=int,   default=14,   help='No new entries after this hour ET (e.g. 11 = stop at 11am)')
+    # Contract sizing — scales raw P&L and commission.
+    # Practical max for TC $50K: DLL_SOFT ($700) / risk_per_contract.
+    # At stop=30% IB, typical IB=130pts → stop=39pts × $2/pt = $78/contract → max ~9 contracts.
+    # Platform hard cap (TC_MAX_CONTRACTS) = 50 MNQ per TopStepX $50K rules.
+    parser.add_argument('--contracts',       type=int,   default=1,    help='MNQ contracts per trade (default 1; scale for TC sizing)')
 
     args = parser.parse_args()
 
@@ -802,8 +822,9 @@ if __name__ == '__main__':
     print(f'  {len(df):,} total bars → {len(ny_df):,} NY session bars')
     print(f'  {len(sorted(ny_df.index.normalize().unique()))} trading days\n')
 
-    trades = run_backtest(start=args.start, end=args.end, mode=args.mode, cfg=cfg)
-    print_report(trades, cfg, mode=args.mode)
+    trades = run_backtest(start=args.start, end=args.end, mode=args.mode, cfg=cfg,
+                          contracts=args.contracts)
+    print_report(trades, cfg, mode=args.mode, contracts=args.contracts)
 
     if args.tc_sim and trades:
         simulate_tc_eval(trades)
