@@ -1,0 +1,112 @@
+{
+  "_meta": {
+    "name": "tc_aggressive",
+    "version": "3.0",
+    "label": "TC Aggressive — Ferrari",
+    "locked_date": "2026-06-04",
+    "git_tag": "v3.0-three-cylinder-champion",
+
+    "description": "Fast TC pass attempt. Same 67% TC pass rate over 5yr but 41% more P&L ($22K vs $16K). Identical WFA (4/6). In favorable regimes (current Apr-Jun 2026), passed TC in 5 trading days. Hat-trick retest days (3 retests in a morning) pay $1,000+ at this sizing.",
+
+    "weather": "sunny_trending",
+    "use_when": "Current regime is clearly favorable (recent 50%+ WR, retests firing frequently, RVOL above average). Use when you want to hunt a fast pass — but have stop-after-loss discipline.",
+    "do_not_use_when": "Recent regime has been choppy or losing (WR < 40% in last 10 trades). 2023-style mean-reversion environment. Switch to tc_champion.",
+
+    "risk_rules": {
+      "stop_after_session_loss_usd": 500,
+      "note": "CRITICAL at base=3: first losing trade at 4ct = ~$490. Second losing trade = ~$980 (near hard DLL $1,000). After first loss > $500, STOP for the day. No exceptions.",
+      "max_single_trade_risk_estimate": 490,
+      "two_stop_loss_total": 980,
+      "hard_dll": 1000
+    }
+  },
+
+  "config": {
+    "ib_window_min": 60,
+    "ib_confirm_bars": 1,
+    "min_ib_range": 50.0,
+    "max_ib_range": 600.0,
+    "gap_max_pct": 1.5,
+    "min_rvol": 1.0,
+    "ema_fast": 8,
+    "ema_slow": 21,
+    "stop_ib_frac": 0.35,
+    "target_ib_mult": 0.75,
+    "min_rr": 1.5,
+    "max_stop_pts": 150.0,
+    "stop_pts": null,
+    "target_pts": null,
+    "max_daily_trades": 3,
+    "cooldown_bars": 2,
+    "retest_zone_pts": 20.0,
+    "retest_stop_pts": 15.0,
+    "retest_min_ext": 50.0,
+    "retest_target_pts": 80.0,
+    "retest_bounce_pts": 0.0,
+    "max_atr_ratio": 0.0,
+    "min_atr_ratio": 0.0,
+    "win_protect_pnl": 0.0,
+    "no_entry_after_hour": 12,
+    "pct_trail_activate": 0.008,
+    "pct_trail_gap": 0.004,
+    "slippage_ticks": 1.0
+  },
+
+  "run_params": {
+    "contracts": 3,
+    "es_confirm": true,
+    "scale_contracts": true
+  },
+
+  "cli_command": "venv/bin/python futures/backtest_futures.py --strategy tc_aggressive --tc-sim --wfa",
+  "cli_flags_raw": "--no-entry-after 12 --stop-frac 0.35 --tgt-mult 0.75 --contracts 3 --min-rvol 1.0 --es-confirm --scale-contracts --retest-zone 20 --retest-stop-pts 15 --retest-min-ext 50 --retest-target-pts 80 --max-trades 3 --cooldown 2 --tc-sim --wfa",
+
+  "performance_snapshot": {
+    "as_of": "2026-06-04",
+    "data_range": "2021-01-01 to 2026-06-04",
+    "trading_days": 1378,
+    "trades": 197,
+    "win_rate_pct": 49.2,
+    "total_pnl": 22186,
+    "avg_pnl_per_trade": 113,
+    "avg_contracts": 3.63,
+    "sharpe_annualized": 3.47,
+    "max_drawdown": -4546,
+    "tc_pass_rate_pct": 67,
+    "tc_attempts": 6,
+    "tc_passes": 4,
+    "tc_blows": 2,
+    "tc_timeouts": 0,
+    "wfa_pass_rate_pct": 67,
+    "wfa_windows": 6,
+    "wfa_profitable": 4,
+    "blow_rate_pct": 33,
+    "by_year": {
+      "2021": 2614, "2022": 6441, "2023": 200,
+      "2024": 2895, "2025": 6177, "2026": 3859
+    },
+    "entry_type": {
+      "breakout": {"trades": 122, "wr_pct": 55.7, "pnl": 18656},
+      "retest": {"trades": 75, "wr_pct": 38.7, "pnl": 3530}
+    },
+    "current_regime_apr_jun_2026": {
+      "trades": 28, "wr_pct": 57.1, "pnl": 4665,
+      "pass_in_trading_days": 5,
+      "note": "PASS in 5 trading days starting Apr 14 ($3,223 on day 5 via Apr 20 hat-trick). Excellent current fit."
+    },
+    "vs_tc_champion": {
+      "pnl_uplift_pct": 41,
+      "tc_pass_rate_same": true,
+      "max_dd_worse_pct": 33,
+      "verdict": "Same pass probability, faster passes, bigger P&L, larger swings. Use in favorable regimes only."
+    }
+  },
+
+  "cylinders_active": {
+    "1_ib_breakout": true,
+    "2_pullback_retest": true,
+    "3_dynamic_scaling": true,
+    "4_premarket_ib": false,
+    "5_news_macro": false
+  }
+}

@@ -1066,7 +1066,20 @@ def run_ab(start: str | None, end: str | None):
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='MNQ futures backtest (pro)')
+    parser = argparse.ArgumentParser(
+        description='MNQ futures backtest (pro)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Named strategies (--strategy):
+  tc_champion    Daily Driver — safe TC eval, 67% pass, all regimes
+  tc_aggressive  Ferrari — fast TC pass, base=3, favorable regimes only
+  xfa_conservative  Family SUV — live XFA, ATR filter, 0%% blow rate
+
+  --strategy loads a preset. Any additional flags OVERRIDE specific params.
+  Example: --strategy tc_champion --start 2026-01-01  (run champion on 2026 only)
+
+  To list all strategies:  --list-strategies
+        """)
     parser.add_argument('--start',  default=None,  help='Start date YYYY-MM-DD')
     parser.add_argument('--end',    default=None,  help='End date YYYY-MM-DD')
     parser.add_argument('--mode',   default='TC',  choices=['TC', 'XFA'])
@@ -1074,22 +1087,28 @@ if __name__ == '__main__':
     parser.add_argument('--wfa',    action='store_true', help='Walk-forward analysis')
     parser.add_argument('--ab',     action='store_true', help='A/B parameter comparison')
 
+    # Named strategy preset — loads JSON config from futures/strategies/
+    parser.add_argument('--strategy', default=None,
+                        help='Load named strategy preset (tc_champion, tc_aggressive, xfa_conservative). Individual flags override.')
+    parser.add_argument('--list-strategies', action='store_true',
+                        help='List all available named strategies and their performance')
+
     # Config overrides
-    parser.add_argument('--ib',              type=int,   default=60,   help='IB window minutes')
-    parser.add_argument('--ib-confirm',      type=int,   default=1,    help='Consecutive closes above/below IB before entry (1=first close, 2=stricter)')
-    parser.add_argument('--stop-frac',       type=float, default=0.50, help='Stop as fraction of IB range')
-    parser.add_argument('--tgt-mult',        type=float, default=1.5,  help='Target = IB_range × mult')
-    parser.add_argument('--slip',            type=float, default=1.0,  help='Slippage ticks per side')
-    parser.add_argument('--min-ib',          type=float, default=50.0,  help='Min IB range (pts) — skip narrow chop days')
-    parser.add_argument('--max-ib',          type=float, default=600.0, help='Max IB range (pts) — skip extreme vol days (pro: 200)')
-    parser.add_argument('--gap',             type=float, default=1.5,   help='Max gap% to trade')
-    parser.add_argument('--no-entry-after',  type=int,   default=14,    help='No new entries after this hour ET (e.g. 11 = stop at 11am)')
-    parser.add_argument('--min-rvol',        type=float, default=0.7,   help='Min relative volume on entry bar (pro: 1.3)')
+    parser.add_argument('--ib',              type=int,   default=None,   help='IB window minutes')
+    parser.add_argument('--ib-confirm',      type=int,   default=None,   help='Consecutive closes above/below IB before entry')
+    parser.add_argument('--stop-frac',       type=float, default=None,   help='Stop as fraction of IB range')
+    parser.add_argument('--tgt-mult',        type=float, default=None,   help='Target = IB_range × mult')
+    parser.add_argument('--slip',            type=float, default=None,   help='Slippage ticks per side')
+    parser.add_argument('--min-ib',          type=float, default=None,   help='Min IB range (pts)')
+    parser.add_argument('--max-ib',          type=float, default=None,   help='Max IB range (pts)')
+    parser.add_argument('--gap',             type=float, default=None,   help='Max gap% to trade')
+    parser.add_argument('--no-entry-after',  type=int,   default=None,   help='No new entries after this hour ET')
+    parser.add_argument('--min-rvol',        type=float, default=None,   help='Min relative volume on entry bar')
     # Contract sizing — scales raw P&L and commission.
     # Practical max for TC $50K: DLL_SOFT ($700) / risk_per_contract.
     # At stop=30% IB, typical IB=130pts → stop=39pts × $2/pt = $78/contract → max ~9 contracts.
     # Platform hard cap (TC_MAX_CONTRACTS) = 50 MNQ per TopStepX $50K rules.
-    parser.add_argument('--contracts',       type=int,   default=1,     help='MNQ contracts per trade (default 1; scale for TC sizing)')
+    parser.add_argument('--contracts',       type=int,   default=None,  help='MNQ contracts per trade')
     # ES confirmation: require ES to be breaking the same IB direction as MNQ at entry time.
     # Filters out MNQ-only moves that ES doesn't confirm — typically false breaks.
     parser.add_argument('--es-confirm',       action='store_true',      help='Require ES to confirm MNQ IB break direction at entry')
@@ -1108,66 +1127,101 @@ if __name__ == '__main__':
     # Multi-trade per day.
     # --max-trades 3: take up to 3 entries per day (retest / continuation setups).
     # --cooldown 2: wait 2×5min bars after exit before next entry (prevents chasing).
-    parser.add_argument('--max-trades', type=int,   default=5,    help='Max entries per day (default 5 = uncapped).')
-    parser.add_argument('--cooldown',   type=int,   default=0,    help='Bars to wait after exit before next entry (default 0).')
+    parser.add_argument('--max-trades', type=int,   default=None, help='Max entries per day.')
+    parser.add_argument('--cooldown',   type=int,   default=None, help='Bars to wait after exit before next entry.')
 
     # Pullback retest entry — second mount at the structural fence.
     # After initial IB break run (price extended ≥ --retest-min-ext pts), a pullback
     # near the IB level is a high-R:R entry (stop AT IB level, same IB extension target).
     # --retest-zone 20: entry zone is IB level to IB+20pts above (for LONG).
     # --retest-min-ext 50: require price to have moved ≥50pts past IB before retest counts.
-    parser.add_argument('--retest-zone',       type=float, default=0.0,  help='Enable pullback retest: entry zone width above IB level (0=off, try 20).')
-    parser.add_argument('--retest-stop-pts',   type=float, default=15.0, help='Retest stop buffer below IB level (default 15pts — avoids normal bar wiggle).')
-    parser.add_argument('--retest-min-ext',    type=float, default=50.0, help='Min pts price must extend past IB before retest is valid (default 50).')
-    parser.add_argument('--retest-target-pts', type=float, default=80.0, help='Retest target: fixed pts from IB level (default 80 — realistic extension regardless of IB size).')
+    parser.add_argument('--retest-zone',       type=float, default=None, help='Enable pullback retest: entry zone width above IB level (0=off, try 20).')
+    parser.add_argument('--retest-stop-pts',   type=float, default=None, help='Retest stop buffer below IB level (default 15pts).')
+    parser.add_argument('--retest-min-ext',    type=float, default=None, help='Min pts price must extend past IB before retest is valid (default 50).')
+    parser.add_argument('--retest-target-pts', type=float, default=None, help='Retest target: fixed pts from IB level (default 80).')
 
     # ATR regime band filter — trade only in the "sweet spot" of normal volatility.
     # --max-atr-ratio 1.5: skip extreme-vol days (2026 tariff shock — IB doubled, targets unreachable).
     # --min-atr-ratio 0.8: skip low-vol grind days (2023 — IB breakouts reverse repeatedly, ~28% WR).
     # Both together: only trade when ATR is 0.8× to 1.5× the 60-day rolling median.
-    parser.add_argument('--max-atr-ratio', type=float, default=0.0,  help='Skip day if ATR > N×60d median (0=off, try 1.5 — extreme vol filter).')
-    parser.add_argument('--min-atr-ratio', type=float, default=0.0,  help='Skip day if ATR < N×60d median (0=off, try 0.8 — low-vol grind filter).')
+    parser.add_argument('--max-atr-ratio', type=float, default=None, help='Skip day if ATR > N×60d median (0=off, try 1.5 — extreme vol filter).')
+    parser.add_argument('--min-atr-ratio', type=float, default=None, help='Skip day if ATR < N×60d median (0=off, try 0.8 — low-vol grind filter).')
 
     # Win protection — conservative sizing after a good day.
     # After daily P&L ≥ N, base contracts reduce by 1 (lock in gains, protect TC consistency rule).
     # Try --win-protect 500.
-    parser.add_argument('--win-protect',   type=float, default=0.0,  help='Scale down after daily P&L ≥ N (0=off, try 500).')
-    # Retest bounce confirmation.
-    # Filters "falling through IB" bars — requires bar to have touched the zone (low ≤ ib_high+zone)
-    # AND closed ≥ N pts above its low (shows price bounced off the IB level, not still falling).
-    # Try --retest-bounce-pts 10.
-    parser.add_argument('--retest-bounce-pts', type=float, default=0.0, help='Retest entry: require bar to bounce N pts from its low (0=off, try 10).')
+    parser.add_argument('--win-protect',       type=float, default=None, help='Scale down after daily P&L ≥ N (0=off, try 500).')
+    parser.add_argument('--retest-bounce-pts', type=float, default=None, help='Retest entry: require bar to bounce N pts from its low (0=off, try 10).')
 
     args = parser.parse_args()
+
+    # ── Strategy preset handling ──────────────────────────────────────────────
+    # List strategies
+    if args.list_strategies:
+        from futures.strategies import list_strategies, print_strategy_summary
+        strategies = list_strategies()
+        print(f'\n{"="*65}')
+        print('  AVAILABLE STRATEGIES')
+        print(f'{"="*65}')
+        print(f'  {"Name":<22} {"Label":<28} {"TC%":>4} {"P&L":>8} {"MaxDD":>8} {"Blow%":>6}')
+        print(f'  {"-"*22} {"-"*28} {"-"*4} {"-"*8} {"-"*8} {"-"*6}')
+        for s in strategies:
+            print(f'  {s["name"]:<22} {s["label"]:<28} {str(s["tc_pass_pct"]):>4} ${s["total_pnl"]:>7,.0f} ${s["max_dd"]:>7,.0f} {str(s["blow_pct"]):>5}%')
+        print()
+        import sys; sys.exit(0)
+
+    # Load strategy preset (sets defaults; CLI flags still override)
+    preset_config: dict = {}
+    preset_run: dict = {}
+    if args.strategy:
+        from futures.strategies import load_strategy, print_strategy_summary
+        print_strategy_summary(args.strategy)
+        preset_config, preset_run = load_strategy(args.strategy)
+        print(f'  Loaded strategy: {args.strategy!r}  (any CLI flag overrides the preset)')
+        print()
 
     if args.ab:
         run_ab(args.start, args.end)
         sys.exit(0)
 
+    # Helper: CLI arg (non-None) > preset > hardcoded default
+    def _v(cli_val, preset_key, default):
+        if cli_val is not None:
+            return cli_val
+        if preset_key in preset_config:
+            return preset_config[preset_key]
+        return default
+
+    no_entry_h = _v(args.no_entry_after, 'no_entry_after_hour', 14)
     cfg = Config(
-        ib_window_min    = args.ib,
-        ib_confirm_bars  = args.ib_confirm,
-        stop_ib_frac     = args.stop_frac,
-        target_ib_mult   = args.tgt_mult,
-        slippage_ticks   = args.slip,
-        min_ib_range     = args.min_ib,
-        max_ib_range     = args.max_ib,
-        gap_max_pct      = args.gap,
-        no_entry_after   = time(args.no_entry_after, 0),
-        min_rvol         = args.min_rvol,
-        stop_pts         = args.stop_pts,
-        target_pts       = args.tgt_pts,
-        max_daily_trades = args.max_trades,
-        cooldown_bars    = args.cooldown,
-        retest_zone_pts   = args.retest_zone,
-        retest_stop_pts   = args.retest_stop_pts,
-        retest_min_ext    = args.retest_min_ext,
-        retest_target_pts = args.retest_target_pts,
-        max_atr_ratio       = args.max_atr_ratio,
-        min_atr_ratio       = args.min_atr_ratio,
-        win_protect_pnl     = args.win_protect,
-        retest_bounce_pts   = args.retest_bounce_pts,
+        ib_window_min    = _v(args.ib,          'ib_window_min',    60),
+        ib_confirm_bars  = _v(args.ib_confirm,  'ib_confirm_bars',  1),
+        stop_ib_frac     = _v(args.stop_frac,   'stop_ib_frac',     0.50),
+        target_ib_mult   = _v(args.tgt_mult,    'target_ib_mult',   1.5),
+        slippage_ticks   = _v(args.slip,        'slippage_ticks',   1.0),
+        min_ib_range     = _v(args.min_ib,      'min_ib_range',     50.0),
+        max_ib_range     = _v(args.max_ib,      'max_ib_range',     600.0),
+        gap_max_pct      = _v(args.gap,         'gap_max_pct',      1.5),
+        no_entry_after   = time(no_entry_h, 0),
+        min_rvol         = _v(args.min_rvol,    'min_rvol',         0.7),
+        stop_pts         = _v(args.stop_pts,    'stop_pts',         None),
+        target_pts       = _v(args.tgt_pts,     'target_pts',       None),
+        max_daily_trades = _v(args.max_trades,  'max_daily_trades', 5),
+        cooldown_bars    = _v(args.cooldown,    'cooldown_bars',    0),
+        retest_zone_pts   = _v(args.retest_zone,       'retest_zone_pts',   0.0),
+        retest_stop_pts   = _v(args.retest_stop_pts,   'retest_stop_pts',   15.0),
+        retest_min_ext    = _v(args.retest_min_ext,    'retest_min_ext',    50.0),
+        retest_target_pts = _v(args.retest_target_pts, 'retest_target_pts', 80.0),
+        retest_bounce_pts = _v(args.retest_bounce_pts, 'retest_bounce_pts', 0.0),
+        max_atr_ratio    = _v(args.max_atr_ratio, 'max_atr_ratio',  0.0),
+        min_atr_ratio    = _v(args.min_atr_ratio, 'min_atr_ratio',  0.0),
+        win_protect_pnl  = _v(args.win_protect,   'win_protect_pnl', 0.0),
     )
+
+    # Run params: CLI args override preset, preset overrides defaults
+    _contracts       = _v(args.contracts,      None, preset_run.get('contracts', 1))
+    _es_confirm      = args.es_confirm or preset_run.get('es_confirm', False)
+    _scale_contracts = args.scale_contracts or preset_run.get('scale_contracts', False)
 
     print(f'Loading MNQ 5-min bars (start={args.start or "all"})...')
     df = load_bars(start=args.start, end=args.end, table='futures_bars_5m')
@@ -1180,10 +1234,10 @@ if __name__ == '__main__':
     print(f'  {len(sorted(ny_df.index.normalize().unique()))} trading days\n')
 
     trades = run_backtest(start=args.start, end=args.end, mode=args.mode, cfg=cfg,
-                          contracts=args.contracts, es_confirm=args.es_confirm,
-                          scale_contracts=args.scale_contracts)
-    print_report(trades, cfg, mode=args.mode, contracts=args.contracts,
-                 scale_contracts=args.scale_contracts)
+                          contracts=_contracts, es_confirm=_es_confirm,
+                          scale_contracts=_scale_contracts)
+    print_report(trades, cfg, mode=args.mode, contracts=_contracts,
+                 scale_contracts=_scale_contracts)
 
     if args.tc_sim and trades:
         simulate_tc_eval(trades)
