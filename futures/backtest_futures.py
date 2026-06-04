@@ -114,6 +114,19 @@ class Config:
     # This filters "falling through" entries while keeping genuine IB-hold entries.
     retest_bounce_pts: float = 0.0  # 0=off; try 10 → require 10pt bounce from bar low
 
+    # Cylinder 4 — Pre-market IB (8:30–9:30 AM ET) breakout.
+    # The overnight session (8:30–9:30am) forms a structural high/low.
+    # When the RTH session consolidates below the PM high, then breaks above it,
+    # that is a "double-fence" confirmation: the RTH IB AND the overnight fence are both broken.
+    # Strategy: fire when pm_high > ib_high + premarket_min_ext (level is meaningfully outside IB).
+    # Entry: price > pm_high (long) or price < pm_low (short) during RTH.
+    # Stop: pm_level - premarket_stop_pts (structural — below the overnight level).
+    # Target: pm_level + premarket_target_pts (fixed 80pts — same calibration as retest).
+    premarket_ib:          bool  = False # enable Cylinder 4
+    premarket_min_ext:     float = 15.0  # min pts PM must be outside RTH IB to activate
+    premarket_stop_pts:    float = 20.0  # stop pts below PM level (wider than retest — PM is noisier)
+    premarket_target_pts:  float = 80.0  # fixed target from PM level
+
     # Win protection: conservative sizing after a good day.
     # After daily P&L ≥ win_protect_pnl, scale down base contracts by 1.
     # Protects TC consistency rule (best_day ≤ 50% of total profit) and locks gains.
@@ -215,7 +228,9 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                  daily_bias: str = 'BOTH',
                  contracts: int = 1,
                  es_day_df: pd.DataFrame | None = None,
-                 scale_contracts: bool = False) -> list[dict]:
+                 scale_contracts: bool = False,
+                 pm_high: float = 0.0,
+                 pm_low: float = 0.0) -> list[dict]:
     """
     daily_bias: 'LONG' | 'SHORT' | 'BOTH'
       Filters entry direction based on higher-timeframe daily trend.
@@ -513,6 +528,65 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                             'entry_type': 'retest',
                         }
 
+        # ── CYLINDER 4: PRE-MARKET IB LEVEL BREAK ──────────────────────────
+        # Fires when the overnight PM level is meaningfully OUTSIDE the RTH IB.
+        # Breaking both the RTH IB AND the PM level = double-fence confirmation.
+        # No ES confirm needed (PM break is already a high-conviction move).
+        # Target: fixed 80pts from PM level (same calibration as retest cylinder).
+        if (position is None
+                and cfg.premarket_ib
+                and t >= ib_end_t
+                and not (cfg.lunch_start <= t <= cfg.lunch_end)
+                and t < cfg.no_entry_after):
+
+            # LONG: PM high is above RTH IB high by enough to be structural
+            if (daily_bias != 'SHORT'
+                    and pm_high > ib_high + cfg.premarket_min_ext
+                    and price > pm_high
+                    and rvol >= cfg.min_rvol
+                    and float(bar['ema_fast']) > float(bar['ema_slow'])):
+                entry_raw = price
+                entry     = price + cfg.slippage_pts
+                stop      = pm_high - cfg.premarket_stop_pts
+                risk      = entry - stop
+                if risk > 0:
+                    target = pm_high + cfg.premarket_target_pts
+                    if (target - entry) / risk >= cfg.min_rr:
+                        n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today,
+                                                   session_pnl, cfg.win_protect_pnl)
+                                if scale_contracts else contracts)
+                        position = {
+                            'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
+                            'entry_time': t, 'stop': stop, 'stop_init': stop,
+                            'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                            'entry_type': 'pm_break',
+                        }
+
+            # SHORT: PM low is below RTH IB low
+            elif (position is None
+                    and daily_bias != 'LONG'
+                    and pm_low > 0
+                    and pm_low < ib_low - cfg.premarket_min_ext
+                    and price < pm_low
+                    and rvol >= cfg.min_rvol
+                    and float(bar['ema_fast']) < float(bar['ema_slow'])):
+                entry_raw = price
+                entry     = price - cfg.slippage_pts
+                stop      = pm_low + cfg.premarket_stop_pts
+                risk      = stop - entry
+                if risk > 0:
+                    target = pm_low - cfg.premarket_target_pts
+                    if (entry - target) / risk >= cfg.min_rr:
+                        n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today,
+                                                   session_pnl, cfg.win_protect_pnl)
+                                if scale_contracts else contracts)
+                        position = {
+                            'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
+                            'entry_time': t, 'stop': stop, 'stop_init': stop,
+                            'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                            'entry_type': 'pm_break',
+                        }
+
         # ── INITIAL BREAKOUT (noon cutoff, full RVOL/ES/VWAP/EMA quality gate) ──
         # Only fires if retest did not already set a position this bar.
         if position is None:
@@ -657,6 +731,20 @@ def run_backtest(start: str | None = None, end: str | None = None,
         else:
             print('  ⚠️  ES data not found — running without ES confirmation')
 
+    # Cylinder 4: pre-market IB levels (8:30–9:30 AM ET)
+    pm_levels: dict[str, tuple[float, float]] = {}   # date → (pm_high, pm_low)
+    if cfg.premarket_ib:
+        from futures.collect_bars import filter_premarket_session
+        pm_df = filter_premarket_session(df)
+        for d_ts in sorted(pm_df.index.normalize().unique()):
+            d_bars = pm_df[pm_df.index.date == d_ts.date()]
+            if len(d_bars) >= 2:
+                pm_levels[d_ts.date().isoformat()] = (
+                    float(d_bars['high'].max()),
+                    float(d_bars['low'].min()),
+                )
+        print(f'  Cylinder 4 (pre-market IB): {len(pm_levels)} days with PM data')
+
     prop  = PropRulesSimulator(mode=mode)
     trades: list[dict] = []
     days  = sorted(ny_df.index.normalize().unique())
@@ -731,10 +819,12 @@ def run_backtest(start: str | None = None, end: str | None = None,
             resets += 1
 
         prop.new_day(day_str)
+        _pm_high, _pm_low = pm_levels.get(day_str, (0.0, 0.0))
         day_trades = simulate_day(day_bars, atr_open, prev_close,
                                   avg_vol, prop, cfg, daily_bias,
                                   contracts=contracts, es_day_df=es_day_bars,
-                                  scale_contracts=scale_contracts)
+                                  scale_contracts=scale_contracts,
+                                  pm_high=_pm_high, pm_low=_pm_low)
         trades.extend(day_trades)
 
         if not day_bars.empty:
@@ -1152,6 +1242,13 @@ Named strategies (--strategy):
     # Try --win-protect 500.
     parser.add_argument('--win-protect',       type=float, default=None, help='Scale down after daily P&L ≥ N (0=off, try 500).')
     parser.add_argument('--retest-bounce-pts', type=float, default=None, help='Retest entry: require bar to bounce N pts from its low (0=off, try 10).')
+    # Cylinder 4 — Pre-market IB breakout.
+    # Fire when the overnight 8:30–9:30am high/low is outside the RTH IB by ≥ premarket-min-ext pts.
+    # Most powerful on NFP/CPI/FOMC days where pre-market reacts, then RTH consolidates.
+    parser.add_argument('--premarket-ib',       action='store_true', help='Enable Cylinder 4: pre-market IB breakout.')
+    parser.add_argument('--premarket-min-ext',  type=float, default=None, help='Min pts PM must be outside RTH IB to activate (default 15).')
+    parser.add_argument('--premarket-stop-pts', type=float, default=None, help='Stop pts below/above PM level (default 20).')
+    parser.add_argument('--premarket-tgt-pts',  type=float, default=None, help='Target pts from PM level (default 80).')
 
     args = parser.parse_args()
 
@@ -1160,13 +1257,14 @@ Named strategies (--strategy):
     if args.list_strategies:
         from futures.strategies import list_strategies, print_strategy_summary
         strategies = list_strategies()
-        print(f'\n{"="*65}')
+        print(f'\n{"="*70}')
         print('  AVAILABLE STRATEGIES')
-        print(f'{"="*65}')
-        print(f'  {"Name":<22} {"Label":<28} {"TC%":>4} {"P&L":>8} {"MaxDD":>8} {"Blow%":>6}')
-        print(f'  {"-"*22} {"-"*28} {"-"*4} {"-"*8} {"-"*8} {"-"*6}')
+        print(f'{"="*70}')
+        print(f'  {"Name":<22} {"TC%":>4} {"P&L":>9} {"MaxDD":>9} {"Blow%":>6}')
+        print(f'  {"-"*22} {"-"*4} {"-"*9} {"-"*9} {"-"*6}')
         for s in strategies:
-            print(f'  {s["name"]:<22} {s["label"]:<28} {str(s["tc_pass_pct"]):>4} ${s["total_pnl"]:>7,.0f} ${s["max_dd"]:>7,.0f} {str(s["blow_pct"]):>5}%')
+            print(f'  {s["name"]:<22} {str(s["tc_pass_pct"]):>4} ${s["total_pnl"]:>8,.0f} ${s["max_dd"]:>8,.0f} {str(s["blow_pct"]):>5}%')
+            print(f'    └─ {s["label"]}')
         print()
         import sys; sys.exit(0)
 
@@ -1216,6 +1314,10 @@ Named strategies (--strategy):
         max_atr_ratio    = _v(args.max_atr_ratio, 'max_atr_ratio',  0.0),
         min_atr_ratio    = _v(args.min_atr_ratio, 'min_atr_ratio',  0.0),
         win_protect_pnl  = _v(args.win_protect,   'win_protect_pnl', 0.0),
+        premarket_ib           = args.premarket_ib or preset_config.get('premarket_ib', False),
+        premarket_min_ext      = _v(args.premarket_min_ext,  'premarket_min_ext',  15.0),
+        premarket_stop_pts     = _v(args.premarket_stop_pts, 'premarket_stop_pts', 20.0),
+        premarket_target_pts   = _v(args.premarket_tgt_pts,  'premarket_target_pts', 80.0),
     )
 
     # Run params: CLI args override preset, preset overrides defaults

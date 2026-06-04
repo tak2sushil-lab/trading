@@ -368,16 +368,21 @@ def summary():
 
 
 def load_bars(symbol: str = 'MNQ', start: str | None = None, end: str | None = None,
-              table: str = 'futures_bars_5m') -> pd.DataFrame:
+              table: str = 'futures_bars_5m',
+              include_premarket: bool = False) -> pd.DataFrame:
     """
     Load futures bars into a DataFrame for backtesting.
     Index: DatetimeIndex (America/New_York). Cols: open, high, low, close, volume.
 
+    include_premarket=False (default): returns all bars (premarket + RTH + overnight).
+      Caller uses filter_ny_session() or filter_premarket_session() to slice.
+    include_premarket=True: alias for the default (kept for clarity in callers).
+
     Usage:
-        from futures.collect_bars import load_bars
+        from futures.collect_bars import load_bars, filter_ny_session, filter_premarket_session
         df = load_bars('MNQ', start='2024-01-01')
-        df = load_bars('ES',  start='2024-01-01')           # regime data
-        df = load_bars('MNQ', table='futures_bars_1m')      # 1-min precision
+        rth = filter_ny_session(df)        # 9:30am–3:10pm
+        pm  = filter_premarket_session(df) # 8:30am–9:29am
     """
     conn = sqlite3.connect(DB_PATH)
     q = f'SELECT ts_utc, open, high, low, close, volume FROM {table} WHERE symbol=?'
@@ -387,7 +392,7 @@ def load_bars(symbol: str = 'MNQ', start: str | None = None, end: str | None = N
         params.append(start)
     if end:
         q += ' AND ts_utc <= ?'
-        params.append(end)
+        params.append(end + 'Z' if end and 'T' not in end else end)
     q += ' ORDER BY ts_utc'
 
     df = pd.read_sql_query(q, conn, params=params, index_col='ts_utc')
@@ -395,14 +400,37 @@ def load_bars(symbol: str = 'MNQ', start: str | None = None, end: str | None = N
 
     df.index = pd.to_datetime(df.index, utc=True, format='mixed').tz_convert(ET)
     df.columns = [c.lower() for c in df.columns]
+
+    # Deduplicate: multiple sources (Databento + yfinance + IBKR) store the same
+    # timestamp with different string formats. After UTC→ET conversion, these become
+    # duplicate index entries. Keep the bar with the highest volume (best quality).
+    if df.index.duplicated().any():
+        df = df.sort_values('volume', ascending=False)
+        df = df[~df.index.duplicated(keep='first')]
+        df = df.sort_index()
+
     return df
 
 
 def filter_ny_session(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only NY session bars (9:30 AM – 3:10 PM ET)."""
+    """Keep only NY RTH session bars (9:30 AM – 3:10 PM ET)."""
     import datetime as _dt
     t = df.index.time
     return df[(t >= _dt.time(*SESSION_START)) & (t <= _dt.time(*SESSION_END))]
+
+
+def filter_premarket_session(df: pd.DataFrame,
+                              start_time: tuple = (8, 30),
+                              end_time:   tuple = (9, 29)) -> pd.DataFrame:
+    """
+    Keep only pre-market bars.
+    Default: 8:30 AM – 9:29 AM ET (the hour before RTH open).
+    On NFP/CPI days this window contains the data-reaction bars.
+    Returns empty DataFrame if no pre-market data available for a given day.
+    """
+    import datetime as _dt
+    t = df.index.time
+    return df[(t >= _dt.time(*start_time)) & (t <= _dt.time(*end_time))]
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
