@@ -127,6 +127,13 @@ class Config:
     premarket_stop_pts:    float = 20.0  # stop pts below PM level (wider than retest — PM is noisier)
     premarket_target_pts:  float = 80.0  # fixed target from PM level
 
+    # Cylinder 5 — Macro news blackout.
+    # Skip ALL entries on high-impact release days (NFP/CPI/FOMC) or 30min before release.
+    # Data: see macro_calendar.py for 2026 schedule.
+    # macro_blackout_level: 'HIGH' = NFP/CPI/FOMC only | 'ALL' = include GDP/PPI
+    macro_blackout:       bool  = False
+    macro_blackout_level: str   = 'HIGH'   # 'HIGH' or 'ALL'
+
     # Win protection: conservative sizing after a good day.
     # After daily P&L ≥ win_protect_pnl, scale down base contracts by 1.
     # Protects TC consistency rule (best_day ≤ 50% of total profit) and locks gains.
@@ -819,12 +826,32 @@ def run_backtest(start: str | None = None, end: str | None = None,
             resets += 1
 
         prop.new_day(day_str)
+
+        # Cylinder 5: macro blackout — skip entire day if high-impact release
+        if cfg.macro_blackout:
+            from futures.macro_calendar import classify_date, is_high_impact
+            day_class = classify_date(day_str)
+            skip_day = (day_class == 'HIGH_IMPACT' or
+                        (cfg.macro_blackout_level == 'ALL' and day_class == 'MEDIUM_IMPACT'))
+            if skip_day:
+                if not day_bars.empty:
+                    prev_close = float(day_bars['close'].iloc[-1])
+                continue
+
         _pm_high, _pm_low = pm_levels.get(day_str, (0.0, 0.0))
         day_trades = simulate_day(day_bars, atr_open, prev_close,
                                   avg_vol, prop, cfg, daily_bias,
                                   contracts=contracts, es_day_df=es_day_bars,
                                   scale_contracts=scale_contracts,
                                   pm_high=_pm_high, pm_low=_pm_low)
+
+        # Tag each trade with its macro classification (for analysis)
+        if day_trades:
+            from futures.macro_calendar import classify_date
+            macro_class = classify_date(day_str)
+            for t in day_trades:
+                t['macro_class'] = macro_class
+
         trades.extend(day_trades)
 
         if not day_bars.empty:
@@ -1031,6 +1058,26 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
     print('  ── Exit Reasons ─────────────────────────────────────────')
     for r, n in sorted(reasons.items(), key=lambda x: -x[1]):
         print(f'    {r:<20} {n:>4}  ({n/total*100:.0f}%)')
+
+    # Macro release day breakdown (always shown if macro_class tag exists)
+    by_macro = {}
+    for t in trades:
+        mc = t.get('macro_class', 'NORMAL')
+        if mc not in by_macro:
+            by_macro[mc] = {'n': 0, 'wins': 0, 'pnl': 0.0}
+        by_macro[mc]['n']    += 1
+        by_macro[mc]['wins'] += (1 if t['status'] == 'WIN' else 0)
+        by_macro[mc]['pnl']  += t['net_pnl']
+    if len(by_macro) > 1 or 'HIGH_IMPACT' in by_macro:
+        print()
+        print('  ── By Macro Release Day ─────────────────────────────────')
+        for mc in ['HIGH_IMPACT', 'MEDIUM_IMPACT', 'NORMAL']:
+            if mc not in by_macro:
+                continue
+            d = by_macro[mc]
+            mwr = d['wins'] / d['n'] * 100 if d['n'] else 0
+            flag = ' ← skip?' if (mc == 'HIGH_IMPACT' and mwr < 40) else ''
+            print(f'    {mc:<15}  {d["n"]:>4} trades  {mwr:>5.1f}% WR  ${d["pnl"]:>9,.2f}{flag}')
 
     print()
     print('  ── MAE / MFE Analysis (in points) ──────────────────────')
@@ -1245,6 +1292,13 @@ Named strategies (--strategy):
     # Cylinder 4 — Pre-market IB breakout.
     # Fire when the overnight 8:30–9:30am high/low is outside the RTH IB by ≥ premarket-min-ext pts.
     # Most powerful on NFP/CPI/FOMC days where pre-market reacts, then RTH consolidates.
+    # Cylinder 5 — Macro news blackout.
+    # Skip entries on high-impact release days (NFP/CPI/FOMC).
+    # Use --macro-blackout to measure the impact on backtest WR.
+    # If release days have much lower WR: the blackout is valuable.
+    parser.add_argument('--macro-blackout', action='store_true', help='Enable Cylinder 5: skip HIGH-impact release days (NFP/CPI/FOMC).')
+    parser.add_argument('--macro-blackout-all', action='store_true', help='Skip ALL release days including GDP/PPI.')
+    parser.add_argument('--macro-analysis', action='store_true', help='Show WR breakdown by macro release type (no blackout applied).')
     parser.add_argument('--premarket-ib',       action='store_true', help='Enable Cylinder 4: pre-market IB breakout.')
     parser.add_argument('--premarket-min-ext',  type=float, default=None, help='Min pts PM must be outside RTH IB to activate (default 15).')
     parser.add_argument('--premarket-stop-pts', type=float, default=None, help='Stop pts below/above PM level (default 20).')
@@ -1314,6 +1368,8 @@ Named strategies (--strategy):
         max_atr_ratio    = _v(args.max_atr_ratio, 'max_atr_ratio',  0.0),
         min_atr_ratio    = _v(args.min_atr_ratio, 'min_atr_ratio',  0.0),
         win_protect_pnl  = _v(args.win_protect,   'win_protect_pnl', 0.0),
+        macro_blackout         = args.macro_blackout or preset_config.get('macro_blackout', False),
+        macro_blackout_level   = 'ALL' if args.macro_blackout_all else preset_config.get('macro_blackout_level', 'HIGH'),
         premarket_ib           = args.premarket_ib or preset_config.get('premarket_ib', False),
         premarket_min_ext      = _v(args.premarket_min_ext,  'premarket_min_ext',  15.0),
         premarket_stop_pts     = _v(args.premarket_stop_pts, 'premarket_stop_pts', 20.0),
@@ -1340,6 +1396,31 @@ Named strategies (--strategy):
                           scale_contracts=_scale_contracts)
     print_report(trades, cfg, mode=args.mode, contracts=_contracts,
                  scale_contracts=_scale_contracts)
+
+    # Macro analysis: show WR on release days vs normal days
+    if getattr(args, 'macro_analysis', False) and trades:
+        from futures.macro_calendar import classify_date
+        for t in trades:
+            if 'macro_class' not in t:
+                t['macro_class'] = classify_date(t['date'])
+        print('  ── Macro Release Day Analysis ───────────────────────────')
+        from collections import defaultdict as _dd
+        by_mc = _dd(lambda: {'n': 0, 'wins': 0, 'pnl': 0.0, 'days': set()})
+        for t in trades:
+            mc = t.get('macro_class', 'NORMAL')
+            by_mc[mc]['n']    += 1
+            by_mc[mc]['wins'] += (1 if t['status'] == 'WIN' else 0)
+            by_mc[mc]['pnl']  += t['net_pnl']
+            by_mc[mc]['days'].add(t['date'])
+        for mc in ['HIGH_IMPACT', 'MEDIUM_IMPACT', 'NORMAL']:
+            if mc not in by_mc: continue
+            d = by_mc[mc]
+            mwr = d['wins'] / d['n'] * 100 if d['n'] else 0
+            avg = d['pnl'] / d['n'] if d['n'] else 0
+            recommendation = 'SKIP' if (mc == 'HIGH_IMPACT' and mwr < 42) else 'TRADE'
+            print(f'  {mc:<15}  {d["n"]:>4}t  {mwr:>5.1f}%WR  ${d["pnl"]:>9,.0f}  '
+                  f'${avg:>7,.0f}/t  {len(d["days"])} days  → {recommendation}')
+        print()
 
     if args.tc_sim and trades:
         simulate_tc_eval(trades)
