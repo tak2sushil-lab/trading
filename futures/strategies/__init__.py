@@ -62,6 +62,11 @@ def load_strategy(name: str) -> tuple[dict, dict]:
         raise ValueError(f'Unknown strategy: {name!r}. Available: {available}')
 
     data = json.loads(path.read_text())
+    if 'config' not in data or 'run_params' not in data:
+        raise ValueError(
+            f"Strategy '{name}' is malformed — missing 'config' or 'run_params' keys. "
+            f"Check futures/strategies/{name}.json."
+        )
     return data['config'], data['run_params']
 
 

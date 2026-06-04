@@ -75,9 +75,11 @@ MACRO_EVENTS_2026: dict[str, dict] = {
     '2026-12-17': {'type': 'FOMC', 'time_et': time(14,  0), 'note': 'Dec FOMC'},
 
     # GDP (quarterly — advance estimate)
-    '2026-01-29': {'type': 'GDP',  'time_et': time(8, 30), 'note': 'Q3 2025 GDP advance'},
+    # Note: 2026-01-29 and 2026-07-30 also have FOMC — FOMC takes priority (already in dict above).
+    # GDP on same-day as FOMC is captured by the FOMC entry; FOMC is higher impact.
+    # '2026-01-29' FOMC overrides GDP (FOMC entry kept above, GDP dropped to avoid key collision).
+    # '2026-07-30' FOMC overrides GDP (same reason).
     '2026-04-30': {'type': 'GDP',  'time_et': time(8, 30), 'note': 'Q1 2026 GDP advance'},
-    '2026-07-30': {'type': 'GDP',  'time_et': time(8, 30), 'note': 'Q2 2026 GDP advance'},
     '2026-10-29': {'type': 'GDP',  'time_et': time(8, 30), 'note': 'Q3 2026 GDP advance'},
 
     # PPI (Producer Price Index)
@@ -164,7 +166,7 @@ def is_blackout_window(now_et: datetime) -> tuple[bool, str]:
             return None, reason
     """
     d_str = now_et.date().isoformat()
-    event = MACRO_EVENTS_2026.get(d_str)
+    event = get_release_info(d_str)   # uses full fallback (hardcoded + auto-NFP)
     if not event:
         return False, ''
 

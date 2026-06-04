@@ -1391,7 +1391,8 @@ Named strategies (--strategy):
     print(f'  {len(df):,} total bars → {len(ny_df):,} NY session bars')
     print(f'  {len(sorted(ny_df.index.normalize().unique()))} trading days\n')
 
-    trades = run_backtest(start=args.start, end=args.end, mode=args.mode, cfg=cfg,
+    _mode = args.mode if args.mode != 'TC' else preset_run.get('mode', args.mode)
+    trades = run_backtest(start=args.start, end=args.end, mode=_mode, cfg=cfg,
                           contracts=_contracts, es_confirm=_es_confirm,
                           scale_contracts=_scale_contracts)
     print_report(trades, cfg, mode=args.mode, contracts=_contracts,
