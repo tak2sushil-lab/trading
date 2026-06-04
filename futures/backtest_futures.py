@@ -127,12 +127,20 @@ class Config:
     premarket_stop_pts:    float = 20.0  # stop pts below PM level (wider than retest — PM is noisier)
     premarket_target_pts:  float = 80.0  # fixed target from PM level
 
-    # Cylinder 5 — Macro news blackout.
-    # Skip ALL entries on high-impact release days (NFP/CPI/FOMC) or 30min before release.
-    # Data: see macro_calendar.py for 2026 schedule.
-    # macro_blackout_level: 'HIGH' = NFP/CPI/FOMC only | 'ALL' = include GDP/PPI
+    # Cylinder 5 — Macro news blackout (DO NOT USE — hurts performance).
+    # Testing confirmed: NFP/CPI days = 61.1% WR, +$203/trade (3× normal).
+    # Blocking them drops TC 67%→40% and removes $3,660 of P&L.
+    # Kept as a flag only for future research.
     macro_blackout:       bool  = False
     macro_blackout_level: str   = 'HIGH'   # 'HIGH' or 'ALL'
+
+    # Cylinder 5b — Macro both-sides override (USE THIS INSTEAD).
+    # On HIGH_IMPACT days (NFP/CPI/FOMC), override the EMA daily_bias to 'BOTH'.
+    # Unlocks SHORT on bad-news days even when market was uptrending the day before.
+    # Data: SHORT on bad NFP = 71.4% WR, +$338/trade avg (7 trades, 5yr).
+    # Without this flag, those shorts are blocked when EMA5 > EMA20 prior day.
+    # For live trading: Groq classifier sets direction; this flag enables both-sides in backtest.
+    macro_both_sides:     bool  = False
 
     # Win protection: conservative sizing after a good day.
     # After daily P&L ≥ win_protect_pnl, scale down base contracts by 1.
@@ -220,7 +228,7 @@ def _dynamic_contracts(base: int, rvol: float, ib_range: float,
     if rvol >= 2.0: n += 1
     if rvol >= 3.0: n += 1
     if rvol >= 4.0: n += 1          # A++ — max conviction, max size
-    if ib_range >= 150: n += 1
+    if ib_range >= 150: n += 1      # large IB = structural trending day signal (complements RVOL)
     if had_loss_today: n -= 1
     if win_protect_pnl > 0 and session_pnl >= win_protect_pnl:
         n -= 1                       # protect the day's gains
@@ -814,6 +822,15 @@ def run_backtest(start: str | None = None, end: str | None = None,
         yesterday = (day_ts.date() - timedelta(days=1)).isoformat()
         daily_bias = daily_bias_map.get(yesterday, 'BOTH')
 
+        # Macro both-sides override: on HIGH_IMPACT days (NFP/CPI/FOMC),
+        # ignore EMA trend and trade both directions. Unlocks SHORT on bad-news
+        # days even when market was uptrending. In live trading this is replaced
+        # by Groq classification (SHORT/LONG/NEUTRAL from actual headline).
+        if cfg.macro_both_sides:
+            from futures.macro_calendar import classify_date as _classify
+            if _classify(day_str) == 'HIGH_IMPACT':
+                daily_bias = 'BOTH'
+
         # ES day bars for confirmation
         es_day_bars = (es_ny[es_ny.index.date == day_ts.date()]
                        if es_confirm and not es_ny.empty else pd.DataFrame())
@@ -1296,7 +1313,8 @@ Named strategies (--strategy):
     # Skip entries on high-impact release days (NFP/CPI/FOMC).
     # Use --macro-blackout to measure the impact on backtest WR.
     # If release days have much lower WR: the blackout is valuable.
-    parser.add_argument('--macro-blackout', action='store_true', help='Enable Cylinder 5: skip HIGH-impact release days (NFP/CPI/FOMC).')
+    parser.add_argument('--macro-blackout',    action='store_true', help='Skip HIGH-impact days (DO NOT USE — hurts performance, testing only).')
+    parser.add_argument('--macro-both-sides', action='store_true', help='On HIGH_IMPACT days (NFP/CPI), trade BOTH directions regardless of EMA trend.')
     parser.add_argument('--macro-blackout-all', action='store_true', help='Skip ALL release days including GDP/PPI.')
     parser.add_argument('--macro-analysis', action='store_true', help='Show WR breakdown by macro release type (no blackout applied).')
     parser.add_argument('--premarket-ib',       action='store_true', help='Enable Cylinder 4: pre-market IB breakout.')
@@ -1370,6 +1388,7 @@ Named strategies (--strategy):
         win_protect_pnl  = _v(args.win_protect,   'win_protect_pnl', 0.0),
         macro_blackout         = args.macro_blackout or preset_config.get('macro_blackout', False),
         macro_blackout_level   = 'ALL' if args.macro_blackout_all else preset_config.get('macro_blackout_level', 'HIGH'),
+        macro_both_sides       = args.macro_both_sides or preset_config.get('macro_both_sides', False),
         premarket_ib           = args.premarket_ib or preset_config.get('premarket_ib', False),
         premarket_min_ext      = _v(args.premarket_min_ext,  'premarket_min_ext',  15.0),
         premarket_stop_pts     = _v(args.premarket_stop_pts, 'premarket_stop_pts', 20.0),
