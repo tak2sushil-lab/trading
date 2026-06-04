@@ -33,7 +33,7 @@ from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -68,6 +68,56 @@ class Config:
     target_ib_mult:  float = 1.5    # target = entry + IB_range × mult
     min_rr:          float = 1.5    # skip if R:R < min_rr
     max_stop_pts:    float = 150.0  # skip day if stop distance > N pts ($300 risk floor)
+
+    # Fixed absolute stop/target (override IB-fraction scaling).
+    # Use when IB range varies wildly (e.g. 2026 tariff volatility doubled IB size
+    # but actual post-break extension stayed ~70-90pts — making IB-scaled targets unreachable).
+    # stop_pts: measured from entry price (not from IB level).
+    # target_pts: measured from entry price.
+    # When set, min_rr check uses these values; max_stop_pts is ignored.
+    stop_pts:        Optional[float] = None  # e.g. 40.0 → fixed 40pt stop from entry
+    target_pts:      Optional[float] = None  # e.g. 60.0 → fixed 60pt target from entry
+
+    # Multi-trade: allow up to N entries per day with a cooldown between them.
+    # Enables re-entry after target/stop hits (retest setups, continuation on trend days).
+    # cooldown_bars=2 means wait 2 × 5-min bars (10 min) after exit before next entry.
+    max_daily_trades: int  = 5    # 5 = effectively uncapped (one-trade behaviour by default)
+    cooldown_bars:    int  = 0    # bars to wait after exit before next entry
+
+    # Pullback retest entry — second mount on the same fence.
+    # After price has run ≥ retest_min_ext pts past IB (the fence is proven), a pullback
+    # back near the IB level is a high R:R entry with stop just below the fence.
+    # retest_zone_pts: entry window above IB (e.g. ib_high to ib_high+20pts).
+    # retest_stop_pts: buffer BELOW IB for the stop (0=stop at IB itself, 15=stop 15pts below).
+    #   → Stop at IB itself (0pts) is too tight — MNQ oscillates 20-30pts normally, so
+    #     normal bar wiggle tags the stop even on valid retests. Use 10-15pt buffer.
+    # retest_min_ext: min pts price must have extended past IB (confirms the run happened).
+    retest_zone_pts:   float = 0.0   # 0=off; 20=allow retest entry within 20pts of IB level
+    retest_stop_pts:   float = 15.0  # pts below IB level for the retest stop (default 15)
+    retest_min_ext:    float = 50.0  # min IB extension before retest is valid
+    retest_target_pts: float = 80.0  # retest target: fixed pts FROM IB LEVEL (not IB-scaled).
+                                     # Horse runs ~80pts from the fence regardless of IB size.
+                                     # Initial entries keep IB-scaled target (captures big trend days).
+
+    # ATR regime filter — "know when to walk away from the pen."
+    # Skip days where today's ATR is outside [min_atr_ratio, max_atr_ratio] × 60d rolling median.
+    # max_atr_ratio=1.5: skip extreme-vol days (2026 tariff shock — IB doubled, targets unreachable).
+    # min_atr_ratio=0.8: skip low-vol grind days (2023 — IB breakouts reverse repeatedly, <30% WR).
+    # Band filter (both set): only trade in the "sweet spot" — normal vol regime.
+    max_atr_ratio:    float = 0.0   # 0=off; 1.5=skip if today's ATR > 1.5× 60d median
+    min_atr_ratio:    float = 0.0   # 0=off; 0.8=skip if today's ATR < 0.8× 60d median (low vol)
+
+    # Retest bounce confirmation: require the retest bar to show a bounce from its low.
+    # A close at IB+3 on a falling bar is NOT a bounce — price is still dropping through IB.
+    # A close at IB+15 with bar_low at IB+2 IS a bounce — price touched IB area and held.
+    # retest_bounce_pts=10: bar_low must be ≤ ib_high+zone_pts AND close-low ≥ 10pts.
+    # This filters "falling through" entries while keeping genuine IB-hold entries.
+    retest_bounce_pts: float = 0.0  # 0=off; try 10 → require 10pt bounce from bar low
+
+    # Win protection: conservative sizing after a good day.
+    # After daily P&L ≥ win_protect_pnl, scale down base contracts by 1.
+    # Protects TC consistency rule (best_day ≤ 50% of total profit) and locks gains.
+    win_protect_pnl:  float = 0.0   # 0=off; e.g. 500 = scale down after $500 daily gain
 
     pct_trail_activate: float = 0.008  # +0.8% activates PCT trail (lower than equity)
     pct_trail_gap:      float = 0.004  # trail 0.4% from peak
@@ -133,20 +183,27 @@ def build_avg_vol(ny_df: pd.DataFrame) -> dict:
 MAX_TRADE_CONTRACTS = 5   # TopStepX $50K account hard limit for MNQ micro
 
 def _dynamic_contracts(base: int, rvol: float, ib_range: float,
-                       had_loss_today: bool) -> int:
+                       had_loss_today: bool,
+                       session_pnl: float = 0.0,
+                       win_protect_pnl: float = 0.0) -> int:
     """
     Scale contracts based on signal conviction.
-      RVOL 2.0–3.0×  → +1 contract  (strong institutional momentum)
-      RVOL ≥ 3.0×    → +2 contracts (exceptional conviction)
+      A   setup (RVOL 2.0–3.0×)  → +1 contract  (strong institutional momentum)
+      A+  setup (RVOL 3.0–4.0×)  → +2 contracts (high conviction breakout)
+      A++ setup (RVOL ≥ 4.0×)    → +3 contracts (exceptional — max the position)
       IB range ≥ 150pts → +1 contract (clear trending day, less reversal risk)
-      After a losing trade today → -1 contract (protect MLL buffer)
+      After a losing trade today  → -1 contract (protect MLL buffer)
+      After win_protect_pnl gain  → -1 contract (conservative after good day)
     Clamps to [1, MAX_TRADE_CONTRACTS].
     """
     n = base
     if rvol >= 2.0: n += 1
     if rvol >= 3.0: n += 1
+    if rvol >= 4.0: n += 1          # A++ — max conviction, max size
     if ib_range >= 150: n += 1
     if had_loss_today: n -= 1
+    if win_protect_pnl > 0 and session_pnl >= win_protect_pnl:
+        n -= 1                       # protect the day's gains
     return max(1, min(n, MAX_TRADE_CONTRACTS))
 
 
@@ -214,22 +271,44 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 
     atr = atr_at_open if atr_at_open and atr_at_open > 0 else ib_range
 
-    trades:         list[dict] = []
-    position:       Optional[dict] = None
-    bars_held       = 0
-    session_high    = float(day_df['high'].iloc[0])
-    session_low     = float(day_df['low'].iloc[0])
-    had_loss_today  = False   # for dynamic sizing: scale down after a loss
+    trades:            list[dict] = []
+    position:          Optional[dict] = None
+    bars_held          = 0
+    session_high       = float(day_df['high'].iloc[0])
+    session_low        = float(day_df['low'].iloc[0])
+    had_loss_today     = False   # for dynamic sizing: scale down after a loss
+    session_pnl        = 0.0    # realized P&L so far today (win protection)
+    daily_trade_count  = 0       # entries taken today (multi-trade cap)
+    cooldown_remaining = 0       # bars to wait before next entry after exit
 
     # IB confirmation tracking
     above_ib_closes = 0
     below_ib_closes = 0
 
+    # Retest tracking: how far has price extended beyond IB after the initial break?
+    # A meaningful extension (≥ retest_min_ext) proves the first run happened — then
+    # a pullback back into the retest zone is a structural bounce entry.
+    max_above_ib = 0.0   # max pts price reached above IB high (post-IB window)
+    max_below_ib = 0.0   # max pts price reached below IB low  (post-IB window)
+
     for i, (ts, bar) in enumerate(day_df.iterrows()):
         t         = ts.time()
         price     = float(bar['close'])
-        session_high = max(session_high, float(bar['high']))
-        session_low  = min(session_low,  float(bar['low']))
+        bar_high  = float(bar['high'])
+        bar_low   = float(bar['low'])
+        session_high = max(session_high, bar_high)
+        session_low  = min(session_low,  bar_low)
+        if cooldown_remaining > 0:
+            cooldown_remaining -= 1
+
+        # Track max IB extension EVERY bar (even while in a position).
+        # This captures the full range of how far price has run past the IB fence —
+        # essential for the retest entry which requires a prior meaningful extension.
+        if t >= ib_end_t:
+            if bar_high > ib_high:
+                max_above_ib = max(max_above_ib, bar_high - ib_high)
+            if bar_low < ib_low:
+                max_below_ib = max(max_below_ib, ib_low - bar_low)
 
         # Track IB confirmation closes (only during IB window)
         if t < ib_end_t:
@@ -324,18 +403,22 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                     'raw_pnl':     round(raw_pnl, 2),
                     'net_pnl':     round(net_pnl, 2),
                     'exit_reason': exit_reason,
+                    'entry_type':  position.get('entry_type', 'breakout'),
                     'status':      'WIN' if net_pnl > 0 else 'LOSS',
                 })
+                session_pnl += net_pnl
                 position = None
                 bars_held = 0
+                daily_trade_count += 1
+                cooldown_remaining = cfg.cooldown_bars
             continue
 
         # ── Entry logic ──────────────────────────────────
         if t < ib_end_t:
             continue   # still forming IB
-        if t >= cfg.no_entry_after:
+        if daily_trade_count >= cfg.max_daily_trades:
             continue
-        if cfg.lunch_start <= t <= cfg.lunch_end:
+        if cooldown_remaining > 0:
             continue
 
         ok, _ = prop.check_can_trade()
@@ -343,89 +426,160 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
             continue
 
         rvol  = float(bar['rvol'])
-        if rvol < cfg.min_rvol:
-            continue   # low-volume bar — no conviction
-
         vwap  = float(bar['vwap'])
 
-        # ── ES confirmation: compute ES IB levels once per day ───────
-        # ES must be breaking the same direction as MNQ at entry time.
+        # ES IB levels and current price (used by both initial and retest checks)
         es_ib_high = es_ib_low = None
         if es_day_df is not None and not es_day_df.empty:
             es_ib_bars = es_day_df[es_day_df.index.time < ib_end_t]
             if len(es_ib_bars) >= 4:
                 es_ib_high = float(es_ib_bars['high'].max())
                 es_ib_low  = float(es_ib_bars['low'].min())
-
-        # ── LONG: IB high breakout ───────────────────────────────────
-        # Skip if daily trend says SHORT-only
-        # Entry gate:
-        #   1. Close above IB high (confirmed breakout)
-        #   2. ib_confirm_bars consecutive closes above IB (no false break)
-        #   3. EMA fast > slow on 5-min (intraday uptrend)
-        #   4. Close above VWAP (bullish session bias)
-        #   5. ES above its own IB high [if --es-confirm]
-        # Stop: IB midpoint (entry - IB_range × stop_frac)
-        # Target: entry + IB_range × target_mult  (IB extension)
         _es_bars_now = (es_day_df[es_day_df.index <= ts]
                         if es_day_df is not None and not es_day_df.empty else None)
-        es_price_now = float(_es_bars_now['close'].iloc[-1]) if (_es_bars_now is not None and len(_es_bars_now)) else None
-
+        es_price_now = (float(_es_bars_now['close'].iloc[-1])
+                        if _es_bars_now is not None and len(_es_bars_now) else None)
         _es_long_ok  = (es_ib_high is None or es_price_now is None or es_price_now > es_ib_high)
         _es_short_ok = (es_ib_low  is None or es_price_now is None or es_price_now < es_ib_low)
 
-        if (daily_bias != 'SHORT'
-                and price > ib_high
-                and above_ib_closes >= cfg.ib_confirm_bars
-                and float(bar['ema_fast']) > float(bar['ema_slow'])
-                and price > vwap
-                and _es_long_ok):
+        # ── PULLBACK RETEST (extended 1pm deadline, no ES/RVOL gate) ─────
+        # Checked BEFORE the noon no-entry-after cutoff so retests can fire until 1pm.
+        # No ES confirmation: on a pullback to IB level ES has usually also pulled back.
+        #   The structural fence (IB high/low holding as S/R) IS the signal.
+        # No RVOL gate: pullbacks naturally have lower volume — that's a GOOD sign.
+        # Condition: price extended ≥ retest_min_ext past IB at any point today
+        #   (level proved itself) AND price is now back in the retest zone.
+        if (cfg.retest_zone_pts > 0
+                and max_above_ib >= cfg.retest_min_ext   # LONG: IB high proved as resistance→support
+                and not (cfg.lunch_start <= t <= cfg.lunch_end)
+                and t < cfg.no_entry_after):             # same deadline as initial entries
 
-            entry_raw = price
-            entry     = price + cfg.slippage_pts      # entry slippage: fills above ask
-            stop      = ib_high - stop_dist_long       # IB midpoint stop
-            risk      = entry - stop
-            if risk <= 0:
-                continue
-            target = entry + ib_range * cfg.target_ib_mult   # IB extension target
-            if risk > 0 and (target - entry) / risk < cfg.min_rr:
-                continue
+            # Bounce confirmation: the bar must have touched the IB zone (low ≤ ib_high+zone)
+            # AND closed at least retest_bounce_pts above its low. Filters "falling through" bars.
+            _long_bounce_ok = (cfg.retest_bounce_pts <= 0
+                               or (bar_low <= ib_high + cfg.retest_zone_pts
+                                   and price - bar_low >= cfg.retest_bounce_pts))
 
-            n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today)
-                    if scale_contracts else contracts)
-            position = {
-                'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
-                'entry_time': t, 'stop': stop, 'stop_init': stop,
-                'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
-            }
+            if (daily_bias != 'SHORT'
+                    and ib_high < price <= ib_high + cfg.retest_zone_pts
+                    and _long_bounce_ok):
+                entry_raw = price
+                entry     = price + cfg.slippage_pts
+                stop      = ib_high - cfg.retest_stop_pts  # buffer below fence: avoids normal bar wiggle
+                risk      = entry - stop
+                if risk > 0:
+                    # Fixed target from IB level — ~80pts regardless of IB size.
+                    # This is the key fix: initial entries use IB-scaled target (big trend days),
+                    # but retests use a fixed realistic extension from the fence.
+                    target = ib_high + cfg.retest_target_pts
+                    if (target - entry) / risk >= cfg.min_rr:
+                        n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today,
+                                                   session_pnl, cfg.win_protect_pnl)
+                                if scale_contracts else contracts)
+                        position = {
+                            'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
+                            'entry_time': t, 'stop': stop, 'stop_init': stop,
+                            'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                            'entry_type': 'retest',
+                        }
 
-        # ── SHORT: IB low breakdown ───────────────────────────────────
-        elif (daily_bias != 'LONG'
-                and price < ib_low
-                and below_ib_closes >= cfg.ib_confirm_bars
-                and float(bar['ema_fast']) < float(bar['ema_slow'])
-                and price < vwap
-                and _es_short_ok):
+        if (position is None
+                and cfg.retest_zone_pts > 0
+                and max_below_ib >= cfg.retest_min_ext   # SHORT: IB low proved as support→resistance
+                and not (cfg.lunch_start <= t <= cfg.lunch_end)
+                and t < cfg.no_entry_after):
 
-            entry_raw = price
-            entry     = price - cfg.slippage_pts      # entry slippage: fills below bid
-            stop      = ib_low + stop_dist_short       # IB midpoint stop
-            risk      = stop - entry
-            if risk <= 0:
-                continue
-            target = entry - ib_range * cfg.target_ib_mult
-            if risk > 0 and (entry - target) / risk < cfg.min_rr:
-                continue
+            _short_bounce_ok = (cfg.retest_bounce_pts <= 0
+                                or (bar_high >= ib_low - cfg.retest_zone_pts
+                                    and bar_high - price >= cfg.retest_bounce_pts))
 
-            n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today)
-                    if scale_contracts else contracts)
-            position = {
-                'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
-                'entry_time': t, 'stop': stop, 'stop_init': stop,
-                'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
-            }
+            if (daily_bias != 'LONG'
+                    and ib_low - cfg.retest_zone_pts <= price < ib_low
+                    and _short_bounce_ok):
+                entry_raw = price
+                entry     = price - cfg.slippage_pts
+                stop      = ib_low + cfg.retest_stop_pts  # buffer above fence
+                risk      = stop - entry
+                if risk > 0:
+                    target = ib_low - cfg.retest_target_pts  # fixed from IB level
+                    if (entry - target) / risk >= cfg.min_rr:
+                        n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today,
+                                                   session_pnl, cfg.win_protect_pnl)
+                                if scale_contracts else contracts)
+                        position = {
+                            'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
+                            'entry_time': t, 'stop': stop, 'stop_init': stop,
+                            'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                            'entry_type': 'retest',
+                        }
 
-        # Update IB confirmation counters after IB window
+        # ── INITIAL BREAKOUT (noon cutoff, full RVOL/ES/VWAP/EMA quality gate) ──
+        # Only fires if retest did not already set a position this bar.
+        if position is None:
+            if t < cfg.no_entry_after and not (cfg.lunch_start <= t <= cfg.lunch_end):
+                if rvol >= cfg.min_rvol:
+
+                    # LONG: IB high breakout
+                    if (daily_bias != 'SHORT'
+                            and price > ib_high
+                            and above_ib_closes >= cfg.ib_confirm_bars
+                            and float(bar['ema_fast']) > float(bar['ema_slow'])
+                            and price > vwap
+                            and _es_long_ok):
+
+                        entry_raw = price
+                        entry     = price + cfg.slippage_pts
+                        if cfg.stop_pts is not None:
+                            stop = entry - cfg.stop_pts
+                            risk = cfg.stop_pts
+                        else:
+                            stop = ib_high - stop_dist_long
+                            risk = entry - stop
+                        if risk > 0:
+                            target = entry + (cfg.target_pts if cfg.target_pts is not None
+                                              else ib_range * cfg.target_ib_mult)
+                            if (target - entry) / risk >= cfg.min_rr:
+                                n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today,
+                                                           session_pnl, cfg.win_protect_pnl)
+                                        if scale_contracts else contracts)
+                                position = {
+                                    'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
+                                    'entry_time': t, 'stop': stop, 'stop_init': stop,
+                                    'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                                    'entry_type': 'breakout',
+                                }
+
+                    # SHORT: IB low breakdown
+                    elif (daily_bias != 'LONG'
+                            and price < ib_low
+                            and below_ib_closes >= cfg.ib_confirm_bars
+                            and float(bar['ema_fast']) < float(bar['ema_slow'])
+                            and price < vwap
+                            and _es_short_ok):
+
+                        entry_raw = price
+                        entry     = price - cfg.slippage_pts
+                        if cfg.stop_pts is not None:
+                            stop = entry + cfg.stop_pts
+                            risk = cfg.stop_pts
+                        else:
+                            stop = ib_low + stop_dist_short
+                            risk = stop - entry
+                        if risk > 0:
+                            target = entry - (cfg.target_pts if cfg.target_pts is not None
+                                              else ib_range * cfg.target_ib_mult)
+                            if (entry - target) / risk >= cfg.min_rr:
+                                n_ct = (_dynamic_contracts(contracts, rvol, ib_range, had_loss_today,
+                                                           session_pnl, cfg.win_protect_pnl)
+                                        if scale_contracts else contracts)
+                                position = {
+                                    'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
+                                    'entry_time': t, 'stop': stop, 'stop_init': stop,
+                                    'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                                    'entry_type': 'breakout',
+                                }
+
+        # Update IB confirmation counters (post-IB window)
         if price > ib_high: above_ib_closes += 1
         elif price < ib_low: below_ib_closes += 1
 
@@ -453,6 +607,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
             'mae_pts': round(position['mae'], 2), 'mfe_pts': round(position['mfe'], 2),
             'raw_pnl': round(raw, 2), 'net_pnl': round(net, 2),
             'exit_reason': 'eod_force',
+            'entry_type':  position.get('entry_type', 'breakout'),
             'status': 'WIN' if net > 0 else 'LOSS',
         })
 
@@ -507,6 +662,34 @@ def run_backtest(start: str | None = None, end: str | None = None,
     days  = sorted(ny_df.index.normalize().unique())
     resets = 0   # count how many times MLL reset the prop (blown TC attempts)
 
+    # ATR regime filter: build rolling 60-day median ATR per day.
+    # On days where the current ATR is abnormally high (broken regime), skip trading.
+    # This preserves the IB-extension strategy for regime-appropriate days only.
+    rolling_atr_median: dict[str, float] = {}
+    if cfg.max_atr_ratio > 0 or cfg.min_atr_ratio > 0:
+        atr_hist: list[float] = []
+        for d_ts in days:
+            d_str  = d_ts.date().isoformat()
+            prior_ = df[df.index.date < d_ts.date()].tail(20)
+            atr_v  = float(prior_['atr'].iloc[-1]) if not prior_.empty else None
+            if atr_v and len(atr_hist) >= 20:
+                rolling_atr_median[d_str] = float(np.median(atr_hist[-60:]))
+            if atr_v:
+                atr_hist.append(atr_v)
+        if rolling_atr_median:
+            if cfg.max_atr_ratio > 0:
+                skipped_hi = sum(1 for d_ts in days
+                                 if (m := rolling_atr_median.get(d_ts.date().isoformat()))
+                                 and (float(df[df.index.date < d_ts.date()].tail(20)['atr'].iloc[-1])
+                                      if not df[df.index.date < d_ts.date()].empty else 0) > cfg.max_atr_ratio * m)
+                print(f'  ATR regime filter (<{cfg.max_atr_ratio}×): ~{skipped_hi} extreme-vol days skipped')
+            if cfg.min_atr_ratio > 0:
+                skipped_lo = sum(1 for d_ts in days
+                                 if (m := rolling_atr_median.get(d_ts.date().isoformat()))
+                                 and (float(df[df.index.date < d_ts.date()].tail(20)['atr'].iloc[-1])
+                                      if not df[df.index.date < d_ts.date()].empty else 0) < cfg.min_atr_ratio * m)
+                print(f'  ATR regime filter (>{cfg.min_atr_ratio}×): ~{skipped_lo} low-vol days skipped')
+
     prev_close = 0.0
     for day_ts in days:
         day_str  = day_ts.date().isoformat()
@@ -515,6 +698,18 @@ def run_backtest(start: str | None = None, end: str | None = None,
         # ATR at open from prior session
         prior = df[df.index.date < day_ts.date()].tail(20)
         atr_open = float(prior['atr'].iloc[-1]) if not prior.empty else 20.0
+
+        # ATR regime filter: skip abnormally volatile OR abnormally quiet days
+        if day_str in rolling_atr_median:
+            median_atr = rolling_atr_median[day_str]
+            if cfg.max_atr_ratio > 0 and atr_open > cfg.max_atr_ratio * median_atr:
+                if not prior.empty:
+                    prev_close = float(prior['close'].iloc[-1])
+                continue
+            if cfg.min_atr_ratio > 0 and atr_open < cfg.min_atr_ratio * median_atr:
+                if not prior.empty:
+                    prev_close = float(prior['close'].iloc[-1])
+                continue
 
         # Prior close for gap calc
         if not prior.empty:
@@ -679,9 +874,13 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
     print(hdr)
     print('=' * 65)
     sizing_str = f'dynamic 1-{MAX_TRADE_CONTRACTS}ct (base={contracts})' if scale_contracts else f'{contracts}ct'
-    print(f'  Config:        IB={cfg.ib_window_min}min | stop={cfg.stop_ib_frac*100:.0f}%IB '
-          f'| target={cfg.target_ib_mult}×IB | slip={cfg.slippage_ticks}tk | gap<{cfg.gap_max_pct}%'
-          f' | sizing={sizing_str}')
+    stop_str   = f'{cfg.stop_pts:.0f}pts fixed' if cfg.stop_pts   is not None else f'{cfg.stop_ib_frac*100:.0f}%IB'
+    tgt_str    = f'{cfg.target_pts:.0f}pts fixed' if cfg.target_pts is not None else f'{cfg.target_ib_mult}×IB'
+    multi_str  = (f' | max_trades={cfg.max_daily_trades}/day cooldown={cfg.cooldown_bars}bars'
+                  if cfg.max_daily_trades < 5 or cfg.cooldown_bars > 0 else '')
+    print(f'  Config:        IB={cfg.ib_window_min}min | stop={stop_str} '
+          f'| target={tgt_str} | slip={cfg.slippage_ticks}tk | gap<{cfg.gap_max_pct}%'
+          f' | sizing={sizing_str}{multi_str}')
     if scale_contracts and trades:
         ct_dist = {}
         for t in trades:
@@ -723,6 +922,20 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
         d = by_hour[h]
         hwr = d['wins'] / d['n'] * 100 if d['n'] else 0
         print(f'    {h:02d}:xx  {d["n"]:>4} trades  {hwr:>5.1f}% WR  ${d["pnl"]:>9,.2f}')
+
+    # Entry type breakdown (breakout vs retest) — only shown if both types present
+    by_etype = defaultdict(lambda: {'n': 0, 'wins': 0, 'pnl': 0.0})
+    for t in trades:
+        et = t.get('entry_type', 'breakout')
+        by_etype[et]['n']    += 1
+        by_etype[et]['wins'] += (1 if t['status'] == 'WIN' else 0)
+        by_etype[et]['pnl']  += t['net_pnl']
+    if len(by_etype) > 1:
+        print()
+        print('  ── By Entry Type ─────────────────────────────────────')
+        for et, d in sorted(by_etype.items()):
+            ewr = d['wins'] / d['n'] * 100 if d['n'] else 0
+            print(f'    {et:<10} {d["n"]:>4} trades  {ewr:>5.1f}% WR  ${d["pnl"]:>9,.2f}')
 
     print()
     print('  ── Exit Reasons ─────────────────────────────────────────')
@@ -863,6 +1076,7 @@ if __name__ == '__main__':
 
     # Config overrides
     parser.add_argument('--ib',              type=int,   default=60,   help='IB window minutes')
+    parser.add_argument('--ib-confirm',      type=int,   default=1,    help='Consecutive closes above/below IB before entry (1=first close, 2=stricter)')
     parser.add_argument('--stop-frac',       type=float, default=0.50, help='Stop as fraction of IB range')
     parser.add_argument('--tgt-mult',        type=float, default=1.5,  help='Target = IB_range × mult')
     parser.add_argument('--slip',            type=float, default=1.0,  help='Slippage ticks per side')
@@ -884,6 +1098,46 @@ if __name__ == '__main__':
     # after loss -1ct. Clamps to [1, MAX_TRADE_CONTRACTS=5].
     parser.add_argument('--scale-contracts',  action='store_true',      help='Dynamic sizing: scale contracts [1-5] based on RVOL/IB/loss')
 
+    # Fixed stop/target (override IB-fraction scaling).
+    # MNQ post-break extension is ~70-90pts regardless of IB size — IB-scaled targets
+    # become unreachable in high-vol years (2026: IB=213pts → 0.75×IB=160pts vs actual 80pts).
+    # Use --tgt-pts 60 --stop-pts 40 for a 1.5 R:R that works in any vol regime.
+    parser.add_argument('--tgt-pts',    type=float, default=None, help='Fixed target in points from entry (e.g. 60). Overrides --tgt-mult.')
+    parser.add_argument('--stop-pts',   type=float, default=None, help='Fixed stop in points from entry (e.g. 40). Overrides --stop-frac.')
+
+    # Multi-trade per day.
+    # --max-trades 3: take up to 3 entries per day (retest / continuation setups).
+    # --cooldown 2: wait 2×5min bars after exit before next entry (prevents chasing).
+    parser.add_argument('--max-trades', type=int,   default=5,    help='Max entries per day (default 5 = uncapped).')
+    parser.add_argument('--cooldown',   type=int,   default=0,    help='Bars to wait after exit before next entry (default 0).')
+
+    # Pullback retest entry — second mount at the structural fence.
+    # After initial IB break run (price extended ≥ --retest-min-ext pts), a pullback
+    # near the IB level is a high-R:R entry (stop AT IB level, same IB extension target).
+    # --retest-zone 20: entry zone is IB level to IB+20pts above (for LONG).
+    # --retest-min-ext 50: require price to have moved ≥50pts past IB before retest counts.
+    parser.add_argument('--retest-zone',       type=float, default=0.0,  help='Enable pullback retest: entry zone width above IB level (0=off, try 20).')
+    parser.add_argument('--retest-stop-pts',   type=float, default=15.0, help='Retest stop buffer below IB level (default 15pts — avoids normal bar wiggle).')
+    parser.add_argument('--retest-min-ext',    type=float, default=50.0, help='Min pts price must extend past IB before retest is valid (default 50).')
+    parser.add_argument('--retest-target-pts', type=float, default=80.0, help='Retest target: fixed pts from IB level (default 80 — realistic extension regardless of IB size).')
+
+    # ATR regime band filter — trade only in the "sweet spot" of normal volatility.
+    # --max-atr-ratio 1.5: skip extreme-vol days (2026 tariff shock — IB doubled, targets unreachable).
+    # --min-atr-ratio 0.8: skip low-vol grind days (2023 — IB breakouts reverse repeatedly, ~28% WR).
+    # Both together: only trade when ATR is 0.8× to 1.5× the 60-day rolling median.
+    parser.add_argument('--max-atr-ratio', type=float, default=0.0,  help='Skip day if ATR > N×60d median (0=off, try 1.5 — extreme vol filter).')
+    parser.add_argument('--min-atr-ratio', type=float, default=0.0,  help='Skip day if ATR < N×60d median (0=off, try 0.8 — low-vol grind filter).')
+
+    # Win protection — conservative sizing after a good day.
+    # After daily P&L ≥ N, base contracts reduce by 1 (lock in gains, protect TC consistency rule).
+    # Try --win-protect 500.
+    parser.add_argument('--win-protect',   type=float, default=0.0,  help='Scale down after daily P&L ≥ N (0=off, try 500).')
+    # Retest bounce confirmation.
+    # Filters "falling through IB" bars — requires bar to have touched the zone (low ≤ ib_high+zone)
+    # AND closed ≥ N pts above its low (shows price bounced off the IB level, not still falling).
+    # Try --retest-bounce-pts 10.
+    parser.add_argument('--retest-bounce-pts', type=float, default=0.0, help='Retest entry: require bar to bounce N pts from its low (0=off, try 10).')
+
     args = parser.parse_args()
 
     if args.ab:
@@ -891,15 +1145,28 @@ if __name__ == '__main__':
         sys.exit(0)
 
     cfg = Config(
-        ib_window_min   = args.ib,
-        stop_ib_frac    = args.stop_frac,
-        target_ib_mult  = args.tgt_mult,
-        slippage_ticks  = args.slip,
-        min_ib_range    = args.min_ib,
-        max_ib_range    = args.max_ib,
-        gap_max_pct     = args.gap,
-        no_entry_after  = time(args.no_entry_after, 0),
-        min_rvol        = args.min_rvol,
+        ib_window_min    = args.ib,
+        ib_confirm_bars  = args.ib_confirm,
+        stop_ib_frac     = args.stop_frac,
+        target_ib_mult   = args.tgt_mult,
+        slippage_ticks   = args.slip,
+        min_ib_range     = args.min_ib,
+        max_ib_range     = args.max_ib,
+        gap_max_pct      = args.gap,
+        no_entry_after   = time(args.no_entry_after, 0),
+        min_rvol         = args.min_rvol,
+        stop_pts         = args.stop_pts,
+        target_pts       = args.tgt_pts,
+        max_daily_trades = args.max_trades,
+        cooldown_bars    = args.cooldown,
+        retest_zone_pts   = args.retest_zone,
+        retest_stop_pts   = args.retest_stop_pts,
+        retest_min_ext    = args.retest_min_ext,
+        retest_target_pts = args.retest_target_pts,
+        max_atr_ratio       = args.max_atr_ratio,
+        min_atr_ratio       = args.min_atr_ratio,
+        win_protect_pnl     = args.win_protect,
+        retest_bounce_pts   = args.retest_bounce_pts,
     )
 
     print(f'Loading MNQ 5-min bars (start={args.start or "all"})...')
