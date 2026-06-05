@@ -100,6 +100,7 @@ _orb_set              = False
 _pm_high              = None # pre-market IB high (8:30–9:30am ET) — Cylinder 4
 _pm_low               = None # pre-market IB low
 _pm_ib_set            = False
+_pm_ib_set_time       = None  # datetime when pm_ib was first captured this session
 _daily_macro_bias     = 'BOTH'  # 'LONG' | 'SHORT' | 'BOTH' — set via Telegram or Groq
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
@@ -270,7 +271,7 @@ def update_premarket_ib():
     8:30am release. Breaking this range during RTH = highest conviction signal.
     Called once per day at ~9:20am startup (before RTH opens).
     """
-    global _pm_high, _pm_low, _pm_ib_set
+    global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time
     if _pm_ib_set:
         return
     try:
@@ -286,7 +287,8 @@ def update_premarket_ib():
         if len(pm_bars) >= 2:
             _pm_high  = float(pm_bars['high'].max())
             _pm_low   = float(pm_bars['low'].min())
-            _pm_ib_set = True
+            _pm_ib_set      = True
+            _pm_ib_set_time = datetime.now(ET)
             flag = '🔴 MACRO DAY' if today_cls == 'HIGH_IMPACT' else ''
             log(f"Pre-market IB: H={_pm_high}  L={_pm_low}  ({len(pm_bars)} bars) {flag}")
             if today_cls == 'HIGH_IMPACT':
@@ -537,6 +539,12 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
     if _daily_macro_bias == 'SHORT' and side == 'LONG':  return 0, 'SKIP'
 
     if side == 'LONG':
+        bull_signals = [sig.get('orb_bull'), sig.get('vwap_reclaim'),
+                        sig.get('momentum_bull'), sig.get('open_play_bull'),
+                        sig.get('pm_bull')]
+        if not any(bull_signals):
+            return 0, 'SKIP'   # session/RSI context alone cannot trigger an entry
+
         # ORB break
         if sig.get('orb_bull'):         score += 20
         # VWAP reclaim
@@ -554,6 +562,12 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
         if rsi < 45:                    score += 5
 
     else:  # SHORT
+        bear_signals = [sig.get('orb_bear'), sig.get('vwap_rejection'),
+                        sig.get('momentum_bear'), sig.get('open_play_bear'),
+                        sig.get('pm_bear')]
+        if not any(bear_signals):
+            return 0, 'SKIP'   # session/RSI context alone cannot trigger an entry
+
         if sig.get('orb_bear'):         score += 20
         if sig.get('vwap_rejection'):   score += 15
         if sig.get('momentum_bear'):    score += 10
@@ -1001,6 +1015,14 @@ def run_scan():
         log(f"Max trades open ({len(open_trades)}) — skip")
         return
 
+    # ── pm_ib hold: give user 5 min to send FUT BIAS after macro range is set ──
+    if _pm_ib_set and _pm_ib_set_time is not None:
+        elapsed = (datetime.now(ET) - _pm_ib_set_time).total_seconds()
+        if elapsed < 300:
+            remaining = int(300 - elapsed)
+            log(f"pm_ib hold — {remaining}s remaining. Send FUT BIAS LONG/SHORT if needed.")
+            return
+
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
@@ -1036,12 +1058,13 @@ def reset_daily_state():
     global _orb_high, _orb_low, _orb_set, _confirmed_scans
     global _regime_scan_counts, _session_high, _session_low
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
-    global _pm_high, _pm_low, _pm_ib_set, _daily_macro_bias
+    global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time, _daily_macro_bias
 
     _orb_high = _orb_low = None
     _orb_set  = False
     _pm_high = _pm_low = None
-    _pm_ib_set = False
+    _pm_ib_set      = False
+    _pm_ib_set_time = None
     _daily_macro_bias = 'BOTH'
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
