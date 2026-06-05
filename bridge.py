@@ -1307,10 +1307,13 @@ async def place_futures_order(req: FuturesOrderRequest):
 
     if req.order_type == "LIMIT" and req.limit_price:
         order = LimitOrder(side, qty, req.limit_price)
+        order.tif = 'GTC'        # resting limit — keep until cancelled or filled
     elif req.order_type == "STOP_MARKET" and req.stop_price:
         order = StopOrder(side, qty, req.stop_price)
+        order.tif = 'GTC'        # resting stop — keep until triggered or cancelled
     else:
         order = MarketOrder(side, qty)
+        order.tif = 'DAY'        # market — execute now or expire end of session
 
     if IBKR_ACCOUNT:
         order.account = IBKR_ACCOUNT
