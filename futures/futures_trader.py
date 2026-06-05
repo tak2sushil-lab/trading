@@ -1103,7 +1103,7 @@ def eod_snapshot():
 
 def poll_telegram_commands():
     """Poll for Telegram commands — PAUSE, RESUME, STATUS, CLOSE."""
-    global _trading_paused, _tg_offset
+    global _trading_paused, _tg_offset, _daily_macro_bias
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
