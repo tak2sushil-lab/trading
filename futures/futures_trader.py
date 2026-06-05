@@ -648,22 +648,33 @@ def get_open_futures_trades() -> list:
 
 
 def log_futures_entry(symbol, contract, entry_price, contracts,
-                      target, sl, setup_type, session, order_id, side='LONG') -> int:
+                      target, sl, setup_type, session, order_id,
+                      side='LONG', stop_order_id=None) -> int:
     conn = sqlite3.connect(DB_PATH)
     now  = datetime.now(ET)
     cur  = conn.execute('''
         INSERT INTO futures_trades
         (symbol, contract, entry_date, entry_time, entry_price,
          contracts, side, target_price, stop_price,
-         status, setup_type, session, order_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+         status, setup_type, session, order_id, stop_order_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ''', (symbol, contract, str(now.date()), now.strftime('%H:%M:%S'),
           entry_price, contracts, side, target, sl,
-          'OPEN', setup_type, session, order_id))
+          'OPEN', setup_type, session, order_id, stop_order_id))
     tid = cur.lastrowid
     conn.commit()
     conn.close()
     return tid
+
+
+def _cancel_backup_stop(trade: dict):
+    """Cancel the IBKR backup stop order for a trade. Call before every software exit."""
+    sid = trade.get('stop_order_id')
+    if not sid:
+        return
+    result = _bridge_post(f'/futures/cancel/{sid}', {})
+    status = result.get('status', result.get('error', '?'))
+    log(f"  Backup stop {sid} cancelled → {status}")
 
 
 def log_futures_exit(trade_id, exit_price, exit_reason, pnl, pnl_ticks):
@@ -780,11 +791,30 @@ def place_trade(side: str, sig: dict, regime: str,
     session  = get_session()
     setup    = f"ORB_{side}" if sig.get(f'orb_{"bull" if side=="LONG" else "bear"}') else f"VWAP_{side}"
 
+    # ── Backup IBKR stop order — placed immediately after entry ──────────────
+    # Fixed at the initial hard stop. Never moved (trail managed in software).
+    # Survives Mac sleep/crash. Cancelled by software exit before closing.
+    stop_side = 'BUY' if side == 'SHORT' else 'SELL'
+    stop_result = _bridge_post('/futures/order', {
+        'symbol':     SYMBOL,
+        'qty':        contracts,
+        'side':       stop_side,
+        'order_type': 'STOP_MARKET',
+        'aux_price':  sl,
+        'tif':        'GTC',
+    })
+    stop_order_id = stop_result.get('order_id', '')
+    if stop_order_id:
+        log(f"  Backup stop placed: {stop_side} STOP_MARKET @ {sl} (order {stop_order_id})")
+    else:
+        log(f"  WARNING: Backup stop failed — {stop_result}. Position unprotected if service dies.")
+
     tid = log_futures_entry(
         symbol=SYMBOL, contract=result.get('contract_month', SYMBOL),
         entry_price=price, contracts=contracts,
         target=target, sl=sl, setup_type=setup,
         session=session, order_id=order_id, side=side,
+        stop_order_id=stop_order_id or None,
     )
 
     risk_usd   = abs(price - sl) / TICK_SIZE * TICK_VALUE * contracts
@@ -924,6 +954,9 @@ def monitor_open_trades(regime: str = 'NORMAL'):
 
         # ── Execute exit ──────────────────────────────────
         if exit_reason:
+            # Cancel backup IBKR stop BEFORE closing — prevents ghost re-entry
+            # if stop triggers in the window between market close and cancellation.
+            _cancel_backup_stop(trade)
             cover_side = 'BUY' if is_short else 'SELL'
             result = _bridge_post('/futures/order', {
                 'symbol':     SYMBOL,
@@ -1171,6 +1204,7 @@ def _force_close_all():
         send_telegram("No open futures positions.")
         return
     for t in trades:
+        _cancel_backup_stop(t)   # cancel backup stop before closing
         side = 'BUY' if t.get('side') == 'SHORT' else 'SELL'
         _bridge_post('/futures/order', {
             'symbol': SYMBOL, 'qty': t.get('contracts', 1),
