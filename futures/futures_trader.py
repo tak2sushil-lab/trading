@@ -59,6 +59,15 @@ DAILY_PROFIT_TARGET  = 400.0   # stop new entries after hitting this
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 
+# ── Profit protection (point-based — MNQ-calibrated) ─────
+# PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
+# Use absolute points instead. Typical trade: entry ~30,000, target ~99pts.
+BE_ACTIVATE_PTS  = 30.0   # +30pts → move stop to entry (scratch worst case)
+TRAIL_WIDE_PTS   = 60.0   # +60pts → trail 20pts behind session peak
+TRAIL_TIGHT_PTS  = 85.0   # +85pts → tighten trail to 10pts (near 99pt target)
+TRAIL_WIDE_GAP   = 20.0   # trail distance in wide mode
+TRAIL_TIGHT_GAP  = 10.0   # trail distance in tight mode
+
 # ── Session constants (ET) ────────────────────────────────
 ET = pytz.timezone('America/New_York')
 
@@ -751,57 +760,35 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         pnl_usd   = pnl_ticks * TICK_VALUE * contracts
         pnl_pct   = pnl_pts / entry * 100
 
-        # ── Trail stops ───────────────────────────────────
-        df5 = get_bars() if is_market_open() else pd.DataFrame()
-        atr = calc_atr(df5) if not df5.empty else 10.0
+        # ── Point-based profit protection ─────────────────
+        # MNQ target ~99pts. PCT-based thresholds (1.5% = 450pts) never fire.
+        # Three tiers, each only tightens — never loosens the stop.
+        pnl_pts = (entry - price) if is_short else (price - entry)
+        s_peak  = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
 
-        ATR_TRAIL_MULT = 1.5
-        PCT_TRAIL_ACT  = 1.5   # % gain to activate PCT trail
-        PCT_TRAIL_GAP  = 0.5   # trail 0.5% below/above session extreme
+        # Tier 1 (+30pts): break-even — stop moves to entry, trade cannot lose
+        if pnl_pts >= BE_ACTIVATE_PTS:
+            be = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
+            if (not is_short and be > sl) or (is_short and be < sl):
+                sl = be
+                update_futures_stop(tid, sl)
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE stop → {sl} (+{pnl_pts:.0f}pts)")
 
-        if is_short:
-            # ATR trail (short): trail = session_low + 1.5 × ATR
-            if pnl_pct >= 1.0:
-                atr_trail = round(_session_low.get(tid, price) + ATR_TRAIL_MULT * atr, 2)
-                if atr_trail < sl:
-                    sl = atr_trail
-                    update_futures_stop(tid, sl)
-                    log(f"  {SYMBOL} SHORT: ATR trail → {sl} ({pnl_pct:+.1f}%)")
-            # PCT trail
-            if pnl_pct >= PCT_TRAIL_ACT:
-                pct_trail = round(_session_low.get(tid, price) * (1 + PCT_TRAIL_GAP / 100), 2)
-                if pct_trail < sl:
-                    sl = pct_trail
-                    update_futures_stop(tid, sl)
-        else:
-            # ATR trail (long): trail = session_high - 1.5 × ATR
-            if pnl_pct >= 1.0:
-                atr_trail = round(_session_high.get(tid, price) - ATR_TRAIL_MULT * atr, 2)
-                if atr_trail > sl:
-                    sl = atr_trail
-                    update_futures_stop(tid, sl)
-                    log(f"  {SYMBOL}: ATR trail → {sl} ({pnl_pct:+.1f}%)")
-            # PCT trail
-            if pnl_pct >= PCT_TRAIL_ACT:
-                pct_trail = round(_session_high.get(tid, price) * (1 - PCT_TRAIL_GAP / 100), 2)
-                if pct_trail > sl:
-                    sl = pct_trail
-                    update_futures_stop(tid, sl)
+        # Tier 2 (+60pts): trail 20pts behind session peak
+        if pnl_pts >= TRAIL_WIDE_PTS:
+            trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
+            if (not is_short and trail > sl) or (is_short and trail < sl):
+                sl = trail
+                update_futures_stop(tid, sl)
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(20) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Break-even stop at +1.5% (futures move fast)
-        if pnl_pct >= 1.5:
-            if is_short and sl > entry:
-                be_sl = round(entry + 0.5, 2)
-                if be_sl < sl:
-                    sl = be_sl
-                    update_futures_stop(tid, sl)
-                    log(f"  {SYMBOL} SHORT: break-even → {sl}")
-            elif not is_short and sl < entry:
-                be_sl = round(entry - 0.5, 2)
-                if be_sl > sl:
-                    sl = be_sl
-                    update_futures_stop(tid, sl)
-                    log(f"  {SYMBOL}: break-even → {sl}")
+        # Tier 3 (+85pts, near target): tighten to 10pts — lock in most of the gain
+        if pnl_pts >= TRAIL_TIGHT_PTS:
+            trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
+            if (not is_short and trail > sl) or (is_short and trail < sl):
+                sl = trail
+                update_futures_stop(tid, sl)
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(10) → {sl} (+{pnl_pts:.0f}pts)")
 
         # VWAP for exit decisions
         vwap = calc_vwap(df5) if not df5.empty else None
@@ -1070,7 +1057,7 @@ def main():
         send_telegram("⚠️ FUTURES: Bridge not connected at startup. Will retry on each scan.")
 
     prop_load()
-    send_telegram(f"🚀 FUTURES TRADER started\n{prop_status()}")
+    send_telegram(f"⚡ TriVega Futures · Online\n{prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)
 

@@ -83,7 +83,10 @@ def _default_state() -> dict:
 def load_state() -> dict:
     try:
         if STATE_FILE.exists():
-            return json.loads(STATE_FILE.read_text())
+            saved   = json.loads(STATE_FILE.read_text())
+            merged  = _default_state()   # start with all keys present
+            merged.update(saved)         # saved values override defaults
+            return merged                # missing keys get default values
     except Exception:
         pass
     return _default_state()
