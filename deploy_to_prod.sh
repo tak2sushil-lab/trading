@@ -4,12 +4,13 @@
 # Then deploy: ./deploy_to_prod.sh
 #
 # What is NOT deployed (stays prod-specific):
-#   .env          — prod has its own credentials + ports
-#   *.db *.sqlite — prod accumulates its own trade history
-#   venv/         — prod uses its own venv (or symlink)
-#   logs/         — separate log streams
-#   .git/         — not a git repo in prod
-#   __pycache__   — rebuilt on first run
+#   .env                    — prod has its own credentials + ports
+#   *.db *.sqlite           — prod accumulates its own trade history
+#   futures/prop_state.json — futures runtime TC/XFA state (like a .db file)
+#   venv/                   — prod uses its own venv (or symlink)
+#   logs/                   — separate log streams
+#   .git/                   — not a git repo in prod
+#   __pycache__             — rebuilt on first run
 
 set -e
 SRC="/Users/sushil/trading/"
@@ -39,6 +40,7 @@ rsync -av $DRY_RUN \
     --exclude='logs/' \
     --exclude='velocity_logs/' \
     --exclude='sim_tune_cache*' \
+    --exclude='futures/prop_state.json' \
     "$SRC" "$DST"
 
 if [[ -n "$DRY_RUN" ]]; then
@@ -53,4 +55,5 @@ echo ""
 echo "  Next: restart prod services"
 echo "    launchctl kickstart -k gui/\$(id -u)/com.sushil.trading-prod.bridge"
 echo "    launchctl kickstart -k gui/\$(id -u)/com.sushil.trading-prod.autotrader"
+echo "    launchctl kickstart -k gui/\$(id -u)/com.sushil.trading-prod.futures_trader"
 echo "  (Do NOT restart the gateway unless you intend to — it forces a re-login)"
