@@ -350,13 +350,61 @@ async def get_futures_history(
     # useRTH=False: futures trade 23h — RTH filter would drop nearly all intraday bars
     use_rth  = rth if bar_size == '1 day' else False
     end_date = end_dt.strip() if end_dt and end_dt.strip() else ''
+    ibkr_bars = []
     try:
-        bars = await ib.reqHistoricalDataAsync(
-            contract, endDateTime=end_date, durationStr=duration,
-            barSizeSetting=bar_size, whatToShow='TRADES',
-            useRTH=use_rth, formatDate=1, keepUpToDate=False
+        # 15s hard cap: IBKR historical server regularly hangs for 60s (Error 162)
+        # on paper accounts without a CME historical data subscription. Failing fast
+        # lets the yfinance fallback below serve data within the caller's 20s timeout.
+        raw = await asyncio.wait_for(
+            ib.reqHistoricalDataAsync(
+                contract, endDateTime=end_date, durationStr=duration,
+                barSizeSetting=bar_size, whatToShow='TRADES',
+                useRTH=use_rth, formatDate=1, keepUpToDate=False
+            ),
+            timeout=15,
         )
-        return {'symbol': sym, 'bars': [_bar_to_dict(b) for b in (bars or [])]}
+        ibkr_bars = [_bar_to_dict(b) for b in (raw or [])]
+    except Exception:
+        pass
+
+    if ibkr_bars:
+        return {'symbol': sym, 'bars': ibkr_bars, 'source': 'ibkr'}
+
+    # Fallback: yfinance — always available, 15-min delayed.
+    # Triggered when IBKR historical data subscription is absent (Error 162)
+    # or during pre-RTH when CME historical server is unreliable.
+    _yf_map = {'MNQ': 'MNQ=F', 'NQ': 'NQ=F', 'ES': 'ES=F',
+               'MES': 'MES=F', 'RTY': 'RTY=F', 'YM': 'YM=F', 'MYM': 'YM=F'}
+    yf_sym = _yf_map.get(sym, f'{sym}=F')
+
+    # Convert IBKR duration to yfinance period
+    _period_map = {'1 D': '1d', '2 D': '5d', '3 D': '5d', '5 D': '5d',
+                   '7 D': '5d', '10 D': '10d', '14 D': '10d', '30 D': '1mo',
+                   '60 D': '2mo'}
+    _interval_map = {'5 mins': '5m', '1 min': '1m', '15 mins': '15m',
+                     '30 mins': '30m', '1 hour': '1h', '1 day': '1d'}
+    period   = _period_map.get(duration, '5d')
+    interval = _interval_map.get(bar_size, '5m')
+    try:
+        loop = asyncio.get_event_loop()
+        # Ticker.history() returns flat columns (Open/High/Low/Close/Volume);
+        # yf.download() returns multi-level columns — avoid it here.
+        df   = await loop.run_in_executor(None,
+               lambda: yf.Ticker(yf_sym).history(period=period, interval=interval,
+                                                  auto_adjust=True))
+        if df is None or df.empty:
+            return {'symbol': sym, 'bars': [], 'source': 'yfinance_empty'}
+        bars_yf = []
+        for ts, row in df.iterrows():
+            bars_yf.append({
+                'ts':     ts.isoformat(),
+                'open':   round(float(row['Open']),   2),
+                'high':   round(float(row['High']),   2),
+                'low':    round(float(row['Low']),    2),
+                'close':  round(float(row['Close']),  2),
+                'volume': int(row['Volume']) if row['Volume'] else 0,
+            })
+        return {'symbol': sym, 'bars': bars_yf, 'source': 'yfinance'}
     except Exception as e:
         return {'error': str(e), 'bars': []}
 
