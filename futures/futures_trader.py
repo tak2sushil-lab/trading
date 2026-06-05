@@ -804,6 +804,10 @@ def monitor_open_trades(regime: str = 'NORMAL'):
     exits = []
     now   = datetime.now(ET)
 
+    # Fetch bars once for the whole monitor cycle (used for VWAP + ATR)
+    df5  = get_bars(bar_size_min=5, days=2) if is_market_open() else pd.DataFrame()
+    vwap_now = calc_vwap(df5) if not df5.empty else None
+
     for trade in trades:
         tid       = trade['id']
         entry     = trade['entry_price']
@@ -863,7 +867,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(10) → {sl} (+{pnl_pts:.0f}pts)")
 
         # VWAP for exit decisions
-        vwap = calc_vwap(df5) if not df5.empty else None
+        vwap = vwap_now   # pre-fetched once above the loop
 
         # ── Exit decisions ────────────────────────────────
         exit_reason = None
@@ -1032,6 +1036,7 @@ def reset_daily_state():
     global _orb_high, _orb_low, _orb_set, _confirmed_scans
     global _regime_scan_counts, _session_high, _session_low
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
+    global _pm_high, _pm_low, _pm_ib_set, _daily_macro_bias
 
     _orb_high = _orb_low = None
     _orb_set  = False
@@ -1057,13 +1062,9 @@ def reset_daily_state():
 
 def eod_snapshot():
     """Called at EOD — update trailing drawdown high water mark."""
-    health = _bridge_get('/account')
-    bal    = health.get('NetLiquidation') or health.get('TotalCashValue')
-    if bal:
-        update_eod_balance(float(bal))
-        log(f"EOD balance: ${bal:,.2f}")
-
     daily = get_futures_daily_pnl()
+    update_eod_balance(daily)   # pass today's futures P&L (not equity account balance)
+    log(f"EOD futures P&L: ${daily:+.2f}")
     send_telegram(
         f"🌙 FUTURES EOD\n"
         f"Day P&L: ${daily:+.2f}\n"

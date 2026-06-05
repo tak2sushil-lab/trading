@@ -72,6 +72,10 @@ async def _connect_ibkr() -> bool:
             # reqAccountUpdates populates ib.portfolio() with prices + P&L
             ib.reqAccountUpdates(True, '')
             await asyncio.sleep(3)
+            # Live feed for both equity and futures — must be set before any reqMktData
+            # call. Avoids Error 10197 (competing live session) and delayed-mode routing
+            # that causes historical data pacing issues after reconnect.
+            ib.reqMarketDataType(1)
             # Subscribe streaming market data for any held positions so portfolio
             # prices stay live (reqAccountUpdates alone doesn't guarantee price pushes).
             # Covers both equity (STK) and futures (FUT) positions.
