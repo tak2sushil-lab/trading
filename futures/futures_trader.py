@@ -1244,6 +1244,15 @@ def _force_close_all():
 
 def main():
     global _scheduler
+
+    # ── Go-live gate (mirrors PROD_EQUITY_ENABLED pattern) ───────────────────
+    # In prod: TRADING_MODE=live. Must also set PROD_FUTURES_ENABLED=true to trade.
+    # Paper mode (UAT): flag not checked — always runs.
+    if os.getenv('TRADING_MODE', 'paper') == 'live':
+        if os.getenv('PROD_FUTURES_ENABLED', 'false').lower() != 'true':
+            log("PROD_FUTURES_ENABLED is not 'true' in .env — exiting. Set it to enable live futures trading.")
+            sys.exit(0)
+
     log("=" * 50)
     log("FUTURES TRADER starting")
     log(f"Symbol: {SYMBOL} | Bridge: {BRIDGE}")
