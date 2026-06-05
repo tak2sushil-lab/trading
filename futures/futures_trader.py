@@ -12,7 +12,7 @@ MNQ constants:
   Tick size  : 0.25 points
   Tick value : $0.50
   Point value: $2.00
-  Session    : 6pm–5pm ET (23h), trade NY only (9:30am–3:10pm ET)
+  Session    : 6pm–5pm ET (23h), trade NY only (9:30am–4:00pm ET / 3:00pm CT)
 """
 
 import os
@@ -79,9 +79,9 @@ MIDDAY_END      = (12, 0)
 LUNCH_START     = (12, 0)
 LUNCH_END       = (13, 0)
 AFTERNOON_START = (13, 0)
-AFTERNOON_END   = (15, 0)
-EOD_START       = (15, 0)   # close only, no new entries
-HARD_CLOSE      = (15, 15)  # force close all positions
+AFTERNOON_END   = (15, 30)
+EOD_START       = (15, 30)  # 3:30pm ET = 2:30pm CT — no new entries (matches TopStepX rule)
+HARD_CLOSE      = (16, 0)   # 4:00pm ET = 3:00pm CT — force close (10 min before TopStepX 3:10pm CT auto-liq)
 
 SCAN_INTERVAL   = 60        # seconds between scans (1 min, faster than equity)
 MONITOR_INTERVAL = 15       # seconds between position checks
@@ -963,7 +963,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         # 5. EOD close (hard close at 3:15pm ET)
         h, m = now.hour, now.minute
         if not exit_reason and (h > HARD_CLOSE[0] or (h == HARD_CLOSE[0] and m >= HARD_CLOSE[1])):
-            exit_reason = f'EOD hard close (3:15pm ET)'
+            exit_reason = f'EOD hard close (4:00pm ET / 3:00pm CT)'
 
         # ── Execute exit ──────────────────────────────────
         if exit_reason:
@@ -1290,7 +1290,7 @@ def main():
                        day_of_week='mon-fri', hour=9, minute=28,
                        timezone=ET, id='daily_reset')
     _scheduler.add_job(eod_snapshot, 'cron',
-                       day_of_week='mon-fri', hour=15, minute=20,
+                       day_of_week='mon-fri', hour=16, minute=10,
                        timezone=ET, id='eod_snapshot')
 
     _scheduler.start()
