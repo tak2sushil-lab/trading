@@ -105,6 +105,7 @@ _daily_macro_bias     = 'BOTH'  # 'LONG' | 'SHORT' | 'BOTH' — set via Telegram
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
+_tg_offset            = 0      # Telegram getUpdates offset — marks messages as read
 _scheduler            = None
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
@@ -1099,17 +1100,18 @@ def eod_snapshot():
 
 def poll_telegram_commands():
     """Poll for Telegram commands — PAUSE, RESUME, STATUS, CLOSE."""
-    global _trading_paused
+    global _trading_paused, _tg_offset
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         r = requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-            params={'timeout': 1, 'allowed_updates': ['message']},
+            params={'timeout': 1, 'offset': _tg_offset, 'allowed_updates': ['message']},
             timeout=5,
         )
         updates = r.json().get('result', [])
         for u in updates:
+            _tg_offset = u['update_id'] + 1   # acknowledge — won't be returned again
             msg = u.get('message', {}).get('text', '').strip().upper()
             if 'FUT PAUSE' in msg:
                 _trading_paused = True
