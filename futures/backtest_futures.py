@@ -1121,7 +1121,7 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
     win_mfes = [t['mfe_pts'] for t in wins]
     loss_mfes = [t['mfe_pts'] for t in losses]
 
-    hdr = f'  MNQ FUTURES BACKTEST — {mode} mode' + (f' [{label}]' if label else '')
+    hdr = f'  TriVega Futures — MNQ Backtest ({mode} mode)' + (f' [{label}]' if label else '')
     print('=' * 65)
     print(hdr)
     print('=' * 65)

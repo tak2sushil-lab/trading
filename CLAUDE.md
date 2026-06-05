@@ -1,6 +1,6 @@
-# Claude Code — Trading System Ground Truth
+# TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jun 2 2026
+Last updated: Jun 5 2026
 
 ---
 

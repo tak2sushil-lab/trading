@@ -3092,6 +3092,7 @@ def main():
 
     _scalp_cooldown_init()   # restore 4h dedup from DB (survives restarts)
     print("[options_trader] started — polling Telegram")
+    send_telegram("⚡ TriVega Options · Online | Spread/LEAP/Scalp engine active")
     _suggestion_check_counter = 0
     _scalp_counter            = 0
     while True:

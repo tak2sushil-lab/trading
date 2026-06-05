@@ -4234,7 +4234,7 @@ if __name__ == '__main__':
     except Exception as _pe:
         log(f"Warning: could not restore peak_session_pnl: {_pe}")
 
-    print("\n🤖 Auto Trader v2 — Consolidated")
+    print("\n⚡ TriVega Equity — Auto Trader")
     print("=" * 55)
     print(f"Scan interval:    Every {SCAN_INTERVAL//60} min")
     print(f"Max open trades:  {MAX_OPEN_TRADES}")
@@ -4268,7 +4268,7 @@ if __name__ == '__main__':
     sched.add_job(poll_telegram_commands, 'interval', seconds=15)
     sched.start()
 
-    send_telegram(f"🤖 Auto Trader v2 ON | Swing mode | ${TOTAL_CAPITAL:,} cap | max {MAX_OPEN_TRADES} positions")
+    send_telegram(f"⚡ TriVega Equity · Online | ${TOTAL_CAPITAL:,} cap | max {MAX_OPEN_TRADES} positions")
 
     _last_full_scan = 0.0
 
@@ -4292,7 +4292,7 @@ if __name__ == '__main__':
                 time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
             daily = get_daily_pnl()
-            send_telegram(f"🤖 Auto Trader stopped\nBull: {daily_bull_count} Bear: {daily_bear_count} | P&L: ${daily['pnl']:+.2f}")
+            send_telegram(f"⚡ TriVega Equity · Stopped\nBull: {daily_bull_count} Bear: {daily_bear_count} | P&L: ${daily['pnl']:+.2f}")
             sched.shutdown()
             break
         except Exception as e:
