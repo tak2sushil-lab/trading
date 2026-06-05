@@ -144,8 +144,11 @@ def check_can_trade(unrealized_pnl: float = 0.0) -> tuple[bool, str]:
     if mode == 'TC' and session_pnl >= TC_DAILY_CAP:
         return False, f'TC daily cap reached (${session_pnl:.0f} ≥ ${TC_DAILY_CAP:.0f}) — protecting consistency rule'
 
-    # ── TC: consistency check warning ─────────────────────
-    if mode == 'TC' and total_profit > 0:
+    # ── TC: consistency check (ratio only meaningful once enough profit is accumulated) ──
+    # The $1,200 daily cap already guarantees ≤40% per day on a $3K target.
+    # Only run the ratio check when total_profit >= TC_DAILY_CAP — otherwise
+    # day-1 profits (total=$173, today=$173 → 100%) falsely block all entries.
+    if mode == 'TC' and total_profit >= TC_DAILY_CAP:
         if session_pnl > 0 and (session_pnl / total_profit) > TC_CONSISTENCY_MAX:
             return False, f'TC consistency: today ${session_pnl:.0f} = {session_pnl/total_profit:.0%} of total ${total_profit:.0f} — cap hit'
 

@@ -789,7 +789,7 @@ def place_trade(side: str, sig: dict, regime: str,
 
     msg = (
         f"🔵 FUTURES {side} ENTRY\n"
-        f"Symbol:    {SYMBOL} ({result.get('contract','')})\n"
+        f"Symbol:    {SYMBOL} {result.get('contract_month','')}\n"
         f"Price:     {price}\n"
         f"Stop:      {sl}  (-${risk_usd:.0f})\n"
         f"Target:    {target}  (+${target_usd:.0f})\n"
@@ -1121,10 +1121,22 @@ def poll_telegram_commands():
                 send_telegram("▶️ FUTURES trading resumed.")
             elif 'FUT STATUS' in msg:
                 price = get_live_price()
+                open_trades = get_open_futures_trades()
+                pos_lines = []
+                for t in open_trades:
+                    live  = price or t['entry_price']
+                    pts   = (t['entry_price'] - live) if t['side'] == 'SHORT' else (live - t['entry_price'])
+                    upnl  = pts / TICK_SIZE * TICK_VALUE * t['contracts']
+                    risk  = abs(t['entry_price'] - (t['stop_price'] or t['entry_price'])) / TICK_SIZE * TICK_VALUE * t['contracts']
+                    pos_lines.append(
+                        f"  {t['side']} {t['contracts']}ct @ {t['entry_price']} | "
+                        f"now {live:.2f} | uPnL ${upnl:+.0f} | risk ${risk:.0f}"
+                    )
+                pos_str = '\n'.join(pos_lines) if pos_lines else '  No open positions'
                 send_telegram(
                     f"{format_prop_status()}\n"
-                    f"Price: {price}  Bias: {_daily_macro_bias}  "
-                    f"Session: {get_session()}"
+                    f"MNQ: {price}  Bias: {_daily_macro_bias}  Session: {get_session()}\n"
+                    f"Positions ({len(open_trades)}):\n{pos_str}"
                 )
             elif 'FUT BIAS LONG' in msg:
                 _daily_macro_bias = 'LONG'
@@ -1145,8 +1157,8 @@ def poll_telegram_commands():
                 send_telegram("✅ Macro bias cleared — trading both directions.")
             elif 'FUT CLOSE' in msg:
                 _force_close_all()
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"[TG poll error] {e}")
 
 
 def _force_close_all():
