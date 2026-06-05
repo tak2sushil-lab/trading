@@ -274,35 +274,76 @@ async def get_history(
             'volume': int(b.volume) if b.volume else 0,
         }
 
-    # For '2 Y' daily: chain two 1-year requests (IBKR max is 1 Y per call)
-    if duration == '2 Y' and bar_size == '1 day':
-        # Year 1: last 12 months
-        bars1 = await ib.reqHistoricalDataAsync(
-            contract, endDateTime='', durationStr='1 Y',
-            barSizeSetting='1 day', whatToShow='TRADES',
-            useRTH=rth, formatDate=1, keepUpToDate=False
+    # 15s hard cap per request — IBKR historical data regularly exceeds 60s under
+    # pacing violations (Error 162), causing all callers to time out. Fail fast so
+    # the yfinance fallback below serves data within auto_trader's 45s HTTP timeout.
+    async def _req(end_dt='', dur=duration):
+        return await asyncio.wait_for(
+            ib.reqHistoricalDataAsync(
+                contract, endDateTime=end_dt, durationStr=dur,
+                barSizeSetting=bar_size, whatToShow='TRADES',
+                useRTH=rth, formatDate=1, keepUpToDate=False
+            ),
+            timeout=15,
         )
-        # Year 2: 12-24 months ago
-        end2 = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d %H:%M:%S')
-        bars2 = await ib.reqHistoricalDataAsync(
-            contract, endDateTime=end2, durationStr='1 Y',
-            barSizeSetting='1 day', whatToShow='TRADES',
-            useRTH=rth, formatDate=1, keepUpToDate=False
-        )
-        result = sorted(
-            [_bar_to_dict(b) for b in (bars2 or [])] +
-            [_bar_to_dict(b) for b in (bars1 or [])],
-            key=lambda x: x['date']
-        )
-    else:
-        bars   = await ib.reqHistoricalDataAsync(
-            contract, endDateTime='', durationStr=duration,
-            barSizeSetting=bar_size, whatToShow='TRADES',
-            useRTH=rth, formatDate=1, keepUpToDate=False
-        )
-        result = [_bar_to_dict(b) for b in (bars or [])]
 
-    _hist_cache[cache_key] = {'ts': datetime.utcnow(), 'bars': result}
+    result = []
+    try:
+        # For '2 Y' daily: chain two 1-year requests (IBKR max is 1 Y per call)
+        if duration == '2 Y' and bar_size == '1 day':
+            bars1 = await _req(dur='1 Y')
+            end2  = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d %H:%M:%S')
+            bars2 = await _req(end_dt=end2, dur='1 Y')
+            result = sorted(
+                [_bar_to_dict(b) for b in (bars2 or [])] +
+                [_bar_to_dict(b) for b in (bars1 or [])],
+                key=lambda x: x['date']
+            )
+        else:
+            bars   = await _req()
+            result = [_bar_to_dict(b) for b in (bars or [])]
+    except Exception:
+        pass
+
+    if result:
+        _hist_cache[cache_key] = {'ts': datetime.utcnow(), 'bars': result}
+        return result
+
+    # Fallback: yfinance — triggered when IBKR historical data times out (Error 162
+    # pacing violation after bridge restart, or missing subscription for that contract).
+    # auto_trader already has its own yfinance fallback; this makes the bridge
+    # self-sufficient so watchman, options_trader, and other callers benefit too.
+    if sym == 'VIX':
+        yf_sym = '^VIX'
+    else:
+        yf_sym = sym
+
+    _period_map = {'1 D': '1d', '2 D': '5d', '3 D': '5d', '5 D': '5d',
+                   '7 D': '5d', '10 D': '10d', '14 D': '10d', '30 D': '1mo',
+                   '60 D': '2mo', '1 Y': '1y', '2 Y': '2y'}
+    _interval_map = {'5 mins': '5m', '1 min': '1m', '15 mins': '15m',
+                     '30 mins': '30m', '1 hour': '1h', '1 day': '1d'}
+    period   = _period_map.get(duration, '1mo')
+    interval = _interval_map.get(bar_size, '1d')
+    try:
+        loop = asyncio.get_event_loop()
+        df   = await loop.run_in_executor(None,
+               lambda: yf.Ticker(yf_sym).history(period=period, interval=interval,
+                                                  auto_adjust=True))
+        if df is not None and not df.empty:
+            result = []
+            for ts, row in df.iterrows():
+                result.append({
+                    'date':   ts.isoformat(),
+                    'open':   round(float(row['Open']),   2),
+                    'high':   round(float(row['High']),   2),
+                    'low':    round(float(row['Low']),    2),
+                    'close':  round(float(row['Close']),  2),
+                    'volume': int(row['Volume']) if row['Volume'] else 0,
+                })
+            _hist_cache[cache_key] = {'ts': datetime.utcnow(), 'bars': result}
+    except Exception:
+        pass
     return result
 
 # ── Futures historical bars ───────────────────────────────
