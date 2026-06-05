@@ -35,6 +35,7 @@ import os
 import sys
 import time
 import requests
+import yfinance as yf
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -317,15 +318,50 @@ def _send_scalp_report(cnt: int):
         print(f"[watchman] scalp report error: {e}")
 
 
+def _yf_option_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
+    """yfinance fallback for option quotes when IBKR/OPRA returns null bid/ask."""
+    try:
+        exp_fmt = f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:]}"
+        chain = yf.Ticker(symbol).option_chain(exp_fmt)
+        df = chain.calls if right.upper() == 'C' else chain.puts
+        # Exact strike match first, then nearest
+        row = df[df['strike'] == float(strike)]
+        if row.empty:
+            row = df.iloc[(df['strike'] - float(strike)).abs().argsort()[:1]]
+        if row.empty:
+            return None
+        r   = row.iloc[0]
+        bid = float(r['bid'])  if r['bid']       > 0 else None
+        ask = float(r['ask'])  if r['ask']       > 0 else None
+        last= float(r['lastPrice']) if r['lastPrice'] > 0 else None
+        # Far-OTM options often have 0 bid/ask — use last price as proxy
+        if bid is None and last:
+            bid = round(last * 0.90, 2)
+            ask = round(last * 1.10, 2)
+        return {
+            'bid': bid, 'ask': ask, 'last': last,
+            'iv':  float(r['impliedVolatility']) if r.get('impliedVolatility') else None,
+            'source': 'yfinance_fallback',
+        }
+    except Exception as e:
+        print(f"[yf_option_quote] {symbol} {expiry} {strike}{right}: {e}")
+        return None
+
+
 def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
+    # Try IBKR bridge first
     try:
         url = f"{BRIDGE_URL}/options/quote/{symbol}/{expiry}/{strike}/{right}"
         r   = requests.get(url, timeout=20)
         if r.status_code == 200:
-            return r.json()
+            d = r.json()
+            # Only trust bridge if bid/ask are real — otherwise fall through to yfinance
+            if d.get('bid') is not None and d.get('ask') is not None:
+                return d
     except Exception as e:
         print(f"[quote error] {symbol} {e}")
-    return None
+    # IBKR returned null bid/ask (OPRA not active) — fall back to yfinance
+    return _yf_option_quote(symbol, expiry, strike, right)
 
 
 def get_iv_rank(symbol: str) -> dict | None:
@@ -371,8 +407,8 @@ def get_spread_value(trade: dict) -> float | None:
                         trade['short_strike'], trade['right'])
     if not long_q or not short_q:
         return None
-    long_mid  = (long_q.get('bid', 0)  + long_q.get('ask', 0))  / 2
-    short_mid = (short_q.get('bid', 0) + short_q.get('ask', 0)) / 2
+    long_mid  = ((long_q.get('bid')  or 0) + (long_q.get('ask')  or 0)) / 2
+    short_mid = ((short_q.get('bid') or 0) + (short_q.get('ask') or 0)) / 2
     value = round((long_mid - short_mid) * 100, 2)  # per-contract dollar value
     return value if value > 0 else None
 
@@ -383,7 +419,7 @@ def get_leap_value(trade: dict) -> float | None:
                   trade['strike'], trade['right'])
     if not q:
         return None
-    mid = (q.get('bid', 0) + q.get('ask', 0)) / 2
+    mid = ((q.get('bid') or 0) + (q.get('ask') or 0)) / 2
     return round(mid * 100, 2)  # per-contract dollar value
 
 
@@ -393,7 +429,7 @@ def get_scalp_value(trade: dict) -> float | None:
                   trade['long_strike'], trade['right'])
     if not q:
         return None
-    mid = (q.get('bid', 0) + q.get('ask', 0)) / 2
+    mid = ((q.get('bid') or 0) + (q.get('ask') or 0)) / 2
     return round(mid * 100, 2)  # per-contract dollar value
 
 
