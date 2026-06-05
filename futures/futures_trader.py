@@ -97,6 +97,10 @@ _partial_done         = {}   # trade_id → locked_pnl
 _orb_high             = None # opening range high (first 15 min)
 _orb_low              = None # opening range low
 _orb_set              = False
+_pm_high              = None # pre-market IB high (8:30–9:30am ET) — Cylinder 4
+_pm_low               = None # pre-market IB low
+_pm_ib_set            = False
+_daily_macro_bias     = 'BOTH'  # 'LONG' | 'SHORT' | 'BOTH' — set via Telegram or Groq
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
@@ -255,6 +259,45 @@ def update_orb(df5: pd.DataFrame):
         _orb_low  = float(orb_bars['low'].min())
         _orb_set  = True
         log(f"ORB set: H={_orb_high} L={_orb_low}")
+
+
+# ── Pre-market IB (Cylinder 4) ───────────────────────────
+
+def update_premarket_ib():
+    """
+    Capture the pre-market Initial Balance from 8:30–9:30am ET bars.
+    On macro days (NFP/CPI/FOMC), this is the range created by the
+    8:30am release. Breaking this range during RTH = highest conviction signal.
+    Called once per day at ~9:20am startup (before RTH opens).
+    """
+    global _pm_high, _pm_low, _pm_ib_set
+    if _pm_ib_set:
+        return
+    try:
+        from futures.macro_calendar import classify_date
+        today_cls = classify_date(datetime.now(ET).date().isoformat())
+        bars = get_bars(bar_size_min=5, days=1)
+        if bars.empty:
+            return
+        today   = datetime.now(ET).date()
+        pm_start = ET.localize(datetime(today.year, today.month, today.day, 8, 30))
+        pm_end   = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+        pm_bars  = bars[(bars.index >= pm_start) & (bars.index < pm_end)]
+        if len(pm_bars) >= 2:
+            _pm_high  = float(pm_bars['high'].max())
+            _pm_low   = float(pm_bars['low'].min())
+            _pm_ib_set = True
+            flag = '🔴 MACRO DAY' if today_cls == 'HIGH_IMPACT' else ''
+            log(f"Pre-market IB: H={_pm_high}  L={_pm_low}  ({len(pm_bars)} bars) {flag}")
+            if today_cls == 'HIGH_IMPACT':
+                send_telegram(
+                    f"📊 Pre-market IB set ({today_cls})\n"
+                    f"PM High: {_pm_high}  PM Low: {_pm_low}\n"
+                    f"Range: {round(_pm_high - _pm_low, 2)}pts\n"
+                    f"Reply FUT BIAS LONG or FUT BIAS SHORT after 8:30am data."
+                )
+    except Exception as e:
+        log(f"update_premarket_ib error: {e}")
 
 
 # ── VWAP ──────────────────────────────────────────────────
@@ -443,6 +486,14 @@ def get_signals(df5: pd.DataFrame) -> dict:
     else:
         sig['momentum_bear'] = False
 
+    # ── Pre-market IB break (Cylinder 4) — macro event capture ───────────
+    # On NFP/CPI/FOMC days: the 8:30am release creates a structural range.
+    # Breaking pm_high/pm_low during RTH = continuation of macro move.
+    sig['pm_bull'] = (_pm_ib_set and _pm_high is not None and price > _pm_high)
+    sig['pm_bear'] = (_pm_ib_set and _pm_low  is not None and price < _pm_low)
+    sig['pm_high'] = _pm_high
+    sig['pm_low']  = _pm_low
+
     return sig
 
 
@@ -479,6 +530,12 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
         if regime == 'STRONG':
             return 0, 'SKIP'
 
+    # ── Macro bias gate ───────────────────────────────────
+    # _daily_macro_bias set by Telegram (FUT BIAS LONG/SHORT) or auto-detected.
+    # On macro days: only trade in the confirmed macro direction.
+    if _daily_macro_bias == 'LONG'  and side == 'SHORT': return 0, 'SKIP'
+    if _daily_macro_bias == 'SHORT' and side == 'LONG':  return 0, 'SKIP'
+
     if side == 'LONG':
         # ORB break
         if sig.get('orb_bull'):         score += 20
@@ -488,17 +545,21 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
         if sig.get('momentum_bull'):    score += 10
         # Session open play
         if sig.get('open_play_bull'):   score += 10
+        # Pre-market IB break — strongest signal on macro days
+        if sig.get('pm_bull'):          score += 25
         # RSI gate: skip if overbought
         if rsi > 80:
             return 0, 'SKIP'
         if rsi > 70:                    score -= 10
-        if rsi < 45:                    score += 5   # still room to run
+        if rsi < 45:                    score += 5
 
     else:  # SHORT
         if sig.get('orb_bear'):         score += 20
         if sig.get('vwap_rejection'):   score += 15
         if sig.get('momentum_bear'):    score += 10
         if sig.get('open_play_bear'):   score += 10
+        # Pre-market IB break (short)
+        if sig.get('pm_bear'):          score += 25
         if rsi < 20:
             return 0, 'SKIP'
         if rsi < 30:                    score -= 10
@@ -903,10 +964,11 @@ def run_scan():
     session = get_session()
     log(f"--- SCAN | session={session} | {datetime.now(ET).strftime('%H:%M')} ---")
 
-    # Update ORB
+    # Update ORB + pre-market IB
     df5 = get_bars(bar_size_min=5, days=2)
     if not df5.empty:
         update_orb(df5)
+        update_premarket_ib()   # sets pm_high/pm_low from 8:30–9:30am bars
 
     # Regime
     regime = get_regime()
@@ -942,8 +1004,12 @@ def run_scan():
             log(f"LONG signal: {grade} ({score}pts) — entering")
             place_trade('LONG', sig, regime, score, grade)
 
-    # ── Try SHORT entry (WEAK regime only) ────────────────
-    if regime == 'WEAK' and _confirmed_scans >= 3:
+    # ── Try SHORT entry ────────────────────────────────────
+    # Normal: WEAK regime required. Macro bias SHORT: allowed in any regime
+    # (NFP miss / CPI hot = directional macro trade, regime not yet confirmed).
+    short_allowed = (regime == 'WEAK' and _confirmed_scans >= 3) or \
+                    (_daily_macro_bias == 'SHORT')
+    if short_allowed:
         score, grade = grade_entry(sig, regime, 'SHORT')
         if grade in ('A+', 'A'):
             log(f"SHORT signal: {grade} ({score}pts) — entering")
@@ -969,6 +1035,9 @@ def reset_daily_state():
 
     _orb_high = _orb_low = None
     _orb_set  = False
+    _pm_high = _pm_low = None
+    _pm_ib_set = False
+    _daily_macro_bias = 'BOTH'
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
     _session_high = {}
@@ -1025,7 +1094,29 @@ def poll_telegram_commands():
                 _trading_paused = False
                 send_telegram("▶️ FUTURES trading resumed.")
             elif 'FUT STATUS' in msg:
-                send_telegram(format_prop_status())
+                price = get_live_price()
+                send_telegram(
+                    f"{format_prop_status()}\n"
+                    f"Price: {price}  Bias: {_daily_macro_bias}  "
+                    f"Session: {get_session()}"
+                )
+            elif 'FUT BIAS LONG' in msg:
+                _daily_macro_bias = 'LONG'
+                send_telegram(
+                    f"✅ Macro bias set: LONG\n"
+                    f"System will only take LONG entries today.\n"
+                    f"PM High: {_pm_high}  (target for pm_break signal)"
+                )
+            elif 'FUT BIAS SHORT' in msg:
+                _daily_macro_bias = 'SHORT'
+                send_telegram(
+                    f"✅ Macro bias set: SHORT\n"
+                    f"System will only take SHORT entries today.\n"
+                    f"PM Low: {_pm_low}  (target for pm_break signal)"
+                )
+            elif 'FUT BIAS BOTH' in msg:
+                _daily_macro_bias = 'BOTH'
+                send_telegram("✅ Macro bias cleared — trading both directions.")
             elif 'FUT CLOSE' in msg:
                 _force_close_all()
     except Exception:
