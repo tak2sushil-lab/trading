@@ -43,7 +43,7 @@ TELEGRAM_TOKEN   = os.getenv('FUTURES_TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 
 # ── Bridge ────────────────────────────────────────────────
-BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8002')  # bridge_projectx.py (TopStepX)
+BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 # ── MNQ constants ─────────────────────────────────────────
 SYMBOL       = 'MNQ'
@@ -182,21 +182,31 @@ def _bridge_post(path: str, payload: dict, timeout: int = 10) -> dict:
 
 
 def get_live_price() -> float | None:
-    """Get current MNQ best price from bridge quote cache."""
-    q = _bridge_get(f'/quote/{SYMBOL}')
-    return q.get('best_price') or q.get('last') or q.get('bid')
+    """Get current MNQ best price via bridge (yfinance primary, IBKR live fallback)."""
+    q = _bridge_get(f'/futures/quote/{SYMBOL}')
+    return q.get('best_price') or q.get('last') or q.get('close')
 
 
 def get_bars(bar_size_min: int = 5, days: int = 2) -> pd.DataFrame:
-    """Fetch historical 5-min bars for MNQ from futures bridge."""
-    data = _bridge_get(f'/history/{SYMBOL}?bar_size={bar_size_min}&days={days}', timeout=15)
-    if not data or not isinstance(data, list):
+    """
+    Fetch historical bars for MNQ from the IBKR bridge.
+    Bridge endpoint: GET /history/futures/MNQ?duration=2+D&bar_size=5+mins&rth=false
+    Response: {'symbol': 'MNQ', 'bars': [{ts, open, high, low, close, volume}, ...]}
+    """
+    bar_str  = f'{bar_size_min}+mins'
+    dur_str  = f'{days}+D'
+    path     = f'/history/futures/{SYMBOL}?duration={dur_str}&bar_size={bar_str}&rth=false'
+    resp     = _bridge_get(path, timeout=20)
+    if not resp or 'error' in resp:
         return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty or 'date' not in df.columns:
+    bars = resp.get('bars', [])
+    if not bars:
         return pd.DataFrame()
-    df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert(ET)
-    df = df.set_index('date').sort_index()
+    df = pd.DataFrame(bars)
+    if df.empty or 'ts' not in df.columns:
+        return pd.DataFrame()
+    df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_convert(ET)
+    df = df.set_index('ts').sort_index()
     for col in ('open', 'high', 'low', 'close', 'volume'):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -656,7 +666,7 @@ def place_trade(side: str, sig: dict, regime: str,
 
     # ── Submit order ──────────────────────────────────────
     order_side = 'BUY' if side == 'LONG' else 'SELL'
-    result = _bridge_post('/order', {
+    result = _bridge_post('/futures/order', {
         'symbol':     SYMBOL,
         'qty':        contracts,
         'side':       order_side,
@@ -667,12 +677,12 @@ def place_trade(side: str, sig: dict, regime: str,
         log(f"  Order failed: {result}")
         return False
 
-    order_id = result.get('orderId', '')
+    order_id = result.get('order_id', '')          # bridge returns 'order_id' not 'orderId'
     session  = get_session()
     setup    = f"ORB_{side}" if sig.get(f'orb_{"bull" if side=="LONG" else "bear"}') else f"VWAP_{side}"
 
     tid = log_futures_entry(
-        symbol=SYMBOL, contract=result.get('contract', SYMBOL),
+        symbol=SYMBOL, contract=result.get('contract_month', SYMBOL),
         entry_price=price, contracts=contracts,
         target=target, sl=sl, setup_type=setup,
         session=session, order_id=order_id, side=side,
@@ -834,7 +844,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         # ── Execute exit ──────────────────────────────────
         if exit_reason:
             cover_side = 'BUY' if is_short else 'SELL'
-            result = _bridge_post('/order', {
+            result = _bridge_post('/futures/order', {
                 'symbol':     SYMBOL,
                 'qty':        contracts,
                 'side':       cover_side,
@@ -1032,7 +1042,7 @@ def _force_close_all():
         return
     for t in trades:
         side = 'BUY' if t.get('side') == 'SHORT' else 'SELL'
-        _bridge_post('/order', {
+        _bridge_post('/futures/order', {
             'symbol': SYMBOL, 'qty': t.get('contracts', 1),
             'side': side, 'order_type': 'MARKET',
         })
