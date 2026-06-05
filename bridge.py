@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env file from same folder
 
 import os
-from ib_async import IB, Stock, Index, Option, Contract, ComboLeg, MarketOrder, LimitOrder, ScannerSubscription, WshEventData
+from ib_async import IB, Stock, Index, Option, Contract, ComboLeg, Future, \
+                    MarketOrder, LimitOrder, StopOrder, \
+                    ScannerSubscription, WshEventData
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -71,9 +73,10 @@ async def _connect_ibkr() -> bool:
             ib.reqAccountUpdates(True, '')
             await asyncio.sleep(3)
             # Subscribe streaming market data for any held positions so portfolio
-            # prices stay live (reqAccountUpdates alone doesn't guarantee price pushes)
+            # prices stay live (reqAccountUpdates alone doesn't guarantee price pushes).
+            # Covers both equity (STK) and futures (FUT) positions.
             for pos in ib.positions():
-                if pos.position != 0 and pos.contract.secType == 'STK':
+                if pos.position != 0 and pos.contract.secType in ('STK', 'FUT'):
                     try:
                         await ib.qualifyContractsAsync(pos.contract)
                         ib.reqMktData(pos.contract, '', False, False)
@@ -1115,6 +1118,191 @@ async def get_wsh_events(
         "count":  len(events),
         "events": sorted(events, key=lambda x: x["event_date"]),
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# FUTURES ENDPOINTS  (MNQ paper + live trading via IBKR)
+# ═══════════════════════════════════════════════════════════
+
+# ── Front-month contract resolver ────────────────────────
+# ContFuture is data-only; orders require the actual dated contract
+# (e.g. MNQ Sep 2026 = lastTradeDateOrContractMonth='20260920').
+# This resolver calls reqContractDetails once per day and caches the result.
+_fut_contract_cache: dict = {}
+_FUT_CONTRACT_TTL   = 86400   # refresh once per day (contracts roll ~quarterly)
+_FUT_EXCHANGES      = {
+    'MNQ': 'CME', 'NQ': 'CME', 'ES': 'CME', 'MES': 'CME',
+    'RTY': 'CME', 'M2K': 'CME', 'YM': 'CBOT', 'MYM': 'CBOT',
+}
+
+async def _resolve_fut_contract(symbol: str):
+    """Return the nearest upcoming Future contract ready for order placement."""
+    sym    = symbol.upper()
+    cached = _fut_contract_cache.get(sym)
+    if cached:
+        age = (datetime.utcnow() - cached['ts']).total_seconds()
+        if age < _FUT_CONTRACT_TTL:
+            return cached['contract']
+
+    exchange = _FUT_EXCHANGES.get(sym, 'CME')
+    stub     = Future(symbol=sym, exchange=exchange, currency='USD')
+    try:
+        details = await ib.reqContractDetailsAsync(stub)
+        if not details:
+            return None
+        today    = datetime.utcnow().strftime('%Y%m%d')
+        upcoming = sorted(
+            [d for d in details
+             if d.contract.lastTradeDateOrContractMonth >= today],
+            key=lambda d: d.contract.lastTradeDateOrContractMonth
+        )
+        if not upcoming:
+            return None
+        resolved = upcoming[0].contract
+        _fut_contract_cache[sym] = {'contract': resolved, 'ts': datetime.utcnow()}
+        print(f"[futures] Resolved {sym}: expiry {resolved.lastTradeDateOrContractMonth}")
+        return resolved
+    except Exception as e:
+        print(f"[futures] Contract resolution failed for {sym}: {e}")
+        return None
+
+
+# ── Futures live quote ────────────────────────────────────
+@app.get("/futures/quote/{symbol}")
+async def get_futures_quote(symbol: str):
+    """Live bid/ask/last for a futures contract (e.g. MNQ)."""
+    contract = await _resolve_fut_contract(symbol)
+    if contract is None:
+        return {"error": f"Could not resolve front-month contract for {symbol.upper()}"}
+
+    ticker = ib.reqMktData(contract, '', False, False)
+    await asyncio.sleep(3)
+
+    bid  = clean(ticker.bid)
+    ask  = clean(ticker.ask)
+    last = clean(ticker.last)
+    close = clean(ticker.close)
+    mid  = clean((bid + ask) / 2) if bid and ask else None
+    best = last or mid or close
+
+    return {
+        "symbol":         symbol.upper(),
+        "contract_month": contract.lastTradeDateOrContractMonth,
+        "last":           last,
+        "bid":            bid,
+        "ask":            ask,
+        "close":          close,
+        "best_price":     best,
+        "note":           "live" if last else "delayed/close",
+    }
+
+
+# ── Futures open positions ────────────────────────────────
+@app.get("/futures/position")
+async def get_futures_position():
+    """Open futures positions with live P&L. Returns [] when flat."""
+    pf_items  = ib.portfolio()
+    price_map = {p.contract.symbol: p for p in pf_items
+                 if p.contract.secType == 'FUT'}
+
+    positions = ib.positions()
+    if not positions:
+        ib.reqPositions()
+        await asyncio.sleep(2)
+        positions = ib.positions()
+
+    result = []
+    for p in positions:
+        if p.position == 0 or p.contract.secType != 'FUT':
+            continue
+        sym = p.contract.symbol
+        pf  = price_map.get(sym)
+        result.append({
+            "symbol":         sym,
+            "contract_month": p.contract.lastTradeDateOrContractMonth,
+            "qty":            p.position,      # positive = LONG, negative = SHORT
+            "avg_cost":       clean(p.avgCost),
+            "market_price":   clean(pf.marketPrice)   if pf else None,
+            "market_value":   clean(pf.marketValue)   if pf else None,
+            "unrealized_pnl": clean(pf.unrealizedPNL) if pf else None,
+            "realized_pnl":   clean(pf.realizedPNL)   if pf else None,
+        })
+    return result
+
+
+# ── Place futures order ───────────────────────────────────
+class FuturesOrderRequest(BaseModel):
+    symbol:      str
+    qty:         int            # number of contracts (always positive)
+    side:        str            # "BUY" or "SELL"
+    order_type:  str = "MARKET" # "MARKET" | "LIMIT" | "STOP_MARKET"
+    limit_price: float = None   # required for LIMIT
+    stop_price:  float = None   # required for STOP_MARKET
+
+@app.post("/futures/order")
+async def place_futures_order(req: FuturesOrderRequest):
+    """
+    Place a futures order on the front-month contract.
+
+    order_type="MARKET"      → market entry/exit
+    order_type="LIMIT"       → profit target (limit_price required)
+    order_type="STOP_MARKET" → stop loss (stop_price required)
+
+    futures_trader.py workflow:
+      1. POST /futures/order  MARKET BUY  → entry fill
+      2. POST /futures/order  STOP_MARKET SELL stop_price=sl  → stop loss
+      3. POST /futures/order  LIMIT SELL  limit_price=target  → profit target
+      4. On target fill: POST /futures/cancel/{stop_order_id}
+    """
+    contract = await _resolve_fut_contract(req.symbol)
+    if contract is None:
+        return {"error": f"Could not resolve front-month contract for {req.symbol.upper()}"}
+
+    side = req.side.upper()
+    qty  = abs(req.qty)
+
+    if req.order_type == "LIMIT" and req.limit_price:
+        order = LimitOrder(side, qty, req.limit_price)
+    elif req.order_type == "STOP_MARKET" and req.stop_price:
+        order = StopOrder(side, qty, req.stop_price)
+    else:
+        order = MarketOrder(side, qty)
+
+    if IBKR_ACCOUNT:
+        order.account = IBKR_ACCOUNT
+
+    trade = ib.placeOrder(contract, order)
+
+    # Subscribe live streaming so position monitoring sees real prices
+    ib.reqMktData(contract, '', False, False)
+
+    await asyncio.sleep(1)
+    return {
+        "status":         "submitted",
+        "symbol":         req.symbol.upper(),
+        "contract_month": contract.lastTradeDateOrContractMonth,
+        "side":           side,
+        "qty":            qty,
+        "order_id":       trade.order.orderId,
+        "order_type":     req.order_type,
+        "limit_price":    req.limit_price,
+        "stop_price":     req.stop_price,
+    }
+
+
+# ── Cancel a specific order ───────────────────────────────
+@app.post("/futures/cancel/{order_id}")
+async def cancel_futures_order(order_id: int):
+    """
+    Cancel one order by ID. Use after target fills to remove the paired stop,
+    or vice versa. More surgical than /cancel_all (which cancels everything).
+    """
+    for trade in ib.trades():
+        if trade.order.orderId == order_id:
+            ib.cancelOrder(trade.order)
+            await asyncio.sleep(0.5)
+            return {"status": "cancelled", "order_id": order_id}
+    return {"status": "not_found", "order_id": order_id}
 
 
 if __name__ == "__main__":
