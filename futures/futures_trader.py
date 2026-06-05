@@ -820,6 +820,8 @@ def place_trade(side: str, sig: dict, regime: str,
     risk_usd   = abs(price - sl) / TICK_SIZE * TICK_VALUE * contracts
     target_usd = abs(target - price) / TICK_SIZE * TICK_VALUE * contracts
 
+    backup_line = (f"Backup SL: IBKR STOP @ {sl} (order {stop_order_id}) ✅"
+                   if stop_order_id else "Backup SL: ⚠️ FAILED — software stop only")
     msg = (
         f"🔵 FUTURES {side} ENTRY\n"
         f"Symbol:    {SYMBOL} {result.get('contract_month','')}\n"
@@ -829,7 +831,8 @@ def place_trade(side: str, sig: dict, regime: str,
         f"Contracts: {contracts} × MNQ\n"
         f"Setup:     {setup} | Grade: {grade} ({score}pts)\n"
         f"Session:   {session} | Regime: {regime}\n"
-        f"R:R:       {rr:.1f}"
+        f"R:R:       {rr:.1f}\n"
+        f"{backup_line}"
     )
     log(msg)
     send_telegram(msg)
