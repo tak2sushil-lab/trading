@@ -292,7 +292,10 @@ def update_premarket_ib():
             _pm_ib_set_time = datetime.now(ET)
             flag = '🔴 MACRO DAY' if today_cls == 'HIGH_IMPACT' else ''
             log(f"Pre-market IB: H={_pm_high}  L={_pm_low}  ({len(pm_bars)} bars) {flag}")
-            if today_cls == 'HIGH_IMPACT':
+            # Only send Telegram if we're still in the morning window — suppress
+            # on afternoon restarts (state restore from bars, not a fresh event).
+            is_morning = datetime.now(ET).hour < 11
+            if today_cls == 'HIGH_IMPACT' and is_morning:
                 send_telegram(
                     f"📊 Pre-market IB set ({today_cls})\n"
                     f"PM High: {_pm_high}  PM Low: {_pm_low}\n"
@@ -1197,6 +1200,14 @@ def main():
         send_telegram("⚠️ FUTURES: Bridge not connected at startup. Will retry on each scan.")
 
     prop_load()
+    # Sync session_pnl from DB — prop_state.json can lag if trades closed while
+    # the service was down (e.g. manual close, restart mid-day).
+    from futures.prop_rules import load_state, save_state
+    _state = load_state()
+    _db_pnl = get_futures_daily_pnl()
+    if _db_pnl != _state.get('session_pnl', 0):
+        _state['session_pnl'] = _db_pnl
+        save_state(_state)
     send_telegram(f"⚡ TriVega Futures · Online\n{format_prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)
