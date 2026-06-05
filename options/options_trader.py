@@ -73,7 +73,7 @@ OPT_TG_CHAT_ID   = os.getenv('OPTIONS_TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
 TG_API           = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 # Dedicated options capital allocation ($5K start; 30% max deployed = $1.5K cap)
 OPTIONS_ACCOUNT_SIZE    = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
-OPTIONS_CIRCUIT_BREAKER = float(os.getenv('OPTIONS_CIRCUIT_BREAKER', '2000'))  # max realized loss
+OPTIONS_CIRCUIT_BREAKER = float(os.getenv('OPTIONS_CIRCUIT_BREAKER', '5000'))  # max realized loss (paper: raised from $2K — $2,935 lost to OPRA blindness Jun 5)
 OPTIONS_TOTAL_CAPITAL   = float(os.getenv('OPTIONS_TOTAL_CAPITAL',   '5000'))  # total pool
 MAX_OPTIONS_POSITIONS   = int(os.getenv('MAX_OPTIONS_POSITIONS',     '4'))     # max concurrent
 LEAP_ENABLED            = False   # LEAP needs more capital — re-enable when spread pool grows
@@ -379,20 +379,28 @@ def check_capital_cap(new_premium: float, chat_id: str) -> bool:
 
 # ── Circuit breaker ───────────────────────────────────────────────────────────
 
+_cb_alerted_date: str = ''   # date of last circuit-breaker Telegram — alert once per day
+
 def check_circuit_breaker(chat_id: str) -> bool:
     """
     Block new entries if cumulative realized options losses exceed OPTIONS_CIRCUIT_BREAKER.
     Returns True if OK to trade, False if breaker is tripped.
+    Sends Telegram once per calendar day to prevent spam.
     """
+    global _cb_alerted_date
+    from datetime import date as _date
     total_pnl = get_options_total_pnl()
     if total_pnl < -OPTIONS_CIRCUIT_BREAKER:
-        send_telegram(
-            f"🛑 *Options circuit breaker tripped*\n"
-            f"Cumulative realized loss: ${abs(total_pnl):,.0f} "
-            f"exceeds ${OPTIONS_CIRCUIT_BREAKER:,.0f} limit\n"
-            f"No new entries until losses recover. Review open positions.",
-            chat_id,
-        )
+        today = str(_date.today())
+        if _cb_alerted_date != today:
+            _cb_alerted_date = today
+            send_telegram(
+                f"🛑 *Options circuit breaker tripped*\n"
+                f"Cumulative realized loss: ${abs(total_pnl):,.0f} "
+                f"exceeds ${OPTIONS_CIRCUIT_BREAKER:,.0f} limit\n"
+                f"No new entries until losses recover. Review open positions.",
+                chat_id,
+            )
         return False
     return True
 
