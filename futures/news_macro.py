@@ -108,21 +108,24 @@ def classify_headline(headline: str, event_type: str = '') -> MacroBias:
         return MacroBias('UNKNOWN', 'LOW', event_type, headline,
                          f'Groq error: {e}', datetime.now(ET).isoformat())
 
-    # Parse response
+    # Parse response — normalise to uppercase and take first token to be robust
+    # against LLM variations like "RISK_ON (jobs beat)" or "high" (lowercase).
     direction_map = {'RISK_ON': 'LONG', 'RISK_OFF': 'SHORT', 'NEUTRAL': 'NEUTRAL'}
     direction = 'NEUTRAL'
     confidence = 'LOW'
     reason = text[:100]
 
-    for line in text.split('\n'):
-        line = line.strip()
+    for _orig_line in text.split('\n'):
+        line = _orig_line.strip().upper()   # uppercase for DIRECTION/CONFIDENCE matching
         if line.startswith('DIRECTION:'):
-            raw = line.split(':', 1)[1].strip()
+            raw = line.split(':', 1)[1].strip().split()[0] if ':' in line else ''
             direction = direction_map.get(raw, 'NEUTRAL')
         elif line.startswith('CONFIDENCE:'):
-            confidence = line.split(':', 1)[1].strip()
+            raw_conf = line.split(':', 1)[1].strip().split()[0] if ':' in line else ''
+            confidence = raw_conf if raw_conf in ('HIGH', 'MEDIUM', 'LOW') else 'LOW'
         elif line.startswith('REASON:'):
-            reason = line.split(':', 1)[1].strip()
+            # Use original (non-uppercased) line for human-readable reason text
+            reason = _orig_line.strip().split(':', 1)[1].strip()[:200] if ':' in _orig_line else reason
 
     return MacroBias(
         direction=direction, confidence=confidence, event_type=event_type,
@@ -257,7 +260,12 @@ def get_macro_bias_cached(trade_date: str | None = None) -> MacroBias:
     """
     d = trade_date or datetime.now(ET).date().isoformat()
     if d not in _bias_cache:
-        _bias_cache[d] = get_macro_bias(d)
+        result = get_macro_bias(d)
+        # Don't cache transient errors (UNKNOWN direction) — allow retry on next call.
+        # NEUTRAL on non-release days IS cached (permanent, correct answer).
+        if result.direction != 'UNKNOWN':
+            _bias_cache[d] = result
+        return result
     return _bias_cache[d]
 
 

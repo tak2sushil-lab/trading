@@ -126,8 +126,10 @@ def _build_nfp_dates(start_year: int = 2021, end_year: int = 2027) -> dict[str, 
     return events
 
 
-# Merge: programmatic NFP dates (all years) + hardcoded 2026 events
-_NFP_ALL_YEARS = _build_nfp_dates(2021, 2027)
+# 2021–2025 only: 2026 is fully covered by MACRO_EVENTS_2026 (exact dates).
+# Including 2026 in _build_nfp_dates causes false positives for holiday-shifted months
+# (e.g. Jan 2 = New Year's week, Jul 3 = Independence Day observed — both wrong).
+_NFP_ALL_YEARS = _build_nfp_dates(2021, 2025)
 # Hardcoded events override auto-detected (more accurate dates/notes)
 MACRO_EVENTS_ALL: dict[str, dict] = {**_NFP_ALL_YEARS, **MACRO_EVENTS_2026}
 

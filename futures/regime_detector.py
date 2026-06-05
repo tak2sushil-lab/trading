@@ -115,11 +115,12 @@ def detect_regime(lookback_days: int = 20, verbose: bool = False) -> dict:
     extension_days = 0
     for d in recent_days[-10:]:  # last 10 trade days
         day_bars = ny_df[ny_df.index.date == d.date()]
-        if len(day_bars) < 12:
+        if len(day_bars) < 8:
             continue
-        # Approximate: get IB (first 12 bars = 60 min), then check if price extended
-        ib_bars = day_bars.iloc[:12]
-        post_bars = day_bars.iloc[12:]
+        # Time-based IB: 9:30–10:30 AM ET (60-min IB, consistent with backtest)
+        from datetime import time as _time
+        ib_bars  = day_bars[day_bars.index.time < _time(10, 30)]
+        post_bars = day_bars[day_bars.index.time >= _time(10, 30)]
         if post_bars.empty:
             continue
         ib_h = float(ib_bars['high'].max())
@@ -191,13 +192,6 @@ def detect_regime(lookback_days: int = 20, verbose: bool = False) -> dict:
                   f'Mean-reversion regime (2023-type). IB breakouts reversing quickly. '
                   f'Trade fewer days — wait for RVOL ≥1.5× setups only.')
 
-    elif ib_narrow:
-        regime = 'QUIET'
-        recommended = 'tc_champion'
-        confidence = 'MEDIUM'
-        reason = (f'Narrow IB ({avg_ib:.0f}pts avg) — low volatility, few qualifying setups. '
-                  f'Champion will fire rarely. That is correct. Do not force trades.')
-
     elif extension_rate > 0.55 and consistent_trend:
         regime = 'TRENDING'
         recommended = 'tc_aggressive'
@@ -205,6 +199,13 @@ def detect_regime(lookback_days: int = 20, verbose: bool = False) -> dict:
         reason = (f'Strong extension rate ({extension_rate:.0%}) with consistent daily trend. '
                   f'IB breakouts following through. Ferrari time. '
                   f'Use tc_aggressive for 3 trades/day at base=3.')
+
+    elif ib_narrow:
+        regime = 'QUIET'
+        recommended = 'tc_champion'
+        confidence = 'MEDIUM'
+        reason = (f'Narrow IB ({avg_ib:.0f}pts avg) — low volatility, few qualifying setups. '
+                  f'Champion will fire rarely. That is correct. Do not force trades.')
 
     else:
         regime = 'TRENDING'

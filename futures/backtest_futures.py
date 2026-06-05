@@ -167,7 +167,8 @@ class Config:
 
     @property
     def total_friction_dollar(self) -> float:
-        return self.commission + self.slippage_ticks * 2 * TICK_SIZE * (POINT_VALUE / TICK_SIZE)
+        # 2 sides (entry+exit) × tick_value ($0.50/tick) per slippage tick
+        return self.commission + self.slippage_ticks * 2 * TICK_SIZE * POINT_VALUE
 
 
 # ── Indicators ─────────────────────────────────────────────────────────────────
@@ -295,8 +296,10 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
     stop_dist_long  = ib_range * cfg.stop_ib_frac   # IB midpoint from IB high
     stop_dist_short = ib_range * cfg.stop_ib_frac
 
-    # Skip day if stop exceeds our max acceptable risk
-    if stop_dist_long > cfg.max_stop_pts:
+    # Skip day if stop exceeds our max acceptable risk.
+    # Only applies to IB-fraction stops; when cfg.stop_pts is set (fixed stop mode)
+    # the actual risk is stop_pts, not stop_dist_long, so skip this filter.
+    if cfg.stop_pts is None and stop_dist_long > cfg.max_stop_pts:
         return []
 
     atr = atr_at_open if atr_at_open and atr_at_open > 0 else ib_range
@@ -492,6 +495,24 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                                 'entry_type': 'pm_break',
                             }
                             pm_long_taken = True
+                            # Same-bar exit check: if this bar's low already tagged the stop
+                            # (entry bar during IB window — exit block hasn't run yet for this bar).
+                            if bar_low <= stop:
+                                _ep = stop - cfg.slippage_pts
+                                _raw = (_ep - entry) * POINT_VALUE * n_ct
+                                _net = prop.record_trade(_raw, contracts=n_ct)
+                                if _net < 0: had_loss_today = True
+                                trades.append({'date': ts.date().isoformat(),
+                                    'entry_time': t.strftime('%H:%M'), 'exit_time': t.strftime('%H:%M'),
+                                    'hour': t.hour, 'contracts': n_ct, 'direction': 'LONG',
+                                    'entry': entry_raw, 'exit': _ep, 'stop_init': stop, 'target': target,
+                                    'atr': atr, 'ib_range': ib_range, 'gap_pct': round(gap_pct if prev_close > 0 else 0, 2),
+                                    'bars_held': 0, 'mae_pts': entry - bar_low, 'mfe_pts': 0.0,
+                                    'raw_pnl': round(_raw, 2), 'net_pnl': round(_net, 2),
+                                    'exit_reason': 'stop', 'entry_type': 'pm_break',
+                                    'status': 'WIN' if _net > 0 else 'LOSS'})
+                                session_pnl += _net; position = None
+                                daily_trade_count += 1; cooldown_remaining = cfg.cooldown_bars
 
                 elif (not pm_short_taken
                         and pm_low < ib_low - cfg.premarket_min_ext
@@ -515,6 +536,23 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                                 'entry_type': 'pm_break',
                             }
                             pm_short_taken = True
+                            # Same-bar exit check for short
+                            if bar_high >= stop:
+                                _ep = stop + cfg.slippage_pts
+                                _raw = (entry - _ep) * POINT_VALUE * n_ct
+                                _net = prop.record_trade(_raw, contracts=n_ct)
+                                if _net < 0: had_loss_today = True
+                                trades.append({'date': ts.date().isoformat(),
+                                    'entry_time': t.strftime('%H:%M'), 'exit_time': t.strftime('%H:%M'),
+                                    'hour': t.hour, 'contracts': n_ct, 'direction': 'SHORT',
+                                    'entry': entry_raw, 'exit': _ep, 'stop_init': stop, 'target': target,
+                                    'atr': atr, 'ib_range': ib_range, 'gap_pct': round(gap_pct if prev_close > 0 else 0, 2),
+                                    'bars_held': 0, 'mae_pts': bar_high - entry, 'mfe_pts': 0.0,
+                                    'raw_pnl': round(_raw, 2), 'net_pnl': round(_net, 2),
+                                    'exit_reason': 'stop', 'entry_type': 'pm_break',
+                                    'status': 'WIN' if _net > 0 else 'LOSS'})
+                                session_pnl += _net; position = None
+                                daily_trade_count += 1; cooldown_remaining = cfg.cooldown_bars
 
         if t < ib_end_t:
             continue   # still forming IB — other cylinders wait
@@ -958,7 +996,9 @@ def run_backtest(start: str | None = None, end: str | None = None,
 # ── Walk-Forward Analysis ──────────────────────────────────────────────────────
 
 def walk_forward(df_5m: pd.DataFrame, cfg: Config,
-                 n_windows: int = 6, oos_pct: float = 0.30) -> list[dict]:
+                 n_windows: int = 6, oos_pct: float = 0.30,
+                 mode: str = 'TC', contracts: int = 1,
+                 es_confirm: bool = False, scale_contracts: bool = False) -> list[dict]:
     """
     Rolling walk-forward: split history into IS/OOS windows.
     Each window: train on IS (70%), test on OOS (30%).
@@ -990,8 +1030,10 @@ def walk_forward(df_5m: pd.DataFrame, cfg: Config,
         oos_start = oos_days[0].date().isoformat()
         oos_end_dt = oos_days[-1].date().isoformat()
 
-        # Run OOS
-        oos_trades = run_backtest(start=oos_start, end=oos_end_dt, cfg=cfg)
+        # Run OOS with the same config/sizing as the main backtest
+        oos_trades = run_backtest(start=oos_start, end=oos_end_dt, cfg=cfg,
+                                  mode=mode, contracts=contracts,
+                                  es_confirm=es_confirm, scale_contracts=scale_contracts)
         n_trades   = len(oos_trades)
         oos_wr     = (sum(1 for t in oos_trades if t['status'] == 'WIN') / n_trades * 100
                       if n_trades else 0)
@@ -1523,5 +1565,7 @@ Named strategies (--strategy):
 
     if args.wfa:
         print('Running walk-forward analysis...')
-        wfa_results = walk_forward(df_ind, cfg)
+        wfa_results = walk_forward(df_ind, cfg, mode=_mode,
+                                   contracts=_contracts, es_confirm=_es_confirm,
+                                   scale_contracts=_scale_contracts)
         print_wfa_report(wfa_results)

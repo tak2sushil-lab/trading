@@ -146,13 +146,14 @@ def estimate_cost(symbols: list[str] | None = None, start: str = DATABENTO_START
     import databento as db
     client = db.Historical(key=key)
     targets = symbols or list(FUTURES_SYMBOLS)
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+    # Databento end is exclusive — use today so yesterday's full session is included.
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     total = 0.0
     for sym in targets:
         db_sym = FUTURES_SYMBOLS[sym][0]
         cost = client.metadata.get_cost(
             dataset=DATABENTO_DATASET, symbols=[db_sym], stype_in='continuous',
-            schema='ohlcv-1m', start=start, end=yesterday,
+            schema='ohlcv-1m', start=start, end=today,
         )
         print(f'  {sym} ({db_sym}) from {start}: ${cost:.4f}')
         total += cost
@@ -171,7 +172,8 @@ def fetch_databento(symbol: str, start: str = DATABENTO_START,
         return [], []
 
     db_sym = FUTURES_SYMBOLS[symbol][0]
-    end_str = end or (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+    # Databento end is exclusive — pass today to include yesterday's full session.
+    end_str = end or datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     print(f'[databento] {symbol} ({db_sym}) {start} → {end_str}...')
     try:
