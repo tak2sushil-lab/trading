@@ -710,6 +710,16 @@ def get_futures_daily_pnl() -> float:
     return round(float(row[0] or 0), 2)
 
 
+def _get_all_time_futures_pnl() -> float:
+    """Total realized P&L across all futures trades — used to reconcile prop_state balance."""
+    conn = sqlite3.connect(DB_PATH)
+    row  = conn.execute(
+        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED'"
+    ).fetchone()
+    conn.close()
+    return round(float(row[0] or 0), 2)
+
+
 # ── Place trade ───────────────────────────────────────────
 
 def place_trade(side: str, sig: dict, regime: str,
@@ -1124,14 +1134,22 @@ def reset_daily_state():
 
 
 def eod_snapshot():
-    """Called at EOD — update trailing drawdown high water mark."""
+    """Called at EOD — reconcile balance from DB, send summary, reset for tomorrow."""
     daily = get_futures_daily_pnl()
-    update_eod_balance(daily)   # pass today's futures P&L (not equity account balance)
     log(f"EOD futures P&L: ${daily:+.2f}")
+    # update_eod_balance reconciles balance from DB truth, then resets session_pnl=0
+    update_eod_balance(daily)
+    # Read state AFTER balance update but re-inject today's P&L for the EOD message
+    # (format_prop_status shows session_pnl=0 post-reset, so we show daily separately)
+    s = prop_status()
     send_telegram(
         f"🌙 FUTURES EOD\n"
-        f"Day P&L: ${daily:+.2f}\n"
-        f"{format_prop_status()}"
+        f"Day P&L:      ${daily:+.2f}\n"
+        f"Balance:      ${s.get('balance', 0):,.0f}\n"
+        f"TC Progress:  ${s.get('total_profit', 0):,.0f} / $3,000 "
+        f"(${s.get('tc_target_left', 0):,.0f} left)\n"
+        f"MLL buffer:   ${s.get('buffer_to_mll', 0):,.0f}\n"
+        f"Resets tomorrow at 9:28am ET"
     )
 
 
@@ -1237,13 +1255,24 @@ def main():
         send_telegram("⚠️ FUTURES: Bridge not connected at startup. Will retry on each scan.")
 
     prop_load()
-    # Sync session_pnl from DB — prop_state.json can lag if trades closed while
-    # the service was down (e.g. manual close, restart mid-day).
+    # Reconcile prop_state from DB on every startup — restarts mid-day cause drift.
+    # DB is the single source of truth for all realized P&L.
     from futures.prop_rules import load_state, save_state
-    _state = load_state()
-    _db_pnl = get_futures_daily_pnl()
-    if _db_pnl != _state.get('session_pnl', 0):
-        _state['session_pnl'] = _db_pnl
+    _state    = load_state()
+    _db_today = get_futures_daily_pnl()
+    _db_total = _get_all_time_futures_pnl()
+    _changed  = False
+    # Sync session_pnl from today's DB
+    if _db_today != _state.get('session_pnl', 0):
+        _state['session_pnl'] = _db_today;  _changed = True
+    # Reconcile balance/total_profit by delta (handles restarts mid-day)
+    _tracked = _state.get('total_profit', 0)
+    _delta   = round(_db_total - _tracked, 2)
+    if abs(_delta) > 0.01:
+        _state['total_profit'] = _db_total
+        _state['balance']      = round(_state.get('balance', 50000) + _delta, 2)
+        _changed = True
+    if _changed:
         save_state(_state)
     send_telegram(f"⚡ TriVega Futures · Online\n{format_prop_status()}")
 

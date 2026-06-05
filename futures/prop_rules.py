@@ -202,26 +202,28 @@ def record_trade_pnl(pnl: float):
 def update_eod_balance(eod_pnl: float):
     """
     Call at end of each trading day (5 PM CT reset).
-    Updates TC trailing floor + XFA qualifying day count.
+    Updates balance + total_profit from DB truth, updates TC floor, resets session.
     """
     state = load_state()
     mode  = state.get('mode', ACCOUNT_MODE)
 
+    # Reconcile balance using DB as truth — intraday restarts cause prop_state
+    # to drift from actual closed P&L. eod_pnl (from DB) is authoritative.
+    pnl_delta = round(eod_pnl - state.get('session_pnl', 0.0), 2)
+    state['balance']      = round(state['balance'] + pnl_delta, 2)
+    state['total_profit'] = round(state['total_profit'] + pnl_delta, 2)
+
     if mode == 'TC':
-        # TC: high-water mark trails EOD balance
         state['high_water_mark'] = max(state['high_water_mark'], state['balance'])
-        # TC pass check
         if state['total_profit'] >= TC_PROFIT_TARGET:
             _send_telegram('🏆 *TC PASS* — profit target reached! Apply for XFA.')
     else:
-        # XFA qualifying day
         if eod_pnl >= 150.0:
             state['qualifying_days'] = state.get('qualifying_days', 0) + 1
             days = state['qualifying_days']
             if days >= 5:
                 _send_telegram(f'💰 *Payout eligible* — {days} qualifying days. Request up to 50% of balance.')
 
-    # Track best day for consistency
     state['best_day_profit'] = max(state.get('best_day_profit', 0), eod_pnl)
 
     # Reset session P&L for next day
