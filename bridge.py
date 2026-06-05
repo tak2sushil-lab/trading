@@ -1187,39 +1187,42 @@ async def get_futures_quote(symbol: str):
     bid = ask = last = close = best = None
     source = 'none'
 
-    # Layer 1: yfinance — works everywhere, no subscription, no pacing risk
-    # MNQ continuous front-month ticker is "MNQ=F"
-    _yf_map = {'MNQ': 'MNQ=F', 'NQ': 'NQ=F', 'ES': 'ES=F',
-               'MES': 'MES=F', 'RTY': 'RTY=F', 'YM': 'YM=F'}
-    yf_ticker = _yf_map.get(sym, f'{sym}=F')
-    try:
-        loop = asyncio.get_event_loop()
-        tk   = await loop.run_in_executor(None,
-               lambda: yf.Ticker(yf_ticker).fast_info)
-        last  = clean(getattr(tk, 'last_price', None))
-        close = clean(getattr(tk, 'previous_close', None))
-        best  = last or close
-        if best:
-            source = 'yfinance'
-    except Exception:
-        pass
-
-    # Layer 2: IBKR live streaming — only if yfinance failed AND subscription active
-    if not best and ib.isConnected():
+    # Layer 1: IBKR live streaming — primary source when paper account inherits
+    # live account's market data subscription (US Securities Snapshot + Futures Bundle).
+    # Portal must be closed (no competing session) for this to work.
+    if ib.isConnected():
         contract = await _resolve_fut_contract(sym)
         if contract:
             ib.reqMarketDataType(1)
             ticker = ib.reqMktData(contract, '', False, False)
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             bid   = clean(ticker.bid)
             ask   = clean(ticker.ask)
             last  = clean(ticker.last)
             close = clean(ticker.close)
-            ib.reqMarketDataType(1)  # restore
+            ib.reqMarketDataType(1)  # restore for equity/options endpoints
             if last or bid or ask:
                 mid  = clean((bid + ask) / 2) if bid and ask else None
                 best = last or mid or close
                 source = 'ibkr_live'
+
+    # Layer 2: yfinance — fallback when IBKR data unavailable (competing session,
+    # no subscription, or futures permission pending). 15-min delayed but always works.
+    if not best:
+        _yf_map = {'MNQ': 'MNQ=F', 'NQ': 'NQ=F', 'ES': 'ES=F',
+                   'MES': 'MES=F', 'RTY': 'RTY=F', 'YM': 'YM=F'}
+        yf_ticker = _yf_map.get(sym, f'{sym}=F')
+        try:
+            loop = asyncio.get_event_loop()
+            tk   = await loop.run_in_executor(None,
+                   lambda: yf.Ticker(yf_ticker).fast_info)
+            last  = clean(getattr(tk, 'last_price', None))
+            close = clean(getattr(tk, 'previous_close', None))
+            best  = last or close
+            if best:
+                source = 'yfinance'
+        except Exception:
+            pass
 
     # Resolve contract month for the response (cached — no extra API call)
     contract_month = None
