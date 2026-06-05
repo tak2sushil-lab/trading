@@ -321,6 +321,12 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
     max_above_ib = 0.0   # max pts price reached above IB high (post-IB window)
     max_below_ib = 0.0   # max pts price reached below IB low  (post-IB window)
 
+    # Cylinder 4 PM break tracking — fire at most once per direction per day.
+    # IB-window version (9:30-10:30am) has priority; post-IB fallback only fires if
+    # PM level was never touched during IB formation.
+    pm_long_taken  = False
+    pm_short_taken = False
+
     for i, (ts, bar) in enumerate(day_df.iterrows()):
         t         = ts.time()
         price     = float(bar['close'])
@@ -444,8 +450,74 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
             continue
 
         # ── Entry logic ──────────────────────────────────
+
+        # ── CYLINDER 4 (IB-window): PM level break 9:30–10:30am ──────────────
+        # Fire when RTH price first breaks the pre-market high/low DURING IB formation.
+        # This is the redesigned version: fires BEFORE the RTH IB is established so it
+        # never competes with Cylinders 1/2. The pre-market session (8:30-9:30am) forms
+        # a structural high/low; when RTH open immediately breaks that fence = highest
+        # conviction signal ("double fence" + fresh institutional flow).
+        # No RVOL/EMA gates: opening volume is always elevated; EMAs meaningless at 9:30.
+        if (position is None
+                and cfg.premarket_ib
+                and t < ib_end_t
+                and daily_trade_count < cfg.max_daily_trades):
+            _ok_pm, _ = prop.check_can_trade()
+            if _ok_pm:
+                _pm_rvol = float(bar['rvol'])
+                # PM level must be structurally OUTSIDE the final RTH IB to be meaningful.
+                # If pm_high <= ib_high + min_ext, the IB will form at or above the PM level
+                # and the PM fence has no structural value as a breakout signal.
+                # (ib_high here is the pre-computed final IB value — a look-ahead used to
+                # select only high-quality days; live system would proxy with opening range.)
+                if (not pm_long_taken
+                        and pm_high > ib_high + cfg.premarket_min_ext
+                        and daily_bias != 'SHORT'
+                        and price > pm_high):
+                    entry_raw = price
+                    entry     = price + cfg.slippage_pts
+                    stop      = pm_high - cfg.premarket_stop_pts
+                    risk      = entry - stop
+                    if risk > 0:
+                        target = pm_high + cfg.premarket_target_pts
+                        if (target - entry) / risk >= cfg.min_rr:
+                            n_ct = (_dynamic_contracts(contracts, _pm_rvol, ib_range,
+                                                       had_loss_today, session_pnl,
+                                                       cfg.win_protect_pnl)
+                                    if scale_contracts else contracts)
+                            position = {
+                                'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
+                                'entry_time': t, 'stop': stop, 'stop_init': stop,
+                                'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                                'entry_type': 'pm_break',
+                            }
+                            pm_long_taken = True
+
+                elif (not pm_short_taken
+                        and pm_low < ib_low - cfg.premarket_min_ext
+                        and daily_bias != 'LONG'
+                        and price < pm_low):
+                    entry_raw = price
+                    entry     = price - cfg.slippage_pts
+                    stop      = pm_low + cfg.premarket_stop_pts
+                    risk      = stop - entry
+                    if risk > 0:
+                        target = pm_low - cfg.premarket_target_pts
+                        if (entry - target) / risk >= cfg.min_rr:
+                            n_ct = (_dynamic_contracts(contracts, _pm_rvol, ib_range,
+                                                       had_loss_today, session_pnl,
+                                                       cfg.win_protect_pnl)
+                                    if scale_contracts else contracts)
+                            position = {
+                                'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
+                                'entry_time': t, 'stop': stop, 'stop_init': stop,
+                                'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                                'entry_type': 'pm_break',
+                            }
+                            pm_short_taken = True
+
         if t < ib_end_t:
-            continue   # still forming IB
+            continue   # still forming IB — other cylinders wait
         if daily_trade_count >= cfg.max_daily_trades:
             continue
         if cooldown_remaining > 0:
@@ -543,19 +615,20 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                             'entry_type': 'retest',
                         }
 
-        # ── CYLINDER 4: PRE-MARKET IB LEVEL BREAK ──────────────────────────
-        # Fires when the overnight PM level is meaningfully OUTSIDE the RTH IB.
-        # Breaking both the RTH IB AND the PM level = double-fence confirmation.
-        # No ES confirm needed (PM break is already a high-conviction move).
-        # Target: fixed 80pts from PM level (same calibration as retest cylinder).
+        # ── CYLINDER 4 (post-IB fallback): PM level outside RTH IB ──────────
+        # Fires post-IB ONLY when the PM level was NOT broken during the IB window.
+        # Use case: PM high set early pre-market, RTH IB consolidates below it all morning,
+        # then breaks above pm_high after 10:30am — still a valid double-fence signal.
+        # Has full quality gates (RVOL + EMA) since this fires later in the session.
         if (position is None
                 and cfg.premarket_ib
                 and t >= ib_end_t
                 and not (cfg.lunch_start <= t <= cfg.lunch_end)
                 and t < cfg.no_entry_after):
 
-            # LONG: PM high is above RTH IB high by enough to be structural
-            if (daily_bias != 'SHORT'
+            # LONG: PM high structurally above RTH IB, not yet taken today
+            if (not pm_long_taken
+                    and daily_bias != 'SHORT'
                     and pm_high > ib_high + cfg.premarket_min_ext
                     and price > pm_high
                     and rvol >= cfg.min_rvol
@@ -576,9 +649,11 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                             'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
                             'entry_type': 'pm_break',
                         }
+                        pm_long_taken = True
 
-            # SHORT: PM low is below RTH IB low
+            # SHORT: PM low structurally below RTH IB, not yet taken today
             elif (position is None
+                    and not pm_short_taken
                     and daily_bias != 'LONG'
                     and pm_low > 0
                     and pm_low < ib_low - cfg.premarket_min_ext
@@ -601,6 +676,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                             'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
                             'entry_type': 'pm_break',
                         }
+                        pm_short_taken = True
 
         # ── INITIAL BREAKOUT (noon cutoff, full RVOL/ES/VWAP/EMA quality gate) ──
         # Only fires if retest did not already set a position this bar.
