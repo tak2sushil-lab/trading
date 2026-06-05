@@ -1502,6 +1502,7 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
 def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
     score   = 0
     reasons = []
+    w = get_strategy_weights()
 
     # Earnings gate — same hard skip (earnings = binary event, both directions)
     # ETFs have no earnings calendar — skip this gate entirely for them
