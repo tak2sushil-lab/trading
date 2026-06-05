@@ -112,6 +112,17 @@ def log(msg: str):
     print(f"[{ts}] {msg}", flush=True)
 
 
+def format_prop_status() -> str:
+    """Format prop_rules status dict as a clean Telegram-ready string."""
+    s = prop_status()   # calls get_status() from prop_rules
+    mode  = s.get('mode', 'TC')
+    lines = [f"Mode: {mode}  |  Balance: ${s.get('balance', 0):,.0f}"]
+    if mode == 'TC':
+        lines.append(f"Target left: ${s.get('tc_target_left', 0):,.0f}  |  MLL buffer: ${s.get('buffer_to_mll', 0):,.0f}")
+    lines.append(f"Day P&L: ${s.get('session_pnl', 0):+,.2f}  |  Cap left: ${s.get('daily_cap_left', 0):,.0f}")
+    return '\n'.join(lines)
+
+
 def send_telegram(msg: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -971,7 +982,7 @@ def reset_daily_state():
     log("Daily state reset")
     send_telegram(
         f"🌅 FUTURES day started\n"
-        f"{prop_status()}"
+        f"{format_prop_status()}"
     )
 
 
@@ -987,7 +998,7 @@ def eod_snapshot():
     send_telegram(
         f"🌙 FUTURES EOD\n"
         f"Day P&L: ${daily:+.2f}\n"
-        f"{prop_status()}"
+        f"{format_prop_status()}"
     )
 
 
@@ -1014,7 +1025,7 @@ def poll_telegram_commands():
                 _trading_paused = False
                 send_telegram("▶️ FUTURES trading resumed.")
             elif 'FUT STATUS' in msg:
-                send_telegram(prop_status())
+                send_telegram(format_prop_status())
             elif 'FUT CLOSE' in msg:
                 _force_close_all()
     except Exception:
@@ -1057,7 +1068,7 @@ def main():
         send_telegram("⚠️ FUTURES: Bridge not connected at startup. Will retry on each scan.")
 
     prop_load()
-    send_telegram(f"⚡ TriVega Futures · Online\n{prop_status()}")
+    send_telegram(f"⚡ TriVega Futures · Online\n{format_prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)
 
