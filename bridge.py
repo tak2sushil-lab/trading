@@ -1170,30 +1170,74 @@ async def _resolve_fut_contract(symbol: str):
 # ── Futures live quote ────────────────────────────────────
 @app.get("/futures/quote/{symbol}")
 async def get_futures_quote(symbol: str):
-    """Live bid/ask/last for a futures contract (e.g. MNQ)."""
-    contract = await _resolve_fut_contract(symbol)
-    if contract is None:
-        return {"error": f"Could not resolve front-month contract for {symbol.upper()}"}
+    """
+    Current price for a futures contract (e.g. MNQ).
 
-    ticker = ib.reqMktData(contract, '', False, False)
-    await asyncio.sleep(3)
+    Two-layer approach — no IBKR subscription required for either:
+      Layer 1: yfinance (MNQ=F)  — 15-min delayed, no subscription, no pacing risk.
+                                    Primary path for paper trading.
+      Layer 2: IBKR live reqMktData — only attempted if yfinance fails AND IBKR
+                                    is connected with a CME data subscription.
 
-    bid  = clean(ticker.bid)
-    ask  = clean(ticker.ask)
-    last = clean(ticker.last)
-    close = clean(ticker.close)
-    mid  = clean((bid + ask) / 2) if bid and ask else None
-    best = last or mid or close
+    yfinance is the correct primary source here: it is free, always available,
+    and identical to what collect_bars.py uses for price data. The IBKR streaming
+    path is reserved for live funded accounts with a CME subscription.
+    """
+    sym = symbol.upper()
+    bid = ask = last = close = best = None
+    source = 'none'
+
+    # Layer 1: yfinance — works everywhere, no subscription, no pacing risk
+    # MNQ continuous front-month ticker is "MNQ=F"
+    _yf_map = {'MNQ': 'MNQ=F', 'NQ': 'NQ=F', 'ES': 'ES=F',
+               'MES': 'MES=F', 'RTY': 'RTY=F', 'YM': 'YM=F'}
+    yf_ticker = _yf_map.get(sym, f'{sym}=F')
+    try:
+        loop = asyncio.get_event_loop()
+        tk   = await loop.run_in_executor(None,
+               lambda: yf.Ticker(yf_ticker).fast_info)
+        last  = clean(getattr(tk, 'last_price', None))
+        close = clean(getattr(tk, 'previous_close', None))
+        best  = last or close
+        if best:
+            source = 'yfinance'
+    except Exception:
+        pass
+
+    # Layer 2: IBKR live streaming — only if yfinance failed AND subscription active
+    if not best and ib.isConnected():
+        contract = await _resolve_fut_contract(sym)
+        if contract:
+            ib.reqMarketDataType(1)
+            ticker = ib.reqMktData(contract, '', False, False)
+            await asyncio.sleep(3)
+            bid   = clean(ticker.bid)
+            ask   = clean(ticker.ask)
+            last  = clean(ticker.last)
+            close = clean(ticker.close)
+            ib.reqMarketDataType(1)  # restore
+            if last or bid or ask:
+                mid  = clean((bid + ask) / 2) if bid and ask else None
+                best = last or mid or close
+                source = 'ibkr_live'
+
+    # Resolve contract month for the response (cached — no extra API call)
+    contract_month = None
+    try:
+        c = await _resolve_fut_contract(sym)
+        contract_month = c.lastTradeDateOrContractMonth if c else None
+    except Exception:
+        pass
 
     return {
-        "symbol":         symbol.upper(),
-        "contract_month": contract.lastTradeDateOrContractMonth,
+        "symbol":         sym,
+        "contract_month": contract_month,
         "last":           last,
         "bid":            bid,
         "ask":            ask,
         "close":          close,
         "best_price":     best,
-        "note":           "live" if last else "delayed/close",
+        "source":         source,
     }
 
 
