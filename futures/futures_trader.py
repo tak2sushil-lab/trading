@@ -55,7 +55,7 @@ POINT_VALUE  = 2.00          # $ per point per contract  (4 ticks × $0.50)
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
 MAX_DAILY_LOSS       = 350.0   # prop_rules.py hard gates at this level
-DAILY_PROFIT_TARGET  = 400.0   # stop new entries after hitting this
+DAILY_PROFIT_TARGET  = 1200.0  # TC consistency cap — no single day > $1,200 (50% of $3K target)
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 
