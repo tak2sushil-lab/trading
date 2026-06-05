@@ -40,3 +40,6 @@ graphify-out/
 
 # ── macOS ─────────────────────────────────────────────────
 .DS_Store
+
+# ── Futures runtime state (changes every trade, like trades.db) ──
+futures/prop_state.json
