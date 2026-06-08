@@ -68,6 +68,14 @@ TRAIL_TIGHT_PTS  = 85.0   # +85pts → tighten trail to 10pts (near 99pt target)
 TRAIL_WIDE_GAP   = 20.0   # trail distance in wide mode
 TRAIL_TIGHT_GAP  = 10.0   # trail distance in tight mode
 
+# ── No-move exit (time-based — frees dead trade slots) ───
+# 14% of backtest exits. Live system must match or it over-holds dead positions.
+# Fires when a trade has been open NO_MOVE_MINUTES and is stuck in the dead zone:
+#   pnl ≤ +25pts (not moving toward target) AND pnl ≥ -10pts (stop not triggered).
+NO_MOVE_MINUTES = 90      # minutes open before checking
+NO_MOVE_MAX_PTS = 25.0    # above this → trade IS progressing, let it run
+NO_MOVE_MIN_PTS = -10.0   # below this → hard stop will manage it
+
 # ── Session constants (ET) ────────────────────────────────
 ET = pytz.timezone('America/New_York')
 
@@ -960,7 +968,21 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             elif is_short and price > vwap:
                 exit_reason = f'VWAP cross exit (short) ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 5. EOD close (hard close at 3:15pm ET)
+        # 5. No-move exit (time-based — dead trade, free the slot)
+        # Only during active session; EOD close handles anything still open at 4pm.
+        if not exit_reason and get_session() not in ('EOD', 'CLOSED'):
+            try:
+                entry_dt = ET.localize(datetime.strptime(
+                    f"{trade['entry_date']} {trade['entry_time']}", '%Y-%m-%d %H:%M:%S'
+                ))
+                age_min = (now - entry_dt).total_seconds() / 60
+                if (age_min >= NO_MOVE_MINUTES
+                        and NO_MOVE_MIN_PTS <= pnl_pts <= NO_MOVE_MAX_PTS):
+                    exit_reason = f'No-move exit ({age_min:.0f}min, {pnl_pts:+.0f}pts)'
+            except Exception:
+                pass
+
+        # 6. EOD close (hard close at 4:00pm ET)
         h, m = now.hour, now.minute
         if not exit_reason and (h > HARD_CLOSE[0] or (h == HARD_CLOSE[0] and m >= HARD_CLOSE[1])):
             exit_reason = f'EOD hard close (4:00pm ET / 3:00pm CT)'
