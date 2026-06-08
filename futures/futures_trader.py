@@ -60,6 +60,7 @@ MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
+MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and live price at order time
 
 # ── Profit protection (point-based — MNQ-calibrated) ─────
 # PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
@@ -801,6 +802,16 @@ def place_trade(side: str, sig: dict, regime: str,
     price = get_live_price()
     if not price:
         log("  BLOCKED: no live price")
+        return False
+
+    # Cross-check: live price must be close to the scan's bar-close price.
+    # A large gap means the bridge is serving a stale cached quote (e.g. after
+    # a competing IBKR session drops market data streaming). Do not trade on
+    # stale prices — the stop will be miscalculated and trigger immediately.
+    scan_price = sig.get('price', 0)
+    if scan_price and abs(price - scan_price) > MAX_PRICE_DIVERGENCE:
+        log(f"  BLOCKED: stale price — scan={scan_price}, live={price} "
+            f"(gap={abs(price-scan_price):.1f}pts > max {MAX_PRICE_DIVERGENCE}pts)")
         return False
 
     df5        = get_bars()
