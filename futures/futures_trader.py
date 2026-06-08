@@ -58,6 +58,8 @@ MAX_DAILY_LOSS       = 350.0   # prop_rules.py hard gates at this level
 DAILY_PROFIT_TARGET  = 1200.0  # TC consistency cap — no single day > $1,200 (50% of $3K target)
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
+MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
+COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
 
 # ── Profit protection (point-based — MNQ-calibrated) ─────
 # PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
@@ -113,6 +115,7 @@ _daily_macro_bias     = 'BOTH'  # 'LONG' | 'SHORT' | 'BOTH' — set via Telegram
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
+_last_exit_time       = None   # datetime of most recent trade exit — cooldown gate
 _tg_offset            = 0      # Telegram getUpdates offset — marks messages as read
 _scheduler            = None
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -762,7 +765,25 @@ def place_trade(side: str, sig: dict, regime: str,
         log(f"  BLOCKED: {len(open_trades)} trades open (max {MAX_OPEN_TRADES})")
         return False
 
-    # 5. Daily P&L gates
+    # 5. Max daily trades (total entries today — open + closed)
+    _conn = sqlite3.connect(DB_PATH)
+    _daily_count = _conn.execute(
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=?",
+        (str(date.today()),)
+    ).fetchone()[0]
+    _conn.close()
+    if _daily_count >= MAX_DAILY_TRADES:
+        log(f"  BLOCKED: {_daily_count} trades entered today (max {MAX_DAILY_TRADES})")
+        return False
+
+    # 6. Cooldown after any exit (prevents immediate re-entry after a stop)
+    if _last_exit_time is not None:
+        _elapsed = (datetime.now(ET) - _last_exit_time).total_seconds() / 60
+        if _elapsed < COOLDOWN_MINUTES:
+            log(f"  BLOCKED: cooldown {_elapsed:.1f}min (need {COOLDOWN_MINUTES:.0f}min after last exit)")
+            return False
+
+    # 7. Daily P&L gates
     daily_pnl = get_futures_daily_pnl()
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f"  BLOCKED: daily loss ${daily_pnl:.0f}")
@@ -989,6 +1010,8 @@ def monitor_open_trades(regime: str = 'NORMAL'):
 
         # ── Execute exit ──────────────────────────────────
         if exit_reason:
+            global _last_exit_time
+            _last_exit_time = datetime.now(ET)
             # Cancel backup IBKR stop BEFORE closing — prevents ghost re-entry
             # if stop triggers in the window between market close and cancellation.
             _cancel_backup_stop(trade)
@@ -1285,17 +1308,46 @@ def main():
         log("WARNING: futures bridge not connected — waiting for connection")
         send_telegram("⚠️ FUTURES: Bridge not connected at startup. Will retry on each scan.")
 
+    # ── Startup: cancel any dangling backup stops from prior session ─────────
+    # If the bot was killed mid-trade or after a manual cleanup, IBKR may still
+    # have live SELL STOP orders from previous entries. Cancel them all.
+    _orphan_trades = get_open_futures_trades()
+    for _t in _orphan_trades:
+        if _t.get('stop_order_id'):
+            _r = _bridge_post(f"/futures/cancel/{_t['stop_order_id']}", {})
+            log(f"  Startup: cancelled orphan backup stop {_t['stop_order_id']} → {_r.get('status','?')}")
+        # Mark stale OPEN trades from a prior day as CLOSED so today starts clean
+        if _t.get('entry_date') and _t['entry_date'] != str(date.today()):
+            _conn = sqlite3.connect(DB_PATH)
+            _conn.execute(
+                "UPDATE futures_trades SET status='CLOSED', exit_reason='orphaned on restart', "
+                "exit_date=?, exit_time=?, pnl=0 WHERE id=?",
+                (str(date.today()), datetime.now(ET).strftime('%H:%M:%S'), _t['id'])
+            )
+            _conn.commit()
+            _conn.close()
+            log(f"  Startup: marked trade {_t['id']} ({_t.get('symbol')}) as orphaned (was OPEN from {_t['entry_date']})")
+
     prop_load()
     # Reconcile prop_state from DB on every startup — restarts mid-day cause drift.
     # DB is the single source of truth for all realized P&L.
     from futures.prop_rules import load_state, save_state
-    _state    = load_state()
-    _db_today = get_futures_daily_pnl()
-    _db_total = _get_all_time_futures_pnl()
-    _changed  = False
-    # Sync session_pnl from today's DB
-    if _db_today != _state.get('session_pnl', 0):
-        _state['session_pnl'] = _db_today;  _changed = True
+    _state     = load_state()
+    _db_today  = get_futures_daily_pnl()
+    _db_total  = _get_all_time_futures_pnl()
+    _saved_date = _state.get('session_date', '')
+    _today_str  = str(date.today())
+    _changed   = False
+    if _saved_date != _today_str:
+        # New calendar day — always start session_pnl fresh; never carry yesterday's DLL
+        _state['session_pnl']  = 0
+        _state['session_date'] = _today_str
+        _changed = True
+    else:
+        # Same-day restart — restore session_pnl from DB truth (handles mid-day crash recovery)
+        if _db_today != _state.get('session_pnl', 0):
+            _state['session_pnl'] = _db_today
+            _changed = True
     # Reconcile balance/total_profit by delta (handles restarts mid-day)
     _tracked = _state.get('total_profit', 0)
     _delta   = round(_db_total - _tracked, 2)
