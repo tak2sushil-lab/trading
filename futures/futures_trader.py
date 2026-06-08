@@ -1012,8 +1012,39 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         if exit_reason:
             global _last_exit_time
             _last_exit_time = datetime.now(ET)
-            # Cancel backup IBKR stop BEFORE closing — prevents ghost re-entry
-            # if stop triggers in the window between market close and cancellation.
+
+            # Verify IBKR actually holds this position before placing an exit order.
+            # If flat, the backup IBKR stop already filled — close the DB trade
+            # only; sending a market order would create a ghost short/long.
+            _ibkr_pos = _bridge_get('/futures/position')
+            _ibkr_qty = 0.0
+            for _p in (_ibkr_pos if isinstance(_ibkr_pos, list) else []):
+                if _p.get('symbol') == SYMBOL:
+                    _ibkr_qty = float(_p.get('qty', 0))
+                    break
+            _position_held = (_ibkr_qty > 0) if not is_short else (_ibkr_qty < 0)
+
+            if not _position_held:
+                log(f"  IBKR flat (qty={_ibkr_qty}) — backup stop filled, closing DB only")
+                _cancel_backup_stop(trade)   # cancel pending stop if any remains
+                log_futures_exit(tid, price, f"[backup-stop] {exit_reason}",
+                                 round(pnl_usd, 2), round(pnl_ticks, 1))
+                record_trade_pnl(pnl_usd)
+                msg = (
+                    f"🔴 FUTURES EXIT (backup stop filled)\n"
+                    f"{SYMBOL} {side} × {contracts}\n"
+                    f"Entry: {entry} → Exit: ~{price}\n"
+                    f"P&L: ~${pnl_usd:+.2f} ({pnl_ticks:+.1f} ticks)\n"
+                    f"Reason: {exit_reason}"
+                )
+                log(msg)
+                send_telegram(msg)
+                exits.append({'tid': tid, 'pnl': pnl_usd})
+                for d in (_session_high, _session_low, _price_history, _partial_done):
+                    d.pop(tid, None)
+                continue
+
+            # Position confirmed on IBKR — cancel backup stop then place software exit
             _cancel_backup_stop(trade)
             cover_side = 'BUY' if is_short else 'SELL'
             result = _bridge_post('/futures/order', {
