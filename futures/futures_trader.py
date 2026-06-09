@@ -119,6 +119,7 @@ _trading_paused       = False
 _last_exit_time       = None   # datetime of most recent trade exit — cooldown gate
 _tg_offset            = 0      # Telegram getUpdates offset — marks messages as read
 _scheduler            = None
+_cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by run_monitor()
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
 
@@ -362,15 +363,17 @@ def calc_rsi(series: pd.Series, period: int = 14) -> float:
 
 # ── Regime detection (NQ-native) ─────────────────────────
 
-def get_regime() -> str:
+def get_regime(df5: pd.DataFrame | None = None) -> str:
     """
     Determine market regime from NQ/MNQ bars directly.
     No SPY proxy needed — NQ IS the market for this instrument.
     Returns: STRONG | NORMAL | WEAK
+    Accepts pre-fetched df5 from run_scan() to avoid a redundant bridge call.
     """
     global _last_regime
     try:
-        df5 = get_bars(bar_size_min=5, days=2)
+        if df5 is None or df5.empty:
+            df5 = get_bars(bar_size_min=5, days=2)
         if df5.empty or len(df5) < 6:
             return _last_regime
 
@@ -712,7 +715,7 @@ def update_futures_stop(trade_id, new_stop):
 
 
 def get_futures_daily_pnl() -> float:
-    today = str(date.today())
+    today = str(datetime.now(ET).date())   # use ET date, consistent with log_futures_entry
     conn  = sqlite3.connect(DB_PATH)
     row   = conn.execute(
         "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED'",
@@ -740,7 +743,7 @@ def place_trade(side: str, sig: dict, regime: str,
     Place a futures order via bridge. Returns True if submitted.
     Checks prop_rules before every order.
     """
-    global _daily_pnl, _trading_paused
+    global _trading_paused
 
     # ── Pre-flight gates ──────────────────────────────────
 
@@ -770,7 +773,7 @@ def place_trade(side: str, sig: dict, regime: str,
     _conn = sqlite3.connect(DB_PATH)
     _daily_count = _conn.execute(
         "SELECT COUNT(*) FROM futures_trades WHERE entry_date=?",
-        (str(date.today()),)
+        (str(datetime.now(ET).date()),)   # use ET date, consistent with log_futures_entry
     ).fetchone()[0]
     _conn.close()
     if _daily_count >= MAX_DAILY_TRADES:
@@ -793,7 +796,7 @@ def place_trade(side: str, sig: dict, regime: str,
         log(f"  SKIP: daily target ${DAILY_PROFIT_TARGET:.0f} already hit (${daily_pnl:.0f})")
         return False
 
-    # 6. Bridge connected
+    # 8. Bridge connected
     if not get_bridge_connected():
         log("  BLOCKED: futures bridge not connected")
         return False
@@ -820,8 +823,9 @@ def place_trade(side: str, sig: dict, regime: str,
     contracts  = calc_contracts(price, sl)
 
     rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
-    if rr < MIN_RR:
-        log(f"  SKIP: R:R {rr:.1f} < min {MIN_RR}")
+    # Use small tolerance to avoid floating-point false rejects at exactly MIN_RR
+    if rr < MIN_RR - 0.01:
+        log(f"  SKIP: R:R {rr:.2f} < min {MIN_RR}")
         return False
 
     # ── Submit order ──────────────────────────────────────
@@ -874,7 +878,7 @@ def place_trade(side: str, sig: dict, regime: str,
                    if stop_order_id else "Backup SL: ⚠️ FAILED — software stop only")
     msg = (
         f"🔵 FUTURES {side} ENTRY\n"
-        f"Symbol:    {SYMBOL} {result.get('contract_month','')}\n"
+        f"Symbol:    {SYMBOL} {result.get('contract_month', SYMBOL)}\n"
         f"Price:     {price}\n"
         f"Stop:      {sl}  (-${risk_usd:.0f})\n"
         f"Target:    {target}  (+${target_usd:.0f})\n"
@@ -896,8 +900,6 @@ def monitor_open_trades(regime: str = 'NORMAL'):
     Check all open futures positions and apply exit stack.
     Runs every MONITOR_INTERVAL seconds.
     """
-    global _daily_pnl
-
     trades = get_open_futures_trades()
     if not trades:
         return
@@ -905,8 +907,9 @@ def monitor_open_trades(regime: str = 'NORMAL'):
     exits = []
     now   = datetime.now(ET)
 
-    # Fetch bars once for the whole monitor cycle (used for VWAP + ATR)
-    df5  = get_bars(bar_size_min=5, days=2) if is_market_open() else pd.DataFrame()
+    # Reuse bars cached by run_scan() (updated every 60s) — avoids a redundant
+    # bridge call every 15s. VWAP changes slowly; 60s-old bars are fine for exits.
+    df5      = _cached_df5
     vwap_now = calc_vwap(df5) if not df5.empty else None
 
     for trade in trades:
@@ -940,7 +943,6 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         # ── Point-based profit protection ─────────────────
         # MNQ target ~99pts. PCT-based thresholds (1.5% = 450pts) never fire.
         # Three tiers, each only tightens — never loosens the stop.
-        pnl_pts = (entry - price) if is_short else (price - entry)
         s_peak  = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
 
         # Tier 1 (+30pts): break-even — stop moves to entry, trade cannot lose
@@ -1021,15 +1023,22 @@ def monitor_open_trades(regime: str = 'NORMAL'):
 
         # ── Execute exit ──────────────────────────────────
         if exit_reason:
-            global _last_exit_time
-            _last_exit_time = datetime.now(ET)
-
             # Verify IBKR actually holds this position before placing an exit order.
             # If flat, the backup IBKR stop already filled — close the DB trade
             # only; sending a market order would create a ghost short/long.
             _ibkr_pos = _bridge_get('/futures/position')
+            # Bridge error returns {} (not a list). If we can't verify, skip this
+            # exit and retry next cycle — the IBKR backup stop protects us.
+            # Do NOT set _last_exit_time on a skipped exit or the cooldown gate
+            # would fire for a trade that hasn't actually closed yet.
+            if not isinstance(_ibkr_pos, list):
+                log(f"  trade {tid}: position check unavailable (bridge error) — skipping, retry next cycle")
+                continue
+
+            global _last_exit_time
+            _last_exit_time = datetime.now(ET)
             _ibkr_qty = 0.0
-            for _p in (_ibkr_pos if isinstance(_ibkr_pos, list) else []):
+            for _p in _ibkr_pos:
                 if _p.get('symbol') == SYMBOL:
                     _ibkr_qty = float(_p.get('qty', 0))
                     break
@@ -1106,7 +1115,7 @@ def _get_open_unrealized() -> float:
 
 def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
-    global _confirmed_scans, _regime_scan_counts
+    global _confirmed_scans, _regime_scan_counts, _cached_df5
 
     if not get_bridge_connected():
         log("Bridge disconnected — skipping scan")
@@ -1119,14 +1128,16 @@ def run_scan():
     session = get_session()
     log(f"--- SCAN | session={session} | {datetime.now(ET).strftime('%H:%M')} ---")
 
-    # Update ORB + pre-market IB
+    # Fetch bars once; shared with run_monitor() via _cached_df5 to avoid
+    # a redundant bridge call every 15s in the monitor loop.
     df5 = get_bars(bar_size_min=5, days=2)
+    _cached_df5 = df5
     if not df5.empty:
         update_orb(df5)
         update_premarket_ib()   # sets pm_high/pm_low from 8:30–9:30am bars
 
-    # Regime
-    regime = get_regime()
+    # Regime — pass pre-fetched bars to avoid a second bridge call
+    regime = get_regime(df5)
     _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1
     _confirmed_scans = _regime_scan_counts.get(regime, 0)
     log(f"Regime: {regime} (×{_confirmed_scans}) | Daily P&L: ${get_futures_daily_pnl():+.0f}")
@@ -1153,7 +1164,11 @@ def run_scan():
         return
 
     # ── pm_ib hold: give user 5 min to send FUT BIAS after macro range is set ──
-    if _pm_ib_set and _pm_ib_set_time is not None:
+    # Only applies in the morning window (before 11am ET). After 11am the pre-market
+    # IB data is stale and restarts should not re-trigger the hold — entries would
+    # be blocked for 5 min after every mid-day restart, which is unacceptable.
+    if (_pm_ib_set and _pm_ib_set_time is not None
+            and datetime.now(ET).hour < 11):
         elapsed = (datetime.now(ET) - _pm_ib_set_time).total_seconds()
         if elapsed < 300:
             remaining = int(300 - elapsed)

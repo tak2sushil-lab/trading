@@ -334,7 +334,7 @@ class PropRulesSimulator:
             self.trades_blocked += 1
             return False, 'TC daily cap'
 
-        if (self.mode == 'TC' and self.total_profit > 0
+        if (self.mode == 'TC' and self.total_profit >= TC_DAILY_CAP
                 and self.session_pnl > 0
                 and self.session_pnl / self.total_profit > TC_CONSISTENCY_MAX):
             self.trades_blocked += 1
