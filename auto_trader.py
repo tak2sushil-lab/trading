@@ -136,6 +136,9 @@ active_sympathy_triggers = {}     # sym → {trigger, trigger_move, gap} — pop
 sympathy_scan_done      = False   # fires once per day at market open
 pm_scan_done            = False   # pre-market scan fires once per day
 catalyst_priority  = []       # symbols from today's catalyst scan
+_longs_paused      = False    # set by PAUSE LONGS / WATCH — blocks new long entries only
+_watch_mode        = False    # set by WATCH — sends regime snapshots every 30 min
+_watch_last_sent   = None     # datetime of last WATCH regime update
 tg_update_id       = 0        # Telegram polling offset
 regime_history     = []       # last N regime readings for confirmation
 spy_open_price     = None     # SPY price at market open (set on first post-open scan)
@@ -1968,13 +1971,22 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             exit_reason = (f'P&L protection: session peak ${peak_session_pnl:.0f} '
                            f'dropped 25% — cutting non-runner ({pnl_pct:+.1f}%)')
 
-        # 0. Regime flip exit: cover losing shorts when market turns NORMAL/STRONG
+        # 0a. Regime flip exit: cover losing shorts when market turns NORMAL/STRONG
         # Requires 3 consecutive scans (symmetric with 3-scan bear entry requirement)
         # 2-scan rule caused 6/24 premature covers (+$754/yr improvement with 3-scan)
         if (is_short and regime in ('NORMAL', 'STRONG')
                 and confirmed_scans >= 3 and pnl_pct < 0):
             exit_reason = (f'Regime flip {regime} (x{confirmed_scans}) — '
                            f'covering losing short ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
+
+        # 0b. Long flip-exit: exit losing longs when market turns WEAK (x3 consecutive)
+        # Mirror of short flip-exit. Jun 9 2026: entered 3 SEMIS longs at NORMAL x2,
+        # regime degraded CAUTIOUS→WEAK x3 at 10:27am — stops hit 10:31-11:22am.
+        # Exiting at WEAK x3 saves ~50% of eventual stop loss on distribution days.
+        if (not exit_reason and not is_short
+                and regime == 'WEAK' and confirmed_scans >= 3 and pnl_pct < 0):
+            exit_reason = (f'Regime flip WEAK (x{confirmed_scans}) — '
+                           f'exiting losing long ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
 
         # 1. Hard stop
         if is_short:
@@ -2239,6 +2251,7 @@ def _chart_alignment_check(sym, entry_price, sl, strategy):
 # ─────────────────────────────────────────────────────────
 def poll_telegram_commands():
     global tg_update_id, daily_bull_count, daily_sympathy_count
+    global _longs_paused, _watch_mode, _watch_last_sent
     try:
         r = requests.get(f"{TG_API}/getUpdates",
                          params={'offset': tg_update_id, 'timeout': 0},
@@ -2300,8 +2313,10 @@ def poll_telegram_commands():
                     "STATUS            — P&L, open positions, 30d win rate",
                     "REGIME            — market condition + full snapshot",
                     "TODAY             — today's closed trades + per-trade P&L",
-                    "PAUSE/STOP/CANCEL — halt new entries (monitor stays on)",
-                    "RESUME            — re-enable entries",
+                    "PAUSE/STOP/CANCEL — halt ALL new entries (monitor stays on)",
+                    "PAUSE LONGS       — block longs only, shorts still active",
+                    "WATCH             — PAUSE LONGS + regime update every 30 min",
+                    "RESUME            — re-enable all entries",
                     "BUY <SYMBOL> [%]  — manual buy (e.g. BUY TSLA 2.5)",
                     "SELL <SYMBOL>     — close one position (e.g. SELL TSLA)",
                     "CLOSEALL          — close ALL open positions now",
@@ -2400,11 +2415,30 @@ def poll_telegram_commands():
                     json.dump({'date': date.today().isoformat(), 'blocked': True,
                                'reason': 'User sent CANCEL via Telegram'}, f)
 
+            elif text == 'PAUSE LONGS':
+                _longs_paused = True
+                _watch_mode   = False
+                send_telegram(
+                    "⏸ Longs paused — new LONG entries blocked, shorts still active.\n"
+                    "Regime will still print each scan. Send RESUME to re-enable."
+                )
+
+            elif text == 'WATCH':
+                _longs_paused    = True
+                _watch_mode      = True
+                _watch_last_sent = None
+                send_telegram(
+                    "👁 WATCH mode — longs paused, regime update every 30 min.\n"
+                    "Shorts still active. Send RESUME to exit watch mode."
+                )
+
             elif text == 'RESUME':
+                _longs_paused = False
+                _watch_mode   = False
                 block_file = os.path.join(_DIR, 'trading_blocked.json')
                 if os.path.exists(block_file):
                     os.remove(block_file)
-                send_telegram("Trading resumed. Scanning for setups.")
+                send_telegram("✅ Resumed — scanning for both longs and shorts.")
 
             elif text.startswith('BUY '):
                 # Accept: BUY TSLA  or  BUY TSLA 2.5  or  BUY TSLA 2.5%
@@ -2979,6 +3013,23 @@ def run_scan():
     log(f"\n{'='*55}")
     log(f"SCAN | Regime: {regime} (x{confirmed_scans}) | SPY {spy_chg:+.1f}% {'↑open' if spy_above_open else '↓open'} | {vwap_str} | {vix_str} | {qqq_str}")
     log(f"      Futures: {fut_str} | {breadth_str}")
+
+    # ── WATCH mode: send regime snapshot every 30 min ─────────────────────
+    global _watch_last_sent
+    if _watch_mode and is_market_open():
+        now_et = datetime.now(ET)
+        if _watch_last_sent is None or (now_et - _watch_last_sent).total_seconds() >= 1800:
+            _watch_last_sent = now_et
+            open_syms = ', '.join(t['symbol'] for t in open_trades) if open_trades else 'none'
+            pause_note = ' ⏸ LONGS PAUSED' if _longs_paused else ''
+            send_telegram(
+                f"👁 WATCH update | {now_et.strftime('%H:%M ET')}{pause_note}\n"
+                f"Regime: {regime} (x{confirmed_scans}) | SPY {spy_chg:+.1f}%\n"
+                f"{vwap_str} | {vix_str}\n"
+                f"Open positions: {open_syms}\n"
+                f"Send RESUME to re-enable longs."
+            )
+
     # Live session P&L = realized today + current unrealized
     try:
         portfolio_snap = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
@@ -3193,6 +3244,11 @@ def _scan_catalyst_override(open_trades):
 
 def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     global daily_bull_count, traded_today
+
+    # ── Manual longs-paused gate (PAUSE LONGS / WATCH commands) ───────────
+    if _longs_paused:
+        log("LONGS PAUSED (manual override) — monitoring only. Send RESUME to re-enable.")
+        return monitor_open_trades(regime, confirmed_scans)
 
     # ── Daily max loss brake ───────────────────────────────────
     try:
@@ -3951,6 +4007,69 @@ def morning_catalyst_scan():
         msg_parts.append("📐 Key levels for top picks:\n" + '\n'.join(key_level_lines))
     if not msg_parts:
         msg_parts.append("📭 No pre-market or catalyst signals today")
+
+    # ── 5. Pre-event macro alert (sector sweep + direction read) ──────────
+    try:
+        from futures.macro_calendar import classify_date as _classify
+        from collections import defaultdict as _dd
+        _today = date.today()
+        _tomorrow = _today + timedelta(days=1)
+        while _tomorrow.weekday() >= 5:
+            _tomorrow += timedelta(days=1)
+        _tomorrow_type = _classify(_tomorrow)
+        _is_pre_event  = (_tomorrow_type == 'HIGH_IMPACT')
+
+        if _is_pre_event:
+            # Count pre-market movers by sector
+            _sector_hits = _dd(list)
+            for _s, _p in pm_results:
+                if _p >= 5.0:
+                    _sector_hits[SECTOR_MAP.get(_s, 'OTHER')].append((_s, _p))
+
+            # Find concentrated sector
+            _top_sector = max(_sector_hits, key=lambda s: len(_sector_hits[s])) if _sector_hits else None
+            _top_count  = len(_sector_hits[_top_sector]) if _top_sector else 0
+            _total_big  = sum(1 for _, _p in pm_results if _p >= 7.0)
+            _total_med  = sum(1 for _, _p in pm_results if _p >= 5.0)
+
+            # Direction read from gap size + coordination
+            if _total_big >= 5 and _top_count >= 2:
+                _pattern = "DISTRIBUTION — coordinated sector pump, no earnings"
+                _action  = "→ Chasing longs into this = buying into institutional exit\n→ Wait for WEAK x3 → short opportunity instead"
+                _icon    = "⚠️"
+            elif _total_med >= 4 and _top_count >= 2:
+                _pattern = "POSSIBLE DISTRIBUTION — moderate breadth, watch for fade"
+                _action  = "→ Be selective on longs, tighten stops\n→ Monitor regime closely in first 30 min"
+                _icon    = "ℹ️"
+            elif _total_big <= 2:
+                _pattern = "QUIET GRIND — low breadth, likely accumulation"
+                _action  = "→ Organic moves tend to hold\n→ Standard entry rules apply"
+                _icon    = "✅"
+            else:
+                _pattern = "MIXED — check regime at open"
+                _action  = "→ Tighten stops on existing positions\n→ Wait for regime to settle post-IB"
+                _icon    = "ℹ️"
+
+            _sector_lines = []
+            for _sec, _syms in sorted(_sector_hits.items(), key=lambda x: -len(x[1]))[:4]:
+                _names = ', '.join(f"{_sy}+{_pc:.0f}%" for _sy, _pc in sorted(_syms, key=lambda x: -x[1])[:3])
+                _sector_lines.append(f"  {_sec}: {len(_syms)} stocks ({_names})")
+
+            _alert = (
+                f"{_icon} PRE-{_tomorrow_type.replace('_',' ')} DAY ({_tomorrow.strftime('%b %d')})\n"
+                f"Pre-mkt breadth: {_total_big} stocks >7%  |  {_total_med} stocks >5%\n"
+            )
+            if _sector_lines:
+                _alert += "Sector concentration:\n" + '\n'.join(_sector_lines) + "\n"
+            _alert += (
+                f"Pattern: {_pattern}\n"
+                f"{_action}\n\n"
+                f"Commands:  PAUSE LONGS  |  WATCH  |  RESUME"
+            )
+            send_telegram(_alert)
+            log(f"Pre-event alert sent: {_tomorrow} ({_total_big} stocks >7%, pattern={_pattern[:20]})")
+    except Exception as _e:
+        log(f"Pre-event alert error: {_e}")
 
     send_telegram('\n\n'.join(msg_parts))
 
