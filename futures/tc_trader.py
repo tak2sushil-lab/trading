@@ -1163,6 +1163,18 @@ def run_scan():
         log(f"Max trades open ({len(open_trades)}) — skip")
         return
 
+    # ── IB window gate: no entries until Initial Balance is fully established ──
+    # Backtest finding (Jun 1 2026): 10:xx entries (right after IB forms at 10:30am)
+    # have 52.7% WR vs 9:xx entries which are noise. The backtest enforces this
+    # implicitly — live trading must mirror it. IB window = 60min from 9:30am = 10:30am.
+    now_et = datetime.now(ET)
+    today_et = now_et.date()
+    ib_ready_at = ET.localize(datetime(today_et.year, today_et.month, today_et.day, 10, 30))
+    if now_et < ib_ready_at:
+        mins_left = int((ib_ready_at - now_et).total_seconds() / 60) + 1
+        log(f"IB window not complete — waiting for 10:30am ET ({mins_left}min remaining)")
+        return
+
     # ── pm_ib hold: give user 5 min to send FUT BIAS after macro range is set ──
     # Only applies in the morning window (before 11am ET). After 11am the pre-market
     # IB data is stale and restarts should not re-trigger the hold — entries would
