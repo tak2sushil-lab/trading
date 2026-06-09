@@ -1047,15 +1047,17 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             if not _position_held:
                 log(f"  IBKR flat (qty={_ibkr_qty}) — backup stop filled, closing DB only")
                 _cancel_backup_stop(trade)   # cancel pending stop if any remains
-                log_futures_exit(tid, price, f"[backup-stop] {exit_reason}",
+                backup_stop_px = trade.get('stop_price', '?')
+                log_futures_exit(tid, price, f"[backup-stop] IBKR stop @ {backup_stop_px} filled",
                                  round(pnl_usd, 2), round(pnl_ticks, 1))
                 record_trade_pnl(pnl_usd)
+                emoji = '✅' if pnl_usd > 0 else '🔴'
                 msg = (
-                    f"🔴 FUTURES EXIT (backup stop filled)\n"
+                    f"{emoji} FUTURES EXIT (IBKR stop filled)\n"
                     f"{SYMBOL} {side} × {contracts}\n"
-                    f"Entry: {entry} → Exit: ~{price}\n"
+                    f"Entry: {entry} → Exit: ~{price} (est.)\n"
                     f"P&L: ~${pnl_usd:+.2f} ({pnl_ticks:+.1f} ticks)\n"
-                    f"Reason: {exit_reason}"
+                    f"IBKR backup stop: {backup_stop_px} | Est. from current price"
                 )
                 log(msg)
                 send_telegram(msg)
