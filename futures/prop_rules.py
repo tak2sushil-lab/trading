@@ -142,8 +142,9 @@ def check_can_trade(unrealized_pnl: float = 0.0) -> tuple[bool, str]:
     mode  = state.get('mode', ACCOUNT_MODE)
 
     balance       = state['balance']
-    session_pnl   = state['session_pnl']
     total_profit  = state['total_profit']
+    # Ignore stale session_pnl from a prior day (service runs overnight continuously)
+    session_pnl   = state['session_pnl'] if state.get('session_date', '') == date.today().isoformat() else 0.0
     floor         = effective_floor(state)
 
     # ── MLL soft stop ─────────────────────────────────────
@@ -197,6 +198,10 @@ def get_max_contracts(base_contracts: int = 1) -> int:
 def record_trade_pnl(pnl: float):
     """Call after each trade closes with realized P&L (after commission)."""
     state = load_state()
+    # Reset session_pnl if date has rolled over since last trade
+    if state.get('session_date', '') != date.today().isoformat():
+        state['session_pnl']  = 0.0
+        state['session_date'] = date.today().isoformat()
     state['session_pnl']   = round(state['session_pnl'] + pnl, 2)
     state['total_profit']  = round(state['total_profit'] + pnl, 2)
     state['balance']       = round(state['balance'] + pnl, 2)
