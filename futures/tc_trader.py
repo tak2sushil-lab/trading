@@ -653,7 +653,8 @@ def get_open_futures_trades() -> list:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT * FROM futures_trades WHERE status='OPEN'"
+        "SELECT * FROM futures_trades WHERE status='OPEN' AND account_mode=?",
+        (ACCOUNT_MODE,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -717,8 +718,8 @@ def get_futures_daily_pnl() -> float:
     today = str(datetime.now(ET).date())   # use ET date, consistent with log_futures_entry
     conn  = sqlite3.connect(DB_PATH)
     row   = conn.execute(
-        "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED'",
-        (today,)
+        "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED' AND account_mode=?",
+        (today, ACCOUNT_MODE)
     ).fetchone()
     conn.close()
     return round(float(row[0] or 0), 2)
@@ -728,7 +729,8 @@ def _get_all_time_futures_pnl() -> float:
     """Total realized P&L across all futures trades — used to reconcile prop_state balance."""
     conn = sqlite3.connect(DB_PATH)
     row  = conn.execute(
-        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED'"
+        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED' AND account_mode=?",
+        (ACCOUNT_MODE,)
     ).fetchone()
     conn.close()
     return round(float(row[0] or 0), 2)
