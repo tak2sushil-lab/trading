@@ -3149,6 +3149,9 @@ def main():
                     continue
                 text    = msg.get('text', '').strip()
                 chat_id = str(msg['chat']['id'])
+                if chat_id != str(OPT_TG_CHAT_ID):
+                    _last_update_id = uid  # consume and discard — only group messages
+                    continue
                 if not text:
                     _last_update_id = uid
                     continue

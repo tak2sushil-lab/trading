@@ -773,8 +773,8 @@ def place_trade(side: str, sig: dict, regime: str,
     # 5. Max daily trades (total entries today — open + closed)
     _conn = sqlite3.connect(DB_PATH)
     _daily_count = _conn.execute(
-        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=?",
-        (str(datetime.now(ET).date()),)   # use ET date, consistent with log_futures_entry
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=?",
+        (str(datetime.now(ET).date()), ACCOUNT_MODE)
     ).fetchone()[0]
     _conn.close()
     if _daily_count >= MAX_DAILY_TRADES:
