@@ -1971,15 +1971,15 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             exit_reason = (f'P&L protection: session peak ${peak_session_pnl:.0f} '
                            f'dropped 25% — cutting non-runner ({pnl_pct:+.1f}%)')
 
-        # 0a. Regime flip exit: cover losing shorts when market turns NORMAL/STRONG
+        # 0b. Regime flip exit: cover losing shorts when market turns NORMAL/STRONG
         # Requires 3 consecutive scans (symmetric with 3-scan bear entry requirement)
         # 2-scan rule caused 6/24 premature covers (+$754/yr improvement with 3-scan)
-        if (is_short and regime in ('NORMAL', 'STRONG')
+        if (not exit_reason and is_short and regime in ('NORMAL', 'STRONG')
                 and confirmed_scans >= 3 and pnl_pct < 0):
             exit_reason = (f'Regime flip {regime} (x{confirmed_scans}) — '
                            f'covering losing short ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
 
-        # 0b. Long flip-exit: exit losing longs when market turns WEAK (x3 consecutive)
+        # 0c. Long flip-exit: exit losing longs when market turns WEAK (x3 consecutive)
         # Mirror of short flip-exit. Jun 9 2026: entered 3 SEMIS longs at NORMAL x2,
         # regime degraded CAUTIOUS→WEAK x3 at 10:27am — stops hit 10:31-11:22am.
         # Exiting at WEAK x3 saves ~50% of eventual stop loss on distribution days.
@@ -2973,7 +2973,12 @@ def run_scan():
     regime_history.append(regime)
     if len(regime_history) > 6:
         regime_history.pop(0)
-    confirmed_scans = sum(1 for r in reversed(regime_history) if r == regime)
+    confirmed_scans = 0
+    for _r in reversed(regime_history):
+        if _r == regime:
+            confirmed_scans += 1
+        else:
+            break
 
     # Track SPY price from market open — set once on first post-open scan
     now = datetime.now(ET)
