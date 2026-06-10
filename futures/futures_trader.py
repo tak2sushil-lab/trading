@@ -143,13 +143,15 @@ def send_telegram(msg: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'HTML'},
             timeout=5,
         )
-    except Exception:
-        pass
+        if not r.ok:
+            log(f"[TG error] {r.status_code}: {r.text[:120]}")
+    except Exception as e:
+        log(f"[TG error] {e}")
 
 
 # ── Session detection ─────────────────────────────────────
