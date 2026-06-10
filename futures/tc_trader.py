@@ -36,7 +36,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from prop_rules import (
     check_can_trade, get_max_contracts, record_trade_pnl,
     update_eod_balance, get_status as prop_status, load_state as prop_load,
-    ACCOUNT_MODE,
+    save_state as prop_save, ACCOUNT_MODE, DLL_SOFT, TC_DAILY_CAP,
 )
 from portfolio_status import format_all as _portfolio_all
 
@@ -51,8 +51,8 @@ from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, 
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
-MAX_DAILY_LOSS       = 350.0   # prop_rules.py hard gates at this level
-DAILY_PROFIT_TARGET  = 1200.0  # TC consistency cap — no single day > $1,200 (50% of $3K target)
+MAX_DAILY_LOSS       = DLL_SOFT      # $700 TC soft DLL (hard limit $1K — stay $300 above it)
+DAILY_PROFIT_TARGET  = TC_DAILY_CAP  # $1,200 — TC consistency cap (50% rule buffer)
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
@@ -1405,8 +1405,7 @@ def main():
     prop_load()
     # Reconcile prop_state from DB on every startup — restarts mid-day cause drift.
     # DB is the single source of truth for all realized P&L.
-    from futures.prop_rules import load_state, save_state
-    _state     = load_state()
+    _state     = prop_load()
     _db_today  = get_futures_daily_pnl()
     _db_total  = _get_all_time_futures_pnl()
     _saved_date = _state.get('session_date', '')
@@ -1430,7 +1429,7 @@ def main():
         _state['balance']      = round(_state.get('balance', 50000) + _delta, 2)
         _changed = True
     if _changed:
-        save_state(_state)
+        prop_save(_state)
     send_telegram(f"⚡ TriVega Futures · Online\n{format_prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)

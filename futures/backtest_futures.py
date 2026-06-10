@@ -40,7 +40,7 @@ import pandas as pd
 import pytz
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from futures.collect_bars import load_bars, filter_ny_session
+from futures.collect_bars import load_bars, filter_ny_session, filter_london_session
 from futures.prop_rules   import PropRulesSimulator, COMMISSION, POINT_VALUE, TICK_SIZE
 
 ET = pytz.timezone('America/New_York')
@@ -150,11 +150,15 @@ class Config:
     pct_trail_activate: float = 0.008  # +0.8% activates PCT trail (lower than equity)
     pct_trail_gap:      float = 0.004  # trail 0.4% from peak
 
+    # Session anchor — controls IB window start and session-specific timing defaults.
+    # NY: 9:30am ET | London: 3:00am ET (= 8:00am BST/GMT)
+    session_open:    time  = time(9, 30)
+
     # Exit
     max_hold_bars:   int   = 24     # 2h no-move exit (tighter than equity)
     eod_close_time:  time  = time(15, 10)
     no_entry_after:  time  = time(14, 0)   # tighter: no entries after 2pm ET
-    lunch_start:     time  = time(11, 45)
+    lunch_start:     time  = time(11, 45)  # NY lunch skip; set to time(23,0) to disable
     lunch_end:       time  = time(12, 30)
 
     # Friction
@@ -271,11 +275,11 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
         if gap_pct > cfg.gap_max_pct:
             return []
 
-    # ── Initial Balance (dynamic window: ib_window_min from 9:30) ────
-    # 9:30 + 30min = 10:00 | 9:30 + 60min = 10:30
+    # ── Initial Balance (ib_window_min from session_open) ────────────
+    # NY:     9:30 + 60min = 10:30  |  London: 3:00 + 60min = 4:00am ET
     from datetime import datetime as _dt
     _ib_end_dt = _dt.combine(day_df.index[0].date(),
-                             time(9, 30)) + timedelta(minutes=cfg.ib_window_min)
+                             cfg.session_open) + timedelta(minutes=cfg.ib_window_min)
     ib_end_t   = _ib_end_dt.time()
     ib_bars   = day_df[day_df.index.time < ib_end_t]
     if len(ib_bars) < 4:
@@ -822,21 +826,25 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
 def run_backtest(start: str | None = None, end: str | None = None,
                  mode: str = 'TC', cfg: Config | None = None,
                  contracts: int = 1, es_confirm: bool = False,
-                 scale_contracts: bool = False) -> list[dict]:
+                 scale_contracts: bool = False,
+                 symbol: str = 'MNQ', session: str = 'NY') -> list[dict]:
     if cfg is None:
         cfg = Config()
 
-    df = load_bars(start=start, end=end, table='futures_bars_5m')
+    df = load_bars(symbol=symbol, start=start, end=end, table='futures_bars_5m')
     if df.empty:
         print('❌ No data. Run: venv/bin/python futures/collect_bars.py --bootstrap')
         return []
 
-    df     = add_indicators(df, cfg)
-    ny_df  = filter_ny_session(df)
+    df  = add_indicators(df, cfg)
+    if session == 'LONDON':
+        ny_df = filter_london_session(df)
+    else:
+        ny_df = filter_ny_session(df)
     avg_vol = build_avg_vol(ny_df)
 
     # Daily trend bias (EMA5 vs EMA20 on daily bars) — higher-timeframe filter
-    daily_df = load_bars(start=start, end=end, table='futures_bars_1d')
+    daily_df = load_bars(symbol=symbol, start=start, end=end, table='futures_bars_1d')
     daily_bias_map: dict[str, str] = {}
     if not daily_df.empty:
         daily_df['ema5']  = daily_df['close'].ewm(span=5,  adjust=False).mean()
@@ -998,7 +1006,8 @@ def run_backtest(start: str | None = None, end: str | None = None,
 def walk_forward(df_5m: pd.DataFrame, cfg: Config,
                  n_windows: int = 6, oos_pct: float = 0.30,
                  mode: str = 'TC', contracts: int = 1,
-                 es_confirm: bool = False, scale_contracts: bool = False) -> list[dict]:
+                 es_confirm: bool = False, scale_contracts: bool = False,
+                 symbol: str = 'MNQ', session: str = 'NY') -> list[dict]:
     """
     Rolling walk-forward: split history into IS/OOS windows.
     Each window: train on IS (70%), test on OOS (30%).
@@ -1033,7 +1042,8 @@ def walk_forward(df_5m: pd.DataFrame, cfg: Config,
         # Run OOS with the same config/sizing as the main backtest
         oos_trades = run_backtest(start=oos_start, end=oos_end_dt, cfg=cfg,
                                   mode=mode, contracts=contracts,
-                                  es_confirm=es_confirm, scale_contracts=scale_contracts)
+                                  es_confirm=es_confirm, scale_contracts=scale_contracts,
+                                  symbol=symbol, session=session)
         n_trades   = len(oos_trades)
         oos_wr     = (sum(1 for t in oos_trades if t['status'] == 'WIN') / n_trades * 100
                       if n_trades else 0)
@@ -1293,7 +1303,7 @@ def simulate_tc_eval(trades: list[dict]):
 
 # ── A/B Config Comparison ─────────────────────────────────────────────────────
 
-def run_ab(start: str | None, end: str | None):
+def run_ab(start: str | None, end: str | None, symbol: str = 'MNQ', session: str = 'NY'):
     configs = [
         # Standard IB approach: stop at midpoint (50%), target 1.5× extension
         Config(label='IB60 stop50% tgt1.5x slip1t', ib_window_min=60, stop_ib_frac=0.50, target_ib_mult=1.5, slippage_ticks=1.0),
@@ -1314,7 +1324,7 @@ def run_ab(start: str | None, end: str | None):
     print(f'  {"-"*30} {"-"*7} {"-"*6} {"-"*10} {"-"*7} {"-"*10}')
 
     for cfg in configs:
-        trades = run_backtest(start=start, end=end, cfg=cfg)
+        trades = run_backtest(start=start, end=end, cfg=cfg, symbol=symbol, session=session)
         if not trades:
             print(f'  {cfg.label:<30} {"no trades":>7}')
             continue
@@ -1339,7 +1349,7 @@ def run_ab(start: str | None, end: str | None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='MNQ futures backtest (pro)',
+        description='Futures backtest (pro)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Named strategies (--strategy):
@@ -1352,9 +1362,12 @@ Named strategies (--strategy):
 
   To list all strategies:  --list-strategies
         """)
-    parser.add_argument('--start',  default=None,  help='Start date YYYY-MM-DD')
-    parser.add_argument('--end',    default=None,  help='End date YYYY-MM-DD')
-    parser.add_argument('--mode',   default='TC',  choices=['TC', 'XFA'])
+    parser.add_argument('--start',      default=None,   help='Start date YYYY-MM-DD')
+    parser.add_argument('--end',        default=None,   help='End date YYYY-MM-DD')
+    parser.add_argument('--instrument', default='MNQ',  help='Instrument symbol (MNQ, MES, ES)')
+    parser.add_argument('--session',    default='NY',   choices=['NY', 'LONDON'],
+                        help='Session filter: NY=9:30am-3:10pm ET, LONDON=3:00am-12:00pm ET')
+    parser.add_argument('--mode',       default='TC',   choices=['TC', 'XFA'])
     parser.add_argument('--tc-sim', action='store_true', help='TC eval simulation')
     parser.add_argument('--wfa',    action='store_true', help='Walk-forward analysis')
     parser.add_argument('--ab',     action='store_true', help='A/B parameter comparison')
@@ -1442,6 +1455,20 @@ Named strategies (--strategy):
 
     args = parser.parse_args()
 
+    # Set instrument env var so strategy_core / prop_rules pick it up
+    import os as _os
+    _os.environ['FUTURES_INSTRUMENT'] = args.instrument
+
+    # ── Session timing defaults ───────────────────────────────────────────────
+    # London IB anchors to 3:00am ET (8am BST). Session ends 12:00pm ET (5pm BST).
+    # NY IB anchors to 9:30am ET. These defaults can be overridden by CLI flags.
+    _london = (args.session == 'LONDON')
+    _session_open   = time(3, 0)  if _london else time(9, 30)
+    _eod_close      = time(11, 45) if _london else time(15, 10)
+    _no_entry_h_def = 10          if _london else 14    # 10am ET = last 2h London | 2pm ET NY
+    _lunch_start    = time(23, 0) if _london else time(11, 45)  # disabled for London
+    _lunch_end      = time(23, 59) if _london else time(12, 30)
+
     # ── Strategy preset handling ──────────────────────────────────────────────
     # List strategies
     if args.list_strategies:
@@ -1469,7 +1496,7 @@ Named strategies (--strategy):
         print()
 
     if args.ab:
-        run_ab(args.start, args.end)
+        run_ab(args.start, args.end, symbol=args.instrument, session=args.session)
         sys.exit(0)
 
     # Helper: CLI arg (non-None) > preset > hardcoded default
@@ -1480,7 +1507,7 @@ Named strategies (--strategy):
             return preset_config[preset_key]
         return default
 
-    no_entry_h = _v(args.no_entry_after, 'no_entry_after_hour', 14)
+    no_entry_h = _v(args.no_entry_after, 'no_entry_after_hour', _no_entry_h_def)
     cfg = Config(
         ib_window_min    = _v(args.ib,          'ib_window_min',    60),
         ib_confirm_bars  = _v(args.ib_confirm,  'ib_confirm_bars',  1),
@@ -1511,6 +1538,11 @@ Named strategies (--strategy):
         premarket_min_ext      = _v(args.premarket_min_ext,  'premarket_min_ext',  15.0),
         premarket_stop_pts     = _v(args.premarket_stop_pts, 'premarket_stop_pts', 20.0),
         premarket_target_pts   = _v(args.premarket_tgt_pts,  'premarket_target_pts', 80.0),
+        # Session timing (session-open anchors IB; eod/lunch differ by session)
+        session_open  = _session_open,
+        eod_close_time = _eod_close,
+        lunch_start   = _lunch_start,
+        lunch_end     = _lunch_end,
     )
 
     # Run params: CLI args override preset, preset overrides defaults
@@ -1518,20 +1550,22 @@ Named strategies (--strategy):
     _es_confirm      = args.es_confirm or preset_run.get('es_confirm', False)
     _scale_contracts = args.scale_contracts or preset_run.get('scale_contracts', False)
 
-    print(f'Loading MNQ 5-min bars (start={args.start or "all"})...')
-    df = load_bars(start=args.start, end=args.end, table='futures_bars_5m')
+    _session_label = 'London (3am-12pm ET)' if args.session == 'LONDON' else 'NY (9:30am-3:10pm ET)'
+    print(f'Loading {args.instrument} 5-min bars (start={args.start or "all"}, session={_session_label})...')
+    df = load_bars(symbol=args.instrument, start=args.start, end=args.end, table='futures_bars_5m')
     if df.empty:
         print('❌ No data. Run bootstrap first.')
         sys.exit(1)
     df_ind = add_indicators(df, cfg)
-    ny_df  = filter_ny_session(df_ind)
-    print(f'  {len(df):,} total bars → {len(ny_df):,} NY session bars')
-    print(f'  {len(sorted(ny_df.index.normalize().unique()))} trading days\n')
+    _session_df = filter_london_session(df_ind) if args.session == 'LONDON' else filter_ny_session(df_ind)
+    print(f'  {len(df):,} total bars → {len(_session_df):,} {args.session} session bars')
+    print(f'  {len(sorted(_session_df.index.normalize().unique()))} trading days\n')
 
     _mode = args.mode if args.mode != 'TC' else preset_run.get('mode', args.mode)
     trades = run_backtest(start=args.start, end=args.end, mode=_mode, cfg=cfg,
                           contracts=_contracts, es_confirm=_es_confirm,
-                          scale_contracts=_scale_contracts)
+                          scale_contracts=_scale_contracts,
+                          symbol=args.instrument, session=args.session)
     print_report(trades, cfg, mode=args.mode, contracts=_contracts,
                  scale_contracts=_scale_contracts)
 
@@ -1567,5 +1601,6 @@ Named strategies (--strategy):
         print('Running walk-forward analysis...')
         wfa_results = walk_forward(df_ind, cfg, mode=_mode,
                                    contracts=_contracts, es_confirm=_es_confirm,
-                                   scale_contracts=_scale_contracts)
+                                   scale_contracts=_scale_contracts,
+                                   symbol=args.instrument, session=args.session)
         print_wfa_report(wfa_results)

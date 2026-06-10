@@ -36,7 +36,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from prop_rules import (
     check_can_trade, get_max_contracts, record_trade_pnl,
     update_eod_balance, get_status as prop_status, load_state as prop_load,
-    ACCOUNT_MODE, IBKR_DAILY_CAP, IBKR_DLL_SOFT, IBKR_FLOOR,
+    save_state as prop_save, ACCOUNT_MODE, IBKR_DAILY_CAP, IBKR_DLL_SOFT, IBKR_FLOOR,
 )
 from portfolio_status import format_all as _portfolio_all
 
@@ -1401,10 +1401,9 @@ def main():
             log(f"  Startup: marked trade {_t['id']} ({_t.get('symbol')}) as orphaned (was OPEN from {_t['entry_date']})")
 
     prop_load()
-    # Reconcile prop_state from DB on every startup — restarts mid-day cause drift.
+    # Reconcile ibkr_state from DB on every startup — restarts mid-day cause drift.
     # DB is the single source of truth for all realized P&L.
-    from futures.prop_rules import load_state, save_state
-    _state     = load_state()
+    _state     = prop_load()
     _db_today  = get_futures_daily_pnl()
     _db_total  = _get_all_time_futures_pnl()
     _saved_date = _state.get('session_date', '')
@@ -1428,7 +1427,7 @@ def main():
         _state['balance']      = round(_state.get('balance', IBKR_FLOOR) + _delta, 2)
         _changed = True
     if _changed:
-        save_state(_state)
+        prop_save(_state)
     send_telegram(f"⚡ TriVega Futures · Personal · Online\n{format_prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)

@@ -421,6 +421,13 @@ def filter_ny_session(df: pd.DataFrame) -> pd.DataFrame:
     return df[(t >= _dt.time(*SESSION_START)) & (t <= _dt.time(*SESSION_END))]
 
 
+def filter_london_session(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only London RTH bars (3:00 AM – 12:00 PM ET = 8:00am–5:00pm BST/GMT)."""
+    import datetime as _dt
+    t = df.index.time
+    return df[(t >= _dt.time(3, 0)) & (t <= _dt.time(12, 0))]
+
+
 def filter_premarket_session(df: pd.DataFrame,
                               start_time: tuple = (8, 30),
                               end_time:   tuple = (9, 29)) -> pd.DataFrame:
