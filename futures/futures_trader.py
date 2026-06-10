@@ -1,18 +1,18 @@
 """
-futures_trader.py — MNQ Futures Trading System
+futures_trader.py — MNQ Futures Trading System (IBKR Personal Account)
 Third vertical: equity → options → futures
 
 Architecture:
-  bridge_projectx.py  (port 8002)  ←→  TopStepX / ProjectX API  [to build]
-  prop_rules.py                    ←   TopStepX TC/XFA safety layer
+  bridge.py           (port 8000)  ←→  IBKR TWS / DU9952463 paper
+  prop_rules.py                    ←   IBKR mode safety layer ($2K floor, $150 DLL soft)
   futures_trader.py                ←   this file (strategy + execution)
   database.py (shared root)        ←   trades.db futures_trades table
 
-MNQ constants:
-  Tick size  : 0.25 points
-  Tick value : $0.50
-  Point value: $2.00
-  Session    : 6pm–5pm ET (23h), trade NY only (9:30am–4:00pm ET / 3:00pm CT)
+Config (set by launch_futures_personal.sh):
+  FUTURES_BRIDGE_URL   = http://localhost:8000
+  FUTURES_ACCOUNT_MODE = IBKR
+  FUTURES_STATE_FILE   = futures/ibkr_state.json
+  FUTURES_TELEGRAM_TOKEN / CHAT_ID = TriVegaFutures bot + Futures · MNQ · Paper group
 """
 
 import os
@@ -36,7 +36,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from prop_rules import (
     check_can_trade, get_max_contracts, record_trade_pnl,
     update_eod_balance, get_status as prop_status, load_state as prop_load,
-    ACCOUNT_MODE,
+    ACCOUNT_MODE, IBKR_DAILY_CAP, IBKR_DLL_SOFT, IBKR_FLOOR,
 )
 from portfolio_status import format_all as _portfolio_all
 
@@ -50,9 +50,9 @@ BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
-MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
-MAX_DAILY_LOSS       = 350.0   # prop_rules.py hard gates at this level
-DAILY_PROFIT_TARGET  = 1200.0  # TC consistency cap — no single day > $1,200 (50% of $3K target)
+MAX_RISK_PER_TRADE   = 100.0          # $ max risk per trade (1 contract × 50-tick stop)
+MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $150 — mirrors prop_rules IBKR soft stop
+DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $400 — mirrors prop_rules IBKR daily cap
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
@@ -88,8 +88,8 @@ LUNCH_START     = (12, 0)
 LUNCH_END       = (13, 0)
 AFTERNOON_START = (13, 0)
 AFTERNOON_END   = (15, 30)
-EOD_START       = (15, 30)  # 3:30pm ET = 2:30pm CT — no new entries (matches TopStepX rule)
-HARD_CLOSE      = (16, 0)   # 4:00pm ET = 3:00pm CT — force close (10 min before TopStepX 3:10pm CT auto-liq)
+EOD_START       = (15, 30)  # 3:30pm ET — no new entries (8:30pm London BST)
+HARD_CLOSE      = (16, 0)   # 4:00pm ET — force close all positions (9pm London BST)
 
 SCAN_INTERVAL   = 60        # seconds between scans (1 min, faster than equity)
 MONITOR_INTERVAL = 15       # seconds between position checks
@@ -725,7 +725,7 @@ def get_futures_daily_pnl() -> float:
 
 
 def _get_all_time_futures_pnl() -> float:
-    """Total realized P&L across all futures trades — used to reconcile prop_state balance."""
+    """Total realized P&L across all futures trades — used to reconcile ibkr_state balance."""
     conn = sqlite3.connect(DB_PATH)
     row  = conn.execute(
         "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED'"
@@ -1258,13 +1258,11 @@ def eod_snapshot():
     # (format_prop_status shows session_pnl=0 post-reset, so we show daily separately)
     s = prop_status()
     send_telegram(
-        f"🌙 FUTURES EOD\n"
-        f"Day P&L:      ${daily:+.2f}\n"
-        f"Balance:      ${s.get('balance', 0):,.0f}\n"
-        f"TC Progress:  ${s.get('total_profit', 0):,.0f} / $3,000 "
-        f"(${s.get('tc_target_left', 0):,.0f} left)\n"
-        f"MLL buffer:   ${s.get('buffer_to_mll', 0):,.0f}\n"
-        f"Resets tomorrow at 9:28am ET"
+        f"🌙 FUTURES (IBKR) EOD\n"
+        f"Day P&L:    ${daily:+.2f}\n"
+        f"Balance:    ${s.get('balance', 0):,.0f}\n"
+        f"All-time:   ${s.get('total_profit', 0):+,.0f}\n"
+        f"Resets tomorrow at 9:28am ET (2:28pm London)"
     )
 
 
@@ -1425,11 +1423,11 @@ def main():
     _delta   = round(_db_total - _tracked, 2)
     if abs(_delta) > 0.01:
         _state['total_profit'] = _db_total
-        _state['balance']      = round(_state.get('balance', 50000) + _delta, 2)
+        _state['balance']      = round(_state.get('balance', IBKR_FLOOR) + _delta, 2)
         _changed = True
     if _changed:
         save_state(_state)
-    send_telegram(f"⚡ TriVega Futures · Online\n{format_prop_status()}")
+    send_telegram(f"⚡ TriVega Futures · Personal · Online\n{format_prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)
 

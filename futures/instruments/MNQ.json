@@ -1,0 +1,16 @@
+{
+  "symbol":              "MNQ",
+  "description":         "Micro E-mini NASDAQ-100",
+  "exchange":            "CME",
+  "point_value":         2.00,
+  "tick_size":           0.25,
+  "tick_value":          0.50,
+  "commission_rt":       1.24,
+  "margin_per_contract": 110,
+  "typical_ib_range_pts": 132,
+  "confirm_with":        "ES",
+  "max_contracts_tc":    5,
+  "roll_months":         [3, 6, 9, 12],
+  "roll_day":            "3rd_friday",
+  "roll_offset_days":    3
+}

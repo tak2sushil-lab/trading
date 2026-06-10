@@ -25,6 +25,7 @@ from database import (
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
 from options.learner_options import run_options_learning_cycle
+from portfolio_status import format_all as _portfolio_all
 
 ET = pytz.timezone('America/New_York')
 
@@ -2304,7 +2305,7 @@ def poll_telegram_commands():
             log(f"TG command: {text}")
 
             # ── Viewer gate: read-only commands only ──────────────
-            if is_viewer and text not in ('REGIME', 'STATUS', 'HELP'):
+            if is_viewer and text not in ('REGIME', 'STATUS', 'STATUS ALL', 'HELP'):
                 continue
 
             if text == 'HELP':
@@ -2408,6 +2409,9 @@ def poll_telegram_commands():
                 else:
                     lines.append('No open positions.')
                 send_telegram_to(reply_to, '\n'.join(lines))
+
+            elif text == 'STATUS ALL':
+                send_telegram_to(reply_to, _portfolio_all())
 
             elif text in ('CANCEL', 'STOP', 'PAUSE'):
                 send_telegram("New entries paused. Monitoring open trades only. Send RESUME to re-enable.")

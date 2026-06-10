@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine   # options/engine.py — same directory
+from portfolio_status import format_all as _portfolio_all
 from database import (
     get_open_options_trades,
     get_upcoming_catalysts,
@@ -2748,6 +2749,11 @@ def dispatch(text: str, chat_id: str):
     # CONFIRM/SKIP (spread entry) and YES/NO (close confirmation) replies
     if upper in ('CONFIRM', 'SKIP', 'YES', 'NO'):
         handle_reply(text, chat_id)
+        return
+
+    # Cross-vertical status — handled here before equity filter
+    if upper.strip() == 'STATUS ALL':
+        send_telegram(_portfolio_all(), chat_id)
         return
 
     # Equity commands handled by auto_trader — silently ignore so they don't get double-responses

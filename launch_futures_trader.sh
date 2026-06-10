@@ -1,10 +1,11 @@
 #!/bin/bash
-# Runs tc_trader.py against the existing paper bridge (port 8000, DU9952463).
-# Will switch to ORDER_BRIDGE=8002 once DUQ640500 gateway is approved by IBKR.
+# Runs tc_trader.py against TC Sandbox bridge (port 8002, DUQ640500).
+# .env-tc is sourced after .env — overrides FUTURES_BRIDGE_URL, IBKR creds, Telegram.
 TRADING_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 set -a
 source "$TRADING_DIR/.env"
+source "$TRADING_DIR/.env-tc"
 set +a
 
 pkill -f "$TRADING_DIR/futures/tc_trader.py" 2>/dev/null

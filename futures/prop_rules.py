@@ -1,14 +1,17 @@
 """
-prop_rules.py — TopStepX rule engine (soft safety layer)
+prop_rules.py — Prop/risk rule engine for all futures modes.
 
-Fires BEFORE TopStepX hard limits so we never get auto-closed.
-Covers both Trading Combine (TC) eval mode and Express Funded Account (XFA).
+Modes:
+  TC   = TopStepX Trading Combine eval  ($50K, $3K target, $700 DLL soft)
+  XFA  = TopStepX Express Funded        ($0 start, $2K MLL, $1,200 daily cap)
+  IBKR = Personal IBKR capital          ($2K floor, $150 DLL soft, no trailing MLL)
 
 TopStepX $50K Standard path:
   TC eval:   profit target $3,000 | MLL $2,000 | DLL $1,000 | consistency ≤50%/day
   XFA:       balance starts $0    | MLL starts -$2,000, locks at $0 after first $2K
 
-MNQ contract: $2/point, $0.50/tick, $1.24 commission/round-turn
+IBKR personal ($2K own capital):
+  No prop firm rules. Soft DLL $150. No trailing MLL. Daily cap $400.
 """
 
 import json
@@ -25,8 +28,9 @@ FUTURES_TELEGRAM_TOKEN   = os.getenv('FUTURES_TELEGRAM_TOKEN')
 FUTURES_TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 
 # ── Account mode ──────────────────────────────────────────────────────────────
-# 'TC'  = Trading Combine (eval, chasing $3K target)
-# 'XFA' = Express Funded Account (funded, chasing payouts)
+# 'TC'   = Trading Combine eval  (chasing $3K target on TopStepX)
+# 'XFA'  = Express Funded Account (funded, chasing payouts)
+# 'IBKR' = Personal IBKR capital ($2K floor, soft DLL only, no trailing MLL)
 ACCOUNT_MODE = os.getenv('FUTURES_ACCOUNT_MODE', 'TC')
 
 # ── TopStepX $50K TC constants ────────────────────────────────────────────────
@@ -46,7 +50,13 @@ XFA_INACTIVITY_DAYS  = 25        # alert before 30-day closure
 
 # ── Soft stops (always fire before TopStepX hard limits) ─────────────────────
 SOFT_STOP_BUFFER     = 300.0    # stay $300 above MLL floor (slippage guard)
-DLL_SOFT             = 700.0    # our DLL soft stop (below $700 → halt; hard limit is $1K)
+DLL_SOFT             = 700.0    # TC/XFA DLL soft stop (below $700 → halt; hard limit is $1K)
+
+# ── IBKR personal mode ($2K own capital) ─────────────────────────────────────
+IBKR_FLOOR           = 2_000.0  # starting capital; no trailing MLL
+IBKR_DLL_SOFT        = 150.0    # $150 daily loss → halt for the day
+IBKR_DAILY_CAP       = 400.0    # soft daily profit cap (don't skew performance tracking)
+IBKR_MAX_CONTRACTS   = 2        # conservative: personal $2K capital
 
 # ── Session times (CT — TopStepX operates on Chicago time) ───────────────────
 # DLL resets at 5 PM CT (new trading day start)
@@ -55,27 +65,32 @@ EOD_CLOSE_CT         = time(15, 10)   # 3:10 PM CT — TopStepX hard deadline
 NO_NEW_ENTRIES_CT    = time(14, 30)   # 2:30 PM CT — our soft cutoff
 DLL_RESET_CT         = time(17, 0)    # 5 PM CT — new trading day
 
-# ── MNQ economics ─────────────────────────────────────────────────────────────
-TICK_SIZE    = 0.25
-TICK_VALUE   = 0.50
-POINT_VALUE  = 2.00
-COMMISSION   = 1.24   # per round-turn
+# ── MNQ economics (sourced from strategy_core to avoid duplication) ───────────
+from strategy_core import TICK_SIZE, TICK_VALUE, POINT_VALUE, COMMISSION
 
-STATE_FILE = Path(__file__).parent / 'prop_state.json'
+# ── State file — configurable so tc_trader and futures_trader use separate files
+_default_state_file = str(Path(__file__).parent / 'prop_state.json')
+STATE_FILE = Path(os.getenv('FUTURES_STATE_FILE', _default_state_file))
 
 
 # ── State persistence ─────────────────────────────────────────────────────────
 
 def _default_state() -> dict:
+    if ACCOUNT_MODE == 'XFA':
+        starting = 0.0
+    elif ACCOUNT_MODE == 'IBKR':
+        starting = IBKR_FLOOR
+    else:  # TC
+        starting = 50_000.0
     return {
         'mode':               ACCOUNT_MODE,
-        'balance':            0.0 if ACCOUNT_MODE == 'XFA' else 50_000.0,
-        'high_water_mark':    0.0 if ACCOUNT_MODE == 'XFA' else 50_000.0,
+        'balance':            starting,
+        'high_water_mark':    starting,
         'total_profit':       0.0,
         'session_pnl':        0.0,
         'session_date':       date.today().isoformat(),
         'best_day_profit':    0.0,
-        'qualifying_days':    0,   # XFA payout: need 5 days ≥ $150
+        'qualifying_days':    0,
         'payout_count':       0,
     }
 
@@ -100,22 +115,22 @@ def save_state(state: dict):
 
 def effective_floor(state: dict) -> float:
     """
-    TC:  trailing floor = high_water_mark - TC_MLL_AMOUNT
-         Locks at starting_balance once balance reaches starting_balance.
-    XFA: floor starts at XFA_INITIAL_MLL (-$2,000).
-         Locks at $0 once balance >= $2,000. Resets to $0 after each payout.
+    TC:   trailing floor = high_water_mark - TC_MLL_AMOUNT (locks at $48K)
+    XFA:  floor starts at -$2,000, locks at $0 after first $2K profit
+    IBKR: fixed floor = $0 (no trailing MLL, just don't lose all $2K starting capital)
     """
     mode = state.get('mode', ACCOUNT_MODE)
     if mode == 'TC':
         hwm   = state['high_water_mark']
         floor = hwm - TC_MLL_AMOUNT
-        # Lock at starting balance (50,000) once we've crossed it
         return max(floor, 50_000.0 - TC_MLL_AMOUNT)
+    elif mode == 'IBKR':
+        return 0.0   # no trailing MLL — just don't go to zero
     else:  # XFA
         balance = state['balance']
         if balance >= 2_000.0:
-            return XFA_MLL_LOCK_AT   # locked at $0
-        return XFA_INITIAL_MLL       # -$2,000 trailing
+            return XFA_MLL_LOCK_AT
+        return XFA_INITIAL_MLL
 
 
 def check_can_trade(unrealized_pnl: float = 0.0) -> tuple[bool, str]:
@@ -137,12 +152,14 @@ def check_can_trade(unrealized_pnl: float = 0.0) -> tuple[bool, str]:
         return False, f'Approaching MLL floor (balance ${running_balance:.0f} < floor ${floor:.0f} + buffer ${SOFT_STOP_BUFFER:.0f})'
 
     # ── DLL soft stop ──────────────────────────────────────
-    if session_pnl <= -DLL_SOFT:
+    dll = IBKR_DLL_SOFT if mode == 'IBKR' else DLL_SOFT
+    if session_pnl <= -dll:
         return False, f'Daily loss soft stop hit (session P&L ${session_pnl:.0f})'
 
-    # ── TC: daily profit cap (consistency protection) ─────
-    if mode == 'TC' and session_pnl >= TC_DAILY_CAP:
-        return False, f'TC daily cap reached (${session_pnl:.0f} ≥ ${TC_DAILY_CAP:.0f}) — protecting consistency rule'
+    # ── Daily profit cap ───────────────────────────────────
+    daily_cap = IBKR_DAILY_CAP if mode == 'IBKR' else TC_DAILY_CAP
+    if mode in ('TC', 'IBKR') and session_pnl >= daily_cap:
+        return False, f'{mode} daily cap reached (${session_pnl:.0f} ≥ ${daily_cap:.0f})'
 
     # ── TC: consistency check (ratio only meaningful once enough profit is accumulated) ──
     # The $1,200 daily cap already guarantees ≤40% per day on a $3K target.
@@ -156,18 +173,16 @@ def check_can_trade(unrealized_pnl: float = 0.0) -> tuple[bool, str]:
 
 
 def get_max_contracts(base_contracts: int = 1) -> int:
-    """
-    Returns max contracts allowed for this order.
-    XFA: scales with balance level.
-    TC: always 1 during eval (conservative).
-    """
     state = load_state()
     mode  = state.get('mode', ACCOUNT_MODE)
 
-    if mode == 'TC':
-        return min(base_contracts, 1)   # conservative during eval
+    if mode == 'IBKR':
+        return min(base_contracts, IBKR_MAX_CONTRACTS)
 
-    # XFA scaling by balance
+    if mode == 'TC':
+        return min(base_contracts, 1)
+
+    # XFA: scale with balance
     balance = state['balance']
     if balance < 500:
         return min(base_contracts, 1)
@@ -248,6 +263,7 @@ def get_status() -> dict:
     state  = load_state()
     floor  = effective_floor(state)
     mode   = state.get('mode', ACCOUNT_MODE)
+    daily_cap = IBKR_DAILY_CAP if mode == 'IBKR' else TC_DAILY_CAP
     return {
         'mode':            mode,
         'balance':         state['balance'],
@@ -255,7 +271,7 @@ def get_status() -> dict:
         'total_profit':    state['total_profit'],
         'mll_floor':       floor,
         'buffer_to_mll':   round(state['balance'] - floor - SOFT_STOP_BUFFER, 2),
-        'daily_cap_left':  round(TC_DAILY_CAP - state['session_pnl'], 2) if mode == 'TC' else None,
+        'daily_cap_left':  round(daily_cap - state['session_pnl'], 2),
         'qualifying_days': state.get('qualifying_days', 0),
         'payout_count':    state.get('payout_count', 0),
         'tc_target_left':  round(TC_PROFIT_TARGET - state['total_profit'], 2) if mode == 'TC' else None,
