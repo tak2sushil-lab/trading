@@ -187,8 +187,7 @@ async def get_portfolio():
 
     positions = ib.positions()
     if not positions:
-        ib.reqPositions()
-        await asyncio.sleep(2)
+        await ib.reqPositionsAsync()
         positions = ib.positions()
 
     if positions:
@@ -1347,8 +1346,7 @@ async def get_futures_position():
 
     positions = ib.positions()
     if not positions:
-        ib.reqPositions()
-        await asyncio.sleep(2)
+        await ib.reqPositionsAsync()
         positions = ib.positions()
 
     result = []
