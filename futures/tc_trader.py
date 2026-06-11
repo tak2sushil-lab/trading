@@ -16,6 +16,7 @@ MNQ constants:
 """
 
 import os
+import subprocess
 import sys
 import json
 import time
@@ -1252,6 +1253,46 @@ def reset_daily_state():
     )
 
 
+def morning_gateway_health_check():
+    """
+    Called at 8:15am ET. Verifies the TC bridge (BRIDGE) is connected to IBKR.
+    If not, restarts com.sushil.trading.tc_gateway and waits up to 60s for reconnect.
+    Must run before the 8:30am pre-market IB capture window.
+    """
+    def _connected():
+        try:
+            r = requests.get(BRIDGE, timeout=5)
+            return r.status_code == 200 and r.json().get('connected') is True
+        except Exception:
+            return False
+
+    if _connected():
+        log("Gateway health: OK (connected)")
+        return
+
+    log("Gateway health: not connected — restarting tc_gateway...")
+    send_telegram("⚠️ TC gateway down at pre-flight — auto-restarting now...")
+    try:
+        subprocess.run(
+            ['launchctl', 'kickstart', '-k', f'gui/{os.getuid()}/com.sushil.trading.tc_gateway'],
+            timeout=15, check=True
+        )
+    except Exception as e:
+        log(f"Gateway restart failed: {e}")
+        send_telegram(f"❌ TC gateway restart failed: {e} — restart manually")
+        return
+
+    for _ in range(6):
+        time.sleep(10)
+        if _connected():
+            log("TC gateway restarted successfully")
+            send_telegram("✅ TC gateway restarted and connected.")
+            return
+
+    log("TC gateway still not connected after restart")
+    send_telegram("⚠️ TC gateway still down after restart — TC trading offline today. Check IBC.")
+
+
 def eod_snapshot():
     """Called at EOD — reconcile balance from DB, send summary, reset for tomorrow."""
     daily = get_futures_daily_pnl()
@@ -1446,6 +1487,9 @@ def main():
     _scheduler.add_job(poll_telegram_commands, 'interval', seconds=10, id='telegram')
 
     # Daily routines
+    _scheduler.add_job(morning_gateway_health_check, 'cron',
+                       day_of_week='mon-fri', hour=8, minute=15,
+                       timezone=ET, id='gateway_health')
     _scheduler.add_job(reset_daily_state, 'cron',
                        day_of_week='mon-fri', hour=9, minute=28,
                        timezone=ET, id='daily_reset')
