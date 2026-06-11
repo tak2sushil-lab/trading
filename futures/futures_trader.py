@@ -110,6 +110,10 @@ _pm_low               = None # pre-market IB low
 _pm_ib_set            = False
 _pm_ib_set_time       = None  # datetime when pm_ib was first captured this session
 _daily_macro_bias     = 'BOTH'  # 'LONG' | 'SHORT' | 'BOTH' — set via Telegram or Groq
+_overnight_bias       = 'BOTH'  # from overnight_position classifier (tc_champion v3.2)
+_overnight_skip_day   = False   # True if overnight_position in bad zone [0.20, 0.40)
+_overnight_position   = None    # float — 0=opened at overnight low, 1=overnight high
+_overnight_computed   = False   # True after first RTH-bar computation this session
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
@@ -316,6 +320,122 @@ def update_premarket_ib():
                 )
     except Exception as e:
         log(f"update_premarket_ib error: {e}")
+
+
+# ── Overnight position classifier (tc_champion v3.2) ─────
+# overnight_position = (rth_open - overnight_low) / overnight_range
+# 0 = RTH opens at overnight low (bears held all night)
+# 1 = RTH opens at overnight high (bulls held all night)
+#
+# Thresholds match tc_champion v3.2 (data-validated, WFA 8/9 windows):
+#   [0.20, 0.40) = bad zone → skip day (18–36% WR, -$3,679 in 5yr backtest)
+#   >= 0.85      = TRENDING_UP  → LONG bias
+#   <= 0.20      = TRENDING_DOWN → SHORT bias
+
+_OVN_SKIP_LO  = 0.20
+_OVN_SKIP_HI  = 0.40
+_OVN_TREND_HI = 0.85
+_OVN_TREND_LO = 0.20
+_OVN_COMPRESS = 50.0   # pts — thin overnight, skip
+
+def compute_overnight_bias():
+    """
+    Compute overnight_position once per session (first RTH scan after 9:30am).
+    Reads 1-min bars from bridge, computes position within overnight range.
+    Sets _overnight_bias and _overnight_skip_day.
+    """
+    global _overnight_bias, _overnight_skip_day, _overnight_position
+    global _overnight_computed, _daily_macro_bias
+
+    if _overnight_computed:
+        return
+
+    try:
+        bars_1m = get_bars(bar_size_min=1, days=2)
+        if bars_1m.empty:
+            log("overnight_bias: no 1-min bars — defaulting BOTH")
+            _overnight_computed = True
+            return
+
+        today     = datetime.now(ET).date()
+        today_930 = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+
+        # Wait for first RTH bar (open price needed) — retry next scan if not yet available
+        rth_bars = bars_1m[bars_1m.index >= today_930]
+        if rth_bars.empty:
+            return
+
+        rth_open = float(rth_bars['open'].iloc[0])
+
+        # Overnight window: prev 4pm ET → today 9:30am ET (skip weekends for prev_day)
+        prev_day = today - timedelta(days=1)
+        while prev_day.weekday() >= 5:
+            prev_day -= timedelta(days=1)
+        prev_4pm   = ET.localize(datetime(prev_day.year, prev_day.month, prev_day.day, 16, 0))
+        night_bars = bars_1m[(bars_1m.index >= prev_4pm) & (bars_1m.index < today_930)]
+
+        _overnight_computed = True   # set before returns — don't retry on data issues
+
+        if len(night_bars) < 20:
+            log(f"overnight_bias: sparse overnight bars ({len(night_bars)}) — defaulting BOTH")
+            return
+
+        overnight_high  = float(night_bars['high'].max())
+        overnight_low   = float(night_bars['low'].min())
+        overnight_range = overnight_high - overnight_low
+
+        if overnight_range < _OVN_COMPRESS:
+            _overnight_skip_day = True
+            log(f"overnight_bias: COMPRESSION ({overnight_range:.0f}pt) — skip day")
+            send_telegram(
+                f"⚠️ Overnight COMPRESSION ({overnight_range:.0f}pt range)\n"
+                f"No entries today — thin session, IB breakouts unreliable.\n"
+                f"Override: FUT BIAS LONG or FUT BIAS SHORT"
+            )
+            return
+
+        pos = (rth_open - overnight_low) / overnight_range
+        pos = max(0.0, min(1.0, pos))
+        _overnight_position = round(pos, 3)
+
+        if _OVN_SKIP_LO <= pos < _OVN_SKIP_HI:
+            _overnight_skip_day = True
+            log(f"overnight_bias: bad zone pos={pos:.3f} — skip day")
+            send_telegram(
+                f"⚠️ Overnight bad zone (pos={pos:.2f})\n"
+                f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
+                f"No entries today — moderate bearish lean, low conviction IB setups.\n"
+                f"Override: FUT BIAS LONG or FUT BIAS SHORT"
+            )
+        elif pos >= _OVN_TREND_HI:
+            _overnight_bias = 'LONG'
+            if _daily_macro_bias == 'BOTH':   # only set if user hasn't overridden
+                _daily_macro_bias = 'LONG'
+            log(f"overnight_bias: TRENDING_UP pos={pos:.3f} → LONG")
+            send_telegram(
+                f"📊 Overnight → <b>LONG bias</b>\n"
+                f"Position: {pos:.2f} (bulls held overnight)\n"
+                f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
+                f"Override: FUT BIAS SHORT or FUT BIAS BOTH"
+            )
+        elif pos <= _OVN_TREND_LO:
+            _overnight_bias = 'SHORT'
+            if _daily_macro_bias == 'BOTH':
+                _daily_macro_bias = 'SHORT'
+            log(f"overnight_bias: TRENDING_DOWN pos={pos:.3f} → SHORT")
+            send_telegram(
+                f"📊 Overnight → <b>SHORT bias</b>\n"
+                f"Position: {pos:.2f} (bears held overnight)\n"
+                f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
+                f"Override: FUT BIAS LONG or FUT BIAS BOTH"
+            )
+        else:
+            _overnight_bias = 'BOTH'
+            log(f"overnight_bias: NORMAL pos={pos:.3f} — both directions")
+
+    except Exception as e:
+        log(f"compute_overnight_bias error: {e}")
+        _overnight_computed = True   # don't loop on error
 
 
 # ── VWAP ──────────────────────────────────────────────────
@@ -1141,6 +1261,9 @@ def run_scan():
         update_orb(df5)
         update_premarket_ib()   # sets pm_high/pm_low from 8:30–9:30am bars
 
+    # Overnight position classifier — compute once after RTH opens (first scan with bars)
+    compute_overnight_bias()
+
     # Regime — pass pre-fetched bars to avoid a second bridge call
     regime = get_regime(df5)
     _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1
@@ -1192,6 +1315,15 @@ def run_scan():
             log(f"pm_ib hold — {remaining}s remaining. Send FUT BIAS LONG/SHORT if needed.")
             return
 
+    # ── Overnight skip zone gate ──────────────────────────────
+    # overnight_position in [0.20, 0.40): moderate bearish lean — IB breakouts
+    # have 18–36% WR in this zone (backtest data, tc_champion v3.2).
+    # User can override by sending FUT BIAS LONG/SHORT via Telegram.
+    if _overnight_skip_day and _daily_macro_bias == 'BOTH':
+        log(f"Overnight skip zone (pos={_overnight_position}) — no entries today. "
+            f"Override: FUT BIAS LONG or FUT BIAS SHORT")
+        return
+
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
@@ -1228,13 +1360,18 @@ def reset_daily_state():
     global _regime_scan_counts, _session_high, _session_low
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
     global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time, _daily_macro_bias
+    global _overnight_bias, _overnight_skip_day, _overnight_position, _overnight_computed
 
     _orb_high = _orb_low = None
     _orb_set  = False
     _pm_high = _pm_low = None
     _pm_ib_set      = False
     _pm_ib_set_time = None
-    _daily_macro_bias = 'BOTH'
+    _daily_macro_bias   = 'BOTH'
+    _overnight_bias     = 'BOTH'
+    _overnight_skip_day = False
+    _overnight_position = None
+    _overnight_computed = False
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
     _session_high = {}
@@ -1287,6 +1424,8 @@ def poll_telegram_commands():
         for u in updates:
             _tg_offset = u['update_id'] + 1   # acknowledge — won't be returned again
             msg = u.get('message', {}).get('text', '').strip().upper()
+            if msg:
+                log(f"[TG CMD] recv: {msg[:80]}")
             if 'FUT PAUSE' in msg:
                 _trading_paused = True
                 send_telegram("⏸ FUTURES trading paused.")
@@ -1307,28 +1446,35 @@ def poll_telegram_commands():
                         f"now {live:.2f} | uPnL ${upnl:+.0f} | risk ${risk:.0f}"
                     )
                 pos_str = '\n'.join(pos_lines) if pos_lines else '  No open positions'
+                ovn_str = (f"skip({_overnight_position})" if _overnight_skip_day
+                           else f"pos={_overnight_position}" if _overnight_position is not None
+                           else "pending")
                 send_telegram(
                     f"{format_prop_status()}\n"
                     f"MNQ: {price}  Bias: {_daily_macro_bias}  Session: {get_session()}\n"
+                    f"Overnight: {ovn_str}\n"
                     f"Positions ({len(open_trades)}):\n{pos_str}"
                 )
             elif 'FUT BIAS LONG' in msg:
-                _daily_macro_bias = 'LONG'
+                _daily_macro_bias   = 'LONG'
+                _overnight_skip_day = False   # user override — allow entries despite skip zone
                 send_telegram(
-                    f"✅ Macro bias set: LONG\n"
+                    f"✅ Bias: LONG (overnight skip overridden)\n"
                     f"System will only take LONG entries today.\n"
                     f"PM High: {_pm_high}  (target for pm_break signal)"
                 )
             elif 'FUT BIAS SHORT' in msg:
-                _daily_macro_bias = 'SHORT'
+                _daily_macro_bias   = 'SHORT'
+                _overnight_skip_day = False
                 send_telegram(
-                    f"✅ Macro bias set: SHORT\n"
+                    f"✅ Bias: SHORT (overnight skip overridden)\n"
                     f"System will only take SHORT entries today.\n"
                     f"PM Low: {_pm_low}  (target for pm_break signal)"
                 )
             elif 'FUT BIAS BOTH' in msg:
-                _daily_macro_bias = 'BOTH'
-                send_telegram("✅ Macro bias cleared — trading both directions.")
+                _daily_macro_bias   = 'BOTH'
+                _overnight_skip_day = False
+                send_telegram("✅ Bias: BOTH — overnight filter disabled for today.")
             elif 'FUT CLOSE' in msg:
                 _force_close_all()
             elif 'STATUS ALL' in msg:
