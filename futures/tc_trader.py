@@ -1052,6 +1052,27 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 log(f"  IBKR flat (qty={_ibkr_qty}) — backup stop filled, closing DB only")
                 _cancel_backup_stop(trade)   # cancel pending stop if any remains
                 backup_stop_px = trade.get('stop_price', '?')
+                # Try to get actual fill price from the IBKR stop order
+                stop_oid = trade.get('stop_order_id')
+                actual_fill = None
+                if stop_oid:
+                    try:
+                        sr = _bridge_get(f'/order/{stop_oid}/status')
+                        fp = sr.get('avgFillPrice') if sr else None
+                        if fp and float(fp) > 0:
+                            actual_fill = float(fp)
+                    except Exception:
+                        pass
+                if actual_fill:
+                    price = actual_fill
+                    pnl_pts  = entry - price if not is_short else price - entry
+                    pnl_ticks = pnl_pts / TICK_SIZE
+                    pnl_usd   = pnl_ticks * TICK_VALUE * contracts
+                    exit_display = str(actual_fill)
+                    price_note = f"IBKR backup stop: {backup_stop_px} | Actual fill"
+                else:
+                    exit_display = f"~{price} (est.)"
+                    price_note = f"IBKR backup stop: {backup_stop_px} | Est. from current price"
                 log_futures_exit(tid, price, f"[backup-stop] IBKR stop @ {backup_stop_px} filled",
                                  round(pnl_usd, 2), round(pnl_ticks, 1))
                 record_trade_pnl(pnl_usd)
@@ -1059,9 +1080,9 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 msg = (
                     f"{emoji} FUTURES EXIT (IBKR stop filled)\n"
                     f"{SYMBOL} {side} × {contracts}\n"
-                    f"Entry: {entry} → Exit: ~{price} (est.)\n"
-                    f"P&L: ~${pnl_usd:+.2f} ({pnl_ticks:+.1f} ticks)\n"
-                    f"IBKR backup stop: {backup_stop_px} | Est. from current price"
+                    f"Entry: {entry} → Exit: {exit_display}\n"
+                    f"P&L: ${pnl_usd:+.2f} ({pnl_ticks:+.1f} ticks)\n"
+                    f"{price_note}"
                 )
                 log(msg)
                 send_telegram(msg)
