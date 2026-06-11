@@ -1,17 +1,22 @@
 {
   "_meta": {
     "name": "tc_champion",
-    "version": "3.0",
-    "label": "TC Champion  'Daily Driver'  (2ct \u00b7 all regimes \u00b7 67% pass)",
-    "locked_date": "2026-06-04",
-    "git_tag": "v3.0-three-cylinder-champion",
-    "description": "Safe TC eval config. Proven 67% pass rate over 5yr (4/6 attempts), zero timeouts. Three-cylinder engine: IB breakout + pullback retest + dynamic scaling. Use this as the baseline \u2014 never modify without backtest validation.",
+    "version": "3.1",
+    "label": "TC Champion  'Daily Driver'  (2ct · all regimes · 67% pass)",
+    "locked_date": "2026-06-10",
+    "git_tag": "v3.1-config-h-time-gates",
+    "description": "Safe TC eval config. Three-cylinder engine: IB breakout + pullback retest + dynamic scaling. v3.1: data-validated time gates — extended afternoon for breakouts (no_entry_after=2pm), retest window capped at 12:30 ET (afternoon retests 30% WR were drag), lunch skip extended to 1pm. Backtest-proven vs JSON v3.0: +36% P&L ($8,317 vs $6,125), better Sharpe (2.03 vs 1.91), better MaxDD ($-2,251 vs $-2,630). WFA: 4/6 windows profitable.",
     "weather": "all_regimes",
     "use_when": "Starting a TC eval. Default choice when regime is unclear or mixed.",
     "do_not_use_when": "You want to minimize DLL risk above all else (use xfa_conservative instead).",
     "risk_rules": {
       "stop_after_session_loss_usd": 500,
       "note": "If first trade of day loses and session_pnl < -500, close platform. Two 4ct stops in a row approaches DLL."
+    },
+    "v31_changes": {
+      "no_entry_after_hour": "12 → 14: afternoon breakouts 57% WR +$2,932 were blocked by noon cutoff",
+      "lunch_end_hour": "new: 13 (aligned with tc_trader.py which was already correct)",
+      "retest_cutoff": "new: 12:30 — afternoon retests 30% WR -$738 eliminated, morning retests kept (+$332)"
     }
   },
   "config": {
@@ -36,10 +41,14 @@
     "retest_min_ext": 50.0,
     "retest_target_pts": 80.0,
     "retest_bounce_pts": 0.0,
+    "retest_cutoff_hour": 12,
+    "retest_cutoff_minute": 30,
+    "lunch_end_hour": 13,
+    "lunch_end_minute": 0,
     "max_atr_ratio": 0.0,
     "min_atr_ratio": 0.0,
     "win_protect_pnl": 0.0,
-    "no_entry_after_hour": 12,
+    "no_entry_after_hour": 14,
     "macro_both_sides": true,
     "pct_trail_activate": null,
     "pct_trail_gap": null,
@@ -50,59 +59,39 @@
     "es_confirm": true,
     "scale_contracts": true
   },
-  "cli_command": "venv/bin/python futures/backtest_futures.py --strategy tc_champion --macro-both-sides --tc-sim --wfa",
-  "cli_flags_raw": "--no-entry-after 12 --stop-frac 0.35 --tgt-mult 0.75 --contracts 2 --min-rvol 1.0 --es-confirm --scale-contracts --retest-zone 20 --retest-stop-pts 15 --retest-min-ext 50 --retest-target-pts 80 --max-trades 2 --cooldown 2 --macro-both-sides --tc-sim --wfa",
+  "cli_command": "venv/bin/python futures/backtest_futures.py --strategy tc_champion --tc-sim --wfa",
+  "cli_flags_raw": "--no-entry-after 14 --stop-frac 0.35 --tgt-mult 0.75 --contracts 2 --min-rvol 1.0 --es-confirm --scale-contracts --retest-zone 20 --retest-stop-pts 15 --retest-min-ext 50 --retest-target-pts 80 --max-trades 2 --cooldown 2 --macro-both-sides --tc-sim --wfa",
   "performance_snapshot": {
-    "as_of": "2026-06-05",
-    "data_range": "2021-01-01 to 2026-06-05",
-    "trading_days": 1378,
-    "trades": 181,
-    "win_rate_pct": 48.1,
-    "total_pnl": 12565,
-    "avg_pnl_per_trade": 69,
-    "avg_contracts": 2.64,
-    "sharpe_annualized": 2.71,
-    "max_drawdown": -2391,
+    "as_of": "2026-06-10",
+    "data_range": "2023-01-01 to 2026-06-10",
+    "trading_days": 841,
+    "trades": 168,
+    "win_rate_pct": 48.8,
+    "sharpe_annualized": 2.03,
+    "max_drawdown": -2251,
     "tc_pass_rate_pct": 67,
-    "tc_attempts": 6,
-    "tc_passes": 4,
-    "tc_blows": 2,
-    "tc_timeouts": 0,
-    "wfa_pass_rate_pct": 83,
-    "wfa_windows": 6,
-    "wfa_profitable": 5,
-    "blow_rate_pct": 33,
-    "by_year": {
-      "2021": 1987,
-      "2022": 4828,
-      "2023": -672,
-      "2024": 1910,
-      "2025": 4710,
-      "2026": -393
-    },
-    "entry_type": {
+    "wfa_profitable_windows": 4,
+    "wfa_total_windows": 6,
+    "mll_triggers": 1,
+    "by_entry_type": {
       "breakout": {
-        "trades": 120,
-        "wr_pct": 54.2,
-        "pnl": 12006
+        "trades": 137,
+        "wr_pct": 53.3,
+        "pnl": 7985
       },
       "retest": {
-        "trades": 54,
-        "wr_pct": 35.2,
-        "pnl": 363
+        "trades": 31,
+        "wr_pct": 32.3,
+        "pnl": 332
       }
     },
-    "current_regime_apr_jun_2026": {
-      "trades": 32,
-      "wr_pct": 50.0,
-      "pnl": 3737,
-      "sharpe": 6.74,
-      "max_dd": -736,
-      "tc_sim": "PASS in 21 days",
-      "note": "Current regime: retest-dominant, excellent"
+    "vs_v30": {
+      "pnl_improvement": "+$2,192 (+36%)",
+      "sharpe_improvement": "2.03 vs 1.91",
+      "max_dd_improvement": "$-2,251 vs $-2,630",
+      "trades_delta": "+49 breakouts (afternoon 13:xx at 57% WR now captured)"
     },
-    "data_note": "Revalidated with deduplicated bars (Jun 4 2026). Removed ~3.5% duplicate bars from multi-source collection.",
-    "wfa_window_6_2026": 496
+    "data_note": "2023-2026 only (Databento bars). v3.0 snapshot was 2021-2026."
   },
   "cylinders_active": {
     "1_ib_breakout": true,
@@ -110,5 +99,10 @@
     "3_dynamic_scaling": true,
     "4_premarket_ib": false,
     "5_news_macro": false
+  },
+  "pending_experiments": {
+    "overnight_classifier_v2": "TRENDING fix needed — current definition fires 1×/3yr. Redesign: overnight_position = (rth_open - overnight_low) / overnight_range; >0.75 = TRENDING_UP",
+    "vwap_reclaim_second_entry": "0% WR on 4 trades (3yr). Parameters too tight or concept needs rethinking. Do not add until backtest shows >40% WR.",
+    "gap_fill_skip": "REJECTED — GAP_FILL_DOWN days are best-performing subset (48% WR, $100/trade). Never skip."
   }
 }

@@ -84,6 +84,28 @@ class Config:
     max_daily_trades: int  = 5    # 5 = effectively uncapped (one-trade behaviour by default)
     cooldown_bars:    int  = 0    # bars to wait after exit before next entry
 
+    # ── Overnight range classifier ────────────────────────────────────────────
+    # Loads 1-min Databento bars to classify each trading day before the open.
+    # COMPRESSION: overnight range < overnight_min_range → thin session, skip day
+    # TRENDING_UP / TRENDING_DOWN: RTH opens outside overnight range → directional bias
+    # GAP_FILL_UP / GAP_FILL_DOWN: large gap but inside overnight range → fill risk
+    # NORMAL: standard day
+    overnight_classify:       bool  = False  # enable overnight classifier (needs 1-min bars)
+    overnight_min_range:      float = 50.0   # COMPRESSION threshold (overnight H-L pts)
+    overnight_trending_bias:  bool  = True   # TRENDING days: restrict to that direction only
+    overnight_gap_fill_skip:  bool  = False  # skip GAP_FILL days
+
+    # ── VWAP reclaim second entry ─────────────────────────────────────────────
+    # After first IB breakout stops out, watch for price to reclaim VWAP in same direction.
+    # Entry signal: bar opens wrong side of VWAP, closes right side (intrabar confirmed cross).
+    # Stop: VWAP ± vwap_reclaim_stop_pts (VWAP is the institutional floor/ceiling).
+    # Only fires once per day per direction; 2-bar cooldown after first stop-out.
+    vwap_reclaim_entry:       bool  = False  # enable VWAP reclaim cylinder
+    vwap_reclaim_rvol:        float = 1.5    # min RVOL on reclaim bar (vol confirmation)
+    vwap_reclaim_stop_pts:    float = 20.0   # stop pts from VWAP at time of entry
+    vwap_reclaim_target_pts:  float = 60.0   # fixed target pts from entry price
+    vwap_reclaim_cooldown:    int   = 2      # flat bars to wait after first stop before watching
+
     # Pullback retest entry — second mount on the same fence.
     # After price has run ≥ retest_min_ext pts past IB (the fence is proven), a pullback
     # back near the IB level is a high R:R entry with stop just below the fence.
@@ -113,6 +135,7 @@ class Config:
     # retest_bounce_pts=10: bar_low must be ≤ ib_high+zone_pts AND close-low ≥ 10pts.
     # This filters "falling through" entries while keeping genuine IB-hold entries.
     retest_bounce_pts: float = 0.0  # 0=off; try 10 → require 10pt bounce from bar low
+    retest_cutoff:     time  = time(23, 59)  # skip retests fired after this ET time (default=off)
 
     # Cylinder 4 — Pre-market IB (8:30–9:30 AM ET) breakout.
     # The overnight session (8:30–9:30am) forms a structural high/low.
@@ -141,6 +164,7 @@ class Config:
     # Without this flag, those shorts are blocked when EMA5 > EMA20 prior day.
     # For live trading: Groq classifier sets direction; this flag enables both-sides in backtest.
     macro_both_sides:     bool  = False
+    force_both_sides:     bool  = False  # ignore EMA bias entirely — both directions every day
 
     # Win protection: conservative sizing after a good day.
     # After daily P&L ≥ win_protect_pnl, scale down base contracts by 1.
@@ -215,6 +239,101 @@ def build_avg_vol(ny_df: pd.DataFrame) -> dict:
 
 MAX_TRADE_CONTRACTS = 5   # TopStepX $50K account hard limit for MNQ micro
 
+def compute_overnight_contexts(df_1m: pd.DataFrame) -> dict:
+    """
+    For each RTH trading date, compute overnight session stats from 1-min bars.
+    Overnight window: 4pm ET prev session → 9:30am ET current session.
+
+    Returns: {date_str: {overnight_high, overnight_low, overnight_range,
+                          prev_rth_close, rth_open, gap_pts, gap_pct, day_type}}
+
+    day_type:
+      COMPRESSION   overnight range < 50pts → thin session, false breakouts common
+      TRENDING_UP   RTH opens above overnight high → sustained institutional buying
+      TRENDING_DOWN RTH opens below overnight low → sustained institutional selling
+      GAP_FILL_UP   negative gap but inside overnight range → unfilled gap bias upward
+      GAP_FILL_DOWN positive gap but inside overnight range → unfilled gap bias downward
+      NORMAL        standard day
+    """
+    import numpy as np
+    contexts: dict = {}
+
+    # Pre-compute integer arrays ONCE — avoids re-scanning 1.9M rows per date.
+    # d_ord: ET date as ordinal integer; t_min: minutes-of-day (0-1439).
+    idx   = df_1m.index
+    d_ord = np.fromiter((d.toordinal() for d in idx.date), dtype=np.int32, count=len(df_1m))
+    t_min = (idx.hour * 60 + idx.minute).values.astype(np.int16)
+    hi_arr = df_1m['high'].to_numpy()
+    lo_arr = df_1m['low'].to_numpy()
+    cl_arr = df_1m['close'].to_numpy()
+    op_arr = df_1m['open'].to_numpy()
+
+    # Time constants as integer minutes
+    T_930  = 9 * 60 + 30    # 570
+    T_1600 = 16 * 60        # 960
+    T_1615 = 16 * 60 + 15   # 975
+
+    all_dates = sorted(set(idx.date))
+
+    for td in all_dates:
+        di      = td.toordinal()
+        di_prev = di - 1
+
+        # Overnight: prev_day ≥16:00 OR current_day <09:30 (integer comparisons)
+        night_mask = (
+            ((d_ord == di_prev) & (t_min >= T_1600)) |
+            ((d_ord == di)      & (t_min <  T_930))
+        )
+        if night_mask.sum() < 20:
+            continue
+
+        overnight_high  = float(hi_arr[night_mask].max())
+        overnight_low   = float(lo_arr[night_mask].min())
+        overnight_range = overnight_high - overnight_low
+
+        # Prior RTH close
+        prev_rth_mask = (d_ord == di_prev) & (t_min >= T_930) & (t_min < T_1615)
+        if not prev_rth_mask.any():
+            continue
+        prev_rth_close = float(cl_arr[prev_rth_mask][-1])
+
+        # RTH open: first bar at or after 9:30 ET
+        rth_mask = (d_ord == di) & (t_min >= T_930)
+        if not rth_mask.any():
+            continue
+        rth_open = float(op_arr[rth_mask][0])
+
+        gap_pts = rth_open - prev_rth_close
+        gap_pct = gap_pts / prev_rth_close * 100 if prev_rth_close > 0 else 0.0
+
+        buf = 2.0  # 2pt noise buffer on overnight boundary
+        if overnight_range < 50:
+            day_type = 'COMPRESSION'
+        elif rth_open > overnight_high + buf:
+            day_type = 'TRENDING_UP'
+        elif rth_open < overnight_low - buf:
+            day_type = 'TRENDING_DOWN'
+        elif gap_pct >= 0.5 and gap_pts < 0:
+            day_type = 'GAP_FILL_UP'
+        elif gap_pct >= 0.5 and gap_pts > 0:
+            day_type = 'GAP_FILL_DOWN'
+        else:
+            day_type = 'NORMAL'
+
+        contexts[td.isoformat()] = {
+            'overnight_high':  overnight_high,
+            'overnight_low':   overnight_low,
+            'overnight_range': overnight_range,
+            'prev_rth_close':  prev_rth_close,
+            'rth_open':        rth_open,
+            'gap_pts':         round(gap_pts, 2),
+            'gap_pct':         round(gap_pct, 2),
+            'day_type':        day_type,
+        }
+
+    return contexts
+
+
 def _dynamic_contracts(base: int, rvol: float, ib_range: float,
                        had_loss_today: bool,
                        session_pnl: float = 0.0,
@@ -250,7 +369,8 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                  es_day_df: pd.DataFrame | None = None,
                  scale_contracts: bool = False,
                  pm_high: float = 0.0,
-                 pm_low: float = 0.0) -> list[dict]:
+                 pm_low: float = 0.0,
+                 overnight_day_type: str = 'NORMAL') -> list[dict]:
     """
     daily_bias: 'LONG' | 'SHORT' | 'BOTH'
       Filters entry direction based on higher-timeframe daily trend.
@@ -333,6 +453,11 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
     # PM level was never touched during IB formation.
     pm_long_taken  = False
     pm_short_taken = False
+
+    # ── VWAP reclaim state ───────────────────────────────────────────────────
+    vwap_reclaim_dir:   Optional[str] = None   # direction of stopped first entry
+    vwap_reclaim_taken: bool          = False
+    vwap_reclaim_wait:  int           = 0      # flat bars to wait before watching
 
     for i, (ts, bar) in enumerate(day_df.iterrows()):
         t         = ts.time()
@@ -447,6 +572,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                     'net_pnl':     round(net_pnl, 2),
                     'exit_reason': exit_reason,
                     'entry_type':  position.get('entry_type', 'breakout'),
+                    'day_type':    overnight_day_type,
                     'status':      'WIN' if net_pnl > 0 else 'LOSS',
                 })
                 session_pnl += net_pnl
@@ -454,6 +580,11 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                 bars_held = 0
                 daily_trade_count += 1
                 cooldown_remaining = cfg.cooldown_bars
+                # Arm VWAP reclaim if this was a stop-out (not target/eod/vwap_cross)
+                if (cfg.vwap_reclaim_entry and exit_reason == 'stop'
+                        and not vwap_reclaim_taken and vwap_reclaim_dir is None):
+                    vwap_reclaim_dir  = dir_
+                    vwap_reclaim_wait = cfg.vwap_reclaim_cooldown
             continue
 
         # ── Entry logic ──────────────────────────────────
@@ -596,6 +727,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
         if (cfg.retest_zone_pts > 0
                 and max_above_ib >= cfg.retest_min_ext   # LONG: IB high proved as resistance→support
                 and not (cfg.lunch_start <= t <= cfg.lunch_end)
+                and t <= cfg.retest_cutoff
                 and t < cfg.no_entry_after):             # same deadline as initial entries
 
             # Bounce confirmation: the bar must have touched the IB zone (low ≤ ib_high+zone)
@@ -631,6 +763,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                 and cfg.retest_zone_pts > 0
                 and max_below_ib >= cfg.retest_min_ext   # SHORT: IB low proved as support→resistance
                 and not (cfg.lunch_start <= t <= cfg.lunch_end)
+                and t <= cfg.retest_cutoff
                 and t < cfg.no_entry_after):
 
             _short_bounce_ok = (cfg.retest_bounce_pts <= 0
@@ -786,6 +919,74 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
                                     'entry_type': 'breakout',
                                 }
 
+        # ── Cylinder VWAP_RECLAIM: second entry after first stop-out ─────────
+        # Fires when: first IB breakout was stopped (vwap_reclaim_dir set),
+        # cooldown elapsed, and price crosses back through VWAP intrabar with volume.
+        # Intrabar cross: bar.open wrong side of VWAP → bar.close right side.
+        if (position is None
+                and cfg.vwap_reclaim_entry
+                and vwap_reclaim_dir is not None
+                and not vwap_reclaim_taken
+                and vwap_reclaim_wait <= 0
+                and daily_trade_count < cfg.max_daily_trades
+                and cooldown_remaining == 0
+                and rvol >= cfg.vwap_reclaim_rvol
+                and t < cfg.no_entry_after
+                and not (cfg.lunch_start <= t <= cfg.lunch_end)):
+
+            bar_open_p = float(bar['open'])
+            vwap_val   = float(bar['vwap'])
+            _ok_vr, _  = prop.check_can_trade()
+
+            if _ok_vr:
+                if (vwap_reclaim_dir == 'LONG'
+                        and daily_bias != 'SHORT'
+                        and bar_open_p < vwap_val
+                        and price > vwap_val):
+                    entry_raw = price
+                    entry     = price + cfg.slippage_pts
+                    stop      = vwap_val - cfg.vwap_reclaim_stop_pts
+                    risk      = entry - stop
+                    if risk > 0 and cfg.vwap_reclaim_target_pts / risk >= cfg.min_rr:
+                        target = entry + cfg.vwap_reclaim_target_pts
+                        n_ct   = (_dynamic_contracts(contracts, rvol, ib_range,
+                                                     had_loss_today, session_pnl,
+                                                     cfg.win_protect_pnl)
+                                  if scale_contracts else contracts)
+                        position = {
+                            'direction': 'LONG', 'entry': entry, 'entry_raw': entry_raw,
+                            'entry_time': t, 'stop': stop, 'stop_init': stop,
+                            'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                            'entry_type': 'vwap_reclaim',
+                        }
+                        vwap_reclaim_taken = True
+
+                elif (vwap_reclaim_dir == 'SHORT'
+                        and daily_bias != 'LONG'
+                        and bar_open_p > vwap_val
+                        and price < vwap_val):
+                    entry_raw = price
+                    entry     = price - cfg.slippage_pts
+                    stop      = vwap_val + cfg.vwap_reclaim_stop_pts
+                    risk      = stop - entry
+                    if risk > 0 and cfg.vwap_reclaim_target_pts / risk >= cfg.min_rr:
+                        target = entry - cfg.vwap_reclaim_target_pts
+                        n_ct   = (_dynamic_contracts(contracts, rvol, ib_range,
+                                                     had_loss_today, session_pnl,
+                                                     cfg.win_protect_pnl)
+                                  if scale_contracts else contracts)
+                        position = {
+                            'direction': 'SHORT', 'entry': entry, 'entry_raw': entry_raw,
+                            'entry_time': t, 'stop': stop, 'stop_init': stop,
+                            'target': target, 'mae': 0.0, 'mfe': 0.0, 'n_ct': n_ct,
+                            'entry_type': 'vwap_reclaim',
+                        }
+                        vwap_reclaim_taken = True
+
+        # Decrement VWAP reclaim cooldown (only counts flat bars)
+        if vwap_reclaim_dir is not None and not vwap_reclaim_taken and vwap_reclaim_wait > 0:
+            vwap_reclaim_wait -= 1
+
         # Update IB confirmation counters (post-IB window)
         if price > ib_high: above_ib_closes += 1
         elif price < ib_low: below_ib_closes += 1
@@ -815,6 +1016,7 @@ def simulate_day(day_df: pd.DataFrame, atr_at_open: float,
             'raw_pnl': round(raw, 2), 'net_pnl': round(net, 2),
             'exit_reason': 'eod_force',
             'entry_type':  position.get('entry_type', 'breakout'),
+            'day_type':    overnight_day_type,
             'status': 'WIN' if net > 0 else 'LOSS',
         })
 
@@ -867,6 +1069,22 @@ def run_backtest(start: str | None = None, end: str | None = None,
             print(f'  ES data loaded: {len(es_ny):,} NY session bars for confirmation')
         else:
             print('  ⚠️  ES data not found — running without ES confirmation')
+
+    # Overnight range classifier: load 1-min bars once, compute day contexts
+    overnight_contexts: dict = {}
+    if cfg.overnight_classify:
+        print('  Loading 1-min bars for overnight classifier...')
+        df_1m_oc = load_bars(symbol=symbol, start=start, end=end, table='futures_bars_1m')
+        if not df_1m_oc.empty:
+            overnight_contexts = compute_overnight_contexts(df_1m_oc)
+            n_comp  = sum(1 for v in overnight_contexts.values() if v['day_type'] == 'COMPRESSION')
+            n_trend = sum(1 for v in overnight_contexts.values() if 'TRENDING' in v['day_type'])
+            n_gap   = sum(1 for v in overnight_contexts.values() if 'GAP_FILL' in v['day_type'])
+            n_norm  = sum(1 for v in overnight_contexts.values() if v['day_type'] == 'NORMAL')
+            print(f'  Overnight: {len(overnight_contexts)} days — '
+                  f'NORMAL={n_norm} TRENDING={n_trend} GAP_FILL={n_gap} COMPRESSION={n_comp}')
+        else:
+            print('  ⚠️  1-min data not found — overnight_classify disabled')
 
     # Cylinder 4: pre-market IB levels (8:30–9:30 AM ET)
     pm_levels: dict[str, tuple[float, float]] = {}   # date → (pm_high, pm_low)
@@ -942,7 +1160,7 @@ def run_backtest(start: str | None = None, end: str | None = None,
 
         # Daily trend bias: look up yesterday's daily bar
         yesterday = (day_ts.date() - timedelta(days=1)).isoformat()
-        daily_bias = daily_bias_map.get(yesterday, 'BOTH')
+        daily_bias = 'BOTH' if cfg.force_both_sides else daily_bias_map.get(yesterday, 'BOTH')
 
         # Macro both-sides override: on HIGH_IMPACT days (NFP/CPI/FOMC),
         # ignore EMA trend and trade both directions. Unlocks SHORT on bad-news
@@ -977,12 +1195,43 @@ def run_backtest(start: str | None = None, end: str | None = None,
                     prev_close = float(day_bars['close'].iloc[-1])
                 continue
 
+        # Overnight classifier: apply day type filter and bias override
+        overnight_day_type = 'NORMAL'
+        effective_daily_bias = daily_bias
+        if cfg.overnight_classify and day_str in overnight_contexts:
+            ctx = overnight_contexts[day_str]
+            overnight_day_type = ctx['day_type']
+
+            if overnight_day_type == 'COMPRESSION':
+                if not day_bars.empty:
+                    prev_close = float(day_bars['close'].iloc[-1])
+                continue  # skip — overnight too thin, IB breakout unreliable
+
+            if cfg.overnight_gap_fill_skip and 'GAP_FILL' in overnight_day_type:
+                if not day_bars.empty:
+                    prev_close = float(day_bars['close'].iloc[-1])
+                continue
+
+            if cfg.overnight_trending_bias:
+                if overnight_day_type == 'TRENDING_UP':
+                    overnight_bias = 'LONG'
+                elif overnight_day_type == 'TRENDING_DOWN':
+                    overnight_bias = 'SHORT'
+                else:
+                    overnight_bias = 'BOTH'
+                # Merge with daily EMA bias: agree → use it, disagree → BOTH (conservative)
+                if overnight_bias != 'BOTH' and daily_bias != 'BOTH':
+                    effective_daily_bias = daily_bias if overnight_bias == daily_bias else 'BOTH'
+                elif overnight_bias != 'BOTH':
+                    effective_daily_bias = overnight_bias
+
         _pm_high, _pm_low = pm_levels.get(day_str, (0.0, 0.0))
         day_trades = simulate_day(day_bars, atr_open, prev_close,
-                                  avg_vol, prop, cfg, daily_bias,
+                                  avg_vol, prop, cfg, effective_daily_bias,
                                   contracts=contracts, es_day_df=es_day_bars,
                                   scale_contracts=scale_contracts,
-                                  pm_high=_pm_high, pm_low=_pm_low)
+                                  pm_high=_pm_high, pm_low=_pm_low,
+                                  overnight_day_type=overnight_day_type)
 
         # Tag each trade with its macro classification (for analysis)
         if day_trades:
@@ -1304,7 +1553,18 @@ def simulate_tc_eval(trades: list[dict]):
 # ── A/B Config Comparison ─────────────────────────────────────────────────────
 
 def run_ab(start: str | None, end: str | None, symbol: str = 'MNQ', session: str = 'NY'):
+    # tc_champion base config (matches tc_champion.json exactly)
+    _base = dict(
+        ib_window_min=60, ib_confirm_bars=1, min_ib_range=50.0, max_ib_range=600.0,
+        gap_max_pct=1.5, min_rvol=1.0, stop_ib_frac=0.35, target_ib_mult=0.75,
+        min_rr=1.5, max_daily_trades=2, cooldown_bars=2,
+        retest_zone_pts=20.0, retest_stop_pts=15.0, retest_min_ext=50.0,
+        retest_target_pts=80.0, macro_both_sides=True, slippage_ticks=1.0,
+    )
+    _run_kw = dict(contracts=2, es_confirm=True, scale_contracts=True)
+
     configs = [
+        # ── Original parameter sweep ──────────────────────────────────────────
         # Standard IB approach: stop at midpoint (50%), target 1.5× extension
         Config(label='IB60 stop50% tgt1.5x slip1t', ib_window_min=60, stop_ib_frac=0.50, target_ib_mult=1.5, slippage_ticks=1.0),
         # Tighter stop (30% of IB), larger target (2× IB)
@@ -1345,6 +1605,85 @@ def run_ab(start: str | None, end: str | None, symbol: str = 'MNQ', session: str
     print()
 
 
+def run_ab_v2(start: str | None, end: str | None, symbol: str = 'MNQ'):
+    """
+    A/B comparison for overnight classifier + VWAP reclaim features.
+    Uses tc_champion v3.1 (Config H) as the baseline.  Run with: --ab-v2
+    """
+    _base = dict(
+        ib_window_min=60, ib_confirm_bars=1, min_ib_range=50.0, max_ib_range=600.0,
+        gap_max_pct=1.5, min_rvol=1.0, stop_ib_frac=0.35, target_ib_mult=0.75,
+        min_rr=1.5, max_daily_trades=2, cooldown_bars=2,
+        retest_zone_pts=20.0, retest_stop_pts=15.0, retest_min_ext=50.0,
+        retest_target_pts=80.0, macro_both_sides=True, slippage_ticks=1.0,
+        lunch_end=time(13, 0), retest_cutoff=time(12, 30),  # v3.1 validated fixes
+    )
+    _run_kw = dict(contracts=2, es_confirm=True, scale_contracts=True)
+
+    configs = [
+        (Config(label='A: champion baseline',          **_base),                          _run_kw),
+        (Config(label='B: + overnight classifier',     **_base,
+                overnight_classify=True, overnight_trending_bias=True),                   _run_kw),
+        (Config(label='C: + overnight + gap_skip',     **_base,
+                overnight_classify=True, overnight_trending_bias=True,
+                overnight_gap_fill_skip=True),                                            _run_kw),
+        (Config(label='D: + overnight + vwap_reclaim', **_base,
+                overnight_classify=True, overnight_trending_bias=True,
+                vwap_reclaim_entry=True, vwap_reclaim_rvol=1.5,
+                vwap_reclaim_stop_pts=20.0, vwap_reclaim_target_pts=60.0),               _run_kw),
+        (Config(label='E: all three features',         **_base,
+                overnight_classify=True, overnight_trending_bias=True,
+                overnight_gap_fill_skip=True,
+                vwap_reclaim_entry=True, vwap_reclaim_rvol=1.5,
+                vwap_reclaim_stop_pts=20.0, vwap_reclaim_target_pts=60.0),               _run_kw),
+    ]
+
+    print('=' * 72)
+    print('  A/B v2 — OVERNIGHT CLASSIFIER + VWAP RECLAIM  (tc_champion base)')
+    print('=' * 72)
+    print(f'  {"Config":<35} {"Trades":>7} {"WR%":>6} {"P&L":>10} {"Sharpe":>7} {"MaxDD":>10}')
+    print(f'  {"-"*35} {"-"*7} {"-"*6} {"-"*10} {"-"*7} {"-"*10}')
+
+    for cfg, kw in configs:
+        trades = run_backtest(start=start, end=end, cfg=cfg, symbol=symbol, **kw)
+        if not trades:
+            print(f'  {cfg.label:<35} {"no trades":>7}')
+            continue
+        total = len(trades)
+        wr    = sum(1 for t in trades if t['status'] == 'WIN') / total * 100
+        pnl   = sum(t['net_pnl'] for t in trades)
+        daily = defaultdict(float)
+        for t in trades:
+            daily[t['date']] += t['net_pnl']
+        dv = list(daily.values())
+        sharpe = (np.mean(dv) / np.std(dv) * math.sqrt(252)
+                  if len(dv) > 1 and np.std(dv) > 0 else 0)
+        eq     = np.cumsum([t['net_pnl'] for t in trades])
+        peak   = np.maximum.accumulate(eq)
+        max_dd = float((eq - peak).min())
+        # Show entry type breakdown
+        by_et = defaultdict(lambda: {'n': 0, 'w': 0, 'p': 0.0})
+        for t in trades:
+            e = t.get('entry_type', 'breakout')
+            by_et[e]['n'] += 1; by_et[e]['w'] += (1 if t['status'] == 'WIN' else 0)
+            by_et[e]['p'] += t['net_pnl']
+        et_str = '  '.join(f"{e}:{d['n']}t/{d['w']/d['n']*100:.0f}%/${d['p']:,.0f}"
+                           for e, d in sorted(by_et.items()))
+        print(f'  {cfg.label:<35} {total:>7} {wr:>6.1f} {pnl:>10,.2f} {sharpe:>7.2f} {max_dd:>10,.2f}')
+        print(f'    {et_str}')
+        # Show day_type breakdown if overnight_classify was on
+        if cfg.overnight_classify:
+            by_dt = defaultdict(lambda: {'n': 0, 'w': 0, 'p': 0.0})
+            for t in trades:
+                dt = t.get('day_type', 'NORMAL')
+                by_dt[dt]['n'] += 1; by_dt[dt]['w'] += (1 if t['status'] == 'WIN' else 0)
+                by_dt[dt]['p'] += t['net_pnl']
+            dt_str = '  '.join(f"{d}:{v['n']}t/{v['w']/v['n']*100:.0f}%/${v['p']:,.0f}"
+                               for d, v in sorted(by_dt.items()) if v['n'] > 0)
+            print(f'    by_daytype: {dt_str}')
+    print()
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -1371,6 +1710,7 @@ Named strategies (--strategy):
     parser.add_argument('--tc-sim', action='store_true', help='TC eval simulation')
     parser.add_argument('--wfa',    action='store_true', help='Walk-forward analysis')
     parser.add_argument('--ab',     action='store_true', help='A/B parameter comparison')
+    parser.add_argument('--ab-v2',  action='store_true', help='A/B v2: overnight classifier + VWAP reclaim (tc_champion base)')
 
     # Named strategy preset — loads JSON config from futures/strategies/
     parser.add_argument('--strategy', default=None,
@@ -1467,7 +1807,6 @@ Named strategies (--strategy):
     _eod_close      = time(11, 45) if _london else time(15, 10)
     _no_entry_h_def = 10          if _london else 14    # 10am ET = last 2h London | 2pm ET NY
     _lunch_start    = time(23, 0) if _london else time(11, 45)  # disabled for London
-    _lunch_end      = time(23, 59) if _london else time(12, 30)
 
     # ── Strategy preset handling ──────────────────────────────────────────────
     # List strategies
@@ -1495,8 +1834,22 @@ Named strategies (--strategy):
         print(f'  Loaded strategy: {args.strategy!r}  (any CLI flag overrides the preset)')
         print()
 
+    # lunch_end and retest_cutoff computed AFTER preset load so preset values take effect
+    _lunch_end     = time(23, 59) if _london else time(
+        preset_config.get('lunch_end_hour', 12),
+        preset_config.get('lunch_end_minute', 30),
+    )
+    _retest_cutoff = time(
+        preset_config.get('retest_cutoff_hour', 23),
+        preset_config.get('retest_cutoff_minute', 59),
+    )
+
     if args.ab:
         run_ab(args.start, args.end, symbol=args.instrument, session=args.session)
+        sys.exit(0)
+
+    if args.ab_v2:
+        run_ab_v2(args.start, args.end, symbol=args.instrument)
         sys.exit(0)
 
     # Helper: CLI arg (non-None) > preset > hardcoded default
@@ -1541,8 +1894,9 @@ Named strategies (--strategy):
         # Session timing (session-open anchors IB; eod/lunch differ by session)
         session_open  = _session_open,
         eod_close_time = _eod_close,
-        lunch_start   = _lunch_start,
-        lunch_end     = _lunch_end,
+        lunch_start    = _lunch_start,
+        lunch_end      = _lunch_end,
+        retest_cutoff  = _retest_cutoff,
     )
 
     # Run params: CLI args override preset, preset overrides defaults
