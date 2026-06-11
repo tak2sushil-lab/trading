@@ -151,7 +151,7 @@ def format_prop_status() -> str:
     lines = [f"Mode: {mode}  |  Balance: ${s.get('balance', 0):,.0f}"]
     if mode == 'TC':
         lines.append(f"Target left: ${s.get('tc_target_left', 0):,.0f}  |  MLL buffer: ${s.get('buffer_to_mll', 0):,.0f}")
-    lines.append(f"Day P&L: ${s.get('session_pnl', 0):+,.2f}  |  Cap left: ${s.get('daily_cap_left', 0):,.0f}")
+    lines.append(f"Day P&L: ${s.get('session_pnl', 0):+,.2f}")
     return '\n'.join(lines)
 
 
