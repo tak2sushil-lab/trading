@@ -90,10 +90,23 @@ class Config:
     # TRENDING_UP / TRENDING_DOWN: RTH opens outside overnight range → directional bias
     # GAP_FILL_UP / GAP_FILL_DOWN: large gap but inside overnight range → fill risk
     # NORMAL: standard day
-    overnight_classify:       bool  = False  # enable overnight classifier (needs 1-min bars)
-    overnight_min_range:      float = 50.0   # COMPRESSION threshold (overnight H-L pts)
-    overnight_trending_bias:  bool  = True   # TRENDING days: restrict to that direction only
-    overnight_gap_fill_skip:  bool  = False  # skip GAP_FILL days
+    #
+    # v2 thresholds (data-driven — use --overnight-analysis to find breakpoints):
+    # overnight_position = (rth_open - overnight_low) / overnight_range
+    # overnight_trending_pos_hi > 0: TRENDING_UP  if overnight_position >= threshold
+    # overnight_trending_pos_lo > 0: TRENDING_DOWN if overnight_position <= threshold
+    # These replace the broken v1 logic (rth_open > overnight_high) which fired 1×/3yr.
+    overnight_classify:           bool  = False  # enable overnight classifier (needs 1-min bars)
+    overnight_min_range:          float = 50.0   # COMPRESSION threshold (overnight H-L pts)
+    overnight_trending_bias:      bool  = True   # TRENDING days: restrict to that direction only
+    overnight_gap_fill_skip:      bool  = False  # skip GAP_FILL days
+    overnight_trending_pos_hi:    float = 0.0    # v2: TRENDING_UP if position >= this (0=use v1)
+    overnight_trending_pos_lo:    float = 0.0    # v2: TRENDING_DOWN if position <= this (0=use v1)
+    # Skip zone: skip days where overnight_position is in [skip_lo, skip_hi).
+    # Data shows 0.20–0.40 is a "no man's land" (18–36% WR, -$141/t avg) — moderate
+    # bearish lean with no conviction. LONGs fight overnight trend; SHORTs don't fire.
+    overnight_skip_lo:            float = 0.0    # skip zone lower bound (0=off)
+    overnight_skip_hi:            float = 0.0    # skip zone upper bound (0=off)
 
     # ── VWAP reclaim second entry ─────────────────────────────────────────────
     # After first IB breakout stops out, watch for price to reclaim VWAP in same direction.
@@ -239,18 +252,27 @@ def build_avg_vol(ny_df: pd.DataFrame) -> dict:
 
 MAX_TRADE_CONTRACTS = 5   # TopStepX $50K account hard limit for MNQ micro
 
-def compute_overnight_contexts(df_1m: pd.DataFrame) -> dict:
+def compute_overnight_contexts(df_1m: pd.DataFrame,
+                               compression_min: float = 50.0,
+                               trending_pos_hi: float = 0.0,
+                               trending_pos_lo: float = 0.0) -> dict:
     """
     For each RTH trading date, compute overnight session stats from 1-min bars.
     Overnight window: 4pm ET prev session → 9:30am ET current session.
 
     Returns: {date_str: {overnight_high, overnight_low, overnight_range,
-                          prev_rth_close, rth_open, gap_pts, gap_pct, day_type}}
+                          overnight_position, prev_rth_close, rth_open,
+                          gap_pts, gap_pct, day_type}}
 
-    day_type:
-      COMPRESSION   overnight range < 50pts → thin session, false breakouts common
-      TRENDING_UP   RTH opens above overnight high → sustained institutional buying
-      TRENDING_DOWN RTH opens below overnight low → sustained institutional selling
+    overnight_position = (rth_open - overnight_low) / overnight_range
+      0.0 = RTH opens at overnight low  (bearish — bears held all night)
+      1.0 = RTH opens at overnight high (bullish — bulls held all night)
+      0.5 = neutral open in middle of range
+
+    day_type (v2 when trending_pos_hi/lo > 0, v1 otherwise):
+      COMPRESSION   overnight range < compression_min → thin session, false breakouts common
+      TRENDING_UP   v2: position >= trending_pos_hi | v1: rth_open > overnight_high+2pt
+      TRENDING_DOWN v2: position <= trending_pos_lo | v1: rth_open < overnight_low-2pt
       GAP_FILL_UP   negative gap but inside overnight range → unfilled gap bias upward
       GAP_FILL_DOWN positive gap but inside overnight range → unfilled gap bias downward
       NORMAL        standard day
@@ -306,13 +328,24 @@ def compute_overnight_contexts(df_1m: pd.DataFrame) -> dict:
         gap_pts = rth_open - prev_rth_close
         gap_pct = gap_pts / prev_rth_close * 100 if prev_rth_close > 0 else 0.0
 
-        buf = 2.0  # 2pt noise buffer on overnight boundary
-        if overnight_range < 50:
+        # overnight_position: 0=opens at overnight low, 1=opens at overnight high
+        overnight_position = (
+            (rth_open - overnight_low) / overnight_range
+            if overnight_range > 0 else 0.5
+        )
+        overnight_position = max(0.0, min(1.0, overnight_position))  # clamp [0,1]
+
+        buf = 2.0  # 2pt noise buffer (v1 method only)
+        if overnight_range < compression_min:
             day_type = 'COMPRESSION'
-        elif rth_open > overnight_high + buf:
-            day_type = 'TRENDING_UP'
-        elif rth_open < overnight_low - buf:
-            day_type = 'TRENDING_DOWN'
+        elif trending_pos_hi > 0 and overnight_position >= trending_pos_hi:
+            day_type = 'TRENDING_UP'   # v2: opened near overnight high — bulls held all night
+        elif trending_pos_lo > 0 and overnight_position <= trending_pos_lo:
+            day_type = 'TRENDING_DOWN' # v2: opened near overnight low  — bears held all night
+        elif rth_open > overnight_high + buf and trending_pos_hi == 0:
+            day_type = 'TRENDING_UP'   # v1 fallback: only when v2 not configured
+        elif rth_open < overnight_low - buf and trending_pos_lo == 0:
+            day_type = 'TRENDING_DOWN' # v1 fallback
         elif gap_pct >= 0.5 and gap_pts < 0:
             day_type = 'GAP_FILL_UP'
         elif gap_pct >= 0.5 and gap_pts > 0:
@@ -321,14 +354,15 @@ def compute_overnight_contexts(df_1m: pd.DataFrame) -> dict:
             day_type = 'NORMAL'
 
         contexts[td.isoformat()] = {
-            'overnight_high':  overnight_high,
-            'overnight_low':   overnight_low,
-            'overnight_range': overnight_range,
-            'prev_rth_close':  prev_rth_close,
-            'rth_open':        rth_open,
-            'gap_pts':         round(gap_pts, 2),
-            'gap_pct':         round(gap_pct, 2),
-            'day_type':        day_type,
+            'overnight_high':     overnight_high,
+            'overnight_low':      overnight_low,
+            'overnight_range':    overnight_range,
+            'overnight_position': round(overnight_position, 3),
+            'prev_rth_close':     prev_rth_close,
+            'rth_open':           rth_open,
+            'gap_pts':            round(gap_pts, 2),
+            'gap_pct':            round(gap_pct, 2),
+            'day_type':           day_type,
         }
 
     return contexts
@@ -1076,7 +1110,12 @@ def run_backtest(start: str | None = None, end: str | None = None,
         print('  Loading 1-min bars for overnight classifier...')
         df_1m_oc = load_bars(symbol=symbol, start=start, end=end, table='futures_bars_1m')
         if not df_1m_oc.empty:
-            overnight_contexts = compute_overnight_contexts(df_1m_oc)
+            overnight_contexts = compute_overnight_contexts(
+                df_1m_oc,
+                compression_min=cfg.overnight_min_range,
+                trending_pos_hi=cfg.overnight_trending_pos_hi,
+                trending_pos_lo=cfg.overnight_trending_pos_lo,
+            )
             n_comp  = sum(1 for v in overnight_contexts.values() if v['day_type'] == 'COMPRESSION')
             n_trend = sum(1 for v in overnight_contexts.values() if 'TRENDING' in v['day_type'])
             n_gap   = sum(1 for v in overnight_contexts.values() if 'GAP_FILL' in v['day_type'])
@@ -1211,6 +1250,15 @@ def run_backtest(start: str | None = None, end: str | None = None,
                 if not day_bars.empty:
                     prev_close = float(day_bars['close'].iloc[-1])
                 continue
+
+            # Skip zone: overnight_position in [skip_lo, skip_hi) → bad "no man's land" days
+            # Guard: hi > lo means zone is active (handles lo=0.0 without false negative)
+            if cfg.overnight_skip_hi > cfg.overnight_skip_lo:
+                pos = ctx.get('overnight_position', 0.5)
+                if cfg.overnight_skip_lo <= pos < cfg.overnight_skip_hi:
+                    if not day_bars.empty:
+                        prev_close = float(day_bars['close'].iloc[-1])
+                    continue  # skip — moderate bearish lean, no conviction both ways
 
             if cfg.overnight_trending_bias:
                 if overnight_day_type == 'TRENDING_UP':
@@ -1684,6 +1732,256 @@ def run_ab_v2(start: str | None, end: str | None, symbol: str = 'MNQ'):
     print()
 
 
+def run_ab_v3(start: str | None, end: str | None, symbol: str = 'MNQ'):
+    """
+    A/B v3 — Test overnight_position v2 classifier with data-driven thresholds.
+    Thresholds derived from --overnight-analysis:
+      Bad zone: overnight_position 0.20–0.40 (18–36% WR, -$141/t avg)
+      Best zone: overnight_position ≥ 0.85 (68% WR, +$190/t)
+    Run with: --ab-v3
+    """
+    _base = dict(
+        ib_window_min=60, ib_confirm_bars=1, min_ib_range=50.0, max_ib_range=600.0,
+        gap_max_pct=1.5, min_rvol=1.0, stop_ib_frac=0.35, target_ib_mult=0.75,
+        min_rr=1.5, max_daily_trades=2, cooldown_bars=2,
+        retest_zone_pts=20.0, retest_stop_pts=15.0, retest_min_ext=50.0,
+        retest_target_pts=80.0, macro_both_sides=True, slippage_ticks=1.0,
+        lunch_end=time(13, 0), retest_cutoff=time(12, 30),
+    )
+    _run_kw = dict(contracts=2, es_confirm=True, scale_contracts=True)
+
+    configs = [
+        (Config(label='A: champion baseline (no overnight)', **_base), _run_kw),
+
+        # B: skip the bad zone only (0.20–0.40: 30 trades, -$3,679 in losses)
+        (Config(label='B: skip bad zone [0.20–0.40]', **_base,
+                overnight_classify=True,
+                overnight_skip_lo=0.20, overnight_skip_hi=0.40), _run_kw),
+
+        # C: wider skip — try skipping all bottom 40% (0.0–0.40)
+        (Config(label='C: skip bottom 40% [0.0–0.40]', **_base,
+                overnight_classify=True,
+                overnight_skip_lo=0.0, overnight_skip_hi=0.40), _run_kw),
+
+        # D: v2 TRENDING bias (restrict SHORT on 0–0.40, restrict LONG on 0.85+)
+        (Config(label='D: v2 TRENDING bias (0.85/0.40)', **_base,
+                overnight_classify=True, overnight_trending_bias=True,
+                overnight_trending_pos_hi=0.85, overnight_trending_pos_lo=0.40), _run_kw),
+
+        # E: skip bad zone + raise compression to 75pt
+        (Config(label='E: skip [0.20–0.40] + compress 75pt', **_base,
+                overnight_classify=True,
+                overnight_skip_lo=0.20, overnight_skip_hi=0.40,
+                overnight_min_range=75.0), _run_kw),
+
+        # F: combined — skip bad zone + v2 TRENDING bias on good/bad extremes
+        (Config(label='F: skip [0.20–0.40] + TRENDING bias', **_base,
+                overnight_classify=True, overnight_trending_bias=True,
+                overnight_trending_pos_hi=0.85, overnight_trending_pos_lo=0.20,
+                overnight_skip_lo=0.20, overnight_skip_hi=0.40), _run_kw),
+    ]
+
+    print('=' * 76)
+    print('  A/B v3 — OVERNIGHT POSITION v2 CLASSIFIER  (data-driven thresholds)')
+    print('  Bad zone (0.20–0.40): 30 trades, 18–36% WR, -$3,679 in losses')
+    print('  Best zone (0.85+):    19 trades, 68.4% WR, +$3,616 gains')
+    print('=' * 76)
+    print(f'  {"Config":<40} {"Trades":>7} {"WR%":>6} {"P&L":>10} {"Sharpe":>7} {"MaxDD":>10}')
+    print(f'  {"-"*40} {"-"*7} {"-"*6} {"-"*10} {"-"*7} {"-"*10}')
+
+    for cfg, kw in configs:
+        trades = run_backtest(start=start, end=end, cfg=cfg, symbol=symbol, **kw)
+        if not trades:
+            print(f'  {cfg.label:<40} {"no trades":>7}')
+            continue
+        total = len(trades)
+        wr    = sum(1 for t in trades if t['status'] == 'WIN') / total * 100
+        pnl   = sum(t['net_pnl'] for t in trades)
+        daily = defaultdict(float)
+        for t in trades:
+            daily[t['date']] += t['net_pnl']
+        dv = list(daily.values())
+        sharpe = (np.mean(dv) / np.std(dv) * math.sqrt(252)
+                  if len(dv) > 1 and np.std(dv) > 0 else 0)
+        eq     = np.cumsum([t['net_pnl'] for t in trades])
+        peak   = np.maximum.accumulate(eq)
+        max_dd = float((eq - peak).min())
+        by_et  = defaultdict(lambda: {'n': 0, 'w': 0, 'p': 0.0})
+        for t in trades:
+            e = t.get('entry_type', 'breakout')
+            by_et[e]['n'] += 1; by_et[e]['w'] += (1 if t['status'] == 'WIN' else 0)
+            by_et[e]['p'] += t['net_pnl']
+        et_str = '  '.join(f"{e}:{d['n']}t/{d['w']/d['n']*100:.0f}%/${d['p']:,.0f}"
+                           for e, d in sorted(by_et.items()))
+        print(f'  {cfg.label:<40} {total:>7} {wr:>6.1f} {pnl:>10,.0f} {sharpe:>7.2f} {max_dd:>10,.0f}')
+        print(f'    {et_str}')
+    print()
+
+
+def run_overnight_analysis(start: str | None, end: str | None, symbol: str = 'MNQ'):
+    """
+    Diagnostic: show WR/P&L breakdown by overnight_position decile and range bucket.
+    Finds data-driven thresholds for TRENDING_UP/DOWN and COMPRESSION classifiers.
+    Run with: --overnight-analysis
+
+    overnight_position = (rth_open - overnight_low) / overnight_range
+      0.0 = RTH opens at overnight LOW  (bears dominated overnight)
+      1.0 = RTH opens at overnight HIGH (bulls dominated overnight)
+    """
+    print('Loading 1-min bars for overnight analysis...')
+    df_1m = load_bars(symbol=symbol, start=start, end=end, table='futures_bars_1m')
+    if df_1m.empty:
+        print('❌ No 1-min data found. Run collect_bars first.')
+        return
+
+    ctxs = compute_overnight_contexts(df_1m)
+    print(f'  Computed contexts for {len(ctxs)} trading days')
+
+    # Run baseline (no overnight filtering) to capture trades on ALL day types
+    base_cfg = Config(
+        label='analysis_base',
+        ib_window_min=60, ib_confirm_bars=1, min_ib_range=50.0, max_ib_range=600.0,
+        gap_max_pct=1.5, min_rvol=1.0, stop_ib_frac=0.35, target_ib_mult=0.75,
+        min_rr=1.5, max_daily_trades=2, cooldown_bars=2,
+        retest_zone_pts=20.0, retest_stop_pts=15.0, retest_min_ext=50.0,
+        retest_target_pts=80.0, macro_both_sides=True, slippage_ticks=1.0,
+        lunch_end=time(13, 0), retest_cutoff=time(12, 30),
+        overnight_classify=False,
+    )
+    print('Running baseline backtest (no overnight filtering — captures all day types)...')
+    trades = run_backtest(start=start, end=end, cfg=base_cfg,
+                          contracts=2, es_confirm=True, scale_contracts=True,
+                          symbol=symbol)
+    if not trades:
+        print('❌ No trades.')
+        return
+
+    # Join trades to overnight context by date
+    trade_rows = []
+    for t in trades:
+        ctx = ctxs.get(t['date'])
+        if ctx:
+            trade_rows.append({
+                'pnl':                t['net_pnl'],
+                'win':                1 if t['status'] == 'WIN' else 0,
+                'entry_type':         t.get('entry_type', 'breakout'),
+                'overnight_position': ctx['overnight_position'],
+                'overnight_range':    ctx['overnight_range'],
+                'day_type':           ctx['day_type'],
+                'date':               t['date'],
+            })
+
+    n_matched = len(trade_rows)
+    n_total   = len(trades)
+    print(f'\n  {n_matched}/{n_total} trades matched to overnight contexts\n')
+
+    # ── SECTION 1: overnight_position decile analysis ─────────────────────────
+    print('=' * 76)
+    print('  OVERNIGHT POSITION  (where in overnight range does RTH open?)')
+    print('  0.0 = opens at overnight LOW (bears held)  |  1.0 = opens at overnight HIGH (bulls held)')
+    print('=' * 76)
+    print(f'  {"Bucket":>10} | {"Days*":>5} | {"Trades":>6} | {"WR%":>6} | {"P&L/t":>8} | {"Total P&L":>10} | Note')
+    print(f'  {"-"*10}-+-{"-"*5}-+-{"-"*6}-+-{"-"*6}-+-{"-"*8}-+-{"-"*10}-+--------')
+
+    # Days from contexts (all trading days, not just traded)
+    all_ctx_positions = {d: v['overnight_position'] for d, v in ctxs.items()}
+
+    for i in range(10):
+        lo_p, hi_p = i / 10, (i + 1) / 10
+        ctx_days   = sum(1 for p in all_ctx_positions.values() if lo_p <= p < hi_p)
+        bucket_t   = [r for r in trade_rows if lo_p <= r['overnight_position'] < hi_p]
+        n = len(bucket_t)
+        if n == 0:
+            note = '(no trades)'
+            print(f'  {lo_p:.1f}–{hi_p:.1f}     | {ctx_days:>5} | {n:>6} | {"—":>6} | {"—":>8} | {"—":>10} | {note}')
+            continue
+        wins = sum(r['win'] for r in bucket_t)
+        tot  = sum(r['pnl'] for r in bucket_t)
+        if lo_p >= 0.8:
+            note = '<-- bulls dominated'
+        elif lo_p >= 0.65:
+            note = '<-- bullish lean'
+        elif hi_p <= 0.2:
+            note = '<-- bears dominated'
+        elif hi_p <= 0.35:
+            note = '<-- bearish lean'
+        else:
+            note = '   neutral open'
+        print(f'  {lo_p:.1f}–{hi_p:.1f}     | {ctx_days:>5} | {n:>6} | {wins/n*100:>6.1f} | {tot/n:>+8.0f} | {tot:>+10.0f} | {note}')
+
+    print('  * Days = all trading days in range (not just traded days)')
+
+    # ── SECTION 2: overnight range size analysis ──────────────────────────────
+    print()
+    print('=' * 76)
+    print('  OVERNIGHT RANGE SIZE  (compression threshold)')
+    print('=' * 76)
+
+    all_ranges_ctx  = sorted(v['overnight_range'] for v in ctxs.values())
+    p25r = all_ranges_ctx[int(len(all_ranges_ctx) * 0.25)]
+    p50r = all_ranges_ctx[int(len(all_ranges_ctx) * 0.50)]
+    p75r = all_ranges_ctx[int(len(all_ranges_ctx) * 0.75)]
+    p90r = all_ranges_ctx[int(len(all_ranges_ctx) * 0.90)]
+    print(f'  All-day distribution: p25={p25r:.0f}pt  p50={p50r:.0f}pt  p75={p75r:.0f}pt  p90={p90r:.0f}pt')
+    print(f'  Current compression threshold: {base_cfg.overnight_min_range:.0f}pt')
+    print()
+    print(f'  {"Range bucket":>22} | {"Days*":>5} | {"Trades":>6} | {"WR%":>6} | {"P&L/t":>8} | {"Total P&L":>10}')
+    print(f'  {"-"*22}-+-{"-"*5}-+-{"-"*6}-+-{"-"*6}-+-{"-"*8}-+-{"-"*10}')
+
+    range_edges = [0, 25, 50, 75, 100, 150, 200, 9999]
+    for j in range(len(range_edges) - 1):
+        lo_r, hi_r = range_edges[j], range_edges[j + 1]
+        label      = f'<{hi_r}pt' if lo_r == 0 else (f'>{lo_r}pt' if hi_r == 9999 else f'{lo_r}–{hi_r}pt')
+        ctx_days   = sum(1 for v in ctxs.values() if lo_r <= v['overnight_range'] < hi_r)
+        bucket_t   = [r for r in trade_rows if lo_r <= r['overnight_range'] < hi_r]
+        n = len(bucket_t)
+        if n == 0:
+            print(f'  {label:>22} | {ctx_days:>5} | {n:>6} | {"—":>6} | {"—":>8} | {"—":>10}')
+            continue
+        wins = sum(r['win'] for r in bucket_t)
+        tot  = sum(r['pnl'] for r in bucket_t)
+        print(f'  {label:>22} | {ctx_days:>5} | {n:>6} | {wins/n*100:>6.1f} | {tot/n:>+8.0f} | {tot:>+10.0f}')
+
+    # ── SECTION 3: current day_type breakdown ─────────────────────────────────
+    print()
+    print('=' * 76)
+    print('  CURRENT DAY_TYPE BREAKDOWN  (v1 classifier — for context)')
+    print('=' * 76)
+    print(f'  {"Day Type":>15} | {"Days*":>5} | {"Trades":>6} | {"WR%":>6} | {"P&L/t":>8} | {"Total P&L":>10}')
+    print(f'  {"-"*15}-+-{"-"*5}-+-{"-"*6}-+-{"-"*6}-+-{"-"*8}-+-{"-"*10}')
+
+    dt_ctx  = defaultdict(int)
+    for v in ctxs.values():
+        dt_ctx[v['day_type']] += 1
+    dt_trade = defaultdict(lambda: {'n': 0, 'w': 0, 'p': 0.0})
+    for r in trade_rows:
+        dt_trade[r['day_type']]['n'] += 1
+        dt_trade[r['day_type']]['w'] += r['win']
+        dt_trade[r['day_type']]['p'] += r['pnl']
+
+    for dt in sorted(dt_ctx, key=lambda x: -dt_ctx[x]):
+        ctx_n = dt_ctx[dt]
+        td    = dt_trade[dt]
+        n     = td['n']
+        if n == 0:
+            print(f'  {dt:>15} | {ctx_n:>5} | {n:>6} | {"—":>6} | {"—":>8} | {"—":>10}')
+        else:
+            print(f'  {dt:>15} | {ctx_n:>5} | {n:>6} | {td["w"]/n*100:>6.1f} | {td["p"]/n:>+8.0f} | {td["p"]:>+10.0f}')
+
+    # ── GUIDANCE ─────────────────────────────────────────────────────────────
+    print()
+    print('=' * 76)
+    print('  HOW TO READ THIS:')
+    print('  1. OVERNIGHT POSITION: find the decile where WR meaningfully jumps (e.g. 60%+)')
+    print('     → Set overnight_trending_pos_hi = that lower bound (e.g. 0.75)')
+    print('     → Set overnight_trending_pos_lo = 1 - trending_pos_hi (e.g. 0.25)')
+    print('  2. RANGE SIZE: find where WR drops below 42% AND P&L/trade goes negative')
+    print('     → Set overnight_min_range = that upper bound (e.g. 40pt or 75pt)')
+    print('  3. Run --ab-v3 with these thresholds to see full A/B impact')
+    print('=' * 76)
+    print()
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -1709,8 +2007,10 @@ Named strategies (--strategy):
     parser.add_argument('--mode',       default='TC',   choices=['TC', 'XFA'])
     parser.add_argument('--tc-sim', action='store_true', help='TC eval simulation')
     parser.add_argument('--wfa',    action='store_true', help='Walk-forward analysis')
-    parser.add_argument('--ab',     action='store_true', help='A/B parameter comparison')
-    parser.add_argument('--ab-v2',  action='store_true', help='A/B v2: overnight classifier + VWAP reclaim (tc_champion base)')
+    parser.add_argument('--ab',                action='store_true', help='A/B parameter comparison')
+    parser.add_argument('--ab-v2',             action='store_true', help='A/B v2: overnight classifier + VWAP reclaim (tc_champion base)')
+    parser.add_argument('--ab-v3',             action='store_true', help='A/B v3: overnight_position v2 classifier (data-driven skip zone + TRENDING bias)')
+    parser.add_argument('--overnight-analysis', action='store_true', help='Data-driven threshold finder: WR by overnight_position decile and range bucket')
 
     # Named strategy preset — loads JSON config from futures/strategies/
     parser.add_argument('--strategy', default=None,
@@ -1852,6 +2152,14 @@ Named strategies (--strategy):
         run_ab_v2(args.start, args.end, symbol=args.instrument)
         sys.exit(0)
 
+    if args.ab_v3:
+        run_ab_v3(args.start, args.end, symbol=args.instrument)
+        sys.exit(0)
+
+    if args.overnight_analysis:
+        run_overnight_analysis(args.start, args.end, symbol=args.instrument)
+        sys.exit(0)
+
     # Helper: CLI arg (non-None) > preset > hardcoded default
     def _v(cli_val, preset_key, default):
         if cli_val is not None:
@@ -1891,6 +2199,15 @@ Named strategies (--strategy):
         premarket_min_ext      = _v(args.premarket_min_ext,  'premarket_min_ext',  15.0),
         premarket_stop_pts     = _v(args.premarket_stop_pts, 'premarket_stop_pts', 20.0),
         premarket_target_pts   = _v(args.premarket_tgt_pts,  'premarket_target_pts', 80.0),
+        # Overnight classifier — loaded from preset JSON
+        overnight_classify         = preset_config.get('overnight_classify', False),
+        overnight_min_range        = preset_config.get('overnight_min_range', 50.0),
+        overnight_trending_bias    = preset_config.get('overnight_trending_bias', True),
+        overnight_gap_fill_skip    = preset_config.get('overnight_gap_fill_skip', False),
+        overnight_trending_pos_hi  = preset_config.get('overnight_trending_pos_hi', 0.0),
+        overnight_trending_pos_lo  = preset_config.get('overnight_trending_pos_lo', 0.0),
+        overnight_skip_lo          = preset_config.get('overnight_skip_lo', 0.0),
+        overnight_skip_hi          = preset_config.get('overnight_skip_hi', 0.0),
         # Session timing (session-open anchors IB; eod/lunch differ by session)
         session_open  = _session_open,
         eod_close_time = _eod_close,

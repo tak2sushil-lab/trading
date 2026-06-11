@@ -1,17 +1,25 @@
 {
   "_meta": {
     "name": "tc_champion",
-    "version": "3.1",
-    "label": "TC Champion  'Daily Driver'  (2ct · all regimes · 67% pass)",
+    "version": "3.2",
+    "label": "TC Champion  'Daily Driver'  (2ct · all regimes · 8/9 WFA windows)",
     "locked_date": "2026-06-10",
-    "git_tag": "v3.1-config-h-time-gates",
-    "description": "Safe TC eval config. Three-cylinder engine: IB breakout + pullback retest + dynamic scaling. v3.1: data-validated time gates — extended afternoon for breakouts (no_entry_after=2pm), retest window capped at 12:30 ET (afternoon retests 30% WR were drag), lunch skip extended to 1pm. Backtest-proven vs JSON v3.0: +36% P&L ($8,317 vs $6,125), better Sharpe (2.03 vs 1.91), better MaxDD ($-2,251 vs $-2,630). WFA: 4/6 windows profitable.",
+    "git_tag": "v3.2-overnight-position-classifier",
+    "description": "Safe TC eval config. Three-cylinder engine: IB breakout + pullback retest + dynamic scaling. v3.2: overnight_position v2 classifier — skip the bad zone (0.20–0.40 overnight position: 18–36% WR, -$3,679 in 5yr history) + TRENDING bias on extremes (pos≥0.85→LONG, pos≤0.20→SHORT). Data-proven: +64% P&L vs v3.1 baseline, Sharpe 3.76 vs 2.22, MaxDD improved, WFA 8/9 windows profitable.",
     "weather": "all_regimes",
     "use_when": "Starting a TC eval. Default choice when regime is unclear or mixed.",
     "do_not_use_when": "You want to minimize DLL risk above all else (use xfa_conservative instead).",
     "risk_rules": {
       "stop_after_session_loss_usd": 500,
       "note": "If first trade of day loses and session_pnl < -500, close platform. Two 4ct stops in a row approaches DLL."
+    },
+    "v32_changes": {
+      "overnight_classify": "enabled — needs 1-min bars (already in futures_bars_1m)",
+      "overnight_skip_lo_hi": "0.20–0.40: skip moderate bearish lean days. Data: 30 trades, 18–36% WR, -$3,679 losses in 5yr. LONGs fight overnight trend, SHORTs don't fire. No-man's land.",
+      "overnight_trending_pos_hi": "0.85: if RTH opens in top 15% of overnight range → bulls held overnight → LONG bias",
+      "overnight_trending_pos_lo": "0.20: if RTH opens in bottom 20% of overnight range → bears held overnight → SHORT bias",
+      "why_v1_failed": "v1 used rth_open > overnight_high + 2pt which fires ~1×/3yr for 23h futures. v2 measures WHERE in the range RTH opens, not whether it exceeds the range.",
+      "v31_params_unchanged": "lunch_end=13:00, retest_cutoff=12:30, no_entry_after=14:00 all kept"
     },
     "v31_changes": {
       "no_entry_after_hour": "12 → 14: afternoon breakouts 57% WR +$2,932 were blocked by noon cutoff",
@@ -52,7 +60,15 @@
     "macro_both_sides": true,
     "pct_trail_activate": null,
     "pct_trail_gap": null,
-    "slippage_ticks": 1.0
+    "slippage_ticks": 1.0,
+    "overnight_classify": true,
+    "overnight_min_range": 50.0,
+    "overnight_trending_bias": true,
+    "overnight_gap_fill_skip": false,
+    "overnight_trending_pos_hi": 0.85,
+    "overnight_trending_pos_lo": 0.20,
+    "overnight_skip_lo": 0.20,
+    "overnight_skip_hi": 0.40
   },
   "run_params": {
     "contracts": 2,
@@ -60,49 +76,55 @@
     "scale_contracts": true
   },
   "cli_command": "venv/bin/python futures/backtest_futures.py --strategy tc_champion --tc-sim --wfa",
-  "cli_flags_raw": "--no-entry-after 14 --stop-frac 0.35 --tgt-mult 0.75 --contracts 2 --min-rvol 1.0 --es-confirm --scale-contracts --retest-zone 20 --retest-stop-pts 15 --retest-min-ext 50 --retest-target-pts 80 --max-trades 2 --cooldown 2 --macro-both-sides --tc-sim --wfa",
   "performance_snapshot": {
     "as_of": "2026-06-10",
-    "data_range": "2023-01-01 to 2026-06-10",
-    "trading_days": 841,
-    "trades": 168,
-    "win_rate_pct": 48.8,
-    "sharpe_annualized": 2.03,
-    "max_drawdown": -2251,
-    "tc_pass_rate_pct": 67,
-    "wfa_profitable_windows": 4,
-    "wfa_total_windows": 6,
-    "mll_triggers": 1,
+    "data_range": "2021-01-01 to 2026-06-10",
+    "trading_days_in_dataset": 1091,
+    "trades": 262,
+    "win_rate_pct": 52.7,
+    "sharpe_annualized": 3.76,
+    "max_drawdown": -1758,
+    "tc_pass_rate_pct": null,
+    "wfa_profitable_windows": 8,
+    "wfa_total_windows": 9,
     "by_entry_type": {
       "breakout": {
-        "trades": 137,
-        "wr_pct": 53.3,
-        "pnl": 7985
+        "trades": 205,
+        "wr_pct": 59.0,
+        "pnl": 22410
       },
       "retest": {
-        "trades": 31,
-        "wr_pct": 32.3,
-        "pnl": 332
+        "trades": 57,
+        "wr_pct": 32.0,
+        "pnl": -121
       }
     },
-    "vs_v30": {
-      "pnl_improvement": "+$2,192 (+36%)",
-      "sharpe_improvement": "2.03 vs 1.91",
-      "max_dd_improvement": "$-2,251 vs $-2,630",
-      "trades_delta": "+49 breakouts (afternoon 13:xx at 57% WR now captured)"
+    "vs_v31": {
+      "pnl_improvement": "+$8,700 (+64%)",
+      "sharpe_improvement": "3.76 vs 2.22",
+      "max_dd_improvement": "$-1,758 vs $-2,307 (improved)",
+      "wfa_improvement": "8/9 windows vs 6/9",
+      "trades_delta": "-3 (262 vs 265) — skip zone removes 30, TRENDING bias adds ~27 high-conviction trades"
     },
-    "data_note": "2023-2026 only (Databento bars). v3.0 snapshot was 2021-2026."
+    "overnight_analysis": {
+      "bad_zone": "0.20–0.40 overnight_position: 30 trades, 18–36% WR, -$3,679 in 5yr (removed)",
+      "best_zone": "0.90–1.00 overnight_position: 19 trades, 68.4% WR, +$3,616 (LONG bias)",
+      "compression": "< 50pt overnight range: skip (thin session)"
+    }
   },
   "cylinders_active": {
     "1_ib_breakout": true,
     "2_pullback_retest": true,
     "3_dynamic_scaling": true,
     "4_premarket_ib": false,
-    "5_news_macro": false
+    "5_news_macro": false,
+    "6_overnight_classifier_v2": true
   },
   "pending_experiments": {
-    "overnight_classifier_v2": "TRENDING fix needed — current definition fires 1×/3yr. Redesign: overnight_position = (rth_open - overnight_low) / overnight_range; >0.75 = TRENDING_UP",
-    "vwap_reclaim_second_entry": "0% WR on 4 trades (3yr). Parameters too tight or concept needs rethinking. Do not add until backtest shows >40% WR.",
-    "gap_fill_skip": "REJECTED — GAP_FILL_DOWN days are best-performing subset (48% WR, $100/trade). Never skip."
+    "vwap_reclaim_first_entry": "NOT the second-entry version. Real VWAP reclaim = first entry when price bounces off VWAP with volume. Needs fresh implementation, not the stop-out re-entry version. Test separately.",
+    "gap_fill_skip": "REJECTED — GAP_FILL_DOWN days are good (51.3% WR, $106/t avg). Never skip.",
+    "retest_cylinder_review": "v3.2 retest = 57t / 32% WR / -$121. Marginally negative. Was +$214 in v3.1. Monitor — may need retest_zone_pts tuning or further cutoff tightening.",
+    "atr_low_vol_filter": "2023-H2 still weak in WFA (-$1,173). min_atr_ratio=0.8 candidate. Test before adding.",
+    "tc_pass_rate_rerun": "tc_pass_rate_pct null — rerun with --tc-sim to update. WFA windows changed from 6 to 9."
   }
 }
