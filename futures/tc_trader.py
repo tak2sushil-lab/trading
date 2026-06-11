@@ -1289,6 +1289,8 @@ def poll_telegram_commands():
         for u in updates:
             _tg_offset = u['update_id'] + 1   # acknowledge — won't be returned again
             msg = u.get('message', {}).get('text', '').strip().upper()
+            if msg:
+                log(f"[TG CMD] recv: {msg[:80]}")
             if 'FUT PAUSE' in msg:
                 _trading_paused = True
                 send_telegram("⏸ FUTURES trading paused.")

@@ -3159,16 +3159,21 @@ def main():
                 upper      = text.upper()
                 first_word = upper.split()[0] if upper.split() else ''
 
-                # Equity commands belong to auto_trader — leave them in the queue
+                # Equity commands don't belong here — consume silently
+                # (auto_trader uses a separate bot; these would never reach it from this group)
                 EQUITY_CMDS = {
                     'HELP', 'STATUS', 'REGIME', 'TODAY',
                     'PAUSE', 'STOP', 'CANCEL', 'RESUME', 'CLOSEALL',
                     'BUY', 'SELL', 'BLOCK',
                 }
-                if not upper.startswith('OPT ') and first_word in EQUITY_CMDS:
-                    continue  # don't advance offset — auto_trader will handle this
+                if (not upper.startswith('OPT ')
+                        and upper != 'STATUS ALL'
+                        and first_word in EQUITY_CMDS):
+                    _last_update_id = uid   # consume — auto_trader can't see options-group messages
+                    continue
 
                 _last_update_id = uid   # consume: this is ours to handle
+                print(f"[options_trader] TG CMD: {text[:80]}")
                 dispatch(text, chat_id)
         except Exception as e:
             print(f"[options_trader] loop error: {e}")

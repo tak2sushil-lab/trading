@@ -198,7 +198,7 @@ These must be verified/built before any real-money trading begins. Do NOT go liv
 |---|------|--------|-------|
 | 1 | **Gateway reconnect simulation test** | ⬜ pending | Kill bridge mid-scan, confirm freeze Telegram fires, no orders placed. Manual test. |
 | 2 | **Partial fill handling in place_trade()** | ✅ done May 29 | Reads `filled` qty + `avgFillPrice` from bridge. Partial fill → Telegram alert. Zero-qty fill returns None. |
-| 3 | **IBKR market data subscriptions** | ⬜ pre-go-live | User to subscribe live data before go-live. Bridge streaming fix (May 29) ensures correct monitoring once subscribed. |
+| 3 | **IBKR market data subscriptions** | ✅ confirmed Jun 10 | Live data already active on paper account (reqMarketDataType=1, not delayed). Subscription is per-user at IBKR — carries over to live account automatically. |
 | 4 | **Buying power pre-check** | ✅ done May 29 | Pre-order BP check vs position_cost×1.05. Fails open on account query error. Paper account ($3.5M) never triggers. |
 | 5 | **TFSA isolation double-check** | ✅ confirmed | Bridge pins IBKR_ACCOUNT on every order. Individual account already identified and saved. |
 | 6 | **PROD_EQUITY_ENABLED flag test** | ⬜ pending | Flip flag in dry-run, confirm orders reach paper Individual account, not TFSA. Flag infrastructure already in auto_trader.py:4104. |
