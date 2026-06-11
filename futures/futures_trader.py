@@ -123,6 +123,18 @@ _scheduler            = None
 _cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by run_monitor()
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
+MKT_DB_PATH = os.path.join(_DIR, '..', 'market_data.db')
+
+US_HOLIDAYS_2026 = {
+    date(2026, 1,  1), date(2026, 1, 19), date(2026, 2, 16),
+    date(2026, 4,  3), date(2026, 5, 25), date(2026, 6, 19),
+    date(2026, 7,  3), date(2026, 9,  7), date(2026, 11, 26),
+    date(2026, 12, 25),
+}
+
+# RVOL scaling: {"%H:%M" ET slot → avg volume across history} — loaded once at startup.
+# Empty dict = RVOL unavailable → dynamic sizing falls back to 1 contract safely.
+_avg_vol_by_time: dict = {}
 
 
 # ── Logging + Telegram ────────────────────────────────────
@@ -367,9 +379,9 @@ def compute_overnight_bias():
 
         rth_open = float(rth_bars['open'].iloc[0])
 
-        # Overnight window: prev 4pm ET → today 9:30am ET (skip weekends for prev_day)
+        # Overnight window: prev 4pm ET → today 9:30am ET (skip weekends + holidays)
         prev_day = today - timedelta(days=1)
-        while prev_day.weekday() >= 5:
+        while prev_day.weekday() >= 5 or prev_day in US_HOLIDAYS_2026:
             prev_day -= timedelta(days=1)
         prev_4pm   = ET.localize(datetime(prev_day.year, prev_day.month, prev_day.day, 16, 0))
         night_bars = bars_1m[(bars_1m.index >= prev_4pm) & (bars_1m.index < today_930)]
@@ -769,6 +781,96 @@ def calc_contracts(price: float, sl: float) -> int:
     return contracts
 
 
+def load_avg_volumes():
+    """Load per-time-slot average volume from market_data.db at startup (once).
+    Builds _avg_vol_by_time dict keyed by ET time string '%H:%M'.
+    """
+    global _avg_vol_by_time
+    try:
+        conn = sqlite3.connect(MKT_DB_PATH)
+        cutoff = (datetime.now() - timedelta(days=550)).strftime('%Y-%m-%d')
+        df = pd.read_sql(
+            "SELECT ts_utc, volume FROM futures_bars_5m WHERE symbol='MNQ' AND ts_utc >= ?",
+            conn, params=[cutoff],
+        )
+        conn.close()
+        if df.empty:
+            log("RVOL: no bars found in market_data.db — RVOL scaling disabled")
+            return
+        df['ts'] = pd.to_datetime(df['ts_utc'], utc=True, format='ISO8601').dt.tz_convert(ET)
+        df['slot'] = df['ts'].dt.strftime('%H:%M')
+        _avg_vol_by_time = df.groupby('slot')['volume'].mean().to_dict()
+        log(f"RVOL: loaded avg_vol for {len(_avg_vol_by_time)} slots ({len(df):,} bars)")
+    except Exception as e:
+        log(f"RVOL: load_avg_volumes failed — {e}. RVOL scaling disabled.")
+
+
+def calc_rvol_current(df5: pd.DataFrame) -> float:
+    """Current bar's volume relative to historical average for this time slot.
+    Returns 1.0 (neutral) if data unavailable.
+    """
+    if df5.empty or not _avg_vol_by_time:
+        return 1.0
+    slot = df5.index[-1].strftime('%H:%M')
+    avg  = _avg_vol_by_time.get(slot, 0)
+    if avg <= 0:
+        return 1.0
+    return float(df5['volume'].iloc[-1]) / avg
+
+
+def calc_ib_range_today(df5: pd.DataFrame) -> float:
+    """Today's H-L range from 9:30am to now (proxy for 60-min IB at entry time)."""
+    if df5.empty:
+        return 0.0
+    today    = datetime.now(ET).date()
+    ib_start = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    bars     = df5[df5.index >= ib_start]
+    if len(bars) < 2:
+        return 0.0
+    return float(bars['high'].max() - bars['low'].min())
+
+
+def had_loss_today() -> bool:
+    """True if any futures trade closed at a loss today (ET date)."""
+    today = str(datetime.now(ET).date())
+    conn  = sqlite3.connect(DB_PATH)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM futures_trades "
+        "WHERE entry_date=? AND pnl < 0 AND status='CLOSED' AND account_mode=?",
+        (today, ACCOUNT_MODE),
+    ).fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def calc_contracts_dynamic(price: float, sl: float,
+                            rvol: float, ib_range: float) -> int:
+    """
+    RVOL-based contract scaling (ported from backtest _dynamic_contracts()).
+    Base = 1 (IBKR personal $2K account).
+    Scale up on conviction; scale down after a loss; hard cap = IBKR_MAX_CONTRACTS (2).
+
+    Tiers (additive):
+      rvol ≥ 2×  → +1  (elevated participation)
+      rvol ≥ 3×  → +1  (strong institutional interest)
+      rvol ≥ 4×  → +1  (exceptional — capped to 2 by prop_rules anyway)
+      ib_range ≥ 150pts → +1  (wide IB = structural range worth sizing into)
+      had_loss_today     → -1  (capital protection after first hit)
+    """
+    n = 1
+    if rvol >= 2.0:
+        n += 1
+    if rvol >= 3.0:
+        n += 1
+    if rvol >= 4.0:
+        n += 1
+    if ib_range >= 150.0:
+        n += 1
+    if had_loss_today():
+        n -= 1
+    return max(1, min(n, get_max_contracts(n)))   # hard cap: 2 for IBKR
+
+
 # ── Database helpers ──────────────────────────────────────
 
 def get_open_futures_trades() -> list:
@@ -943,7 +1045,16 @@ def place_trade(side: str, sig: dict, regime: str,
     df5        = get_bars()
     atr        = calc_atr(df5) if not df5.empty else 10.0
     sl, target = calc_sl_target(price, atr, side)
-    contracts  = calc_contracts(price, sl)
+
+    # tc_champion: max_stop_pts=150 — skip when ATR-based stop is extreme ($300+ risk)
+    stop_pts = abs(price - sl)
+    if stop_pts > 150.0:
+        log(f"  SKIP: stop {stop_pts:.0f}pts > 150 max (high-ATR day)")
+        return False
+
+    rvol       = calc_rvol_current(df5)
+    ib_range   = calc_ib_range_today(df5)
+    contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range)
 
     rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
     # Use small tolerance to avoid floating-point false rejects at exactly MIN_RR
@@ -966,7 +1077,19 @@ def place_trade(side: str, sig: dict, regime: str,
 
     order_id = result.get('order_id', '')          # bridge returns 'order_id' not 'orderId'
     session  = get_session()
-    setup    = f"ORB_{side}" if sig.get(f'orb_{"bull" if side=="LONG" else "bear"}') else f"VWAP_{side}"
+    # Setup label: priority order matches grade_entry bonus hierarchy
+    if side == 'LONG':
+        if sig.get('pm_bull'):          setup = 'PM_LONG'
+        elif sig.get('orb_bull'):       setup = 'ORB_LONG'
+        elif sig.get('vwap_reclaim'):   setup = 'VWAP_LONG'
+        elif sig.get('momentum_bull'):  setup = 'MOM_LONG'
+        else:                           setup = 'OPEN_LONG'
+    else:
+        if sig.get('pm_bear'):          setup = 'PM_SHORT'
+        elif sig.get('orb_bear'):       setup = 'ORB_SHORT'
+        elif sig.get('vwap_rejection'): setup = 'VWAP_SHORT'
+        elif sig.get('momentum_bear'):  setup = 'MOM_SHORT'
+        else:                           setup = 'OPEN_SHORT'
 
     # ── Backup IBKR stop order — placed immediately after entry ──────────────
     # Fixed at the initial hard stop. Never moved (trail managed in software).
@@ -1005,7 +1128,7 @@ def place_trade(side: str, sig: dict, regime: str,
         f"Price:     {price}\n"
         f"Stop:      {sl}  (-${risk_usd:.0f})\n"
         f"Target:    {target}  (+${target_usd:.0f})\n"
-        f"Contracts: {contracts} × MNQ\n"
+        f"Contracts: {contracts} × MNQ  (RVOL={rvol:.1f}×  IB={ib_range:.0f}pts)\n"
         f"Setup:     {setup} | Grade: {grade} ({score}pts)\n"
         f"Session:   {session} | Regime: {regime}\n"
         f"R:R:       {rr:.1f}\n"
@@ -1192,12 +1315,24 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             # Position confirmed on IBKR — cancel backup stop then place software exit
             _cancel_backup_stop(trade)
             cover_side = 'BUY' if is_short else 'SELL'
-            result = _bridge_post('/futures/order', {
+            exit_result = _bridge_post('/futures/order', {
                 'symbol':     SYMBOL,
                 'qty':        contracts,
                 'side':       cover_side,
                 'order_type': 'MARKET',
             })
+
+            if exit_result.get('status') != 'submitted':
+                # Exit order failed: re-place backup stop so position stays protected,
+                # then skip closing the DB record — next monitor cycle will retry.
+                log(f"  ⚠️ EXIT ORDER FAILED: {exit_result} — re-placing backup stop, will retry")
+                stop_side = 'BUY' if is_short else 'SELL'
+                _bridge_post('/futures/order', {
+                    'symbol': SYMBOL, 'qty': contracts, 'side': stop_side,
+                    'order_type': 'STOP_MARKET', 'aux_price': sl, 'tif': 'GTC',
+                })
+                send_telegram(f"⚠️ FUTURES EXIT FAILED (trade {tid})!\nRetrying next cycle. Check IBKR manually if persists.")
+                continue
 
             log_futures_exit(tid, price, exit_reason, round(pnl_usd, 2),
                              round(pnl_ticks, 1))
@@ -1241,6 +1376,10 @@ def _get_open_unrealized() -> float:
 def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
     global _confirmed_scans, _regime_scan_counts, _cached_df5
+
+    if date.today() in US_HOLIDAYS_2026:
+        log("Market holiday — scan skipped")
+        return
 
     if not get_bridge_connected():
         log("Bridge disconnected — skipping scan")
@@ -1315,6 +1454,24 @@ def run_scan():
             log(f"pm_ib hold — {remaining}s remaining. Send FUT BIAS LONG/SHORT if needed.")
             return
 
+    # ── No-entry-after 14:00 gate (tc_champion v3.2 parity) ─────────────────
+    # Backtest cuts off entries at 2pm ET. Afternoon 2pm-3:30pm has lower WR
+    # and is not in the validated backtest window.
+    if now_et.hour >= 14:
+        log(f"No-entry-after gate (14:00 ET) — monitoring only")
+        return
+
+    # ── RVOL + IB range gates (tc_champion: min_rvol=1.0, min_ib_range=50pts) ─
+    # Computed once here; also passed to calc_contracts_dynamic in place_trade().
+    _scan_rvol     = calc_rvol_current(df5)
+    _scan_ib_range = calc_ib_range_today(df5)
+    if _scan_rvol < 1.0:
+        log(f"Low RVOL ({_scan_rvol:.2f}× < 1.0) — skip entry attempt")
+        return
+    if _scan_ib_range > 0 and _scan_ib_range < 50.0:
+        log(f"Thin IB ({_scan_ib_range:.0f}pts < 50 min) — skip entry attempt")
+        return
+
     # ── Overnight skip zone gate ──────────────────────────────
     # overnight_position in [0.20, 0.40): moderate bearish lean — IB breakouts
     # have 18–36% WR in this zone (backtest data, tc_champion v3.2).
@@ -1356,6 +1513,9 @@ def run_monitor():
 
 def reset_daily_state():
     """Called at market open each day."""
+    if date.today() in US_HOLIDAYS_2026:
+        log("reset_daily_state: market holiday — skipping")
+        return
     global _orb_high, _orb_low, _orb_set, _confirmed_scans
     global _regime_scan_counts, _session_high, _session_low
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
@@ -1547,6 +1707,8 @@ def main():
             _conn.commit()
             _conn.close()
             log(f"  Startup: marked trade {_t['id']} ({_t.get('symbol')}) as orphaned (was OPEN from {_t['entry_date']})")
+
+    load_avg_volumes()   # build RVOL denominator (non-blocking; graceful if missing)
 
     prop_load()
     # Reconcile ibkr_state from DB on every startup — restarts mid-day cause drift.
