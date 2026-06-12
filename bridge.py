@@ -812,19 +812,31 @@ async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
             "iv":    clean(greeks.impliedVol) if greeks else None,
         }
 
-    # Try type 1 (live OPRA) first — 3s probe is enough; IBKR responds immediately if subscribed
+    async def _stream_quote(mkt_type: int, timeout: float) -> dict:
+        """Streaming reqMktData — waits for bid/ask then a further 2s for Greeks."""
+        ib.reqMarketDataType(mkt_type)
+        tkr = ib.reqMktData(q, genericTickList='', snapshot=False)
+        deadline = asyncio.get_event_loop().time() + timeout
+        got_price = False
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+            if not got_price and (clean(tkr.bid) is not None or clean(tkr.ask) is not None):
+                got_price = True
+                deadline = min(deadline, asyncio.get_event_loop().time() + 2.0)  # 2s more for Greeks
+            if got_price and tkr.modelGreeks is not None:
+                break  # have everything
+        result = _extract(tkr)
+        ib.cancelMktData(q)
+        return result
+
+    # Live OPRA — stream up to 6s
     ib.reqMarketDataType(1)
-    ticker = ib.reqMktData(q, genericTickList='100', snapshot=True)
-    await asyncio.sleep(3)
-    data   = _extract(ticker)
+    data   = await _stream_quote(1, timeout=6)
     source = 'live'
 
-    # Fall back to type 3 (delayed) if live returned no bid/ask
+    # Fall back to delayed if live returned nothing
     if not data['bid'] and not data['ask']:
-        ib.reqMarketDataType(3)
-        ticker = ib.reqMktData(q, genericTickList='100', snapshot=True)
-        await asyncio.sleep(10)
-        data   = _extract(ticker)
+        data   = await _stream_quote(3, timeout=10)
         source = 'delayed'
 
     ib.reqMarketDataType(1)   # always restore to live for equity quotes
