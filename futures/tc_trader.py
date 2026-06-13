@@ -717,6 +717,37 @@ def update_futures_stop(trade_id, new_stop):
     conn.close()
 
 
+def _update_backup_stop(trade: dict, new_sl: float):
+    """Cancel old IBKR backup stop, place a new one at new_sl, update DB + trade dict.
+    Called when BE or trail fires so the hardware stop tracks the software stop.
+    Brief gap between cancel and replace is acceptable vs. having the stop
+    permanently stranded at the original ATR level.
+    """
+    is_short  = trade.get('side') == 'SHORT'
+    contracts = trade.get('contracts', 1)
+
+    _cancel_backup_stop(trade)
+
+    stop_side = 'BUY' if is_short else 'SELL'
+    result    = _bridge_post('/futures/order', {
+        'symbol':     SYMBOL,
+        'qty':        contracts,
+        'side':       stop_side,
+        'order_type': 'STOP_MARKET',
+        'aux_price':  new_sl,
+        'tif':        'GTC',
+    })
+    new_oid = (result or {}).get('order_id', '') or ''
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('UPDATE futures_trades SET stop_price=?, stop_order_id=? WHERE id=?',
+                 (new_sl, new_oid or None, trade['id']))
+    conn.commit()
+    conn.close()
+
+    trade['stop_order_id'] = new_oid   # keep trade dict in sync for this cycle
+
+
 def get_futures_daily_pnl() -> float:
     today = str(datetime.now(ET).date())   # use ET date, consistent with log_futures_entry
     conn  = sqlite3.connect(DB_PATH)
@@ -954,7 +985,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             be = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
             if (not is_short and be > sl) or (is_short and be < sl):
                 sl = be
-                update_futures_stop(tid, sl)
+                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to BE level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE stop → {sl} (+{pnl_pts:.0f}pts)")
 
         # Tier 2 (+60pts): trail 20pts behind session peak
@@ -962,7 +993,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
-                update_futures_stop(tid, sl)
+                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to trail level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(20) → {sl} (+{pnl_pts:.0f}pts)")
 
         # Tier 3 (+85pts, near target): tighten to 10pts — lock in most of the gain
@@ -970,7 +1001,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
-                update_futures_stop(tid, sl)
+                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to tight trail level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(10) → {sl} (+{pnl_pts:.0f}pts)")
 
         # VWAP for exit decisions
@@ -987,10 +1018,18 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             if price <= sl:
                 exit_reason = f'Stop {sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 2. Circuit breaker — prop rule safety
-        daily_pnl = get_futures_daily_pnl()
+        # 2. Circuit breaker — total daily P&L (realized + unrealized across all open trades).
+        # Realized-only check lets an open position blow through the DLL undetected.
+        # Using current price for all trades is correct — same instrument, same price.
+        _total_unrealized = sum(
+            (t['entry_price'] - price) / TICK_SIZE * TICK_VALUE * t.get('contracts', 1)
+            if t.get('side') == 'SHORT' else
+            (price - t['entry_price']) / TICK_SIZE * TICK_VALUE * t.get('contracts', 1)
+            for t in trades
+        )
+        daily_pnl = get_futures_daily_pnl() + _total_unrealized
         if not exit_reason and daily_pnl <= -MAX_DAILY_LOSS:
-            exit_reason = f'Daily loss circuit breaker: ${daily_pnl:.0f}'
+            exit_reason = f'Daily loss circuit breaker (total): ${daily_pnl:.0f}'
 
         # 3. Target hit
         if not exit_reason and target:

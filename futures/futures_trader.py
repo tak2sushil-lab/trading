@@ -51,7 +51,7 @@ from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, 
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0          # $ max risk per trade (1 contract × 50-tick stop)
-MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $150 — mirrors prop_rules IBKR soft stop
+MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $200 (10% of $2K) — mirrors prop_rules IBKR soft stop
 DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $400 — mirrors prop_rules IBKR daily cap
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
@@ -75,6 +75,25 @@ TRAIL_TIGHT_GAP  = 10.0   # trail distance in tight mode
 NO_MOVE_MINUTES = 90      # minutes open before checking
 NO_MOVE_MAX_PTS = 25.0    # above this → trade IS progressing, let it run
 NO_MOVE_MIN_PTS = -10.0   # below this → hard stop will manage it
+
+# ── ELEPHANT TRADE (Liquidity Grab Reversal) ─────────────
+# Algos sweep stop-loss clusters then reverse — we enter at the sweep extreme.
+# All parameters derived from 5.5yr MNQ backtest (Jun 12 2026 research session).
+ELEPHANT_ENABLED         = True    # master kill-switch
+ELEPHANT_ENTRY_CONF      = 10.0    # pts above flush extreme for LONG / below for SHORT
+ELEPHANT_STOP_PTS        = 50.0    # pts from flush extreme to hard stop
+ELEPHANT_TARGET_PTS      = 150.0   # pts from entry to profit target  (R:R = 150/60 = 2.5)
+ELEPHANT_TIMEOUT_MINS    = 180.0   # no-move timeout (3 hr) — wider than regular 90 min
+ELEPHANT_FLUSH_EXTREME   = 100.0   # min flush depth (pts) on EXTREME_BULL/BEAR days
+ELEPHANT_FLUSH_STRONG    = 150.0   # min flush depth (pts) on STRONG_BULL/BEAR days
+ELEPHANT_BODY_EXTREME    = 250.0   # 15-min opening bar body → EXTREME classification
+ELEPHANT_BODY_STRONG     = 100.0   # 15-min opening bar body → STRONG classification
+ELEPHANT_MAX_EXTREME     = 4       # max elephant trades allowed on EXTREME day
+ELEPHANT_MAX_STRONG      = 2       # max elephant trades allowed on STRONG day
+ELEPHANT_ES_MOVE_SKIP    = 25.0    # skip STRONG flush when ES also moved ≥25pts same dir
+                                    # (macro flush WR 57% vs MNQ-specific WR 84%)
+ELEPHANT_NOON_CUTOFF_ET  = 12      # no elephant entries at/after noon ET (backtest: 2pm=22% WR)
+ELEPHANT_LOOKBACK_BARS   = 12      # 60-min rolling window for flush detection (12 × 5-min)
 
 # ── Session constants (ET) ────────────────────────────────
 ET = pytz.timezone('America/New_York')
@@ -121,6 +140,12 @@ _last_exit_time       = None   # datetime of most recent trade exit — cooldown
 _tg_offset            = 0      # Telegram getUpdates offset — marks messages as read
 _scheduler            = None
 _cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by run_monitor()
+
+# ── Elephant Trade state (reset daily) ───────────────────
+_elephant_day_type    = 'NONE'  # NONE | STRONG_BULL | STRONG_BEAR | EXTREME_BULL | EXTREME_BEAR
+_elephant_trades_today = 0      # count of elephant entries today
+_elephant_flush_ids   = set()   # timestamps of flush extremes already acted on (dedup)
+
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
 MKT_DB_PATH = os.path.join(_DIR, '..', 'market_data.db')
@@ -270,6 +295,26 @@ def get_bars(bar_size_min: int = 5, days: int = 2) -> pd.DataFrame:
 def get_bridge_connected() -> bool:
     h = _bridge_get('/')
     return h.get('connected', False)
+
+
+def _get_es_bars(bar_size_min: int = 5, days: int = 2) -> pd.DataFrame:
+    """Fetch ES 5-min bars — used by elephant ES-confirmation filter."""
+    path = f'/history/futures/ES?duration={days}+D&bar_size={bar_size_min}+mins&rth=false'
+    resp = _bridge_get(path, timeout=20)
+    if not resp or 'error' in resp:
+        return pd.DataFrame()
+    bars = resp.get('bars', [])
+    if not bars:
+        return pd.DataFrame()
+    df = pd.DataFrame(bars)
+    if df.empty or 'ts' not in df.columns:
+        return pd.DataFrame()
+    df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_convert(ET)
+    df = df.set_index('ts').sort_index()
+    for col in ('open', 'high', 'low', 'close', 'volume'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df.dropna(subset=['close'])
 
 
 # ── Opening Range Break (ORB) ─────────────────────────────
@@ -938,6 +983,37 @@ def update_futures_stop(trade_id, new_stop):
     conn.close()
 
 
+def _update_backup_stop(trade: dict, new_sl: float):
+    """Cancel old IBKR backup stop, place a new one at new_sl, update DB + trade dict.
+    Called when BE or trail fires so the hardware stop tracks the software stop.
+    Brief gap between cancel and replace is acceptable vs. having the stop
+    permanently stranded at the original ATR level.
+    """
+    is_short  = trade.get('side') == 'SHORT'
+    contracts = trade.get('contracts', 1)
+
+    _cancel_backup_stop(trade)
+
+    stop_side = 'BUY' if is_short else 'SELL'
+    result    = _bridge_post('/futures/order', {
+        'symbol':     SYMBOL,
+        'qty':        contracts,
+        'side':       stop_side,
+        'order_type': 'STOP_MARKET',
+        'aux_price':  new_sl,
+        'tif':        'GTC',
+    })
+    new_oid = (result or {}).get('order_id', '') or ''
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('UPDATE futures_trades SET stop_price=?, stop_order_id=? WHERE id=?',
+                 (new_sl, new_oid or None, trade['id']))
+    conn.commit()
+    conn.close()
+
+    trade['stop_order_id'] = new_oid   # keep trade dict in sync for this cycle
+
+
 def get_futures_daily_pnl() -> float:
     today = str(datetime.now(ET).date())   # use ET date, consistent with log_futures_entry
     conn  = sqlite3.connect(DB_PATH)
@@ -1196,7 +1272,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             be = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
             if (not is_short and be > sl) or (is_short and be < sl):
                 sl = be
-                update_futures_stop(tid, sl)
+                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to BE level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE stop → {sl} (+{pnl_pts:.0f}pts)")
 
         # Tier 2 (+60pts): trail 20pts behind session peak
@@ -1204,7 +1280,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
-                update_futures_stop(tid, sl)
+                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to trail level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(20) → {sl} (+{pnl_pts:.0f}pts)")
 
         # Tier 3 (+85pts, near target): tighten to 10pts — lock in most of the gain
@@ -1212,7 +1288,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
-                update_futures_stop(tid, sl)
+                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to tight trail level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(10) → {sl} (+{pnl_pts:.0f}pts)")
 
         # VWAP for exit decisions
@@ -1229,10 +1305,18 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             if price <= sl:
                 exit_reason = f'Stop {sl} hit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
-        # 2. Circuit breaker — prop rule safety
-        daily_pnl = get_futures_daily_pnl()
+        # 2. Circuit breaker — total daily P&L (realized + unrealized across all open trades).
+        # Realized-only check lets an open position blow through the DLL undetected.
+        # Using current price for all trades is correct — same instrument, same price.
+        _total_unrealized = sum(
+            (t['entry_price'] - price) / TICK_SIZE * TICK_VALUE * t.get('contracts', 1)
+            if t.get('side') == 'SHORT' else
+            (price - t['entry_price']) / TICK_SIZE * TICK_VALUE * t.get('contracts', 1)
+            for t in trades
+        )
+        daily_pnl = get_futures_daily_pnl() + _total_unrealized
         if not exit_reason and daily_pnl <= -MAX_DAILY_LOSS:
-            exit_reason = f'Daily loss circuit breaker: ${daily_pnl:.0f}'
+            exit_reason = f'Daily loss circuit breaker (total): ${daily_pnl:.0f}'
 
         # 3. Target hit
         if not exit_reason and target:
@@ -1249,14 +1333,17 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 exit_reason = f'VWAP cross exit (short) ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
         # 5. No-move exit (time-based — dead trade, free the slot)
-        # Only during active session; EOD close handles anything still open at 4pm.
+        # Elephant trades get a wider window (ELEPHANT_TIMEOUT_MINS=180) because
+        # LGR reversals sometimes take longer to develop than regular ORB/VWAP setups.
         if not exit_reason and get_session() not in ('EOD', 'CLOSED'):
             try:
                 entry_dt = ET.localize(datetime.strptime(
                     f"{trade['entry_date']} {trade['entry_time']}", '%Y-%m-%d %H:%M:%S'
                 ))
                 age_min = (now - entry_dt).total_seconds() / 60
-                if (age_min >= NO_MOVE_MINUTES
+                is_elephant = trade.get('setup_type', '').startswith('ELEPHANT')
+                timeout_min = ELEPHANT_TIMEOUT_MINS if is_elephant else NO_MOVE_MINUTES
+                if (age_min >= timeout_min
                         and NO_MOVE_MIN_PTS <= pnl_pts <= NO_MOVE_MAX_PTS):
                     exit_reason = f'No-move exit ({age_min:.0f}min, {pnl_pts:+.0f}pts)'
             except Exception:
@@ -1392,6 +1479,289 @@ def _get_open_unrealized() -> float:
     return round(total, 2)
 
 
+# ── ELEPHANT TRADE (Liquidity Grab Reversal) ─────────────
+
+def _classify_elephant_day(df5: pd.DataFrame) -> str:
+    """
+    Classify today's session using the first 15-min RTH opening bar body.
+    The opening bar body predicts institutional order flow bias for the day.
+    Backtest result: |body| ≥250pts = EXTREME (90%+ WR), 100-249pts = STRONG (48-65% WR).
+    Returns: 'NONE' | 'STRONG_BULL' | 'STRONG_BEAR' | 'EXTREME_BULL' | 'EXTREME_BEAR'
+    """
+    today    = datetime.now(ET).date()
+    rth_open = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    rth_15m  = ET.localize(datetime(today.year, today.month, today.day, 9, 45))
+
+    bars_15 = df5[(df5.index >= rth_open) & (df5.index < rth_15m)]
+    if len(bars_15) < 3:
+        return 'NONE'
+
+    open_px  = float(bars_15['open'].iloc[0])
+    close_px = float(bars_15['close'].iloc[-1])
+    body     = close_px - open_px
+
+    body_abs = abs(body)
+    if body_abs >= ELEPHANT_BODY_EXTREME:
+        return 'EXTREME_BULL' if body > 0 else 'EXTREME_BEAR'
+    elif body_abs >= ELEPHANT_BODY_STRONG:
+        return 'STRONG_BULL' if body > 0 else 'STRONG_BEAR'
+    return 'NONE'
+
+
+def _scan_elephant(df5: pd.DataFrame) -> dict | None:
+    """
+    Scan for a Liquidity Grab Reversal (LGR) entry signal.
+    An LGR occurs when algos sweep stop-loss clusters at the flush extreme
+    then immediately reverse — we enter 10pts from the extreme to ride the reversal.
+
+    Direction by day type (all data-validated):
+      STRONG_BULL  → LONG only (flush ≥150pts); ES must NOT confirm
+      STRONG_BEAR  → SHORT only (surge ≥150pts); ES must NOT confirm
+      EXTREME_BULL → LONG on flush + SHORT on surge (flush ≥100pts, up to 4/day)
+      EXTREME_BEAR → SHORT on surge + LONG on flush (flush ≥100pts, up to 4/day)
+
+    Returns signal dict or None.
+    """
+    global _elephant_day_type, _elephant_trades_today, _elephant_flush_ids
+
+    if not ELEPHANT_ENABLED:
+        return None
+
+    # Classify day on first available 3-bar window (needs 9:45am data)
+    if _elephant_day_type == 'NONE':
+        _elephant_day_type = _classify_elephant_day(df5)
+        if _elephant_day_type != 'NONE':
+            log(f"  🐘 Elephant day classified: {_elephant_day_type}")
+
+    if _elephant_day_type == 'NONE':
+        return None
+
+    # Noon cutoff — backtest: 11am window 88% WR, 2pm window 22% WR
+    now_et = datetime.now(ET)
+    if now_et.hour >= ELEPHANT_NOON_CUTOFF_ET:
+        return None
+
+    # Quota
+    max_q = ELEPHANT_MAX_EXTREME if 'EXTREME' in _elephant_day_type else ELEPHANT_MAX_STRONG
+    if _elephant_trades_today >= max_q:
+        return None
+
+    # Today's RTH bars
+    today    = now_et.date()
+    rth_open = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    today_bars = df5[df5.index >= rth_open].copy()
+    if len(today_bars) < ELEPHANT_LOOKBACK_BARS:
+        return None
+
+    window        = today_bars.iloc[-ELEPHANT_LOOKBACK_BARS:]
+    current_price = float(today_bars['close'].iloc[-1])
+    is_extreme    = 'EXTREME' in _elephant_day_type
+    min_flush     = ELEPHANT_FLUSH_EXTREME if is_extreme else ELEPHANT_FLUSH_STRONG
+
+    # ── LONG setup: buy the flush down ──────────────────────
+    # Allowed on: STRONG_BULL, EXTREME_BULL, EXTREME_BEAR
+    if _elephant_day_type in ('STRONG_BULL', 'EXTREME_BULL', 'EXTREME_BEAR'):
+        w_high = float(window['high'].max())
+        w_low  = float(window['low'].min())
+        flush_depth = w_high - w_low
+
+        if flush_depth >= min_flush:
+            flush_extreme = w_low
+            flush_bar_ts  = str(window['low'].idxmin())
+            entry_level   = flush_extreme + ELEPHANT_ENTRY_CONF
+
+            # Price must be at or just above entry level (reversal confirmed, not too far past)
+            if entry_level <= current_price <= flush_extreme + 50:
+                if flush_bar_ts not in _elephant_flush_ids:
+                    # ES filter: STRONG days only — skip if ES also flushed ≥25pts
+                    if not is_extreme:
+                        es_df = _get_es_bars()
+                        if not es_df.empty:
+                            es_today = es_df[es_df.index >= rth_open]
+                            if len(es_today) >= 2:
+                                es_win  = es_today.iloc[-ELEPHANT_LOOKBACK_BARS:]
+                                es_drop = float(es_win['high'].max()) - float(es_win['low'].min())
+                                if es_drop >= ELEPHANT_ES_MOVE_SKIP:
+                                    log(f"  Elephant LONG skip: ES confirmed flush ({es_drop:.0f}pts ≥ {ELEPHANT_ES_MOVE_SKIP})")
+                                    return None
+
+                    # Overnight level bonus (confidence signal, not a gate)
+                    bonus_note = ''
+                    if _pm_low is not None and abs(flush_extreme - _pm_low) <= 25:
+                        bonus_note = f'⚡ Flush at PM low ({_pm_low:.0f}) — overnight level confluence'
+
+                    sl     = round(flush_extreme - ELEPHANT_STOP_PTS, 2)
+                    target = round(entry_level + ELEPHANT_TARGET_PTS, 2)
+                    return {
+                        'direction':     'LONG',
+                        'flush_extreme': flush_extreme,
+                        'flush_bar_ts':  flush_bar_ts,
+                        'entry_level':   entry_level,
+                        'sl':            sl,
+                        'target':        target,
+                        'flush_depth':   flush_depth,
+                        'bonus_note':    bonus_note,
+                        'day_type':      _elephant_day_type,
+                    }
+
+    # ── SHORT setup: fade the surge up ──────────────────────
+    # Allowed on: STRONG_BEAR, EXTREME_BEAR, EXTREME_BULL
+    if _elephant_day_type in ('STRONG_BEAR', 'EXTREME_BEAR', 'EXTREME_BULL'):
+        w_high = float(window['high'].max())
+        w_low  = float(window['low'].min())
+        surge_depth = w_high - w_low
+
+        if surge_depth >= min_flush:
+            surge_extreme = w_high
+            surge_bar_ts  = str(window['high'].idxmax())
+            entry_level   = surge_extreme - ELEPHANT_ENTRY_CONF
+
+            if surge_extreme - 50 <= current_price <= entry_level:
+                if surge_bar_ts not in _elephant_flush_ids:
+                    if not is_extreme:
+                        es_df = _get_es_bars()
+                        if not es_df.empty:
+                            es_today = es_df[es_df.index >= rth_open]
+                            if len(es_today) >= 2:
+                                es_win  = es_today.iloc[-ELEPHANT_LOOKBACK_BARS:]
+                                es_rise = float(es_win['high'].max()) - float(es_win['low'].min())
+                                if es_rise >= ELEPHANT_ES_MOVE_SKIP:
+                                    log(f"  Elephant SHORT skip: ES confirmed surge ({es_rise:.0f}pts ≥ {ELEPHANT_ES_MOVE_SKIP})")
+                                    return None
+
+                    bonus_note = ''
+                    if _pm_high is not None and abs(surge_extreme - _pm_high) <= 25:
+                        bonus_note = f'⚡ Surge at PM high ({_pm_high:.0f}) — overnight level confluence'
+
+                    sl     = round(surge_extreme + ELEPHANT_STOP_PTS, 2)
+                    target = round(entry_level - ELEPHANT_TARGET_PTS, 2)
+                    return {
+                        'direction':     'SHORT',
+                        'flush_extreme': surge_extreme,
+                        'flush_bar_ts':  surge_bar_ts,
+                        'entry_level':   entry_level,
+                        'sl':            sl,
+                        'target':        target,
+                        'flush_depth':   surge_depth,
+                        'bonus_note':    bonus_note,
+                        'day_type':      _elephant_day_type,
+                    }
+
+    return None
+
+
+def _enter_elephant(signal: dict) -> bool:
+    """
+    Place a MARKET entry for an elephant (LGR) trade.
+    Uses fixed 1 contract (no RVOL scaling — LGR is a structural play, not volume-driven).
+    Setup types: 'ELEPHANT_LONG' / 'ELEPHANT_SHORT' in futures_trades.
+    Monitored by the standard monitor_open_trades() exit stack + longer ELEPHANT_TIMEOUT_MINS.
+    """
+    global _elephant_trades_today, _elephant_flush_ids
+
+    direction    = signal['direction']
+    sl           = signal['sl']
+    target       = signal['target']
+    day_type     = signal['day_type']
+    flush_depth  = signal['flush_depth']
+    bonus_note   = signal.get('bonus_note', '')
+    flush_bar_ts = signal['flush_bar_ts']
+
+    # Pre-flight checks (subset of place_trade — elephants bypass RVOL/IB gates)
+    allowed, reason = check_can_trade(unrealized_pnl=_get_open_unrealized())
+    if not allowed:
+        log(f"  🐘 Elephant BLOCKED by prop_rules: {reason}")
+        return False
+
+    if _trading_paused:
+        log("  🐘 Elephant BLOCKED: trading paused")
+        return False
+
+    open_trades = get_open_futures_trades()
+    if len(open_trades) >= MAX_OPEN_TRADES:
+        log(f"  🐘 Elephant BLOCKED: {len(open_trades)} trades open (max {MAX_OPEN_TRADES})")
+        return False
+
+    daily_pnl = get_futures_daily_pnl()
+    if daily_pnl <= -MAX_DAILY_LOSS:
+        log(f"  🐘 Elephant BLOCKED: daily loss ${daily_pnl:.0f}")
+        return False
+
+    if not get_bridge_connected():
+        log("  🐘 Elephant BLOCKED: bridge not connected")
+        return False
+
+    price = get_live_price()
+    if not price:
+        log("  🐘 Elephant BLOCKED: no live price")
+        return False
+
+    contracts  = 1   # fixed — no RVOL scaling for structural LGR plays
+    order_side = 'BUY' if direction == 'LONG' else 'SELL'
+
+    result = _bridge_post('/futures/order', {
+        'symbol':     SYMBOL,
+        'qty':        contracts,
+        'side':       order_side,
+        'order_type': 'MARKET',
+    })
+    if result.get('status') != 'submitted':
+        log(f"  🐘 Elephant order failed: {result}")
+        return False
+
+    order_id = result.get('order_id', '')
+
+    # Backup IBKR hardware stop
+    stop_side   = 'BUY' if direction == 'SHORT' else 'SELL'
+    stop_result = _bridge_post('/futures/order', {
+        'symbol':     SYMBOL,
+        'qty':        contracts,
+        'side':       stop_side,
+        'order_type': 'STOP_MARKET',
+        'aux_price':  sl,
+        'tif':        'GTC',
+    })
+    stop_order_id = stop_result.get('order_id', '')
+    if stop_order_id:
+        log(f"  🐘 Backup stop placed: {stop_side} STOP_MARKET @ {sl} (order {stop_order_id})")
+    else:
+        log(f"  🐘 WARNING: Backup stop failed — {stop_result}")
+
+    setup_type = f'ELEPHANT_{direction}'
+    tid = log_futures_entry(
+        symbol=SYMBOL, contract=result.get('contract_month', SYMBOL),
+        entry_price=price, contracts=contracts,
+        target=target, sl=sl, setup_type=setup_type,
+        session=get_session(), order_id=order_id, side=direction,
+        stop_order_id=stop_order_id or None,
+    )
+
+    _elephant_trades_today += 1
+    _elephant_flush_ids.add(flush_bar_ts)
+
+    risk_usd   = (ELEPHANT_ENTRY_CONF + ELEPHANT_STOP_PTS) * (TICK_VALUE / TICK_SIZE)   # 60pts × $2/pt = $120
+    target_usd = ELEPHANT_TARGET_PTS * (TICK_VALUE / TICK_SIZE)                          # 150pts × $2/pt = $300
+    rr         = ELEPHANT_TARGET_PTS / (ELEPHANT_ENTRY_CONF + ELEPHANT_STOP_PTS)         # 2.5
+
+    backup_line = (f"Backup SL: IBKR STOP @ {sl} ✅" if stop_order_id
+                   else "Backup SL: ⚠️ FAILED — software stop only")
+    msg = (
+        f"🐘 ELEPHANT {direction} ENTRY\n"
+        f"Symbol:  {SYMBOL}\n"
+        f"Price:   {price}\n"
+        f"Stop:    {sl}  (-${risk_usd:.0f})\n"
+        f"Target:  {target}  (+${target_usd:.0f})\n"
+        f"Setup:   {setup_type} | Day: {day_type}\n"
+        f"Flush:   {flush_depth:.0f}pts LGR sweep → entry {ELEPHANT_ENTRY_CONF:.0f}pts in\n"
+        f"R:R:     {rr:.1f}  |  Trade #{tid}\n"
+        + (f"{bonus_note}\n" if bonus_note else '')
+        + backup_line
+    )
+    log(msg)
+    send_telegram(msg)
+    return True
+
+
 # ── Main scan loop ────────────────────────────────────────
 
 def run_scan():
@@ -1434,29 +1804,15 @@ def run_scan():
         log(f"Session {session} — no new entries")
         return
 
-    # Get signals
-    sig = get_signals(df5)
-    if not sig:
-        log("No signals generated")
-        return
-
-    price = sig.get('price', 0)
-    vwap  = sig.get('vwap', 0)
-    log(f"Price: {price} | VWAP: {vwap} | RSI: {sig.get('rsi',0):.0f} | "
-        f"ORB: {'set' if _orb_set else 'pending'}")
-
-    # Open trades count
-    open_trades = get_open_futures_trades()
-    if len(open_trades) >= MAX_OPEN_TRADES:
-        log(f"Max trades open ({len(open_trades)}) — skip")
-        return
+    # Compute now_et once — used by IB window, pm_ib hold, 14:00 gate, and elephant scan.
+    # Must be before any of those gates so all use the same timestamp.
+    now_et   = datetime.now(ET)
+    today_et = now_et.date()
 
     # ── IB window gate: no entries until Initial Balance is fully established ──
     # Backtest finding (Jun 1 2026): 10:xx entries (right after IB forms at 10:30am)
     # have 52.7% WR vs 9:xx entries which are noise. The backtest enforces this
     # implicitly — live trading must mirror it. IB window = 60min from 9:30am = 10:30am.
-    now_et = datetime.now(ET)
-    today_et = now_et.date()
     ib_ready_at = ET.localize(datetime(today_et.year, today_et.month, today_et.day, 10, 30))
     if now_et < ib_ready_at:
         mins_left = int((ib_ready_at - now_et).total_seconds() / 60) + 1
@@ -1467,9 +1823,8 @@ def run_scan():
     # Only applies in the morning window (before 11am ET). After 11am the pre-market
     # IB data is stale and restarts should not re-trigger the hold — entries would
     # be blocked for 5 min after every mid-day restart, which is unacceptable.
-    if (_pm_ib_set and _pm_ib_set_time is not None
-            and datetime.now(ET).hour < 11):
-        elapsed = (datetime.now(ET) - _pm_ib_set_time).total_seconds()
+    if (_pm_ib_set and _pm_ib_set_time is not None and now_et.hour < 11):
+        elapsed = (now_et - _pm_ib_set_time).total_seconds()
         if elapsed < 300:
             remaining = int(300 - elapsed)
             log(f"pm_ib hold — {remaining}s remaining. Send FUT BIAS LONG/SHORT if needed.")
@@ -1481,6 +1836,37 @@ def run_scan():
     if now_et.hour >= 14:
         log(f"No-entry-after gate (14:00 ET) — monitoring only")
         return
+
+    # Open trades count — checked once, shared by elephant + regular entry.
+    # Must be before get_signals() so the elephant scan doesn't get skipped
+    # on days where regular signals are absent (different signal sources).
+    open_trades = get_open_futures_trades()
+    if len(open_trades) >= MAX_OPEN_TRADES:
+        log(f"Max trades open ({len(open_trades)}) — skip")
+        return
+
+    # ── ELEPHANT TRADE scan (LGR) — before regular signal checks ──────────────
+    # Elephant entries are structural (flush reversal) — they don't need an
+    # ORB/VWAP signal. Running before get_signals() ensures they aren't silently
+    # skipped on days where get_signals() returns None (no regular setup present).
+    if ELEPHANT_ENABLED and not _trading_paused and now_et.hour < ELEPHANT_NOON_CUTOFF_ET:
+        elephant_sig = _scan_elephant(df5)
+        if elephant_sig:
+            log(f"  🐘 Elephant signal: {elephant_sig['direction']} | "
+                f"flush {elephant_sig['flush_depth']:.0f}pts | "
+                f"day={elephant_sig['day_type']}")
+            _enter_elephant(elephant_sig)
+
+    # Get signals (for regular ORB/VWAP/momentum entries)
+    sig = get_signals(df5)
+    if not sig:
+        log("No signals generated")
+        return
+
+    price = sig.get('price', 0)
+    vwap  = sig.get('vwap', 0)
+    log(f"Price: {price} | VWAP: {vwap} | RSI: {sig.get('rsi',0):.0f} | "
+        f"ORB: {'set' if _orb_set else 'pending'}")
 
     # ── RVOL + IB range gates (tc_champion: min_rvol=1.0, min_ib_range=50pts) ─
     # Computed once here; also passed to calc_contracts_dynamic in place_trade().
@@ -1542,6 +1928,7 @@ def reset_daily_state():
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
     global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time, _daily_macro_bias
     global _overnight_bias, _overnight_skip_day, _overnight_position, _overnight_computed
+    global _elephant_day_type, _elephant_trades_today, _elephant_flush_ids
 
     _orb_high = _orb_low = None
     _orb_set  = False
@@ -1561,6 +1948,9 @@ def reset_daily_state():
     _partial_done  = {}
     _daily_pnl     = 0.0
     _peak_daily_pnl = 0.0
+    _elephant_day_type     = 'NONE'
+    _elephant_trades_today = 0
+    _elephant_flush_ids    = set()
 
     prop_load()   # refresh prop rules state for new day
     log("Daily state reset")
