@@ -32,6 +32,7 @@ ET = pytz.timezone('America/New_York')
 # ── Credentials ───────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+TELEGRAM_OWNER_ID = '8573003999'   # Sushil's personal TG user ID (for DMs to the bot)
 VIEWER_CHAT_IDS  = {5225043215}   # Ruhi — REGIME, STATUS, chart analysis only
 ANTHROPIC_KEY    = os.getenv('ANTHROPIC_KEY')
 BRIDGE           = os.getenv("BRIDGE_URL", "http://127.0.0.1:8000")
@@ -2263,7 +2264,9 @@ def poll_telegram_commands():
             msg  = update.get('message', {})
             sender_id   = msg.get('chat', {}).get('id')
             sender_name = msg.get('chat', {}).get('first_name', '')
-            is_owner    = str(sender_id) == str(TELEGRAM_CHAT_ID)
+            from_id     = str(msg.get('from', {}).get('id', ''))
+            is_owner    = (str(sender_id) == str(TELEGRAM_CHAT_ID)
+                           or from_id == TELEGRAM_OWNER_ID)
             is_viewer   = sender_id in VIEWER_CHAT_IDS
             if not is_owner and not is_viewer:
                 continue   # ignore unknown senders
