@@ -2267,7 +2267,8 @@ def poll_telegram_commands():
             is_viewer   = sender_id in VIEWER_CHAT_IDS
             if not is_owner and not is_viewer:
                 continue   # ignore unknown senders
-            reply_to = TELEGRAM_CHAT_ID  # always reply to group, never to personal chats
+            chat_type = msg.get('chat', {}).get('type', 'group')
+            reply_to = sender_id if chat_type == 'private' else TELEGRAM_CHAT_ID
             text = msg.get('text', '').strip().upper()
 
             # ── Photo messages: handle before the text guard ──────
