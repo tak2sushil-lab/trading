@@ -54,7 +54,7 @@ DLL_SOFT             = 700.0    # TC/XFA DLL soft stop (below $700 → halt; har
 
 # ── IBKR personal mode ($2K own capital) ─────────────────────────────────────
 IBKR_FLOOR           = 2_000.0  # starting capital; no trailing MLL
-IBKR_DLL_SOFT        = 200.0    # 10% of $2K capital → halt for the day
+IBKR_DLL_SOFT        = 250.0    # 12.5% of $2K capital → halt for the day
 IBKR_DAILY_CAP       = 400.0    # soft daily profit cap (don't skew performance tracking)
 IBKR_MAX_CONTRACTS   = 2        # conservative: personal $2K capital
 

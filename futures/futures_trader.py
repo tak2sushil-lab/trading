@@ -51,7 +51,7 @@ from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, 
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0          # $ max risk per trade (1 contract × 50-tick stop)
-MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $200 (10% of $2K) — mirrors prop_rules IBKR soft stop
+MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $250 (12.5% of $2K) — mirrors prop_rules IBKR soft stop
 DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $400 — mirrors prop_rules IBKR daily cap
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
@@ -89,7 +89,7 @@ ELEPHANT_FLUSH_STRONG    = 150.0   # min flush depth (pts) on STRONG_BULL/BEAR d
 ELEPHANT_BODY_EXTREME    = 250.0   # 15-min opening bar body → EXTREME classification
 ELEPHANT_BODY_STRONG     = 100.0   # 15-min opening bar body → STRONG classification
 ELEPHANT_MAX_EXTREME     = 4       # max elephant trades allowed on EXTREME day
-ELEPHANT_MAX_STRONG      = 2       # max elephant trades allowed on STRONG day
+ELEPHANT_MAX_STRONG      = 4       # max elephant trades allowed on STRONG day
 ELEPHANT_ES_MOVE_SKIP    = 25.0    # skip STRONG flush when ES also moved ≥25pts same dir
                                     # (macro flush WR 57% vs MNQ-specific WR 84%)
 ELEPHANT_NOON_CUTOFF_ET  = 12      # no elephant entries at/after noon ET (backtest: 2pm=22% WR)
