@@ -1347,14 +1347,21 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         st = (status or {}).get('status', 'Unknown')
         print(f"[options] {sym} spread attempt {attempt+1}: orderId={order_id} status={st} filled={(status or {}).get('filled',0)}")
 
-        # Always verify via portfolio — status alone is unreliable for BAG/combo orders.
-        # paper fill simulation may show Submitted/PreSubmitted without actual position,
-        # or show Cancelled/Unknown when position DID fill (race condition on reconnect).
-        opts_pos = get_portfolio_options()
-        if any(p.get('symbol') == sym for p in opts_pos):
-            print(f"[options] {sym} position confirmed in portfolio (status={st}) — recording fill")
-            filled_at = limit_price
-            break
+        # Portfolio fallback for ambiguous statuses (race condition on reconnect).
+        # Must match expiry + long_strike to avoid false positives from orphan positions.
+        filled_count = (status or {}).get('filled', 0)
+        if st in ('Unknown', 'Cancelled', 'PendingSubmit', 'PreSubmitted') and filled_count == 0:
+            opts_pos = get_portfolio_options()
+            long_stk = float(tmpl['long_strike'])
+            matched = [p for p in opts_pos
+                       if p.get('symbol') == sym
+                       and p.get('expiry') == expiry
+                       and abs(float(p.get('strike', 0)) - long_stk) < 0.01
+                       and float(p.get('qty', 0)) > 0]
+            if matched:
+                print(f"[options] {sym} position confirmed in portfolio (status={st}) — recording fill")
+                filled_at = limit_price
+                break
 
         # Also accept clean Filled status as authoritative
         if status and status.get('filled', 0) >= qty:
@@ -1466,10 +1473,18 @@ def _execute_leap_bg(sym: str, leap: dict, chat_id: str,
             filled_at = limit_price
             break
 
-        # Paper fallback: order settled out of ib.trades() — verify via portfolio
+        # Paper fallback: order settled out of ib.trades() — verify via portfolio.
+        # Match expiry + strike to avoid false positives from orphan positions.
         if _is_paper() and st in ('Unknown', 'Cancelled'):
             opts_pos = get_portfolio_options()
-            if any(p.get('symbol') == sym for p in opts_pos):
+            leap_stk = float(leap['strike'])
+            leap_exp = leap['expiry']
+            matched = [p for p in opts_pos
+                       if p.get('symbol') == sym
+                       and p.get('expiry') == leap_exp
+                       and abs(float(p.get('strike', 0)) - leap_stk) < 0.01
+                       and float(p.get('qty', 0)) > 0]
+            if matched:
                 print(f"[options] {sym} LEAP status={st} but position confirmed in portfolio — recording fill")
                 filled_at = limit_price
                 break
@@ -2015,10 +2030,17 @@ def _execute_scalp_bg(sym: str, calc: dict, chat_id: str):
             filled_at = limit_price   # paper fill
             break
 
-        # Paper fallback: order settled out of ib.trades() — verify via portfolio
+        # Paper fallback: order settled out of ib.trades() — verify via portfolio.
+        # Match expiry + strike to avoid false positives from orphan positions.
         if _is_paper() and st in ('Unknown', 'Cancelled'):
             opts_pos = get_portfolio_options()
-            if any(p.get('symbol') == sym for p in opts_pos):
+            scalp_stk = float(strike)
+            matched = [p for p in opts_pos
+                       if p.get('symbol') == sym
+                       and p.get('expiry') == expiry
+                       and abs(float(p.get('strike', 0)) - scalp_stk) < 0.01
+                       and float(p.get('qty', 0)) > 0]
+            if matched:
                 print(f"[options] {sym} scalp status={st} but position confirmed in portfolio — recording fill")
                 filled_at = limit_price
                 break

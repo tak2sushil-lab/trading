@@ -164,8 +164,8 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
         if not lq or not sq:
             return False
-        long_mid   = (lq.get('bid', 0) + lq.get('ask', 0)) / 2
-        short_mid  = (sq.get('bid', 0) + sq.get('ask', 0)) / 2
+        long_mid   = ((lq.get('bid') or 0) + (lq.get('ask') or 0)) / 2
+        short_mid  = ((sq.get('bid') or 0) + (sq.get('ask') or 0)) / 2
         spread_mid = round(long_mid - short_mid, 2)
         payload = {
             'symbol':       sym,
@@ -184,7 +184,7 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         q = get_quote(sym, trade['expiry'], trade['long_strike'], trade['right'])
         if not q:
             return False
-        mid = round((q.get('bid', 0) + q.get('ask', 0)) / 2, 2)
+        mid = round(((q.get('bid') or 0) + (q.get('ask') or 0)) / 2, 2)
         payload = {
             'symbol':      sym,
             'expiry':      trade['expiry'],
@@ -200,7 +200,7 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         q = get_quote(sym, trade['expiry'], trade['strike'], trade['right'])
         if not q:
             return False
-        mid = round((q.get('bid', 0) + q.get('ask', 0)) / 2, 2)
+        mid = round(((q.get('bid') or 0) + (q.get('ask') or 0)) / 2, 2)
         payload = {
             'symbol':      sym,
             'expiry':      trade['expiry'],
@@ -348,6 +348,26 @@ def _yf_option_quote(symbol: str, expiry: str, strike: float, right: str) -> dic
         return None
 
 
+def _portfolio_option_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
+    """Last-resort fallback: use bridge /portfolio/options marketPrice for positions we hold."""
+    try:
+        r = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
+        if r.status_code != 200:
+            return None
+        for leg in r.json():
+            if (leg.get('symbol') == symbol
+                    and leg.get('expiry') == expiry
+                    and leg.get('right') == right
+                    and abs((leg.get('strike') or 0) - float(strike)) < 0.01):
+                mkt = leg.get('marketPrice')
+                if mkt and mkt > 0:
+                    return {'bid': round(mkt * 0.97, 2), 'ask': round(mkt * 1.03, 2),
+                            'last': mkt, 'source': 'portfolio_fallback'}
+    except Exception:
+        pass
+    return None
+
+
 def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | None:
     # Try IBKR bridge first
     try:
@@ -360,8 +380,12 @@ def get_quote(symbol: str, expiry: str, strike: float, right: str) -> dict | Non
                 return d
     except Exception as e:
         print(f"[quote error] {symbol} {e}")
-    # IBKR returned null bid/ask (OPRA not active) — fall back to yfinance
-    return _yf_option_quote(symbol, expiry, strike, right)
+    # IBKR returned null bid/ask — fall back to yfinance
+    yf_q = _yf_option_quote(symbol, expiry, strike, right)
+    if yf_q and yf_q.get('bid') is not None:
+        return yf_q
+    # yfinance also failed — use portfolio/options marketPrice (last resort for held positions)
+    return _portfolio_option_quote(symbol, expiry, strike, right)
 
 
 def get_iv_rank(symbol: str) -> dict | None:
@@ -605,7 +629,8 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
         return alerts   # no further checks needed once position is closed
 
     # ── T4: value below stop — AUTO-CLOSE ──
-    if stop is not None and current_value <= stop:
+    if stop is not None and current_value <= stop and 'T4' not in fired:
+        fired.add('T4')
         stage_label = {1: 'hard stop (-50%)', 2: 'breakeven stop', 3: 'trail stop'}.get(stage, '')
         closed = _auto_close_position(trade, current_value)
         if closed:

@@ -967,6 +967,7 @@ async def place_options_order(req: OptionsOrderRequest):
         if req.limit_price is None:
             return {"error": "limit_price required — never use market orders on options"}
         order = LimitOrder(req.action.upper(), req.qty, req.limit_price)
+        order.tif = 'DAY'
         if IBKR_ACCOUNT:
             order.account = IBKR_ACCOUNT
         trade = ib.placeOrder(contract, order)
