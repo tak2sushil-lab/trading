@@ -1394,11 +1394,17 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
 
     # By year
     by_year = defaultdict(lambda: {'n': 0, 'wins': 0, 'pnl': 0.0})
+    by_month_2026 = defaultdict(lambda: {'n': 0, 'wins': 0, 'pnl': 0.0})
     for t in trades:
         y = t['date'][:4]
         by_year[y]['n']    += 1
         by_year[y]['wins'] += (1 if t['status'] == 'WIN' else 0)
         by_year[y]['pnl']  += t['net_pnl']
+        if y == '2026':
+            m = t['date'][:7]  # YYYY-MM
+            by_month_2026[m]['n']    += 1
+            by_month_2026[m]['wins'] += (1 if t['status'] == 'WIN' else 0)
+            by_month_2026[m]['pnl']  += t['net_pnl']
 
     # By direction
     longs  = [t for t in trades if t['direction'] == 'LONG']
@@ -1474,6 +1480,18 @@ def print_report(trades: list[dict], cfg: Config, mode: str = 'TC', label: str =
         d = by_year[y]
         yr_wr = d['wins'] / d['n'] * 100 if d['n'] else 0
         print(f'    {y}  {d["n"]:>4} trades  {yr_wr:>5.1f}% WR  ${d["pnl"]:>9,.2f}')
+
+    if by_month_2026:
+        print()
+        print('  ── 2026 Month by Month ──────────────────────────────────')
+        MONTH_NAMES = {'01': 'Jan', '02': 'Feb', '03': 'Mar', '04': 'Apr',
+                       '05': 'May', '06': 'Jun', '07': 'Jul', '08': 'Aug',
+                       '09': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dec'}
+        for ym in sorted(by_month_2026):
+            d = by_month_2026[ym]
+            mwr = d['wins'] / d['n'] * 100 if d['n'] else 0
+            mname = MONTH_NAMES.get(ym[5:], ym[5:])
+            print(f'    {mname} {ym[:4]}  {d["n"]:>3} trades  {mwr:>5.1f}% WR  ${d["pnl"]:>9,.2f}')
 
     print()
     print('  ── By Hour of Entry ─────────────────────────────────────')
@@ -2013,14 +2031,13 @@ def _run_elephant_sim(ny_df: pd.DataFrame, es_ny: pd.DataFrame,
         if len(day_bars) < eb.ELEPHANT_LOOKBACK_BARS + 3:
             continue
 
-        day_type = eb.classify_day(day_bars)
-        if day_type == 'NONE':
+        if eb.classify_day(day_bars) != 'STRONG_BULL':
             continue
 
         es_day = (es_ny[(es_ny.index >= rth_s) & (es_ny.index <= rth_e)]
                   if not es_ny.empty else pd.DataFrame())
 
-        for t in eb.simulate_day(day_bars, es_day, day_type):
+        for t in eb.simulate_day(day_bars, es_day):
             gross   = t['pnl_usd']
             net_pnl = round(gross - friction, 2)
             all_trades.append({
@@ -2040,7 +2057,7 @@ def _run_elephant_sim(ny_df: pd.DataFrame, es_ny: pd.DataFrame,
                 'net_pnl':    net_pnl,
                 'exit_reason': t['exit_reason'],
                 'entry_type': 'elephant',
-                'day_type':   t.get('day_type', day_type),
+                'day_type':   t.get('day_type', 'STRONG_BULL'),
                 'macro_class': 'NORMAL',
                 'status':     'WIN' if net_pnl > 0 else 'LOSS',
             })
