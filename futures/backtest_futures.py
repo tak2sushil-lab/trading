@@ -1982,6 +1982,186 @@ def run_overnight_analysis(start: str | None, end: str | None, symbol: str = 'MN
     print()
 
 
+# ── Elephant (LGR) integration ────────────────────────────────────────────────
+
+def _run_elephant_sim(ny_df: pd.DataFrame, es_ny: pd.DataFrame,
+                      slippage_ticks: float = 1.0) -> list[dict]:
+    """
+    Run Elephant Trade (Liquidity Grab Reversal) backtest over full history.
+    Reuses elephant_backtest.py classify/scan logic exactly.
+    Applies slippage + commission to match the IB trade cost model.
+    Returns list of trade dicts in the same format as simulate_day().
+    """
+    import importlib.util
+    from pathlib import Path
+
+    eb_path = Path(__file__).parent / 'elephant_backtest.py'
+    spec    = importlib.util.spec_from_file_location('elephant_backtest', eb_path)
+    eb      = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(eb)
+
+    friction = 2 * slippage_ticks * (TICK_SIZE * POINT_VALUE) + COMMISSION  # entry+exit slip + commission
+
+    all_trades = []
+    rth_starts = ny_df[(ny_df.index.hour == 9) & (ny_df.index.minute == 30)].index
+    trading_dates = sorted(set(ts.date() for ts in rth_starts))
+
+    for today in trading_dates:
+        rth_s = pd.Timestamp(f'{today} 09:30:00', tz='America/New_York')
+        rth_e = pd.Timestamp(f'{today} 16:00:00', tz='America/New_York')
+        day_bars = ny_df[(ny_df.index >= rth_s) & (ny_df.index <= rth_e)].copy()
+        if len(day_bars) < eb.ELEPHANT_LOOKBACK_BARS + 3:
+            continue
+
+        day_type = eb.classify_day(day_bars)
+        if day_type == 'NONE':
+            continue
+
+        es_day = (es_ny[(es_ny.index >= rth_s) & (es_ny.index <= rth_e)]
+                  if not es_ny.empty else pd.DataFrame())
+
+        for t in eb.simulate_day(day_bars, es_day, day_type):
+            gross   = t['pnl_usd']
+            net_pnl = round(gross - friction, 2)
+            all_trades.append({
+                'date':       t['date'],
+                'entry_time': t['entry_time'],
+                'exit_time':  t.get('exit_time', ''),
+                'hour':       int(t['entry_time'][:2]),
+                'contracts':  1,
+                'direction':  t['direction'],
+                'entry':      t['entry'],
+                'exit':       t.get('exit', t['entry']),
+                'stop_init':  t['stop'],
+                'target':     t['target'],
+                'atr':        0.0, 'ib_range': 0.0, 'gap_pct': 0.0,
+                'bars_held':  0,   'mae_pts':  0.0,  'mfe_pts': 0.0,
+                'raw_pnl':    round(gross, 2),
+                'net_pnl':    net_pnl,
+                'exit_reason': t['exit_reason'],
+                'entry_type': 'elephant',
+                'day_type':   t.get('day_type', day_type),
+                'macro_class': 'NORMAL',
+                'status':     'WIN' if net_pnl > 0 else 'LOSS',
+            })
+
+    return all_trades
+
+
+def simulate_tc_eval_combined(ib_trades: list[dict], eleph_trades: list[dict]):
+    """
+    Side-by-side TC eval: IB-only baseline vs IB + Elephant combined.
+
+    Models TC rules per attempt:
+      - DLL soft stop ($700): day P&L < -$700 → blown
+      - Daily cap ($1,200): day contribution capped (consistency protection)
+      - MLL ($2,000 trailing): cumulative drawdown from high-water mark → blown
+      - $3,000 profit target → PASS
+
+    Shows per-attempt outcome and summary pass rate + avg days to pass.
+    """
+    from futures.prop_rules import TC_PROFIT_TARGET, TC_MLL_AMOUNT, TC_DAILY_CAP, DLL_SOFT
+
+    def _attempt_stream(trades: list[dict], window: int = 30) -> list[dict]:
+        daily_pnl: dict[str, float] = defaultdict(float)
+        for t in trades:
+            daily_pnl[t['date']] += t['net_pnl']
+
+        days = sorted(daily_pnl.keys())
+        results = []
+        i = 0
+        while i < len(days):
+            chunk = days[i:i + window]
+            cum = hwm = 0.0
+            n_days = 0
+            outcome = 'timeout'
+            for d in chunk:
+                raw_day = daily_pnl[d]
+                # DLL: if single day loses more than soft stop → blown
+                if raw_day < -DLL_SOFT:
+                    outcome = 'blown'; n_days += 1; break
+                # Daily cap: protect consistency rule (large elephant days can't skew 50% rule)
+                day_pnl = min(raw_day, TC_DAILY_CAP)
+                cum += day_pnl; n_days += 1
+                hwm = max(hwm, cum)
+                if cum - hwm < -TC_MLL_AMOUNT:
+                    outcome = 'blown'; break
+                if cum >= TC_PROFIT_TARGET:
+                    outcome = 'pass'; break
+            results.append({'outcome': outcome, 'days': n_days, 'cum': round(cum, 2)})
+            i += len(chunk)
+        return results
+
+    ib_att  = _attempt_stream(ib_trades)
+    cb_att  = _attempt_stream(ib_trades + eleph_trades)
+    n_att   = max(len(ib_att), len(cb_att))
+
+    print('  ── TC Eval Simulation — Baseline vs Combined ────────────────────────────────')
+    print(f'  Rules: $3K target | $2K MLL | ${DLL_SOFT:.0f} DLL soft | ${TC_DAILY_CAP:.0f} daily cap')
+    print()
+    print(f'  {"Attempt":<10} {"IB Only (baseline)":<32} {"IB + Elephant":<32}  Delta')
+    print(f'  {"-"*10} {"-"*32} {"-"*32}  {"-"*20}')
+
+    ib_pass = c_pass = 0
+    ib_days_pass = c_days_pass = 0
+
+    icons = {'pass': '✅ PASS', 'blown': '💥 BLOWN', 'timeout': '⏱ TIMEOUT'}
+
+    for i in range(n_att):
+        ib_str = c_str = delta = ''
+
+        if i < len(ib_att):
+            a = ib_att[i]
+            ib_str = f'{a["days"]:>2}d  ${a["cum"]:>+7,.0f}  {icons[a["outcome"]]}'
+            if a['outcome'] == 'pass': ib_pass += 1; ib_days_pass += a['days']
+
+        if i < len(cb_att):
+            b = cb_att[i]
+            c_str = f'{b["days"]:>2}d  ${b["cum"]:>+7,.0f}  {icons[b["outcome"]]}'
+            if b['outcome'] == 'pass': c_pass += 1; c_days_pass += b['days']
+
+        if i < len(ib_att) and i < len(cb_att):
+            a, b = ib_att[i], cb_att[i]
+            if a['outcome'] == 'pass' and b['outcome'] == 'pass':
+                saved = a['days'] - b['days']
+                delta = (f'⬆ {saved}d faster' if saved > 0
+                         else (f'⬇ {abs(saved)}d slower' if saved < 0 else 'same speed'))
+            elif a['outcome'] != 'pass' and b['outcome'] == 'pass':
+                delta = '⬆ CONVERTED to pass'
+            elif a['outcome'] == 'pass' and b['outcome'] != 'pass':
+                delta = '⬇ DEGRADED'
+            elif a['outcome'] == 'blown' and b['outcome'] != 'blown':
+                delta = '⬆ Avoided blow'
+            elif a['outcome'] != 'blown' and b['outcome'] == 'blown':
+                delta = '⬇ New blow'
+
+        print(f'  Attempt {i+1:<4} {ib_str:<32} {c_str:<32}  {delta}')
+
+    print()
+    ib_rate = ib_pass / len(ib_att) * 100 if ib_att else 0
+    c_rate  = c_pass  / len(cb_att) * 100 if cb_att else 0
+    avg_ib  = ib_days_pass / ib_pass if ib_pass else 0
+    avg_c   = c_days_pass  / c_pass  if c_pass  else 0
+
+    print(f'  IB only:       {ib_pass}/{len(ib_att)} pass ({ib_rate:.0f}%)  '
+          f'avg days to pass: {avg_ib:.1f}')
+    print(f'  IB + Elephant: {c_pass}/{len(cb_att)} pass ({c_rate:.0f}%)  '
+          f'avg days to pass: {avg_c:.1f}')
+    print()
+    if c_rate > ib_rate:
+        print(f'  ✅ Elephant IMPROVES pass rate: {ib_rate:.0f}% → {c_rate:.0f}%  '
+              f'({c_rate - ib_rate:+.0f}pp)')
+    elif c_rate == ib_rate and c_pass > 0 and avg_c < avg_ib - 0.5:
+        print(f'  ✅ Same pass rate but FASTER: {avg_ib:.1f}d → {avg_c:.1f}d avg  '
+              f'({avg_ib - avg_c:.1f}d saved per attempt)')
+    elif c_rate < ib_rate:
+        print(f'  ⚠️  Elephant HURTS pass rate: {ib_rate:.0f}% → {c_rate:.0f}%  '
+              f'(DLL risk from LGR losses)')
+    elif c_rate == ib_rate and c_pass > 0 and abs(avg_c - avg_ib) <= 0.5:
+        print(f'  ➡️  Elephant neutral impact  (pass rate same, speed same)')
+    print()
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -2092,6 +2272,12 @@ Named strategies (--strategy):
     parser.add_argument('--premarket-min-ext',  type=float, default=None, help='Min pts PM must be outside RTH IB to activate (default 15).')
     parser.add_argument('--premarket-stop-pts', type=float, default=None, help='Stop pts below/above PM level (default 20).')
     parser.add_argument('--premarket-tgt-pts',  type=float, default=None, help='Target pts from PM level (default 80).')
+
+    # Elephant (LGR) cylinder — adds Liquidity Grab Reversal trades on STRONG/EXTREME days.
+    # Runs elephant_backtest.py logic alongside the IB strategy and shows combined TC eval.
+    # Command: --strategy tc_champion --tc-sim --elephant
+    parser.add_argument('--elephant', action='store_true',
+                        help='Add Elephant (LGR) trades alongside IB strategy. Shows side-by-side TC eval: baseline vs combined.')
 
     args = parser.parse_args()
 
@@ -2267,6 +2453,72 @@ Named strategies (--strategy):
 
     if args.tc_sim and trades:
         simulate_tc_eval(trades)
+
+    # ── Elephant (LGR) combined analysis ─────────────────────────────────────
+    if getattr(args, 'elephant', False) and trades:
+        print()
+        print('=' * 65)
+        print('  ELEPHANT (LGR) — COMBINED TC EVAL')
+        print('=' * 65)
+
+        # Load ES bars for the ES-confirmation filter (STRONG days only)
+        _es_eleph: pd.DataFrame = pd.DataFrame()
+        if not _es_confirm:   # if already loaded above, reuse
+            _es_e_raw = load_bars(symbol='ES', start=args.start, end=args.end,
+                                   table='futures_bars_5m')
+            if not _es_e_raw.empty:
+                _es_eleph = filter_ny_session(add_indicators(_es_e_raw, cfg))
+                print(f'  ES bars for LGR filter: {len(_es_eleph):,}')
+            else:
+                print('  ⚠️  No ES bars — LGR ES filter disabled (STRONG days unfiltered)')
+        else:
+            # already loaded inside run_backtest — reload from DB (cheap, already parsed)
+            _es_e_raw = load_bars(symbol='ES', start=args.start, end=args.end,
+                                   table='futures_bars_5m')
+            if not _es_e_raw.empty:
+                _es_eleph = filter_ny_session(add_indicators(_es_e_raw, cfg))
+
+        print('  Running Elephant backtest...')
+        eleph_trades = _run_elephant_sim(_session_df, _es_eleph,
+                                          slippage_ticks=cfg.slippage_ticks)
+
+        if not eleph_trades:
+            print('  ⚠️  No elephant trades generated — check bar data range.')
+        else:
+            ib_wr   = sum(1 for t in trades if t['status'] == 'WIN') / len(trades) * 100
+            e_wr    = sum(1 for t in eleph_trades if t['status'] == 'WIN') / len(eleph_trades) * 100
+            ib_pnl  = sum(t['net_pnl'] for t in trades)
+            e_pnl   = sum(t['net_pnl'] for t in eleph_trades)
+            c_pnl   = ib_pnl + e_pnl
+            c_wr    = (sum(1 for t in trades + eleph_trades if t['status'] == 'WIN')
+                       / (len(trades) + len(eleph_trades)) * 100)
+
+            # Elephant by day type
+            by_dt: dict = defaultdict(lambda: {'n': 0, 'w': 0, 'p': 0.0})
+            for t in eleph_trades:
+                dt = t['day_type']
+                by_dt[dt]['n'] += 1
+                by_dt[dt]['w'] += (1 if t['status'] == 'WIN' else 0)
+                by_dt[dt]['p'] += t['net_pnl']
+
+            print()
+            print(f'  {"Strategy":<26} {"Trades":>7} {"WR%":>6}  {"Total P&L":>11}  {"Avg/trade":>9}')
+            print(f'  {"-"*26} {"-"*7} {"-"*6}  {"-"*11}  {"-"*9}')
+            _ib_avg  = ib_pnl / len(trades) if trades else 0
+            _e_avg   = e_pnl  / len(eleph_trades)
+            _c_avg   = c_pnl  / (len(trades) + len(eleph_trades))
+            print(f'  {"IB (breakout + retest)":<26} {len(trades):>7} {ib_wr:>6.1f}  ${ib_pnl:>10,.2f}  ${_ib_avg:>8,.2f}')
+            print(f'  {"Elephant (LGR)":<26} {len(eleph_trades):>7} {e_wr:>6.1f}  ${e_pnl:>10,.2f}  ${_e_avg:>8,.2f}')
+            print(f'  {"Combined":<26} {len(trades)+len(eleph_trades):>7} {c_wr:>6.1f}  ${c_pnl:>10,.2f}  ${_c_avg:>8,.2f}')
+
+            print()
+            print('  Elephant by day type:')
+            for dt, d in sorted(by_dt.items(), key=lambda x: -x[1]['n']):
+                dwr = d['w'] / d['n'] * 100 if d['n'] else 0
+                print(f'    {dt:<14}  {d["n"]:>3}t  {dwr:>5.1f}% WR  ${d["p"]:>+8,.2f}')
+
+            print()
+            simulate_tc_eval_combined(trades, eleph_trades)
 
     if args.wfa:
         print('Running walk-forward analysis...')

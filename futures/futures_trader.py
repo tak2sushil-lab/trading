@@ -80,20 +80,22 @@ NO_MOVE_MIN_PTS = -10.0   # below this → hard stop will manage it
 # Algos sweep stop-loss clusters then reverse — we enter at the sweep extreme.
 # All parameters derived from 5.5yr MNQ backtest (Jun 12 2026 research session).
 ELEPHANT_ENABLED         = True    # master kill-switch
-ELEPHANT_ENTRY_CONF      = 10.0    # pts above flush extreme for LONG / below for SHORT
-ELEPHANT_STOP_PTS        = 50.0    # pts from flush extreme to hard stop
-ELEPHANT_TARGET_PTS      = 150.0   # pts from entry to profit target  (R:R = 150/60 = 2.5)
+ELEPHANT_ENTRY_CONF      = 10.0    # pts above flush extreme for entry confirmation
+ELEPHANT_STOP_PTS        = 100.0   # pts from flush extreme to hard stop (widened from 50: +16pp WR Jun 13 2026)
+ELEPHANT_TARGET_PTS      = 150.0   # pts from entry to profit target  (R:R = 150/110 = 1.36)
 ELEPHANT_TIMEOUT_MINS    = 180.0   # no-move timeout (3 hr) — wider than regular 90 min
-ELEPHANT_FLUSH_EXTREME   = 100.0   # min flush depth (pts) on EXTREME_BULL/BEAR days
-ELEPHANT_FLUSH_STRONG    = 150.0   # min flush depth (pts) on STRONG_BULL/BEAR days
-ELEPHANT_BODY_EXTREME    = 250.0   # 15-min opening bar body → EXTREME classification
-ELEPHANT_BODY_STRONG     = 100.0   # 15-min opening bar body → STRONG classification
-ELEPHANT_MAX_EXTREME     = 4       # max elephant trades allowed on EXTREME day
-ELEPHANT_MAX_STRONG      = 4       # max elephant trades allowed on STRONG day
-ELEPHANT_ES_MOVE_SKIP    = 25.0    # skip STRONG flush when ES also moved ≥25pts same dir
-                                    # (macro flush WR 57% vs MNQ-specific WR 84%)
-ELEPHANT_NOON_CUTOFF_ET  = 12      # no elephant entries at/after noon ET (backtest: 2pm=22% WR)
+ELEPHANT_FLUSH_STRONG    = 150.0   # min flush depth (pts) on STRONG_BULL days
+ELEPHANT_BODY_STRONG     = 100.0   # 15-min opening bar body threshold → STRONG classification
+ELEPHANT_MAX_STRONG      = 4       # max entries allowed per STRONG_BULL day
+ELEPHANT_ES_MOVE_SKIP    = 40.0    # skip flush when ES also moved ≥40pt in same window (calibrated: MNQ 150pt flush ≈ ES 37pt; 25pt was too tight — blocked all setups)
+ELEPHANT_NOON_CUTOFF_ET  = 12      # no elephant entries at/after noon ET
 ELEPHANT_LOOKBACK_BARS   = 12      # 60-min rolling window for flush detection (12 × 5-min)
+
+# Volume early exit — cuts losses when institutional conviction selling is confirmed
+# Mirrors elephant_backtest.py constants exactly (live ↔ backtest parity).
+ELEPHANT_VOL_ADV_ZONE    = 50.0    # pts adverse before vol monitoring activates
+ELEPHANT_VOL_BUILD_MULT  = 1.5     # bar vol ≥ this × pre-entry baseline = "building"
+ELEPHANT_VOL_CONSEC_BARS = 3       # N consecutive building+worsening 5-min bars → early exit
 
 # ── Session constants (ET) ────────────────────────────────
 ET = pytz.timezone('America/New_York')
@@ -142,7 +144,7 @@ _scheduler            = None
 _cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by run_monitor()
 
 # ── Elephant Trade state (reset daily) ───────────────────
-_elephant_day_type    = 'NONE'  # NONE | STRONG_BULL | STRONG_BEAR | EXTREME_BULL | EXTREME_BEAR
+_elephant_day_type    = 'NONE'  # NONE | STRONG_BULL
 _elephant_trades_today = 0      # count of elephant entries today
 _elephant_flush_ids   = set()   # timestamps of flush extremes already acted on (dedup)
 
@@ -1332,6 +1334,35 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             elif is_short and price > vwap:
                 exit_reason = f'VWAP cross exit (short) ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
+        # 5a. Elephant volume early exit — adverse zone with confirmed institutional selling
+        # Logic mirrors _simulate_outcome() in elephant_backtest.py (live ↔ backtest parity):
+        #   When adverse ≥ 50pt AND last 3 completed 5-min bars are BOTH high-vol
+        #   (≥ 1.5× pre-entry baseline) AND each bar closes worse than the prior
+        #   → exit before hard 100pt SL fires (avg saves ~$35 vs waiting for SL)
+        is_elephant = trade.get('setup_type', '').startswith('ELEPHANT')
+        if not exit_reason and is_elephant and df5 is not None and len(df5) >= 24:
+            adv_pts = (entry - price) if not is_short else (price - entry)
+            if adv_pts >= ELEPHANT_VOL_ADV_ZONE:
+                # Use last 3 completed bars (skip [-1] which may be forming)
+                recent = df5.iloc[-4:-1]
+                # Baseline: 20 bars before the recent window
+                baseline = df5.iloc[-24:-4]['volume']
+                avg_vol  = float(baseline.mean()) if len(baseline) > 0 else 0.0
+                if avg_vol > 0:
+                    vols   = [float(b['volume']) for _, b in recent.iterrows()]
+                    closes = [float(b['close'])  for _, b in recent.iterrows()]
+                    all_high_vol = all(v >= ELEPHANT_VOL_BUILD_MULT * avg_vol for v in vols)
+                    if not is_short:
+                        all_worsening = all(closes[i] < closes[i-1] for i in range(1, len(closes)))
+                    else:
+                        all_worsening = all(closes[i] > closes[i-1] for i in range(1, len(closes)))
+                    if all_high_vol and all_worsening:
+                        exit_reason = (
+                            f'Elephant vol early exit: {adv_pts:.0f}pt adverse, '
+                            f'{ELEPHANT_VOL_CONSEC_BARS} high-vol bars '
+                            f'(${pnl_usd:+.0f})'
+                        )
+
         # 5. No-move exit (time-based — dead trade, free the slot)
         # Elephant trades get a wider window (ELEPHANT_TIMEOUT_MINS=180) because
         # LGR reversals sometimes take longer to develop than regular ORB/VWAP setups.
@@ -1485,8 +1516,8 @@ def _classify_elephant_day(df5: pd.DataFrame) -> str:
     """
     Classify today's session using the first 15-min RTH opening bar body.
     The opening bar body predicts institutional order flow bias for the day.
-    Backtest result: |body| ≥250pts = EXTREME (90%+ WR), 100-249pts = STRONG (48-65% WR).
-    Returns: 'NONE' | 'STRONG_BULL' | 'STRONG_BEAR' | 'EXTREME_BULL' | 'EXTREME_BEAR'
+    Returns: 'STRONG_BULL' | 'NONE'
+    Only STRONG_BULL days are eligible for Elephant LONG entries.
     """
     today    = datetime.now(ET).date()
     rth_open = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
@@ -1496,15 +1527,9 @@ def _classify_elephant_day(df5: pd.DataFrame) -> str:
     if len(bars_15) < 3:
         return 'NONE'
 
-    open_px  = float(bars_15['open'].iloc[0])
-    close_px = float(bars_15['close'].iloc[-1])
-    body     = close_px - open_px
-
-    body_abs = abs(body)
-    if body_abs >= ELEPHANT_BODY_EXTREME:
-        return 'EXTREME_BULL' if body > 0 else 'EXTREME_BEAR'
-    elif body_abs >= ELEPHANT_BODY_STRONG:
-        return 'STRONG_BULL' if body > 0 else 'STRONG_BEAR'
+    body = float(bars_15['close'].iloc[-1]) - float(bars_15['open'].iloc[0])
+    if body >= ELEPHANT_BODY_STRONG:
+        return 'STRONG_BULL'
     return 'NONE'
 
 
@@ -1514,11 +1539,12 @@ def _scan_elephant(df5: pd.DataFrame) -> dict | None:
     An LGR occurs when algos sweep stop-loss clusters at the flush extreme
     then immediately reverse — we enter 10pts from the extreme to ride the reversal.
 
-    Direction by day type (all data-validated):
-      STRONG_BULL  → LONG only (flush ≥150pts); ES must NOT confirm
-      STRONG_BEAR  → SHORT only (surge ≥150pts); ES must NOT confirm
-      EXTREME_BULL → LONG on flush + SHORT on surge (flush ≥100pts, up to 4/day)
-      EXTREME_BEAR → SHORT on surge + LONG on flush (flush ≥100pts, up to 4/day)
+    LONG only on STRONG_BULL days:
+      - Day opens with first-15min body ≥ 100pt upward (institutional bias UP)
+      - Within session: price flushes DOWN ≥ 150pt in a 60-min rolling window
+      - ES macro filter: if ES also moved ≥ 25pt in same window → skip (true macro, not sweep)
+      - Entry: current price within 10–60pt above flush extreme
+      - SL: 100pt below flush extreme | Target: 150pt above entry
 
     Returns signal dict or None.
     """
@@ -1527,134 +1553,82 @@ def _scan_elephant(df5: pd.DataFrame) -> dict | None:
     if not ELEPHANT_ENABLED:
         return None
 
-    # Classify day on first available 3-bar window (needs 9:45am data)
+    # Classify day on first scan after 9:45am (needs 3 × 5-min bars)
     if _elephant_day_type == 'NONE':
         _elephant_day_type = _classify_elephant_day(df5)
-        if _elephant_day_type != 'NONE':
-            log(f"  🐘 Elephant day classified: {_elephant_day_type}")
+        if _elephant_day_type == 'STRONG_BULL':
+            log(f"  🐘 Elephant day: STRONG_BULL — watching for flush")
 
-    if _elephant_day_type == 'NONE':
+    if _elephant_day_type != 'STRONG_BULL':
         return None
 
-    # Noon cutoff — backtest: 11am window 88% WR, 2pm window 22% WR
     now_et = datetime.now(ET)
     if now_et.hour >= ELEPHANT_NOON_CUTOFF_ET:
         return None
 
-    # Quota
-    max_q = ELEPHANT_MAX_EXTREME if 'EXTREME' in _elephant_day_type else ELEPHANT_MAX_STRONG
-    if _elephant_trades_today >= max_q:
+    if _elephant_trades_today >= ELEPHANT_MAX_STRONG:
         return None
 
-    # Today's RTH bars
-    today    = now_et.date()
-    rth_open = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    today      = now_et.date()
+    rth_open   = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
     today_bars = df5[df5.index >= rth_open].copy()
     if len(today_bars) < ELEPHANT_LOOKBACK_BARS:
         return None
 
     window        = today_bars.iloc[-ELEPHANT_LOOKBACK_BARS:]
     current_price = float(today_bars['close'].iloc[-1])
-    is_extreme    = 'EXTREME' in _elephant_day_type
-    min_flush     = ELEPHANT_FLUSH_EXTREME if is_extreme else ELEPHANT_FLUSH_STRONG
+    w_high        = float(window['high'].max())
+    w_low         = float(window['low'].min())
+    flush_depth   = w_high - w_low
 
-    # ── LONG setup: buy the flush down ──────────────────────
-    # Allowed on: STRONG_BULL, EXTREME_BULL, EXTREME_BEAR
-    if _elephant_day_type in ('STRONG_BULL', 'EXTREME_BULL', 'EXTREME_BEAR'):
-        w_high = float(window['high'].max())
-        w_low  = float(window['low'].min())
-        flush_depth = w_high - w_low
+    if flush_depth < ELEPHANT_FLUSH_STRONG:
+        return None
 
-        if flush_depth >= min_flush:
-            flush_extreme = w_low
-            flush_bar_ts  = str(window['low'].idxmin())
-            entry_level   = flush_extreme + ELEPHANT_ENTRY_CONF
+    flush_extreme = w_low
+    flush_bar_ts  = str(window['low'].idxmin())
+    entry_level   = flush_extreme + ELEPHANT_ENTRY_CONF
 
-            # Price must be at or just above entry level (reversal confirmed, not too far past)
-            if entry_level <= current_price <= flush_extreme + 50:
-                if flush_bar_ts not in _elephant_flush_ids:
-                    # ES filter: STRONG days only — skip if ES also flushed ≥25pts
-                    if not is_extreme:
-                        es_df = _get_es_bars()
-                        if not es_df.empty:
-                            es_today = es_df[es_df.index >= rth_open]
-                            if len(es_today) >= 2:
-                                es_win  = es_today.iloc[-ELEPHANT_LOOKBACK_BARS:]
-                                es_drop = float(es_win['high'].max()) - float(es_win['low'].min())
-                                if es_drop >= ELEPHANT_ES_MOVE_SKIP:
-                                    log(f"  Elephant LONG skip: ES confirmed flush ({es_drop:.0f}pts ≥ {ELEPHANT_ES_MOVE_SKIP})")
-                                    return None
+    if not (entry_level <= current_price <= flush_extreme + 50):
+        return None
+    if flush_bar_ts in _elephant_flush_ids:
+        return None
 
-                    # Overnight level bonus (confidence signal, not a gate)
-                    bonus_note = ''
-                    if _pm_low is not None and abs(flush_extreme - _pm_low) <= 25:
-                        bonus_note = f'⚡ Flush at PM low ({_pm_low:.0f}) — overnight level confluence'
+    # ES filter: skip if ES confirmed the same flush (macro move, not algo sweep)
+    es_df = _get_es_bars()
+    if not es_df.empty:
+        es_today = es_df[es_df.index >= rth_open]
+        if len(es_today) >= 2:
+            es_win  = es_today.iloc[-ELEPHANT_LOOKBACK_BARS:]
+            es_drop = float(es_win['high'].max()) - float(es_win['low'].min())
+            if es_drop >= ELEPHANT_ES_MOVE_SKIP:
+                log(f"  Elephant LONG skip: ES confirmed flush ({es_drop:.0f}pts ≥ {ELEPHANT_ES_MOVE_SKIP})")
+                return None
 
-                    sl     = round(flush_extreme - ELEPHANT_STOP_PTS, 2)
-                    target = round(entry_level + ELEPHANT_TARGET_PTS, 2)
-                    return {
-                        'direction':     'LONG',
-                        'flush_extreme': flush_extreme,
-                        'flush_bar_ts':  flush_bar_ts,
-                        'entry_level':   entry_level,
-                        'sl':            sl,
-                        'target':        target,
-                        'flush_depth':   flush_depth,
-                        'bonus_note':    bonus_note,
-                        'day_type':      _elephant_day_type,
-                    }
+    # Overnight level bonus (informational only — not a gate)
+    bonus_note = ''
+    if _pm_low is not None and abs(flush_extreme - _pm_low) <= 25:
+        bonus_note = f'⚡ Flush at PM low ({_pm_low:.0f}) — overnight level confluence'
 
-    # ── SHORT setup: fade the surge up ──────────────────────
-    # Allowed on: STRONG_BEAR, EXTREME_BEAR, EXTREME_BULL
-    if _elephant_day_type in ('STRONG_BEAR', 'EXTREME_BEAR', 'EXTREME_BULL'):
-        w_high = float(window['high'].max())
-        w_low  = float(window['low'].min())
-        surge_depth = w_high - w_low
-
-        if surge_depth >= min_flush:
-            surge_extreme = w_high
-            surge_bar_ts  = str(window['high'].idxmax())
-            entry_level   = surge_extreme - ELEPHANT_ENTRY_CONF
-
-            if surge_extreme - 50 <= current_price <= entry_level:
-                if surge_bar_ts not in _elephant_flush_ids:
-                    if not is_extreme:
-                        es_df = _get_es_bars()
-                        if not es_df.empty:
-                            es_today = es_df[es_df.index >= rth_open]
-                            if len(es_today) >= 2:
-                                es_win  = es_today.iloc[-ELEPHANT_LOOKBACK_BARS:]
-                                es_rise = float(es_win['high'].max()) - float(es_win['low'].min())
-                                if es_rise >= ELEPHANT_ES_MOVE_SKIP:
-                                    log(f"  Elephant SHORT skip: ES confirmed surge ({es_rise:.0f}pts ≥ {ELEPHANT_ES_MOVE_SKIP})")
-                                    return None
-
-                    bonus_note = ''
-                    if _pm_high is not None and abs(surge_extreme - _pm_high) <= 25:
-                        bonus_note = f'⚡ Surge at PM high ({_pm_high:.0f}) — overnight level confluence'
-
-                    sl     = round(surge_extreme + ELEPHANT_STOP_PTS, 2)
-                    target = round(entry_level - ELEPHANT_TARGET_PTS, 2)
-                    return {
-                        'direction':     'SHORT',
-                        'flush_extreme': surge_extreme,
-                        'flush_bar_ts':  surge_bar_ts,
-                        'entry_level':   entry_level,
-                        'sl':            sl,
-                        'target':        target,
-                        'flush_depth':   surge_depth,
-                        'bonus_note':    bonus_note,
-                        'day_type':      _elephant_day_type,
-                    }
-
-    return None
+    sl     = round(flush_extreme - ELEPHANT_STOP_PTS, 2)
+    target = round(entry_level + ELEPHANT_TARGET_PTS, 2)
+    return {
+        'direction':     'LONG',
+        'flush_extreme': flush_extreme,
+        'flush_bar_ts':  flush_bar_ts,
+        'entry_level':   entry_level,
+        'sl':            sl,
+        'target':        target,
+        'flush_depth':   flush_depth,
+        'bonus_note':    bonus_note,
+        'day_type':      _elephant_day_type,
+    }
 
 
 def _enter_elephant(signal: dict) -> bool:
     """
     Place a MARKET entry for an elephant (LGR) trade.
     Uses fixed 1 contract (no RVOL scaling — LGR is a structural play, not volume-driven).
-    Setup types: 'ELEPHANT_LONG' / 'ELEPHANT_SHORT' in futures_trades.
+    Setup type: 'ELEPHANT_LONG' in futures_trades.
     Monitored by the standard monitor_open_trades() exit stack + longer ELEPHANT_TIMEOUT_MINS.
     """
     global _elephant_trades_today, _elephant_flush_ids
@@ -1739,9 +1713,9 @@ def _enter_elephant(signal: dict) -> bool:
     _elephant_trades_today += 1
     _elephant_flush_ids.add(flush_bar_ts)
 
-    risk_usd   = (ELEPHANT_ENTRY_CONF + ELEPHANT_STOP_PTS) * (TICK_VALUE / TICK_SIZE)   # 60pts × $2/pt = $120
+    risk_usd   = (ELEPHANT_ENTRY_CONF + ELEPHANT_STOP_PTS) * (TICK_VALUE / TICK_SIZE)   # 110pts × $2/pt = $220
     target_usd = ELEPHANT_TARGET_PTS * (TICK_VALUE / TICK_SIZE)                          # 150pts × $2/pt = $300
-    rr         = ELEPHANT_TARGET_PTS / (ELEPHANT_ENTRY_CONF + ELEPHANT_STOP_PTS)         # 2.5
+    rr         = ELEPHANT_TARGET_PTS / (ELEPHANT_ENTRY_CONF + ELEPHANT_STOP_PTS)         # 1.36
 
     backup_line = (f"Backup SL: IBKR STOP @ {sl} ✅" if stop_order_id
                    else "Backup SL: ⚠️ FAILED — software stop only")
