@@ -734,7 +734,7 @@ def _update_backup_stop(trade: dict, new_sl: float):
         'qty':        contracts,
         'side':       stop_side,
         'order_type': 'STOP_MARKET',
-        'aux_price':  new_sl,
+        'stop_price': new_sl,
         'tif':        'GTC',
     })
     new_oid = (result or {}).get('order_id', '') or ''
@@ -807,7 +807,7 @@ def place_trade(side: str, sig: dict, regime: str,
     # 5. Max daily trades (total entries today — open + closed)
     _conn = sqlite3.connect(DB_PATH)
     _daily_count = _conn.execute(
-        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=?",
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED'",
         (str(datetime.now(ET).date()), ACCOUNT_MODE)
     ).fetchone()[0]
     _conn.close()
@@ -889,7 +889,7 @@ def place_trade(side: str, sig: dict, regime: str,
         'qty':        contracts,
         'side':       stop_side,
         'order_type': 'STOP_MARKET',
-        'aux_price':  sl,
+        'stop_price': sl,
         'tif':        'GTC',
     })
     stop_order_id = stop_result.get('order_id', '')
@@ -1104,7 +1104,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                         pass
                 if actual_fill:
                     price = actual_fill
-                    pnl_pts  = entry - price if not is_short else price - entry
+                    pnl_pts  = price - entry if not is_short else entry - price
                     pnl_ticks = pnl_pts / TICK_SIZE
                     pnl_usd   = pnl_ticks * TICK_VALUE * contracts
                     exit_display = str(actual_fill)

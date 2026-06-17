@@ -1255,10 +1255,13 @@ async def _resolve_fut_contract(symbol: str):
         details = await ib.reqContractDetailsAsync(stub)
         if not details:
             return None
-        today    = datetime.utcnow().strftime('%Y%m%d')
+        # Roll 5 days early: skip contracts expiring within the next 5 days.
+        # ContFuture (used for bar history) rolls to the next active contract
+        # ~1 week before expiry as volume shifts. This keeps live quote aligned.
+        roll_cutoff = (datetime.utcnow() + timedelta(days=5)).strftime('%Y%m%d')
         upcoming = sorted(
             [d for d in details
-             if d.contract.lastTradeDateOrContractMonth >= today],
+             if d.contract.lastTradeDateOrContractMonth >= roll_cutoff],
             key=lambda d: d.contract.lastTradeDateOrContractMonth
         )
         if not upcoming:

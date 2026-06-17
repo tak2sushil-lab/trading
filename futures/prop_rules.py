@@ -4,14 +4,14 @@ prop_rules.py — Prop/risk rule engine for all futures modes.
 Modes:
   TC   = TopStepX Trading Combine eval  ($50K, $3K target, $700 DLL soft)
   XFA  = TopStepX Express Funded        ($0 start, $2K MLL, $1,200 daily cap)
-  IBKR = Personal IBKR capital          ($2K floor, $150 DLL soft, no trailing MLL)
+  IBKR = Personal IBKR capital          ($5K floor, $1,250 DLL soft, no trailing MLL)
 
 TopStepX $50K Standard path:
   TC eval:   profit target $3,000 | MLL $2,000 | DLL $1,000 | consistency ≤50%/day
   XFA:       balance starts $0    | MLL starts -$2,000, locks at $0 after first $2K
 
-IBKR personal ($2K own capital):
-  No prop firm rules. Soft DLL $150. No trailing MLL. Daily cap $400.
+IBKR personal ($5K own capital — updated Jun 16 2026):
+  No prop firm rules. Soft DLL $1,250 (25% of $5K). No trailing MLL. Daily cap $400.
 """
 
 import json
@@ -52,11 +52,11 @@ XFA_INACTIVITY_DAYS  = 25        # alert before 30-day closure
 SOFT_STOP_BUFFER     = 300.0    # stay $300 above MLL floor (slippage guard)
 DLL_SOFT             = 700.0    # TC/XFA DLL soft stop (below $700 → halt; hard limit is $1K)
 
-# ── IBKR personal mode ($2K own capital) ─────────────────────────────────────
-IBKR_FLOOR           = 2_000.0  # starting capital; no trailing MLL
-IBKR_DLL_SOFT        = 250.0    # 12.5% of $2K capital → halt for the day
+# ── IBKR personal mode ($5K own capital — updated Jun 16 2026) ───────────────
+IBKR_FLOOR           = 5_000.0  # starting capital; no trailing MLL
+IBKR_DLL_SOFT        = 1_250.0  # 25% of $5K capital → halt for the day
 IBKR_DAILY_CAP       = 400.0    # soft daily profit cap (don't skew performance tracking)
-IBKR_MAX_CONTRACTS   = 2        # conservative: personal $2K capital
+IBKR_MAX_CONTRACTS   = 2        # conservative: same contract size as before
 
 # ── Session times (CT — TopStepX operates on Chicago time) ───────────────────
 # DLL resets at 5 PM CT (new trading day start)

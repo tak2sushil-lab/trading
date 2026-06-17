@@ -167,6 +167,11 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         long_mid   = ((lq.get('bid') or 0) + (lq.get('ask') or 0)) / 2
         short_mid  = ((sq.get('bid') or 0) + (sq.get('ask') or 0)) / 2
         spread_mid = round(long_mid - short_mid, 2)
+        # Natural credit: sell long at bid, buy back short at ask.
+        # IBKR paper BAG fill requires limit ≤ natural credit to execute SELL.
+        natural_credit = round(
+            (lq.get('bid') or long_mid) - (sq.get('ask') or short_mid), 2)
+        limit_credit = max(0.01, natural_credit)
         payload = {
             'symbol':       sym,
             'expiry':       trade['expiry'],
@@ -175,9 +180,9 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             'qty':          qty,
             'action':       'SELL',
             'order_type':   'LIMIT',
-            'limit_price':  round(spread_mid - 0.05, 2),
+            'limit_price':  limit_credit,
             'short_strike': trade['short_strike'],
-            'net_debit':    round(-(spread_mid - 0.05), 2),
+            'net_debit':    round(-limit_credit, 2),
         }
         exit_dollar = round(spread_mid * 100 * qty, 2)
     elif strat == 'OPT_SCALP':
@@ -218,17 +223,36 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         return False
 
     order_id = resp['orderId']
-    # Wait one scan cycle for IBKR to fill, then verify before writing DB
+    # Wait for IBKR paper fill simulator to settle (BAG orders need time)
     time.sleep(30)
     status = _bridge_get(f'/order/{order_id}/status')
-    filled = status and (
-        status.get('filled', 0) >= qty
-        or (_is_paper() and status.get('status') in ('Submitted', 'PreSubmitted', 'Filled'))
-    )
+    st     = (status or {}).get('status', 'Unknown')
+    filled = status and status.get('filled', 0) >= qty or st == 'Filled'
+
+    # Portfolio fallback: if order status is ambiguous, verify position is gone from IBKR.
+    # Do NOT trust Submitted/PreSubmitted — paper simulator may still cancel after 30s.
+    if not filled and st in ('Submitted', 'PreSubmitted', 'Cancelled', 'Unknown'):
+        try:
+            r     = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
+            opts  = r.json() if r.ok else []
+            long_stk = float(trade.get('long_strike', 0))
+            exp      = trade.get('expiry', '')
+            still_open = any(
+                p.get('symbol') == sym
+                and p.get('expiry') == exp
+                and abs(float(p.get('strike', 0)) - long_stk) < 0.01
+                and float(p.get('qty', 0)) > 0
+                for p in opts
+            )
+            if not still_open:
+                filled = True  # position gone from IBKR — close confirmed
+        except Exception:
+            pass
+
     if not filled:
         send_telegram(
             f"⚠️ *{sym} auto-close order not confirmed* (trade #{tid})\n"
-            f"Order {order_id} status: {(status or {}).get('status', 'unknown')}\n"
+            f"Order {order_id} status: {st}\n"
             f"DB NOT updated — check IBKR manually. Use `OPT CLOSE {sym}` to retry."
         )
         return False

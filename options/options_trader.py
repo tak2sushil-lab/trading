@@ -1310,13 +1310,31 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
                        sug_id: int | None = None):
     """Place a spread combo order with incremental limit, runs in thread."""
     qty      = tmpl['qty']
-    mid      = tmpl['net_debit']
     expiry   = tmpl['expiry']
+
+    # Fetch live bid/ask to compute natural fill price (ask_long - bid_short).
+    # IBKR paper BAG fill simulator requires natural price, not mid-to-mid.
+    mid         = tmpl['net_debit']   # baseline mid from calc (used in error message)
+    start_price = mid
+    try:
+        long_q  = get_quote(sym, expiry, float(tmpl['long_strike']))
+        short_q = get_quote(sym, expiry, float(tmpl['short_strike']))
+        if (long_q and short_q
+                and long_q.get('ask') is not None
+                and short_q.get('bid') is not None):
+            natural = round(float(long_q['ask']) - float(short_q['bid']), 2)
+            live_mid = round(
+                (float(long_q['bid']) + float(long_q['ask'])) / 2
+                - (float(short_q['bid']) + float(short_q['ask'])) / 2, 2)
+            mid = live_mid          # refresh for error message
+            start_price = natural   # IBKR paper needs natural to fill BAG orders
+    except Exception:
+        pass
 
     order_id = None
     filled_at = None
     for attempt in range(MAX_FILL_TRIES):
-        limit_price = round(mid + attempt * 0.10, 2)  # mid, mid+.10, mid+.20, mid+.30
+        limit_price = round(start_price + attempt * 0.10, 2)  # natural, +.10, +.20, +.30
         if attempt > 0:
             send_telegram(
                 f"⏳ *{sym} spread* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f}",
