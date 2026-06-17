@@ -118,6 +118,11 @@ HARD_CLOSE      = (16, 0)   # 4:00pm ET — force close all positions (9pm Londo
 SCAN_INTERVAL   = 60        # seconds between scans (1 min, faster than equity)
 MONITOR_INTERVAL = 15       # seconds between position checks
 
+# ── London session module (plug / unplug here) ────────────────────────────────
+# Flip to True + restart service → London session activates 3am–9am ET
+# Flip to False + restart service → London disabled, zero impact on NY session
+LONDON_ENABLED = True
+
 # ── Global state ──────────────────────────────────────────
 _last_regime          = 'NORMAL'
 _confirmed_scans      = 0
@@ -2255,6 +2260,23 @@ def main():
     # Core loops
     _scheduler.add_job(run_scan,     'interval', seconds=SCAN_INTERVAL,    id='scan')
     _scheduler.add_job(run_monitor,  'interval', seconds=MONITOR_INTERVAL, id='monitor')
+
+    # London session (plug/unplug via LONDON_ENABLED above)
+    if LONDON_ENABLED:
+        from futures import london_trader as _lt
+        _lt.init_db()
+        _scheduler.add_job(
+            _lt.run_scan, 'cron',
+            hour='3-8', minute='*',
+            id='london_scan', max_instances=1, misfire_grace_time=30,
+        )
+        _scheduler.add_job(
+            _lt.run_monitor, 'interval',
+            seconds=15,
+            id='london_monitor', max_instances=1,
+        )
+        log('London session ENABLED — IB 3am–4am ET, entries 4am–8am ET')
+        send_telegram('🇬🇧 London session ENABLED')
 
     # Telegram command polling
     _scheduler.add_job(poll_telegram_commands, 'interval', seconds=10, id='telegram')

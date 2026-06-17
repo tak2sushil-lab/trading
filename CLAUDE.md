@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jun 5 2026
+Last updated: Jun 15 2026
 
 ---
 
@@ -71,7 +71,44 @@ options/
   backtester_options.py      — B-S backtest [Phase 5 update pending]
 
 backtest_scalp.py            — OPT_SCALP Mode A backtest (scan_log A+ + 5-min bars proxy)
+
+futures/
+  futures_trader.py            — live IBKR personal (port 8000, DU9952463)
+  tc_trader.py                 — TC eval mode (TopStepX, port 8002)
+  sim_replay.py                — NY session bar-by-bar replay (mirrors futures_trader.py)
+  london_sim.py                — London session 3am-9am ET simulator (STANDALONE, not yet live)
+                                 TUNING COMPLETE Jun 15. Champion: stop=2.0 target=6.0 BE=0.10
+                                 5.5yr: $22,045, 42.7% WR, MaxDD $287, NEVER LOST A YEAR
+                                 2x old baseline ($10,918). $4,008/year avg.
+                                 Default: --signals A --no-ib-clean
+                                 Pluggable: LONDON_ENABLED=False in futures_trader.py
+                                 File defaults updated Jun 16 to match champion
+  collect_bars.py              — futures bar collector (futures_bars_5m, 2021→today)
 ```
+
+### London Session Backtest Commands
+```bash
+# Standard run — file defaults now match champion (stop=2.0, target=6.0, BE=0.10)
+venv/bin/python futures/london_sim.py --signals A --no-ib-clean
+venv/bin/python futures/london_sim.py --signals A --no-ib-clean --start 2025-01-01   # faster
+venv/bin/python futures/london_sim.py --compare --no-ib-clean --start 2025-01-01    # 7 combos
+venv/bin/python futures/london_sim.py --signals A --no-ib-clean --detail            # trade-by-trade
+venv/bin/python futures/london_sim.py --stats --start 2025-01-01                    # data dist
+
+# Future tuning (trail params added Jun 15 — not yet tuned)
+# --be-mult N          break-even trigger (ATR×), current default=0.10
+# --trail-wide-atr N   wide trail activation (ATR×), current default=1.00
+# --trail-tight-atr N  tight trail activation (ATR×), current default=1.50
+```
+
+### London Tuning Summary (Jun 15 2026 — complete)
+| Parameter | Old default | Champion | Change |
+|-----------|------------|----------|--------|
+| STOP_ATR_MULT | 1.5× | **2.0×** | Wider stop → higher WR, less noise |
+| TARGET_ATR_MULT | 3.0× | **6.0×** | Pure trail — target almost never fires |
+| BE_ATR_MULT | 0.50× | **0.10×** | Protect entry at +5pts → saves fakeout losses |
+| 5.5yr P&L | $10,918 | **$22,045** | +102% improvement |
+| MaxDD | ~$450 | **$287** | Lower drawdown with champion |
 
 ---
 
