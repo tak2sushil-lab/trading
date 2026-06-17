@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jun 15 2026
+Last updated: Jun 17 2026
 
 ---
 
@@ -73,16 +73,15 @@ options/
 backtest_scalp.py            — OPT_SCALP Mode A backtest (scan_log A+ + 5-min bars proxy)
 
 futures/
-  futures_trader.py            — live IBKR personal (port 8000, DU9952463)
+  futures_trader.py            — live IBKR personal (port 8000, DU9952463). LONDON_ENABLED=True
   tc_trader.py                 — TC eval mode (TopStepX, port 8002)
+  london_trader.py             — London session live trader (LIVE Jun 17 2026, paper validation)
+                                 3am–9am ET. IB formation 3am–4am. Signal A entries 4am–8am.
+                                 Champion: stop=2.0 target=6.0 BE=0.10. $5k/$1,250 DLL model.
+                                 Plug/unplug: flip LONDON_ENABLED in futures_trader.py + restart
   sim_replay.py                — NY session bar-by-bar replay (mirrors futures_trader.py)
-  london_sim.py                — London session 3am-9am ET simulator (STANDALONE, not yet live)
-                                 TUNING COMPLETE Jun 15. Champion: stop=2.0 target=6.0 BE=0.10
-                                 5.5yr: $22,045, 42.7% WR, MaxDD $287, NEVER LOST A YEAR
-                                 2x old baseline ($10,918). $4,008/year avg.
-                                 Default: --signals A --no-ib-clean
-                                 Pluggable: LONDON_ENABLED=False in futures_trader.py
-                                 File defaults updated Jun 16 to match champion
+  london_sim.py                — London session simulator. Validated 2025-2026: 467t 42.4% $+10,608
+                                 Default: --signals A --no-ib-clean --start 2025-01-01
   collect_bars.py              — futures bar collector (futures_bars_5m, 2021→today)
 ```
 
@@ -95,20 +94,20 @@ venv/bin/python futures/london_sim.py --compare --no-ib-clean --start 2025-01-01
 venv/bin/python futures/london_sim.py --signals A --no-ib-clean --detail            # trade-by-trade
 venv/bin/python futures/london_sim.py --stats --start 2025-01-01                    # data dist
 
-# Future tuning (trail params added Jun 15 — not yet tuned)
-# --be-mult N          break-even trigger (ATR×), current default=0.10
-# --trail-wide-atr N   wide trail activation (ATR×), current default=1.00
-# --trail-tight-atr N  tight trail activation (ATR×), current default=1.50
+# Trail params (tuning complete Jun 15 — champion locked):
+# --be-mult 0.10       break-even trigger (ATR×) — CHAMPION, do not change
+# --trail-wide-atr 1.00   wide trail activation — CHAMPION
+# --trail-tight-atr 1.50  tight trail activation — CHAMPION
 ```
 
-### London Tuning Summary (Jun 15 2026 — complete)
+### London Tuning Summary (Jun 15 2026 — complete, $5k model)
 | Parameter | Old default | Champion | Change |
 |-----------|------------|----------|--------|
 | STOP_ATR_MULT | 1.5× | **2.0×** | Wider stop → higher WR, less noise |
 | TARGET_ATR_MULT | 3.0× | **6.0×** | Pure trail — target almost never fires |
 | BE_ATR_MULT | 0.50× | **0.10×** | Protect entry at +5pts → saves fakeout losses |
-| 5.5yr P&L | $10,918 | **$22,045** | +102% improvement |
-| MaxDD | ~$450 | **$287** | Lower drawdown with champion |
+| 2025-2026 P&L | baseline | **$10,608** | 467t, 42.4% WR, MaxDD $321 |
+| Risk model | $100/trade | **$250/trade** | $5k account, $1,250 DLL |
 
 ---
 
@@ -208,7 +207,8 @@ Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 1
 2. **Validate before build.** Always backtest first. Never suggest building without data.
 3. **No mid-run changes** unless: (a) clear bug, (b) system crashing, (c) market condition system cannot handle.
 4. **After any change:** `sim_today.py` replay immediately.
-5. **Go-live timeline:** June 25% → July-Aug 50% → Sep full. Do NOT compress this.
+5. **Equity go-live timeline:** Jun 25% → Jul-Aug 50% → Sep full. Pre-flight checklist items must be done first (see checklist below).
+5b. **Futures go-live timeline:** London paper Jun 17–Jul 17 (30 days) → Jul 17 real money at 25% capital. No tinkering Jun 11–Jul 9 (evaluation window). Do NOT compress this.
 
 ---
 
