@@ -39,6 +39,9 @@ from prop_rules import (
     save_state as prop_save, ACCOUNT_MODE, IBKR_DAILY_CAP, IBKR_DLL_SOFT, IBKR_FLOOR,
 )
 from portfolio_status import format_all as _portfolio_all
+from futures.hero_score import (
+    score_entry_regime, contracts_from_regime_score, detect_regime,
+)
 
 # ── Telegram ──────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv('FUTURES_TELEGRAM_TOKEN')
@@ -57,7 +60,7 @@ MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
-MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and live price at order time
+MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and live price at order time
 
 # ── Profit protection (point-based — MNQ-calibrated) ─────
 # PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
@@ -135,6 +138,12 @@ _overnight_bias       = 'BOTH'  # from overnight_position classifier (tc_champio
 _overnight_skip_day   = False   # True if overnight_position in bad zone [0.20, 0.40)
 _overnight_position   = None    # float — 0=opened at overnight low, 1=overnight high
 _overnight_computed   = False   # True after first RTH-bar computation this session
+
+# ── IB classification state (set once at 10:30, sticky for the day) ──────────
+_ib_kind              = None    # 'BEAR_DIRECTIONAL' | 'BULL_DIRECTIONAL' | 'ROTATIONAL'
+_ib_kind_set          = False   # True once ib_mid computed at IB formation
+_day_regime           = None    # 'TRENDING' | 'CHOPPY' | 'QUIET' — for hero weighting
+_large_ib_delayed     = False   # True when IB range > 200pts — delay first entry to 10:45
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
@@ -488,6 +497,18 @@ def compute_overnight_bias():
                 f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
                 f"Override: FUT BIAS LONG or FUT BIAS BOTH"
             )
+            # OVN_POS Option A: overnight closed near its low (≤13%) → exhausted bears.
+            # Pre-market already showing bullish structure (26/27 trades were PM_LONG).
+            # Data 2025-2026: ovn_pos 0-0.08 → 66.7% WR +$64; 0.08-0.13 → 57.1% WR +$63.
+            # Allow LONGs too — do NOT override user's manual FUT BIAS SHORT if set.
+            if pos <= 0.13 and _daily_macro_bias == 'SHORT':
+                _daily_macro_bias = 'BOTH'
+                log(f"OVN_POS Option A: pos={pos:.3f} ≤ 0.13 → exhausted bears → override to BOTH")
+                send_telegram(
+                    f"📊 OVN_POS Option A: bears exhausted (pos={pos:.2f})\n"
+                    f"SHORT bias → BOTH — LONGs now allowed (pre-market coiled)\n"
+                    f"Override: FUT BIAS SHORT to force SHORT-only"
+                )
         else:
             _overnight_bias = 'BOTH'
             log(f"overnight_bias: NORMAL pos={pos:.3f} — both directions")
@@ -1002,14 +1023,20 @@ def _update_backup_stop(trade: dict, new_sl: float):
         'qty':        contracts,
         'side':       stop_side,
         'order_type': 'STOP_MARKET',
-        'aux_price':  new_sl,
+        'stop_price': new_sl,
         'tif':        'GTC',
     })
     new_oid = (result or {}).get('order_id', '') or ''
 
+    if not new_oid:
+        alert = f"⚠️ BACKUP STOP REPLACE FAILED (trade {trade['id']}) — position unprotected! Manual stop needed at {new_sl}"
+        log(alert)
+        send_telegram(alert)
+        return  # keep DB/dict unchanged so old (now cancelled) stop_order_id stays as a breadcrumb
+
     conn = sqlite3.connect(DB_PATH)
     conn.execute('UPDATE futures_trades SET stop_price=?, stop_order_id=? WHERE id=?',
-                 (new_sl, new_oid or None, trade['id']))
+                 (new_sl, new_oid, trade['id']))
     conn.commit()
     conn.close()
 
@@ -1075,7 +1102,7 @@ def place_trade(side: str, sig: dict, regime: str,
     # 5. Max daily trades (total entries today — open + closed)
     _conn = sqlite3.connect(DB_PATH)
     _daily_count = _conn.execute(
-        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=?",
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED'",
         (str(datetime.now(ET).date()), ACCOUNT_MODE)
     ).fetchone()[0]
     _conn.close()
@@ -1178,7 +1205,7 @@ def place_trade(side: str, sig: dict, regime: str,
         'qty':        contracts,
         'side':       stop_side,
         'order_type': 'STOP_MARKET',
-        'aux_price':  sl,
+        'stop_price': sl,
         'tif':        'GTC',
     })
     stop_order_id = stop_result.get('order_id', '')
@@ -1399,8 +1426,6 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 log(f"  trade {tid}: position check unavailable (bridge error) — skipping, retry next cycle")
                 continue
 
-            global _last_exit_time
-            _last_exit_time = datetime.now(ET)
             _ibkr_qty = 0.0
             for _p in _ibkr_pos:
                 if _p.get('symbol') == SYMBOL:
@@ -1425,7 +1450,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                         pass
                 if actual_fill:
                     price = actual_fill
-                    pnl_pts  = entry - price if not is_short else price - entry
+                    pnl_pts  = price - entry if not is_short else entry - price
                     pnl_ticks = pnl_pts / TICK_SIZE
                     pnl_usd   = pnl_ticks * TICK_VALUE * contracts
                     exit_display = str(actual_fill)
@@ -1446,6 +1471,8 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 )
                 log(msg)
                 send_telegram(msg)
+                global _last_exit_time
+                _last_exit_time = datetime.now(ET)
                 exits.append({'tid': tid, 'pnl': pnl_usd})
                 for d in (_session_high, _session_low, _price_history, _partial_done):
                     d.pop(tid, None)
@@ -1468,10 +1495,12 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 stop_side = 'BUY' if is_short else 'SELL'
                 _bridge_post('/futures/order', {
                     'symbol': SYMBOL, 'qty': contracts, 'side': stop_side,
-                    'order_type': 'STOP_MARKET', 'aux_price': sl, 'tif': 'GTC',
+                    'order_type': 'STOP_MARKET', 'stop_price': sl, 'tif': 'GTC',
                 })
                 send_telegram(f"⚠️ FUTURES EXIT FAILED (trade {tid})!\nRetrying next cycle. Check IBKR manually if persists.")
                 continue
+
+            _last_exit_time = datetime.now(ET)
 
             log_futures_exit(tid, price, exit_reason, round(pnl_usd, 2),
                              round(pnl_ticks, 1))
@@ -1656,6 +1685,16 @@ def _enter_elephant(signal: dict) -> bool:
         log(f"  🐘 Elephant BLOCKED: {len(open_trades)} trades open (max {MAX_OPEN_TRADES})")
         return False
 
+    _econn = sqlite3.connect(DB_PATH)
+    _edaily = _econn.execute(
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED'",
+        (str(datetime.now(ET).date()), ACCOUNT_MODE)
+    ).fetchone()[0]
+    _econn.close()
+    if _edaily >= MAX_DAILY_TRADES:
+        log(f"  🐘 Elephant BLOCKED: {_edaily} trades entered today (max {MAX_DAILY_TRADES})")
+        return False
+
     daily_pnl = get_futures_daily_pnl()
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f"  🐘 Elephant BLOCKED: daily loss ${daily_pnl:.0f}")
@@ -1692,7 +1731,7 @@ def _enter_elephant(signal: dict) -> bool:
         'qty':        contracts,
         'side':       stop_side,
         'order_type': 'STOP_MARKET',
-        'aux_price':  sl,
+        'stop_price': sl,
         'tif':        'GTC',
     })
     stop_order_id = stop_result.get('order_id', '')
@@ -1741,6 +1780,7 @@ def _enter_elephant(signal: dict) -> bool:
 def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
     global _confirmed_scans, _regime_scan_counts, _cached_df5
+    global _ib_kind, _ib_kind_set, _day_regime, _large_ib_delayed
 
     if date.today() in US_HOLIDAYS_2026:
         log("Market holiday — scan skipped")
@@ -1784,14 +1824,54 @@ def run_scan():
     today_et = now_et.date()
 
     # ── IB window gate: no entries until Initial Balance is fully established ──
-    # Backtest finding (Jun 1 2026): 10:xx entries (right after IB forms at 10:30am)
-    # have 52.7% WR vs 9:xx entries which are noise. The backtest enforces this
-    # implicitly — live trading must mirror it. IB window = 60min from 9:30am = 10:30am.
     ib_ready_at = ET.localize(datetime(today_et.year, today_et.month, today_et.day, 10, 30))
     if now_et < ib_ready_at:
         mins_left = int((ib_ready_at - now_et).total_seconds() / 60) + 1
         log(f"IB window not complete — waiting for 10:30am ET ({mins_left}min remaining)")
         return
+
+    # ── IB classification (computed once at 10:30, sticky all day) ───────────
+    # Classifies day type for hero weighting + directional bias for SHORT gate bypass.
+    if not _ib_kind_set and not df5.empty:
+        ib_range = calc_ib_range_today(df5)
+        if ib_range >= 50.0:   # only classify when IB has meaningful range
+            today_d = today_et
+            df_today = df5[df5.index.date == today_d]
+            if not df_today.empty:
+                ib_hi  = float(df_today['high'].max())
+                ib_lo  = float(df_today['low'].min())
+                ib_cl  = float(df_today['close'].iloc[-1])
+                ib_rng = ib_hi - ib_lo
+                ib_mid = 0.5   # default: rotational
+                if ib_rng > 0:
+                    ib_mid = (ib_cl - ib_lo) / ib_rng
+                    if ib_mid < 0.25:
+                        _ib_kind = 'BEAR_DIRECTIONAL'
+                    elif ib_mid > 0.75:
+                        _ib_kind = 'BULL_DIRECTIONAL'
+                    else:
+                        _ib_kind = 'ROTATIONAL'
+                _day_regime  = detect_regime(ib_range)
+                # Large IB gate: IB > 200pts at 10:30 → first entry delayed to 10:45
+                # (10:30 on a freshly-formed large IB has 35.7% WR vs 50.8% at 10:45)
+                if ib_range > 200.0:
+                    _large_ib_delayed = True
+                    log(f"Large IB gate: {ib_range:.0f}pts > 200 — delaying first entry to 10:45")
+                _ib_kind_set = True
+                log(f"IB classified: {_ib_kind} | regime={_day_regime} | range={ib_range:.0f}pts | mid={ib_mid:.2f}")
+                send_telegram(
+                    f"📊 IB formed: {_ib_kind} | {_day_regime}\n"
+                    f"Range={ib_range:.0f}pts  mid={ib_mid:.2f}\n"
+                    f"{'⏳ Large IB — first entry delayed to 10:45' if _large_ib_delayed else ''}"
+                )
+
+    # ── Large IB delay gate ───────────────────────────────────────────────────
+    if _large_ib_delayed:
+        ib_ready_1045 = ET.localize(datetime(today_et.year, today_et.month, today_et.day, 10, 45))
+        if now_et < ib_ready_1045:
+            log(f"Large IB delay — waiting for 10:45 ET")
+            return
+        _large_ib_delayed = False   # cleared after first scan past 10:45
 
     # ── pm_ib hold: give user 5 min to send FUT BIAS after macro range is set ──
     # Only applies in the morning window (before 11am ET). After 11am the pre-market
@@ -1842,12 +1922,15 @@ def run_scan():
     log(f"Price: {price} | VWAP: {vwap} | RSI: {sig.get('rsi',0):.0f} | "
         f"ORB: {'set' if _orb_set else 'pending'}")
 
-    # ── RVOL + IB range gates (tc_champion: min_rvol=1.0, min_ib_range=50pts) ─
-    # Computed once here; also passed to calc_contracts_dynamic in place_trade().
+    # ── RVOL + IB range gates ────────────────────────────────────────────────
+    # min_rvol=0.3: 550-day averages include 2021-22 high-vol era; June 2026
+    # RTH slots run 0.3-0.6× that baseline — structurally lower, not thin.
+    # 0.3 blocks truly dead scans (weekend/holiday test: 0.17×) without
+    # filtering normal trading days. tc_champion uses 1.0 (its own backtest).
     _scan_rvol     = calc_rvol_current(df5)
     _scan_ib_range = calc_ib_range_today(df5)
-    if _scan_rvol < 1.0:
-        log(f"Low RVOL ({_scan_rvol:.2f}× < 1.0) — skip entry attempt")
+    if _scan_rvol < 0.3:
+        log(f"Low RVOL ({_scan_rvol:.2f}× < 0.3) — skip entry attempt")
         return
     if _scan_ib_range > 0 and _scan_ib_range < 50.0:
         log(f"Thin IB ({_scan_ib_range:.0f}pts < 50 min) — skip entry attempt")
@@ -1862,23 +1945,60 @@ def run_scan():
             f"Override: FUT BIAS LONG or FUT BIAS SHORT")
         return
 
+    # ── Hero gate (Phase 5 regime-aware scoring) ─────────────────────────────
+    # Heroes vote on entry quality using regime-weighted scoring.
+    # Regime detected once at IB formation (10:30); CHOPPY is default before that.
+    hero_regime = _day_regime if _day_regime else 'CHOPPY'
+    try:
+        bars_hist = get_bars(bar_size_min=5, days=2)
+        prev_rth  = bars_hist[bars_hist.index.date < today_et] if not bars_hist.empty else pd.DataFrame()
+        atr_now   = calc_atr(df5)
+        price_now = sig.get('price', 0)
+    except Exception:
+        bars_hist = pd.DataFrame()
+        prev_rth  = pd.DataFrame()
+        atr_now   = 10.0
+        price_now = sig.get('price', 0)
+
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
         if grade in ('A+', 'A'):
-            log(f"LONG signal: {grade} ({score}pts) — entering")
-            place_trade('LONG', sig, regime, score, grade)
+            # Hero gate: score entry with regime-aware weights
+            h_score, h_flags = score_entry_regime(price_now, atr_now, 'LONG',
+                                                   bars_hist, prev_rth, hero_regime)
+            contracts_hero = contracts_from_regime_score(h_score, hero_regime, 2)
+            if contracts_hero == 0:
+                log(f"LONG signal: {grade} ({score}pts) — HERO SKIP "
+                    f"(weighted={h_score}, regime={hero_regime}, flags={h_flags})")
+            else:
+                log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
+                place_trade('LONG', sig, regime, score, grade)
 
     # ── Try SHORT entry ────────────────────────────────────
-    # Normal: WEAK regime required. Macro bias SHORT: allowed in any regime
-    # (NFP miss / CPI hot = directional macro trade, regime not yet confirmed).
-    short_allowed = (regime == 'WEAK' and _confirmed_scans >= 3) or \
-                    (_daily_macro_bias == 'SHORT')
+    # short_allowed:
+    #   1. WEAK regime confirmed ≥3 consecutive scans (noisy market turned bearish)
+    #   2. Overnight macro bias is SHORT (NFP/CPI directional day)
+    #   3. BEAR_DIRECTIONAL IB (market closed near IB low — day already showed its hand)
+    short_allowed = (
+        (regime == 'WEAK' and _confirmed_scans >= 3) or
+        (_daily_macro_bias == 'SHORT') or
+        (_ib_kind == 'BEAR_DIRECTIONAL')
+    )
     if short_allowed:
         score, grade = grade_entry(sig, regime, 'SHORT')
         if grade in ('A+', 'A'):
-            log(f"SHORT signal: {grade} ({score}pts) — entering")
-            place_trade('SHORT', sig, regime, score, grade)
+            # Hero gate for SHORT
+            h_score, h_flags = score_entry_regime(price_now, atr_now, 'SHORT',
+                                                   bars_hist, prev_rth, hero_regime)
+            contracts_hero = contracts_from_regime_score(h_score, hero_regime, 2)
+            if contracts_hero == 0:
+                log(f"SHORT signal: {grade} ({score}pts) — HERO SKIP "
+                    f"(weighted={h_score}, regime={hero_regime}, flags={h_flags})")
+            else:
+                log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                    f"ib={_ib_kind} — entering")
+                place_trade('SHORT', sig, regime, score, grade)
 
 
 def run_monitor():
@@ -1903,6 +2023,7 @@ def reset_daily_state():
     global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time, _daily_macro_bias
     global _overnight_bias, _overnight_skip_day, _overnight_position, _overnight_computed
     global _elephant_day_type, _elephant_trades_today, _elephant_flush_ids
+    global _ib_kind, _ib_kind_set, _day_regime, _large_ib_delayed
 
     _orb_high = _orb_low = None
     _orb_set  = False
@@ -1914,6 +2035,10 @@ def reset_daily_state():
     _overnight_skip_day = False
     _overnight_position = None
     _overnight_computed = False
+    _ib_kind          = None
+    _ib_kind_set      = False
+    _day_regime       = None
+    _large_ib_delayed = False
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
     _session_high = {}
