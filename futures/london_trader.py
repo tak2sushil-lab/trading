@@ -150,6 +150,7 @@ _cached_df:  pd.DataFrame         = pd.DataFrame()
 
 _active_contract_month: str       = ''   # resolved at session reset; passed to get_bars
 _stale_block_count:     int       = 0    # consecutive stale-price blocks this session
+_ib_pending_sync:       bool      = False  # IB formed but live quote stale — waiting to align
 
 
 # ── Helpers: tick rounding ────────────────────────────────────────────────────
@@ -289,7 +290,7 @@ def update_london_ib(df: pd.DataFrame, trade_date: date) -> bool:
     Call once after 4am when IB window is complete.
     Returns True if IB is valid and formed.
     """
-    global _ib_high, _ib_low, _ib_formed, _ib_close_pos
+    global _ib_high, _ib_low, _ib_formed, _ib_close_pos, _ib_pending_sync
 
     ib_mask = (
         (df.index.date == trade_date) &
@@ -312,35 +313,38 @@ def update_london_ib(df: pd.DataFrame, trade_date: date) -> bool:
 
     ib_cp = (float(ib_bars['close'].iloc[-1]) - ib_lo) / ib_rng if ib_rng > 0 else 0.5
 
-    # Coherence check: IB bars and live quote must be on the same contract.
-    # During rollover week ContFuture (bars) can lag behind the contract that
-    # _resolve_fut_contract() (live quote) has already rolled to, creating a
-    # ~120pt gap. If we formed the IB on the wrong contract, skip the day.
-    live_chk = get_live_price()
-    ib_mid   = (ib_hi + ib_lo) / 2
-    if live_chk and abs(live_chk - ib_mid) > 75.0:
-        msg = (f'⚠️ LONDON SKIP — contract mismatch at IB formation\n'
-               f'IB mid={ib_mid:.0f}  live={live_chk:.0f}  '
-               f'gap={abs(live_chk - ib_mid):.0f}pts\n'
-               f'Bars and live quote on different contracts (rollover week?). '
-               f'Sitting out today.')
-        log(msg)
-        send_telegram(msg)
-        return False
-
     _ib_high      = ib_hi
     _ib_low       = ib_lo
     _ib_close_pos = ib_cp
     _ib_formed    = True
 
+    # Coherence check: on quarterly rollover day IBKR streaming for the new
+    # front-month contract may not be active yet, causing a stale live quote.
+    # The IB range itself (from historical bars) is always correct. Rather than
+    # skip the day, raise _ib_pending_sync so run_scan() holds off on entries
+    # until live price aligns with the most-recent bar close (within 50pts).
+    live_chk = get_live_price()
+    ib_mid   = (ib_hi + ib_lo) / 2
+    if live_chk and abs(live_chk - ib_mid) > 75.0:
+        _ib_pending_sync = True
+        msg = (f'⚠️ LONDON IB — live price out of sync\n'
+               f'IB H={ib_hi:.0f}  L={ib_lo:.0f}  mid={ib_mid:.0f}\n'
+               f'live={live_chk:.0f}  gap={abs(live_chk - ib_mid):.0f}pts\n'
+               f'IB valid — waiting for live quote to align before trading.')
+        log(msg)
+        send_telegram(msg)
+    else:
+        _ib_pending_sync = False
+
     log(f'IB formed: H={ib_hi:.2f}  L={ib_lo:.2f}  Range={ib_rng:.1f}pts  '
         f'ClosePos={ib_cp:.2f}  Bias={_ovn_bias}  OvnPos={_ovn_pos:.2f}')
-    send_telegram(
-        f'🌅 LONDON IB FORMED\n'
-        f'H={ib_hi:.2f}  L={ib_lo:.2f}  Range={ib_rng:.1f}pts\n'
-        f'Close@{ib_cp:.0%}  Overnight bias: {_ovn_bias}\n'
-        f'Watching for IB breaks...'
-    )
+    if not _ib_pending_sync:
+        send_telegram(
+            f'🌅 LONDON IB FORMED\n'
+            f'H={ib_hi:.2f}  L={ib_lo:.2f}  Range={ib_rng:.1f}pts\n'
+            f'Close@{ib_cp:.0%}  Overnight bias: {_ovn_bias}\n'
+            f'Watching for IB breaks...'
+        )
     return True
 
 
@@ -809,27 +813,28 @@ def reset_session():
     global _session_date, _ib_high, _ib_low, _ib_formed, _ib_close_pos
     global _ovn_bias, _ovn_skip, _ovn_pos, _atr, _position, _trade_count
     global _daily_pnl, _last_exit_time, _cached_df
-    global _active_contract_month, _stale_block_count
+    global _active_contract_month, _stale_block_count, _ib_pending_sync
 
     today = datetime.now(ET).date()
     if _session_date == today:
         return  # already initialised for today
 
-    _session_date   = today
-    _ib_high        = 0.0
-    _ib_low         = 0.0
-    _ib_formed      = False
-    _ib_close_pos   = 0.5
-    _ovn_bias       = 'BOTH'
-    _ovn_skip       = False
-    _ovn_pos        = -1.0
-    _atr            = 10.0
-    _position       = None
-    _trade_count    = 0
-    _daily_pnl      = 0.0
-    _last_exit_time = None
-    _cached_df      = pd.DataFrame()
+    _session_date      = today
+    _ib_high           = 0.0
+    _ib_low            = 0.0
+    _ib_formed         = False
+    _ib_close_pos      = 0.5
+    _ovn_bias          = 'BOTH'
+    _ovn_skip          = False
+    _ovn_pos           = -1.0
+    _atr               = 10.0
+    _position          = None
+    _trade_count       = 0
+    _daily_pnl         = 0.0
+    _last_exit_time    = None
+    _cached_df         = pd.DataFrame()
     _stale_block_count = 0
+    _ib_pending_sync   = False
 
     # Resolve active contract month once per session so get_bars() and
     # get_live_price() always pull from the same IBKR contract.
@@ -847,6 +852,7 @@ def run_scan():
       4. Monitor open position exits / trail updates.
     """
     global _ib_formed, _ovn_bias, _ovn_skip, _ovn_pos, _atr, _cached_df
+    global _ib_pending_sync
 
     if not get_bridge_connected():
         log('Bridge disconnected — skipping scan')
@@ -895,6 +901,31 @@ def run_scan():
 
     if _ovn_skip or not _ib_formed:
         return
+
+    # ── 1b. Live-price sync gate (rollover / stale-streaming) ─────────────────
+    if _ib_pending_sync:
+        today_bars_sync = df[df.index.date == today_et]
+        bar_close = float(today_bars_sync['close'].iloc[-1]) if not today_bars_sync.empty else None
+        live_now  = get_live_price()
+        if bar_close and live_now and abs(live_now - bar_close) < 50.0:
+            _ib_pending_sync = False
+            msg = (f'✅ LONDON: live price synced — entries open\n'
+                   f'live={live_now:.0f}  bar={bar_close:.0f}  '
+                   f'gap={abs(live_now - bar_close):.0f}pts\n'
+                   f'IB: H={_ib_high:.0f}  L={_ib_low:.0f}')
+            log(msg)
+            send_telegram(msg)
+            send_telegram(
+                f'🌅 LONDON IB FORMED\n'
+                f'H={_ib_high:.2f}  L={_ib_low:.2f}  '
+                f'Range={_ib_high - _ib_low:.1f}pts\n'
+                f'Close@{_ib_close_pos:.0%}  Overnight bias: {_ovn_bias}\n'
+                f'Watching for IB breaks...'
+            )
+        else:
+            gap = abs(live_now - bar_close) if (live_now and bar_close) else 999
+            log(f'  Waiting for live sync: live={live_now}  bar={bar_close}  gap={gap:.0f}pts')
+            return
 
     # ── 2. Monitor open position ──────────────────────────────────────────────
     if _position is not None:

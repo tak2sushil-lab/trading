@@ -122,6 +122,18 @@ _cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by r
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
 
+# CME holiday calendar — NOT the same as NYSE. CME stays open on Juneteenth,
+# MLK Day, and Presidents Day.
+CME_HOLIDAYS_2026 = {
+    date(2026, 1,  1),   # New Year's Day
+    date(2026, 4,  3),   # Good Friday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 7,  3),   # Independence Day (observed, Sat→Fri)
+    date(2026, 9,  7),   # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 12, 25),  # Christmas
+}
+
 
 # ── Logging + Telegram ────────────────────────────────────
 
@@ -1192,6 +1204,10 @@ def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
     global _confirmed_scans, _regime_scan_counts, _cached_df5
 
+    if date.today() in CME_HOLIDAYS_2026:
+        log("CME holiday — scan skipped")
+        return
+
     if not get_bridge_connected():
         log("Bridge disconnected — skipping scan")
         return
@@ -1294,6 +1310,10 @@ def run_monitor():
 
 def reset_daily_state():
     """Called at market open each day."""
+    if date.today() in CME_HOLIDAYS_2026:
+        log("reset_daily_state: CME holiday — skipping")
+        return
+
     global _orb_high, _orb_low, _orb_set, _confirmed_scans
     global _regime_scan_counts, _session_high, _session_low
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
