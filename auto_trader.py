@@ -1315,26 +1315,32 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
     elif sig['fvg_count'] >= 1:
         score += 10; reasons.append(f'{sig["fvg_count"]} FVGs')
 
-    if sig['vol_ratio'] >= 2.0:
+    # Vol scoring — ≥2.5x = full signal; <2.5x = low energy, -10pts across all tiers
+    # Live data: vol <2.5x EOD bleed = 29 trades, -$798 total (-$28 avg)
+    if sig['vol_ratio'] >= 2.5:
         score += round(25 * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
+    elif sig['vol_ratio'] >= 2.0:
+        score += round(15 * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol (low energy -10)')
     elif sig['vol_ratio'] >= 1.5:
-        score += round(15 * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
+        score += round(5  * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol (low energy -10)')
     else:
-        score += round(5  * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol')
+        score -= round(5  * w['volume']); reasons.append(f'{sig["vol_ratio"]:.1f}x vol (low energy -10)')
 
     if sig['uptrend'] and sig['ema_touch']:
         score += 20; reasons.append('EMA pullback in uptrend')
     elif sig['uptrend']:
         score += 10; reasons.append('Uptrend')
 
-    # Daily RSI — scoring only, no longer a hard gate (high RSI = momentum, not overbought)
-    # RSI 65-75 bucket has 42.5% WR historically — no bonus, no penalty
+    # Daily RSI — hard gate for 70-80 danger zone; scoring for all other zones
+    # Live data (182 trades): RSI 70-80 = 44% WR, -$14 avg, -$374 total — only net-negative zone
+    # RSI 80+ = 65% WR, +$23 avg — sellers gave up, momentum confirmed ✓
+    # RSI 70-80 = sellers still testing, stock at resistance without breakaway momentum ✗
+    if 70 <= sig['rsi'] < 80:
+        return 'SKIP', [f'RSI {sig["rsi"]} danger zone (70-80) — 44% WR net negative'], 0
     if 45 <= sig['rsi'] <= 65:
         score += round(20 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} ideal')
-    elif 65 < sig['rsi'] <= 75:
-        reasons.append(f'RSI {sig["rsi"]} elevated (neutral)')  # 42.5% WR — skip bonus
-    elif 75 < sig['rsi'] <= 80:
-        score += round(5  * w['rsi']); reasons.append(f'RSI {sig["rsi"]} strong momentum')
+    elif 65 < sig['rsi'] < 70:
+        reasons.append(f'RSI {sig["rsi"]} elevated (neutral)')
     else:
         score += round(5  * w['rsi']); reasons.append(f'RSI {sig["rsi"]} (trending)')
 
@@ -1984,11 +1990,13 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         # 0c. Long flip-exit: exit losing longs when market turns WEAK (x3 consecutive)
         # Mirror of short flip-exit. Jun 9 2026: entered 3 SEMIS longs at NORMAL x2,
         # regime degraded CAUTIOUS→WEAK x3 at 10:27am — stops hit 10:31-11:22am.
-        # Exiting at WEAK x3 saves ~50% of eventual stop loss on distribution days.
+        # VWAP condition: only exit if also below VWAP — protects winning longs that still
+        # have momentum (above VWAP = stock is OK even if market is weak).
         if (not exit_reason and not is_short
-                and regime == 'WEAK' and confirmed_scans >= 3 and pnl_pct < 0):
+                and regime == 'WEAK' and confirmed_scans >= 3 and pnl_pct < 0
+                and (above_vwap is None or not above_vwap)):
             exit_reason = (f'Regime flip WEAK (x{confirmed_scans}) — '
-                           f'exiting losing long ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
+                           f'exiting losing long below VWAP ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
 
         # 1. Hard stop
         if is_short:
@@ -3493,6 +3501,11 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         else:
             strategy = 'FVG_FILL' if pick['fvg_count'] > 5 else 'MOMENTUM'
             tag      = '🎯'
+
+        # FVG fills need volume confirmation — gap-fills without momentum tend to stall and exit EOD
+        if strategy == 'FVG_FILL' and pick['vol_ratio'] < 5.0:
+            log(f"  ⛔ SKIP {sym} — FVG_FILL vol {pick['vol_ratio']:.1f}x < 5x required")
+            continue
 
         log(f"  {tag} {pick['grade']} {sym} [{sector}] ${price} | "
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | ATR stop")

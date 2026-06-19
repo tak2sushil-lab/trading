@@ -163,9 +163,11 @@ def grade_day(i, df, spy_chg, regime, symbol=None):
     if hod_break:    score += 20; reasons.append('HOD break')
     if rs_leader:    score += 20; reasons.append(f'RS +{rs_vs_spy:.1f}% vs SPY')
 
-    if vol_ratio >= 2.0:    score += 25; reasons.append(f'{vol_ratio:.1f}x vol')
-    elif vol_ratio >= 1.5:  score += 15; reasons.append(f'{vol_ratio:.1f}x vol')
-    else:                   score += 5;  reasons.append(f'{vol_ratio:.1f}x vol')
+    # Vol scoring — ≥2.5x = full signal; <2.5x = low energy, -10pts (mirrors auto_trader)
+    if vol_ratio >= 2.5:    score += 25; reasons.append(f'{vol_ratio:.1f}x vol')
+    elif vol_ratio >= 2.0:  score += 15; reasons.append(f'{vol_ratio:.1f}x vol (low energy -10)')
+    elif vol_ratio >= 1.5:  score += 5;  reasons.append(f'{vol_ratio:.1f}x vol (low energy -10)')
+    else:                   score -= 5;  reasons.append(f'{vol_ratio:.1f}x vol (low energy -10)')
 
     ema8  = float(df_upto['Close'].ewm(span=8).mean().iloc[-1])
     ema21 = float(df_upto['Close'].ewm(span=21).mean().iloc[-1])
@@ -176,10 +178,11 @@ def grade_day(i, df, spy_chg, regime, symbol=None):
     g = d.clip(lower=0).rolling(14).mean().iloc[-1]
     l = (-d.clip(upper=0)).rolling(14).mean().iloc[-1]
     rsi = round(float(100 - (100 / (1 + g / l))), 1) if l and l > 0 else 50
+    # Daily RSI — hard gate for 70-80 danger zone (mirrors auto_trader)
+    if 70 <= rsi < 80:     return 'SKIP', 0, [f'RSI {rsi:.0f} danger zone (70-80)'], False
     if 45 <= rsi <= 65:    score += 20; reasons.append(f'RSI {rsi:.0f}')
-    elif 65 < rsi <= 75:  reasons.append(f'RSI {rsi:.0f} elevated (neutral)')  # 42.5% WR
-    elif 75 < rsi <= 80:  score += 5;  reasons.append(f'RSI {rsi:.0f} strong momentum')
-    else:                 score += 5
+    elif 65 < rsi < 70:   reasons.append(f'RSI {rsi:.0f} elevated (neutral)')
+    else:                  score += 5
 
     if today_gain >= 5.0: score += 30; reasons.append(f'+{today_gain:.1f}%')
     elif today_gain >= 3.0: score += 20; reasons.append(f'+{today_gain:.1f}%')

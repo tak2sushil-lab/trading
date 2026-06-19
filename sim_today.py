@@ -679,12 +679,15 @@ def simulate(symbol, regime, spy_chg):
             score += 10; patterns.append(f'RS +{rs_vs_spy:.1f}% vs SPY')
         elif rs_vs_spy < 0:
             score -= 10; patterns.append(f'RS {rs_vs_spy:.1f}% lagging SPY')
-        if vol_ratio >= 2.0:
+        # Vol scoring — ≥2.5x = full signal; <2.5x = low energy, -10pts (mirrors auto_trader)
+        if vol_ratio >= 2.5:
             score += 25; patterns.append(f'{vol_ratio:.1f}x vol')
+        elif vol_ratio >= 2.0:
+            score += 15; patterns.append(f'{vol_ratio:.1f}x vol (low energy -10)')
         elif vol_ratio >= 1.5:
-            score += 15; patterns.append(f'{vol_ratio:.1f}x vol')
+            score += 5;  patterns.append(f'{vol_ratio:.1f}x vol (low energy -10)')
         else:
-            score += 5;  patterns.append(f'{vol_ratio:.1f}x vol')
+            score -= 5;  patterns.append(f'{vol_ratio:.1f}x vol (low energy -10)')
         if fvg_count >= 10:
             score += 30; patterns.append(f'{fvg_count} FVGs')
         elif fvg_count >= 5:
@@ -695,12 +698,17 @@ def simulate(symbol, regime, spy_chg):
             score += 20; patterns.append('EMA pullback in uptrend')
         elif uptrend_now:
             score += 10; patterns.append('Uptrend')
+        # Daily RSI — hard gate for 70-80 danger zone (mirrors auto_trader)
+        if 70 <= rsi_d < 80:
+            skip = f'RSI {rsi_d:.0f} danger zone (70-80) — 44% WR net negative'
+            skip_counts[skip] = skip_counts.get(skip, 0) + 1
+            if skip not in first_skip:
+                first_skip[skip] = (tstr, price)
+            continue
         if 45 <= rsi_d <= 65:
             score += 20; patterns.append(f'Daily RSI {rsi_d:.0f} ideal')
-        elif 65 < rsi_d <= 75:
-            patterns.append(f'Daily RSI {rsi_d:.0f} elevated (neutral)')  # 42.5% WR — no bonus
-        elif 75 < rsi_d <= 80:
-            score += 5;  patterns.append(f'Daily RSI {rsi_d:.0f} strong momentum')
+        elif 65 < rsi_d < 70:
+            patterns.append(f'Daily RSI {rsi_d:.0f} elevated (neutral)')
         else:
             score += 5;  patterns.append(f'Daily RSI {rsi_d:.0f}')
         if is_tight:
