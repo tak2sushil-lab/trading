@@ -167,11 +167,17 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
 MKT_DB_PATH = os.path.join(_DIR, '..', 'market_data.db')
 
-US_HOLIDAYS_2026 = {
-    date(2026, 1,  1), date(2026, 1, 19), date(2026, 2, 16),
-    date(2026, 4,  3), date(2026, 5, 25), date(2026, 6, 19),
-    date(2026, 7,  3), date(2026, 9,  7), date(2026, 11, 26),
-    date(2026, 12, 25),
+# CME holiday calendar — NOT the same as NYSE. CME stays open on Juneteenth,
+# MLK Day, and Presidents Day. Only close on: New Year's, Good Friday,
+# Memorial Day, Independence Day, Labor Day, Thanksgiving, Christmas.
+CME_HOLIDAYS_2026 = {
+    date(2026, 1,  1),   # New Year's Day
+    date(2026, 4,  3),   # Good Friday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 7,  3),   # Independence Day (observed, Sat→Fri)
+    date(2026, 9,  7),   # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 12, 25),  # Christmas
 }
 
 # RVOL scaling: {"%H:%M" ET slot → avg volume across history} — loaded once at startup.
@@ -451,7 +457,7 @@ def compute_overnight_bias():
 
         # Overnight window: prev 4pm ET → today 9:30am ET (skip weekends + holidays)
         prev_day = today - timedelta(days=1)
-        while prev_day.weekday() >= 5 or prev_day in US_HOLIDAYS_2026:
+        while prev_day.weekday() >= 5 or prev_day in CME_HOLIDAYS_2026:
             prev_day -= timedelta(days=1)
         prev_4pm   = ET.localize(datetime(prev_day.year, prev_day.month, prev_day.day, 16, 0))
         night_bars = bars_1m[(bars_1m.index >= prev_4pm) & (bars_1m.index < today_930)]
@@ -1796,7 +1802,7 @@ def run_scan():
     global _confirmed_scans, _regime_scan_counts, _cached_df5
     global _ib_kind, _ib_kind_set, _day_regime, _large_ib_delayed
 
-    if date.today() in US_HOLIDAYS_2026:
+    if date.today() in CME_HOLIDAYS_2026:
         log("Market holiday — scan skipped")
         return
 
@@ -2028,7 +2034,7 @@ def run_monitor():
 
 def reset_daily_state():
     """Called at market open each day."""
-    if date.today() in US_HOLIDAYS_2026:
+    if date.today() in CME_HOLIDAYS_2026:
         log("reset_daily_state: market holiday — skipping")
         return
     global _orb_high, _orb_low, _orb_set, _confirmed_scans
