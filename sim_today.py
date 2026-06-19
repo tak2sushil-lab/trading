@@ -699,7 +699,9 @@ def simulate(symbol, regime, spy_chg):
         elif uptrend_now:
             score += 10; patterns.append('Uptrend')
         # Daily RSI — hard gate for 70-80 danger zone (mirrors auto_trader)
-        if 70 <= rsi_d < 80:
+        # Bypass for catalysts: earnings gap can legitimately push RSI to 70-80 on day 1
+        _is_cat_cand = today_gain_now >= 4.0 and vol_ratio >= 2.0
+        if 70 <= rsi_d < 80 and not _is_cat_cand:
             skip = f'RSI {rsi_d:.0f} danger zone (70-80) — 44% WR net negative'
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
             if skip not in first_skip:
@@ -826,6 +828,16 @@ def simulate(symbol, regime, spy_chg):
             continue
         if spy_chg < 0 and grade != 'A+':
             skip = f'Grade {grade} skipped — SPY negative, need A+'
+            skip_counts[skip] = skip_counts.get(skip, 0) + 1
+            if skip not in first_skip:
+                first_skip[skip] = (tstr, price)
+            continue
+
+        # FVG_FILL vol gate: high-FVG stocks need vol confirmation (mirrors auto_trader._scan_and_enter)
+        # Catalyst stocks bypass this (same as auto_trader strategy assignment order)
+        _is_cat_fvg = today_gain_now >= 4.0 and vol_ratio >= 2.0
+        if fvg_count >= 5 and vol_ratio < 5.0 and not _is_cat_fvg:
+            skip = f'FVG_FILL vol {vol_ratio:.1f}x < 5x (fvg_count={fvg_count})'
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
             if skip not in first_skip:
                 first_skip[skip] = (tstr, price)

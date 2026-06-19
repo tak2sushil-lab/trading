@@ -179,7 +179,9 @@ def grade_day(i, df, spy_chg, regime, symbol=None):
     l = (-d.clip(upper=0)).rolling(14).mean().iloc[-1]
     rsi = round(float(100 - (100 / (1 + g / l))), 1) if l and l > 0 else 50
     # Daily RSI — hard gate for 70-80 danger zone (mirrors auto_trader)
-    if 70 <= rsi < 80:     return 'SKIP', 0, [f'RSI {rsi:.0f} danger zone (70-80)'], False
+    # Bypass for catalysts: gap >=4% + vol >=2x (mirrors is_catalyst logic in auto_trader)
+    _is_cat = today_gain >= 4.0 and vol_ratio >= 2.0
+    if 70 <= rsi < 80 and not _is_cat:     return 'SKIP', 0, [f'RSI {rsi:.0f} danger zone (70-80)'], False
     if 45 <= rsi <= 65:    score += 20; reasons.append(f'RSI {rsi:.0f}')
     elif 65 < rsi < 70:   reasons.append(f'RSI {rsi:.0f} elevated (neutral)')
     else:                  score += 5

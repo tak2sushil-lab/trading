@@ -1335,7 +1335,8 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
     # Live data (182 trades): RSI 70-80 = 44% WR, -$14 avg, -$374 total — only net-negative zone
     # RSI 80+ = 65% WR, +$23 avg — sellers gave up, momentum confirmed ✓
     # RSI 70-80 = sellers still testing, stock at resistance without breakaway momentum ✗
-    if 70 <= sig['rsi'] < 80:
+    # Bypass for catalysts: earnings gap can legitimately push RSI to 70-80 on day 1
+    if 70 <= sig['rsi'] < 80 and not is_catalyst:
         return 'SKIP', [f'RSI {sig["rsi"]} danger zone (70-80) — 44% WR net negative'], 0
     if 45 <= sig['rsi'] <= 65:
         score += round(20 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} ideal')
@@ -1994,7 +1995,7 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         # have momentum (above VWAP = stock is OK even if market is weak).
         if (not exit_reason and not is_short
                 and regime == 'WEAK' and confirmed_scans >= 3 and pnl_pct < 0
-                and (above_vwap is None or not above_vwap)):
+                and (above_vwap is not None and not above_vwap)):
             exit_reason = (f'Regime flip WEAK (x{confirmed_scans}) — '
                            f'exiting losing long below VWAP ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})')
 
@@ -3499,7 +3500,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             strategy = 'CATALYST'
             tag      = '⚡'
         else:
-            strategy = 'FVG_FILL' if pick['fvg_count'] > 5 else 'MOMENTUM'
+            strategy = 'FVG_FILL' if pick['fvg_count'] >= 5 else 'MOMENTUM'
             tag      = '🎯'
 
         # FVG fills need volume confirmation — gap-fills without momentum tend to stall and exit EOD
