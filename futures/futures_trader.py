@@ -51,6 +51,7 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
+from futures.gate_audit import log_block, log_enter  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0          # $ max risk per trade (1 contract × 50-tick stop)
@@ -1951,9 +1952,13 @@ def run_scan():
     _scan_ib_range = calc_ib_range_today(df5)
     if _scan_rvol < 0.3:
         log(f"Low RVOL ({_scan_rvol:.2f}× < 0.3) — skip entry attempt")
+        try: log_block('IBKR', 'MNQ', 'LONG', 'RVOL', f'{_scan_rvol:.2f}x', price, session)
+        except Exception: pass
         return
     if _scan_ib_range > 0 and _scan_ib_range < 50.0:
         log(f"Thin IB ({_scan_ib_range:.0f}pts < 50 min) — skip entry attempt")
+        try: log_block('IBKR', 'MNQ', 'LONG', 'IB_RANGE', f'{_scan_ib_range:.0f}pts', price, session)
+        except Exception: pass
         return
 
     # ── Overnight skip zone gate ──────────────────────────────
@@ -1963,6 +1968,8 @@ def run_scan():
     if _overnight_skip_day and _daily_macro_bias == 'BOTH':
         log(f"Overnight skip zone (pos={_overnight_position}) — no entries today. "
             f"Override: FUT BIAS LONG or FUT BIAS SHORT")
+        try: log_block('IBKR', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={_overnight_position:.3f}', price, session)
+        except Exception: pass
         return
 
     # ── Hero gate (Phase 5 regime-aware scoring) ─────────────────────────────
@@ -1983,7 +1990,10 @@ def run_scan():
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
-        if grade in ('A+', 'A'):
+        if grade not in ('A+', 'A'):
+            try: log_block('IBKR', 'MNQ', 'LONG', 'GRADE', f'{grade}({score})', price_now, session)
+            except Exception: pass
+        else:
             # Hero gate: score entry with regime-aware weights
             h_score, h_flags = score_entry_regime(price_now, atr_now, 'LONG',
                                                    bars_hist, prev_rth, hero_regime)
@@ -1991,9 +2001,16 @@ def run_scan():
             if contracts_hero == 0:
                 log(f"LONG signal: {grade} ({score}pts) — HERO SKIP "
                     f"(weighted={h_score}, regime={hero_regime}, flags={h_flags})")
+                try: log_block('IBKR', 'MNQ', 'LONG', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
+                except Exception: pass
             else:
                 log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
-                place_trade('LONG', sig, regime, score, grade)
+                if place_trade('LONG', sig, regime, score, grade):
+                    try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
+                    except Exception: pass
+    else:
+        try: log_block('IBKR', 'MNQ', 'LONG', 'REGIME', regime, price_now, session)
+        except Exception: pass
 
     # ── Try SHORT entry ────────────────────────────────────
     # short_allowed:
@@ -2007,7 +2024,10 @@ def run_scan():
     )
     if short_allowed:
         score, grade = grade_entry(sig, regime, 'SHORT')
-        if grade in ('A+', 'A'):
+        if grade not in ('A+', 'A'):
+            try: log_block('IBKR', 'MNQ', 'SHORT', 'GRADE', f'{grade}({score})', price_now, session)
+            except Exception: pass
+        else:
             # Hero gate for SHORT
             h_score, h_flags = score_entry_regime(price_now, atr_now, 'SHORT',
                                                    bars_hist, prev_rth, hero_regime)
@@ -2015,10 +2035,17 @@ def run_scan():
             if contracts_hero == 0:
                 log(f"SHORT signal: {grade} ({score}pts) — HERO SKIP "
                     f"(weighted={h_score}, regime={hero_regime}, flags={h_flags})")
+                try: log_block('IBKR', 'MNQ', 'SHORT', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
+                except Exception: pass
             else:
                 log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
                     f"ib={_ib_kind} — entering")
-                place_trade('SHORT', sig, regime, score, grade)
+                if place_trade('SHORT', sig, regime, score, grade):
+                    try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
+                    except Exception: pass
+    else:
+        try: log_block('IBKR', 'MNQ', 'SHORT', 'REGIME', regime, price_now, session)
+        except Exception: pass
 
 
 def run_monitor():

@@ -49,6 +49,7 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
+from futures.gate_audit import log_block, log_enter  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
@@ -1281,9 +1282,17 @@ def run_scan():
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
-        if grade in ('A+', 'A'):
+        if grade not in ('A+', 'A'):
+            try: log_block('TC', 'MNQ', 'LONG', 'GRADE', f'{grade}({score})', price, session)
+            except Exception: pass
+        else:
             log(f"LONG signal: {grade} ({score}pts) — entering")
-            place_trade('LONG', sig, regime, score, grade)
+            if place_trade('LONG', sig, regime, score, grade):
+                try: log_enter('TC', 'MNQ', 'LONG', f'{grade}({score})', price, session)
+                except Exception: pass
+    else:
+        try: log_block('TC', 'MNQ', 'LONG', 'REGIME', regime, price, session)
+        except Exception: pass
 
     # ── Try SHORT entry ────────────────────────────────────
     # Normal: WEAK regime required. Macro bias SHORT: allowed in any regime
@@ -1292,9 +1301,17 @@ def run_scan():
                     (_daily_macro_bias == 'SHORT')
     if short_allowed:
         score, grade = grade_entry(sig, regime, 'SHORT')
-        if grade in ('A+', 'A'):
+        if grade not in ('A+', 'A'):
+            try: log_block('TC', 'MNQ', 'SHORT', 'GRADE', f'{grade}({score})', price, session)
+            except Exception: pass
+        else:
             log(f"SHORT signal: {grade} ({score}pts) — entering")
-            place_trade('SHORT', sig, regime, score, grade)
+            if place_trade('SHORT', sig, regime, score, grade):
+                try: log_enter('TC', 'MNQ', 'SHORT', f'{grade}({score})', price, session)
+                except Exception: pass
+    else:
+        try: log_block('TC', 'MNQ', 'SHORT', 'REGIME', regime, price, session)
+        except Exception: pass
 
 
 def run_monitor():

@@ -39,6 +39,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+from futures.gate_audit import log_block, log_enter
 
 # ── Instrument constants (MNQ) ────────────────────────────────────────────────
 
@@ -886,6 +887,9 @@ def run_scan():
         if skip:
             log(f'Overnight ambiguous (pos={ovn_pos_val:.2f}) — skip day')
             send_telegram(f'🇬🇧 LONDON: overnight ambiguous (pos={ovn_pos_val:.2f}) — skip today')
+            _price_now = float(df['close'].iloc[-1]) if not df.empty else 0.0
+            try: log_block('LONDON', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={ovn_pos_val:.3f}', _price_now, 'LONDON')
+            except Exception: pass
             return
 
         # Compute ATR from yesterday's bars (not today's London bars)
@@ -959,19 +963,27 @@ def run_scan():
     sig_a_bear = price < _ib_low
 
     for side in ('LONG', 'SHORT'):
-        # Respect overnight directional bias
-        if _ovn_bias == 'LONG'  and side == 'SHORT':
-            continue
-        if _ovn_bias == 'SHORT' and side == 'LONG':
-            continue
-
+        # Only log gates when there is actually an IB break signal to evaluate
         sig_a = sig_a_bull if side == 'LONG' else sig_a_bear
         if not sig_a:
             continue
 
+        # Respect overnight directional bias — IB break exists but bias opposes it
+        if _ovn_bias == 'LONG'  and side == 'SHORT':
+            try: log_block('LONDON', 'MNQ', side, 'BIAS', _ovn_bias, price, 'LONDON')
+            except Exception: pass
+            continue
+        if _ovn_bias == 'SHORT' and side == 'LONG':
+            try: log_block('LONDON', 'MNQ', side, 'BIAS', _ovn_bias, price, 'LONDON')
+            except Exception: pass
+            continue
+
         log(f'Signal A: {side} IB break  price={price:.2f}  '
             f'IB=({_ib_low:.2f}–{_ib_high:.2f})  bias={_ovn_bias}')
-        place_london_trade(side, price)
+        placed = place_london_trade(side, price)
+        if placed:
+            try: log_enter('LONDON', 'MNQ', side, f'SignalA({_ovn_bias})', price, 'LONDON')
+            except Exception: pass
         break  # one entry per scan
 
 
