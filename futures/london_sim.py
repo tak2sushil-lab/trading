@@ -155,6 +155,17 @@ def _tick_round(v: float) -> float:
     return round(round(v / TICK_SIZE) * TICK_SIZE, 2)
 
 
+def _is_quarterly_roll_day(d: _dt.date) -> bool:
+    """True on the 3rd Friday of March/June/September/December — MNQ quarterly expiry.
+    Live london_trader now skips these days (contract mismatch risk). Sim matches."""
+    if d.month not in (3, 6, 9, 12):
+        return False
+    first_day = d.replace(day=1)
+    first_fri = first_day + _dt.timedelta(days=(4 - first_day.weekday()) % 7)
+    third_fri = first_fri + _dt.timedelta(weeks=2)
+    return d == third_fri
+
+
 def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
     if len(df) < 2:
         return 10.0
@@ -324,6 +335,12 @@ def simulate_london_day(
     if trade_date in US_HOLIDAYS:
         day_stats['skip_reason'] = 'holiday'
         return [], 'HOLIDAY', -1.0, day_stats
+
+    # Quarterly roll day: live system skips due to ContFuture/live-quote contract
+    # mismatch (IB range formed on expiring contract). Sim matches live behaviour.
+    if _is_quarterly_roll_day(trade_date):
+        day_stats['skip_reason'] = 'quarterly_roll'
+        return [], 'ROLL', -1.0, day_stats
 
     # ── Overnight bias ────────────────────────────────────────────────────────
     daily_bias, skip_day, ovn_pos = compute_overnight_bias_london(all_bars, trade_date)

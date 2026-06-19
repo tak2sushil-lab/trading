@@ -96,6 +96,7 @@ SCAN_INTERVAL   = 60        # seconds between scans (1 min, faster than equity)
 MONITOR_INTERVAL = 15       # seconds between position checks
 
 # ── Global state ──────────────────────────────────────────
+_active_contract_month = ''   # resolved daily; keeps get_bars() on same contract as live quote
 _last_regime          = 'NORMAL'
 _confirmed_scans      = 0
 _regime_scan_counts   = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
@@ -222,19 +223,27 @@ def _bridge_post(path: str, payload: dict, timeout: int = 10) -> dict:
 
 def get_live_price() -> float | None:
     """Get current MNQ best price via bridge (yfinance primary, IBKR live fallback)."""
+    global _active_contract_month
     q = _bridge_get(f'/futures/quote/{SYMBOL}')
+    # Cache contract month so get_bars() stays on the same contract as the live quote
+    cm = str(q.get('contract_month', '') or '').strip()
+    if cm:
+        _active_contract_month = cm
     return q.get('best_price') or q.get('last') or q.get('close')
 
 
 def get_bars(bar_size_min: int = 5, days: int = 2) -> pd.DataFrame:
     """
     Fetch historical bars for MNQ from the IBKR bridge.
+    Passes active contract_month so bars and live quote use the same IBKR contract
+    (prevents ContFuture/live-quote divergence during rollover week).
     Bridge endpoint: GET /history/futures/MNQ?duration=2+D&bar_size=5+mins&rth=false
     Response: {'symbol': 'MNQ', 'bars': [{ts, open, high, low, close, volume}, ...]}
     """
     bar_str  = f'{bar_size_min}+mins'
     dur_str  = f'{days}+D'
-    path     = f'/history/futures/{SYMBOL}?duration={dur_str}&bar_size={bar_str}&rth=false'
+    cm       = f'&contract_month={_active_contract_month}' if _active_contract_month else ''
+    path     = f'/history/futures/{SYMBOL}?duration={dur_str}&bar_size={bar_str}&rth=false{cm}'
     resp     = _bridge_get(path, timeout=20)
     if not resp or 'error' in resp:
         return pd.DataFrame()

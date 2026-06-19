@@ -348,15 +348,18 @@ async def get_history(
 # ── Futures historical bars ───────────────────────────────
 @app.get("/history/futures/{symbol}")
 async def get_futures_history(
-    symbol:   str,
-    duration: str = Query(default="60 D",  description="e.g. '60 D', '6 M'. Max 60D for 5-min."),
-    bar_size: str = Query(default="5 mins", description="e.g. '5 mins', '1 hour', '1 day'"),
-    end_dt:   str = Query(default="",      description="End datetime YYYYMMDD HH:MM:SS. Empty = now."),
-    rth:      bool = Query(default=True,   description="Regular trading hours only"),
+    symbol:         str,
+    duration:       str  = Query(default="60 D",  description="e.g. '60 D', '6 M'. Max 60D for 5-min."),
+    bar_size:       str  = Query(default="5 mins", description="e.g. '5 mins', '1 hour', '1 day'"),
+    end_dt:         str  = Query(default="",      description="End datetime YYYYMMDD HH:MM:SS. Empty = now."),
+    rth:            bool = Query(default=True,    description="Regular trading hours only"),
+    contract_month: str  = Query(default="",      description="Specific contract YYYYMMDD (e.g. '20260918'). Empty = ContFuture continuous."),
 ):
     """
-    Fetch continuous futures bars from IBKR.
-    Uses ContFuture (IBKR continuous contract) for clean historical data.
+    Fetch futures bars from IBKR.
+    When contract_month is provided, uses that specific Future contract — ensures bars
+    and live quote are on the same contract (critical during rollover week).
+    When empty, uses ContFuture (IBKR continuous) — best for long historical backtests.
     useRTH defaults False — futures trade 23h/day, RTH filter removes most bars.
     Returns bars as {ts, open, high, low, close, volume} for collect_bars.py.
     """
@@ -367,12 +370,19 @@ async def get_futures_history(
                  'YM': 'CBOT', 'MYM': 'CBOT', 'RTY': 'CME', 'M2K': 'CME'}
     exchange  = exchanges.get(sym, 'CME')
 
-    # ContFuture = IBKR's continuous adjusted contract — best for backtesting
-    contract = ContFuture(sym, exchange=exchange, currency='USD')
+    cm = contract_month.strip()
+    if cm:
+        # Specific contract — same one the live quote endpoint subscribes to.
+        # Prevents ContFuture/live-quote divergence during rollover week.
+        contract = Future(sym, lastTradeDateOrContractMonth=cm,
+                          exchange=exchange, currency='USD')
+    else:
+        # ContFuture = IBKR's continuous adjusted contract — best for backtesting
+        contract = ContFuture(sym, exchange=exchange, currency='USD')
     try:
         qualified = await ib.qualifyContractsAsync(contract)
         if not qualified:
-            return {'error': f'Could not qualify ContFuture {sym}', 'bars': []}
+            return {'error': f'Could not qualify contract {sym} {cm or "ContFuture"}', 'bars': []}
     except Exception as e:
         return {'error': f'Contract qualification failed: {e}', 'bars': []}
 

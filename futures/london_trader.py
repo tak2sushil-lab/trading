@@ -148,6 +148,9 @@ _ovn_pos:        float            = -1.0   # overnight close position (set by ru
 
 _cached_df:  pd.DataFrame         = pd.DataFrame()
 
+_active_contract_month: str       = ''   # resolved at session reset; passed to get_bars
+_stale_block_count:     int       = 0    # consecutive stale-price blocks this session
+
 
 # ── Helpers: tick rounding ────────────────────────────────────────────────────
 
@@ -181,9 +184,17 @@ def get_bridge_connected() -> bool:
 
 # ── Data / bar functions ──────────────────────────────────────────────────────
 
-def get_bars(days: int = 2) -> pd.DataFrame:
-    """Fetch MNQ 5-min bars from IBKR bridge (rth=false → includes London window)."""
-    path = f'/history/futures/{SYMBOL}?duration={days}+D&bar_size=5+mins&rth=false'
+def get_active_contract_month() -> str:
+    """Return the contract month string the bridge is subscribed to (e.g. '20260918')."""
+    resp = _bridge_get(f'/futures/quote/{SYMBOL}')
+    return str(resp.get('contract_month', '') or '').strip()
+
+
+def get_bars(days: int = 2, contract_month: str = '') -> pd.DataFrame:
+    """Fetch MNQ 5-min bars from IBKR bridge (rth=false → includes London window).
+    Pass contract_month to ensure bars and live quote use the same contract."""
+    cm   = f'&contract_month={contract_month}' if contract_month else ''
+    path = f'/history/futures/{SYMBOL}?duration={days}+D&bar_size=5+mins&rth=false{cm}'
     resp = _bridge_get(path, timeout=20)
     bars = resp.get('bars', [])
     if not bars:
@@ -300,6 +311,22 @@ def update_london_ib(df: pd.DataFrame, trade_date: date) -> bool:
         return False
 
     ib_cp = (float(ib_bars['close'].iloc[-1]) - ib_lo) / ib_rng if ib_rng > 0 else 0.5
+
+    # Coherence check: IB bars and live quote must be on the same contract.
+    # During rollover week ContFuture (bars) can lag behind the contract that
+    # _resolve_fut_contract() (live quote) has already rolled to, creating a
+    # ~120pt gap. If we formed the IB on the wrong contract, skip the day.
+    live_chk = get_live_price()
+    ib_mid   = (ib_hi + ib_lo) / 2
+    if live_chk and abs(live_chk - ib_mid) > 75.0:
+        msg = (f'⚠️ LONDON SKIP — contract mismatch at IB formation\n'
+               f'IB mid={ib_mid:.0f}  live={live_chk:.0f}  '
+               f'gap={abs(live_chk - ib_mid):.0f}pts\n'
+               f'Bars and live quote on different contracts (rollover week?). '
+               f'Sitting out today.')
+        log(msg)
+        send_telegram(msg)
+        return False
 
     _ib_high      = ib_hi
     _ib_low       = ib_lo
@@ -506,9 +533,18 @@ def place_london_trade(side: str, signal_price: float) -> bool:
 
     # Stale quote guard (same 50pt divergence as NY system)
     if abs(live_price - signal_price) > 50.0:
+        global _stale_block_count
+        _stale_block_count += 1
         log(f'  BLOCKED: stale price — signal={signal_price:.2f} live={live_price:.2f} '
-            f'(gap={abs(live_price-signal_price):.1f}pts)')
+            f'(gap={abs(live_price-signal_price):.1f}pts) [{_stale_block_count} consecutive]')
+        if _stale_block_count == 5:
+            send_telegram(
+                f'⚠️ LONDON: {_stale_block_count} consecutive stale-price blocks\n'
+                f'gap={abs(live_price-signal_price):.0f}pts — possible contract mismatch\n'
+                f'contract={_active_contract_month or "unknown"}'
+            )
         return False
+    _stale_block_count = 0
 
     sl, target = calc_sl_target(live_price, _atr, side)
     stop_pts   = abs(live_price - sl)
@@ -773,6 +809,7 @@ def reset_session():
     global _session_date, _ib_high, _ib_low, _ib_formed, _ib_close_pos
     global _ovn_bias, _ovn_skip, _ovn_pos, _atr, _position, _trade_count
     global _daily_pnl, _last_exit_time, _cached_df
+    global _active_contract_month, _stale_block_count
 
     today = datetime.now(ET).date()
     if _session_date == today:
@@ -792,8 +829,12 @@ def reset_session():
     _daily_pnl      = 0.0
     _last_exit_time = None
     _cached_df      = pd.DataFrame()
+    _stale_block_count = 0
 
-    log(f'=== London session reset for {today} ===')
+    # Resolve active contract month once per session so get_bars() and
+    # get_live_price() always pull from the same IBKR contract.
+    _active_contract_month = get_active_contract_month()
+    log(f'=== London session reset for {today} | contract={_active_contract_month or "unresolved"} ===')
 
 
 def run_scan():
@@ -821,8 +862,8 @@ def run_scan():
 
     reset_session()
 
-    # Fetch bars (cached for monitor sub-calls this cycle)
-    df = get_bars(days=2)
+    # Fetch bars using the specific active contract (same one as live quote)
+    df = get_bars(days=2, contract_month=_active_contract_month)
     if df.empty:
         log('No bars from bridge — skip')
         return
