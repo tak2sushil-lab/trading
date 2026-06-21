@@ -51,8 +51,12 @@ def rfr(date_str: str) -> float:
 
 # ── Data fetchers ──────────────────────────────────────────────────────────────
 
+_price_cache: dict[str, pd.DataFrame] = {}
+_iv_cache:    dict[str, pd.Series]    = {}
+
 def fetch_prices(symbol: str) -> pd.DataFrame | None:
-    # yfinance for price history — works 24/7, 2Y daily data, reliable
+    if symbol in _price_cache:
+        return _price_cache[symbol]
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period='2y', interval='1d', auto_adjust=True)
@@ -63,6 +67,7 @@ def fetch_prices(symbol: str) -> pd.DataFrame | None:
         df['close'] = pd.to_numeric(df['close'], errors='coerce')
         df = df.dropna(subset=['close'])
         df['ma200'] = df['close'].rolling(200, min_periods=150).mean()
+        _price_cache[symbol] = df
         return df
     except Exception as e:
         print(f"    price error: {e}")
@@ -74,7 +79,11 @@ def fetch_iv(symbol: str, prices: pd.DataFrame | None = None) -> pd.Series | Non
     Fall back to realized-volatility proxy from price history:
       IV ≈ HV30 × 1.20  (20% vol-risk-premium is conservative market average)
     This makes the backtester fully self-contained — no gateway required.
+    Cached per symbol — safe because all scenarios run in the same process.
     """
+    if symbol in _iv_cache:
+        return _iv_cache[symbol]
+    result = None
     try:
         r = requests.get(f"{BRIDGE_URL}/options/iv_history/{symbol}", timeout=10)
         if r.status_code == 200:
@@ -82,22 +91,25 @@ def fetch_iv(symbol: str, prices: pd.DataFrame | None = None) -> pd.Series | Non
             if bars:
                 s = pd.Series({pd.Timestamp(b['date']): b['iv'] for b in bars if b.get('iv')})
                 if len(s) >= 20:
-                    return s.sort_index()
+                    result = s.sort_index()
     except Exception:
         pass
 
-    # Fallback: compute 30-day realized vol from price history, scale by 1.20
-    if prices is None or len(prices) < 35:
-        return None
-    try:
-        log_ret = prices['close'].pct_change().apply(lambda x: x + 1).apply(lambda x: __import__('math').log(x))
-        hv30    = log_ret.rolling(30).std() * (252 ** 0.5)   # annualized
-        iv_proxy = (hv30 * 1.20).dropna()
-        if len(iv_proxy) < 20:
-            return None
-        return iv_proxy
-    except Exception:
-        return None
+    if result is None:
+        # Fallback: compute 30-day realized vol from price history, scale by 1.20
+        if prices is not None and len(prices) >= 35:
+            try:
+                log_ret  = prices['close'].pct_change().apply(lambda x: x + 1).apply(lambda x: __import__('math').log(x))
+                hv30     = log_ret.rolling(30).std() * (252 ** 0.5)
+                iv_proxy = (hv30 * 1.20).dropna()
+                if len(iv_proxy) >= 20:
+                    result = iv_proxy
+            except Exception:
+                pass
+
+    if result is not None:
+        _iv_cache[symbol] = result
+    return result
 
 # ── IV rank ────────────────────────────────────────────────────────────────────
 
@@ -610,7 +622,8 @@ def sim_quick_spread(sym, entry_date, price_df, iv_series, ivr,
 def run_quick_backtest(symbols: list[str], bearish: bool = False,
                        min_move_pct: float = 0.0, max_move_pct: float = 0.0,
                        long_sd: float = 0.33, short_sd: float = 0.67,
-                       max_ivr: int = 35, silent: bool = False) -> list[dict]:
+                       max_ivr: int = 35, silent: bool = False,
+                       start_date: str = '2026-01-01') -> list[dict]:
     direction = 'BEAR PUT' if bearish else 'BULL CALL'
     if not silent:
         print(f"\n{'═'*55}")
@@ -641,9 +654,9 @@ def run_quick_backtest(symbols: list[str], bearish: bool = False,
             if not silent: print("✗ insufficient overlap")
             continue
 
-        common = common[common >= pd.Timestamp('2026-01-01')]
+        common = common[common >= pd.Timestamp(start_date)]
         if len(common) < 5:
-            if not silent: print("✗ insufficient 2026 data")
+            if not silent: print(f"✗ insufficient data from {start_date}")
             continue
 
         trades    = 0
@@ -749,11 +762,11 @@ HIGH_BETA_SYMBOLS = [
 ]
 
 
-def run_comparison(symbols: list[str], bearish: bool = False):
+def run_comparison(symbols: list[str], bearish: bool = False, start_date: str = '2026-01-01'):
     """Run scenarios and print a side-by-side comparison table."""
     direction = 'BEAR PUT' if bearish else 'BULL CALL'
     print(f"\n{'═'*72}")
-    print(f"  SCENARIO COMPARISON  |  {direction} spread  |  2026 YTD")
+    print(f"  SCENARIO COMPARISON  |  {direction} spread  |  {start_date} →")
     print(f"  Goal: find which entry filter / strike geometry creates edge")
     print(f"{'═'*72}")
 
@@ -786,7 +799,8 @@ def run_comparison(symbols: list[str], bearish: bool = False):
         trades = run_quick_backtest(syms, bearish=bearish,
                                    min_move_pct=mm, max_move_pct=mx_mv,
                                    long_sd=l_sd, short_sd=s_sd,
-                                   max_ivr=mx_ivr, silent=True)
+                                   max_ivr=mx_ivr, silent=True,
+                                   start_date=start_date)
         if not trades:
             print(f"  {label:<26}  {'–':>5}   no trades")
             continue
@@ -818,6 +832,8 @@ if __name__ == '__main__':
                         help='Long strike in SD units (default 0.33)')
     parser.add_argument('--short-sd', type=float, default=0.67,
                         help='Short strike in SD units (default 0.67)')
+    parser.add_argument('--start', default='2026-01-01',
+                        help='Start date for backtest (default: 2026-01-01, use 2025-01-01 for full year)')
     args = parser.parse_args()
 
     if args.high_beta:
@@ -826,9 +842,10 @@ if __name__ == '__main__':
         syms = args.symbols or DEFAULT_SYMBOLS
 
     if args.strategy in ('COMPARE_BULL', 'COMPARE_BEAR'):
-        run_comparison(syms, bearish=(args.strategy == 'COMPARE_BEAR'))
+        run_comparison(syms, bearish=(args.strategy == 'COMPARE_BEAR'), start_date=args.start)
     elif args.strategy.startswith('QUICK'):
-        kw = dict(min_move_pct=args.momentum, long_sd=args.long_sd, short_sd=args.short_sd)
+        kw = dict(min_move_pct=args.momentum, long_sd=args.long_sd, short_sd=args.short_sd,
+                  start_date=args.start)
         if args.strategy in ('QUICK_BULL', 'QUICK_BOTH'):
             bull_trades = run_quick_backtest(syms, bearish=False, **kw)
             report_quick(bull_trades, bearish=False)
