@@ -127,7 +127,7 @@ SCALP_TRADE_SIZE    = float(os.getenv('SCALP_TRADE_SIZE',    '250'))
 MAX_SCALP_POSITIONS = int(os.getenv('MAX_SCALP_POSITIONS',   '2'))
 SCALP_PROFIT_MULT   = 1.80   # close at 180% of cost (+80%)
 SCALP_STOP_MULT     = 0.50   # close at 50% of cost (-50%)
-SCALP_MAX_DAYS      = 3
+SCALP_MAX_DAYS      = 2
 SCALP_MIN_DTE       = 7
 SCALP_MAX_DTE       = 12
 SCALP_DELTA_MIN     = 0.38
@@ -2244,7 +2244,9 @@ def _scalp_cooldown_expire(stale_syms: list):
 # ── OPT_SCALP: trigger scanners ───────────────────────────────────────────────
 
 def _mode_a_scan() -> list[str]:
-    """Return SCALP_UNIVERSE symbols with an A+ LONG scan entry in the last 10 min."""
+    """Return SCALP_UNIVERSE symbols with an A+ LONG scan entry in the last 10 min.
+    Skips catalyst (IV elevated) and ≥7% intraday (momentum exhausted at scan time).
+    """
     try:
         import sqlite3
         from database import DB_PATH
@@ -2253,13 +2255,24 @@ def _mode_a_scan() -> list[str]:
         today  = date.today().isoformat()
         cutoff = (datetime.now(ET) - timedelta(minutes=10)).strftime('%H:%M:%S')
         c.execute(
-            "SELECT DISTINCT symbol FROM scan_log "
+            "SELECT symbol, is_catalyst, intra_chg FROM scan_log "
             "WHERE scan_date=? AND scan_time>=? AND grade='A+' AND direction='LONG'",
             (today, cutoff),
         )
         rows = c.fetchall()
         conn.close()
-        return [r[0] for r in rows if r[0] in SCALP_UNIVERSE]
+        result = []
+        for sym, is_catalyst, intra_chg in rows:
+            if sym not in SCALP_UNIVERSE:
+                continue
+            if is_catalyst:
+                print(f"[scalp] mode_a skip {sym}: catalyst=1 (IV elevated)")
+                continue
+            if intra_chg is not None and intra_chg >= 7.0:
+                print(f"[scalp] mode_a skip {sym}: intra {intra_chg:.1f}% ≥7% (exhausted)")
+                continue
+            result.append(sym)
+        return result
     except Exception as e:
         print(f"[scalp] mode_a_scan error: {e}")
         return []

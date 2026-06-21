@@ -667,18 +667,18 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             )
             return alerts   # don't pile on other alerts when stop is hit
 
-    # ── OPT_SCALP: 3-day time stop (checked intraday + EOD) ──
+    # ── OPT_SCALP: 2-day time stop (checked intraday + EOD) ──
     if strat == 'OPT_SCALP' and 'SCALP_TIME' not in fired:
         entry_date_str = trade.get('entry_date')
         if entry_date_str:
             days_held = (date.today() - date.fromisoformat(entry_date_str)).days
-            if days_held >= 3:
+            if days_held >= 2:
                 fired.add('SCALP_TIME')
                 closed = _auto_close_position(trade, current_value, exit_reason='SCALP_TIME')
                 if closed:
                     alerts.append(
                         f"⏰ *AUTO-CLOSED: {sym} SCALP* (trade #{tid})\n"
-                        f"3-day hold limit reached (Day {days_held})\n"
+                        f"2-day hold limit reached (Day {days_held})\n"
                         f"Value: ${current_value:.2f} | Entry cost: ${prem:.2f}"
                     )
                 else:
