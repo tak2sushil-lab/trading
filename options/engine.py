@@ -45,14 +45,19 @@ def get_stock_data(symbol: str) -> dict:
         if n >= 200:
             above_200 = float(closes[-1]) > float(np.mean(closes[-200:]))
 
+        # Prior close = last completed daily bar (yfinance excludes today's intraday)
+        prior_close = round(float(closes[-1]), 4) if n >= 1 else None
+
         return {
             'hv30':        hv30,
             'hv10':        hv10,
             'momentum_5d': momentum_5d,
             'above_200':   above_200,
+            'prior_close': prior_close,
         }
     except Exception:
-        return {'hv30': None, 'hv10': None, 'momentum_5d': None, 'above_200': False}
+        return {'hv30': None, 'hv10': None, 'momentum_5d': None,
+                'above_200': False, 'prior_close': None}
 
 
 def compute_hv(symbol: str, window: int = 30) -> Optional[float]:
@@ -211,6 +216,28 @@ def _bs_spread_vals(S_matrix: np.ndarray, K1: float, K2: float,
     return np.clip(call_long - call_short, 0.0, spread_width)
 
 
+def _bs_put_spread_vals(S_matrix: np.ndarray, K_long: float, K_short: float,
+                        sigma: float, T_remaining: np.ndarray) -> np.ndarray:
+    """
+    Vectorized Black-Scholes bear put spread value.
+    K_long > K_short (long higher put, short lower put).
+    S_matrix: (n_paths, dte), T_remaining: (1, dte) years.
+    """
+    spread_width = K_long - K_short
+    safe_T  = np.maximum(T_remaining, 1 / 252)
+    sqrt_T  = np.sqrt(safe_T)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        d1_l = (np.log(S_matrix / K_long)  + 0.5 * sigma**2 * safe_T) / (sigma * sqrt_T)
+        d2_l = d1_l - sigma * sqrt_T
+        d1_s = (np.log(S_matrix / K_short) + 0.5 * sigma**2 * safe_T) / (sigma * sqrt_T)
+        d2_s = d1_s - sigma * sqrt_T
+
+    put_long  = K_long  * _norm.cdf(-d2_l) - S_matrix * _norm.cdf(-d1_l)
+    put_short = K_short * _norm.cdf(-d2_s) - S_matrix * _norm.cdf(-d1_s)
+    return np.clip(put_long - put_short, 0.0, spread_width)
+
+
 def run_monte_carlo_ev(
     price:        float,
     iv_pct:       float,
@@ -220,6 +247,7 @@ def run_monte_carlo_ev(
     net_debit:    float,
     hv30:         Optional[float] = None,
     n_paths:      int = 10_000,
+    bearish:      bool = False,
 ) -> dict:
     """
     GBM Monte Carlo with Black-Scholes spread pricing at each step.
@@ -239,7 +267,9 @@ def run_monte_carlo_ev(
     price_sigma  = sigma
     path_sigma   = sigma
     dt           = 1 / 252
-    spread_width = short_strike - long_strike
+    # For call spread: short_strike > long_strike → positive width
+    # For put spread:  long_strike  > short_strike → use abs()
+    spread_width = abs(short_strike - long_strike)
 
     profit_target_val = net_debit + (spread_width - net_debit) * 0.50
     stop_level_val    = net_debit * 0.50
@@ -255,7 +285,11 @@ def run_monte_carlo_ev(
     T_remain = ((dte - days_idx - 1) / 252).reshape(1, -1)   # (1, dte) years
 
     # BS spread values: use realized sigma so EV reflects VRP edge at entry
-    spread_vals = _bs_spread_vals(prices, long_strike, short_strike, price_sigma, T_remain)
+    if bearish:
+        # Bear put spread: long_strike > short_strike (long higher put, short lower put)
+        spread_vals = _bs_put_spread_vals(prices, long_strike, short_strike, price_sigma, T_remain)
+    else:
+        spread_vals = _bs_spread_vals(prices, long_strike, short_strike, price_sigma, T_remain)
 
     # Exit masks
     profit_mask = spread_vals >= profit_target_val

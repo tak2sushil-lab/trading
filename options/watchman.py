@@ -73,7 +73,7 @@ US_HOLIDAYS_2026 = {
     date(2026,  7,  3), date(2026,  9,  7), date(2026, 11, 26),
     date(2026, 12, 25),
 }
-SCAN_INTERVAL_MIN = 15
+SCAN_INTERVAL_MIN = 5
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
 
@@ -159,7 +159,7 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
     tid   = trade['id']
     qty   = trade.get('contracts', 1)
 
-    if strat == 'BULL_SPREAD':
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         lq = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
         sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
         if not lq or not sq:
@@ -486,7 +486,7 @@ def get_contract_value(trade: dict) -> float | None:
     premium_paid and stop_value in DB are also totals, so comparisons are consistent."""
     contracts = trade.get('contracts', 1) or 1
     strat     = trade.get('strategy', '')
-    if strat == 'BULL_SPREAD':
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         val = get_spread_value(trade)
     elif strat == 'OPT_SCALP':
         val = get_scalp_value(trade)
@@ -532,7 +532,7 @@ def compute_new_stop(trade: dict, current_value: float,
     cur_stage  = trade['stop_stage'] or 1
     cur_stop   = trade['stop_value']
 
-    if trade['strategy'] == 'BULL_SPREAD':
+    if trade['strategy'] in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         hard_stop      = round(premium * 0.50, 2)      # -50%
         be_trigger     = round(premium * 1.25, 2)      # +25% profit
         trail_trigger  = round(premium + max_profit * 0.50, 2)  # +50% of max
@@ -559,7 +559,7 @@ def compute_new_stop(trade: dict, current_value: float,
 
     if cur_stage == 3:
         new_trail = round(session_high - (
-            max_profit * 0.15 if trade['strategy'] == 'BULL_SPREAD'
+            max_profit * 0.15 if trade['strategy'] in ('BULL_SPREAD', 'BEAR_PUT_SPREAD')
             else premium * 0.20
         ), 2)
         if new_trail > (cur_stop or 0):
@@ -625,18 +625,13 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             trade['stop_stage'] = new_stage
             stop  = new_stop
             stage = new_stage
-            stage_label = {1: 'hard stop', 2: 'breakeven lock', 3: 'trailing'}
-            alerts.append(
-                f"🔒 *{sym} stop updated* → Stage {stage} ({stage_label[stage]})\n"
-                f"Stop value: ${stop:.2f} | Contract: ${current_value:.2f}"
-            )
 
     # ── T3b: hit profit target — AUTO-CLOSE ──
     target = trade.get('target_value')
     if target is not None and current_value >= target and 'T3b' not in fired:
         fired.add('T3b')
         gain_pct = round((current_value - prem) / prem * 100, 1) if prem else 0
-        tgt_label = '50% max profit' if trade['strategy'] == 'BULL_SPREAD' else '100% gain'
+        tgt_label = '50% max profit' if trade['strategy'] in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') else '100% gain'
         closed = _auto_close_position(trade, current_value, exit_reason='AUTO_TARGET')
         if closed:
             alerts.append(
@@ -693,41 +688,6 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                     )
                 return alerts
 
-    # ── T1: underlying > 3% move (once per session) ──
-    if underlying and prior_close and prior_close > 0 and 'T1' not in fired:
-        move_pct = (underlying - prior_close) / prior_close * 100
-        if abs(move_pct) > 3.0:
-            fired.add('T1')
-            direction = "▲" if move_pct > 0 else "▼"
-            alerts.append(
-                f"{direction} *{sym} moved {move_pct:+.1f}%* today\n"
-                f"Price: ${underlying:.2f} (was ${prior_close:.2f})\n"
-                f"Contract value: ${current_value:.2f}"
-            )
-
-    # ── T2: IV rank spike > 8 pts from entry (once per session) ──
-    if iv_rank is not None and trade['iv_rank_entry'] is not None and 'T2' not in fired:
-        iv_change = iv_rank - trade['iv_rank_entry']
-        if abs(iv_change) > 8:
-            fired.add('T2')
-            direction = "↑" if iv_change > 0 else "↓"
-            alerts.append(
-                f"⚡ *{sym} IV rank {direction}{abs(iv_change):.0f} pts*\n"
-                f"Current: {iv_rank:.0f}% | At entry: {trade['iv_rank_entry']:.0f}%\n"
-                f"{'IV crush risk — consider closing' if iv_change > 8 else 'IV drop — contract cheaper to hold'}"
-            )
-
-    # ── T3: contract value up > 30% (once per session) ──
-    if prem and prem > 0 and 'T3' not in fired:
-        gain_pct = (current_value - prem) / prem * 100
-        if gain_pct > 30:
-            fired.add('T3')
-            alerts.append(
-                f"💰 *{sym} up {gain_pct:.0f}%* from entry\n"
-                f"Value: ${current_value:.2f} | Entry: ${prem:.2f}\n"
-                f"Stop now at: ${stop:.2f} (Stage {stage})"
-            )
-
     # ── T5: catalyst within 10 days (once per session) ──
     if trade.get('catalyst_id') and 'T5' not in fired:
         catalysts = get_upcoming_catalysts(days=10)
@@ -750,14 +710,50 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             f"→ Use `OPT CLOSE {sym}` to exit"
         )
 
-    # ── Bull Spread: 21 DTE time exit (once per session) ──
-    if strat == 'BULL_SPREAD' and dte <= 21 and 'BULL_DTE' not in fired:
-        fired.add('BULL_DTE')
-        alerts.append(
-            f"⏰ *{sym} SPREAD: {dte} DTE* — 21-DTE time exit rule\n"
-            f"P&L: ${current_value - prem:+.2f} | Value: ${current_value:.2f}\n"
-            f"→ Close via: `OPT CLOSE {sym}`"
-        )
+    # ── Quick play: 2-day time exit (14-21 DTE at entry — new pro strategy) ──
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') and 'QUICK_TIME' not in fired:
+        try:
+            entry_d = date.fromisoformat(trade.get('entry_date', '2000-01-01'))
+            exp_d   = datetime.strptime(trade.get('expiry', '20000101').replace('-', ''), '%Y%m%d').date()
+            dte_at_entry = (exp_d - entry_d).days
+            if dte_at_entry <= 23:   # quick play entered with 14-21 DTE
+                days_held = (date.today() - entry_d).days
+                if days_held >= 2:
+                    fired.add('QUICK_TIME')
+                    pnl_pct = (current_value - prem) / prem * 100 if prem else 0
+                    closed  = _auto_close_position(trade, current_value, exit_reason='QUICK_TIME')
+                    if closed:
+                        alerts.append(
+                            f"⏰ *AUTO-CLOSED: {sym} {strat}* — 2-day time exit\n"
+                            f"Held {days_held}d | P&L: ${current_value - prem:+.2f} ({pnl_pct:+.1f}%)\n"
+                            f"Quick play rule: exit after 2 days regardless of P&L"
+                        )
+                    else:
+                        alerts.append(
+                            f"⏰ *{sym} {strat}: 2-day time exit* — manual close needed\n"
+                            f"Held {days_held}d | Value: ${current_value:.2f}\n"
+                            f"→ `OPT CLOSE {sym}`"
+                        )
+                    return alerts   # position closed (or close failed) — skip further checks
+        except Exception:
+            pass
+
+    # ── Standard spread: 21 DTE alert (only for older 28-45 DTE positions) ──
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') and dte <= 21 and 'BULL_DTE' not in fired:
+        try:
+            entry_d = date.fromisoformat(trade.get('entry_date', '2000-01-01'))
+            exp_d   = datetime.strptime(trade.get('expiry', '20000101').replace('-', ''), '%Y%m%d').date()
+            dte_at_entry = (exp_d - entry_d).days
+            is_standard = dte_at_entry > 23   # entered with ≥24 DTE — old 28-45 DTE strategy
+        except Exception:
+            is_standard = True
+        if is_standard:
+            fired.add('BULL_DTE')
+            alerts.append(
+                f"⏰ *{sym} {strat}: {dte} DTE* — 21-DTE time exit rule\n"
+                f"P&L: ${current_value - prem:+.2f} | Value: ${current_value:.2f}\n"
+                f"→ Close via: `OPT CLOSE {sym}`"
+            )
 
     # ── EOD: write snapshot ──
     if is_eod:

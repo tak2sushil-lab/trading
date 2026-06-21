@@ -585,7 +585,7 @@ def _calc_template(symbol: str, underlying: float, expiry: str,
     max_loss_dollar    = net_debit_dollar
 
     # Liquidity flags
-    long_spread_ok  = (long_ask  - long_bid)  <= 0.30
+    long_spread_ok  = (long_ask  - long_bid)  <= 0.20
     short_spread_ok = (short_ask - short_bid) <= 0.25
     liquidity_ok    = long_spread_ok and short_spread_ok
     min_debit_ok    = net_debit >= 0.80
@@ -688,8 +688,12 @@ def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
     hv30        = stock_data['hv30']
     above_200   = stock_data['above_200']
     momentum_5d = stock_data['momentum_5d']
+    prior_close = stock_data['prior_close']
+    intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) \
+                   if prior_close else None
 
-    iv_for_calc  = current_iv or iv_rank or 40.0
+    # current_iv is the actual IV %; iv_rank is a percentile (0-100) — do NOT use as fallback
+    iv_for_calc  = current_iv if current_iv else 40.0
     vol_analysis = (engine.assess_volatility_edge(iv_for_calc, hv30)
                     if hv30 else {'edge_pts': None, 'verdict': 'UNKNOWN',
                                   'gate_pass': True, 'iv': iv_for_calc, 'hv30': None})
@@ -708,7 +712,13 @@ def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
     direction     = conviction.get('direction', 'MIXED')
     signal_count  = conviction.get('signal_count', 0)
     narrative     = conviction.get('narrative', '')
-    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULL')
+    last_signal_at = conviction.get('last_signal_at', '')
+    try:
+        signal_age_hrs = (datetime.now() - datetime.fromisoformat(last_signal_at)).total_seconds() / 3600
+    except Exception:
+        signal_age_hrs = 999
+    # HIGH only (MEDIUM is too common) + signal within 24h (news half-life is short)
+    conviction_gate = (tier == 'HIGH') and (direction == 'BULL') and (signal_age_hrs <= 24)
 
     # LEAP: 15-24 month expiry (450–730 DTE)
     expiry = _find_expiry(expiries, 450, 730)
@@ -742,7 +752,7 @@ def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
 
     # 5-gate scoring — same framework, LEAP-specific thresholds
     liquidity_gate  = ba_spread <= 0.60        # LEAP spreads wider — allow up to $0.60
-    momentum_gate   = (momentum_5d is not None and momentum_5d >= 1.0) or \
+    momentum_gate   = (intraday_pct is not None and intraday_pct >= 2.0) or \
                       (catalyst_days is not None and catalyst_days <= 3)
 
     entry_gates = engine.score_entry_gates(
@@ -798,6 +808,7 @@ def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
         'velocity':     velocity,
         'mc_ev':        mc_ev,
         'momentum_5d':  momentum_5d,
+        'intraday_pct': intraday_pct,
         'above_200':    above_200,
         'conviction':   {'tier': tier, 'direction': direction,
                          'signals': signal_count, 'narrative': narrative},
@@ -943,9 +954,14 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     hv30        = stock_data['hv30']
     above_200   = stock_data['above_200']
     momentum_5d = stock_data['momentum_5d']
+    prior_close = stock_data['prior_close']
+    # Intraday move = how much the stock has moved TODAY (catalyst confirmation)
+    intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) \
+                   if prior_close else None
 
     # ── Volatility edge (Gate 1) ──────────────────────────────────────────
-    iv_for_calc = current_iv or iv_rank or 40.0
+    # current_iv is the actual IV %; iv_rank is a percentile (0-100) — do NOT use as fallback
+    iv_for_calc = current_iv if current_iv else 40.0
     if hv30 is not None:
         vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
     else:
@@ -968,7 +984,13 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     direction     = conviction.get('direction', 'MIXED')
     signal_count  = conviction.get('signal_count', 0)
     narrative     = conviction.get('narrative', '')
-    conviction_gate = (tier in ('HIGH', 'MEDIUM')) and (direction == 'BULL')
+    last_signal_at = conviction.get('last_signal_at', '')
+    try:
+        signal_age_hrs = (datetime.now() - datetime.fromisoformat(last_signal_at)).total_seconds() / 3600
+    except Exception:
+        signal_age_hrs = 999
+    # HIGH only (MEDIUM is too common) + signal within 24h (news half-life is short)
+    conviction_gate = (tier == 'HIGH') and (direction == 'BULL') and (signal_age_hrs <= 24)
 
     # ── Expiry selection (catalyst-driven or balanced DTE) ────────────────
     if catalyst_days and 21 <= catalyst_days <= 75:
@@ -976,10 +998,10 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         valid_exp  = [e for e in expiries if days_to_expiry(e) >= 21]
         expiry     = min(valid_exp, key=lambda e: abs(days_to_expiry(e) - target_dte), default=None)
     else:
-        expiry = _find_expiry(expiries, 28, 45)
+        expiry = _find_expiry(expiries, 14, 21)
 
     if not expiry:
-        return {'error': f'No suitable expiry for {sym} (no options 28-45 DTE)'}
+        return {'error': f'No suitable expiry for {sym} (no options 14-21 DTE)'}
 
     dte = days_to_expiry(expiry)
 
@@ -990,8 +1012,12 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     if not strikes:
         return {'error': f'Cannot fetch strike list for {sym} {expiry}'}
 
-    target_long  = underlying + em * 0.33   # ~33% of 1-SD move — moderate OTM entry
-    target_short = underlying + em * 1.00   # at the 1-SD level — natural cap
+    target_long  = underlying + em * 0.33
+    if iv_for_calc > 60:
+        # High-IV stocks have large EMs; coarse strike spacing inflates OTM distance.
+        # Cap long strike at 8% OTM so delta stays ≥ ~0.38 regardless of IV.
+        target_long = min(target_long, underlying * 1.08)
+    target_short = underlying + em * 0.67   # 0.67 SD OTM → delta ~0.25 (pro standard)
     long_strike  = _find_nearest_strike(strikes, target_long)
     short_strike = _find_nearest_strike(strikes, target_short)
 
@@ -1027,9 +1053,13 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     # ── Gate evaluation ───────────────────────────────────────────────────
     long_ba  = round(long_ask  - long_bid,  2)
     short_ba = round(short_ask - short_bid, 2)
-    liquidity_gate = long_ba <= 0.30 and short_ba <= 0.30
+    liquidity_gate = long_ba <= 0.20 and short_ba <= 0.20
 
-    momentum_gate = (momentum_5d is not None and momentum_5d >= 1.0) or \
+    # Momentum gate: scan_log backtest (Jun 20) shows sweet spot is 2-6% intraday.
+    # ≥7% stocks have exhausted daily energy at scan time — options enter at the peak.
+    # Stocks at 7%+ continue UP (100% stock WR) but options show 26% WR / -17% avg
+    # because the move is priced in. Upper bound 7% filters this gap-and-hold effect.
+    momentum_gate = (intraday_pct is not None and 2.0 <= intraday_pct < 7.0) or \
                     (catalyst_days is not None and catalyst_days <= 3)
 
     entry_gates = engine.score_entry_gates(
@@ -1058,6 +1088,13 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         hv30=hv30,   # two-sigma: paths on HV30, pricing on IV
     )
 
+    # ── MC WR guard: model says sub-45% win rate → require human review ──────
+    mc_wr = (mc_ev or {}).get('win_rate', 0)
+    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 45:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']  = 'ENTER_REDUCED'
+        entry_gates['size_adj'] = 0.5
+
     # ── Trade dict for execution (consumed by _execute_spread_bg) ─────────
     verdict     = entry_gates['verdict']
     grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
@@ -1073,6 +1110,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         'iv_pct':        current_iv,
         'grade':         grade_label,
         'template':      'EM-Anchored',
+        'right':         'C',
         'delta_long':    lq.get('delta'),
         'catalyst_id':   catalyst_id,
         'catalyst_days': catalyst_days,
@@ -1103,16 +1141,232 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         'net_greeks':   net_greeks,
         'velocity':     velocity,
         'mc_ev':        mc_ev,
-        'momentum_5d':  momentum_5d,
-        'above_200':    above_200,
-        'conviction':   {'tier': tier, 'direction': direction, 'signals': signal_count, 'narrative': narrative},
+        'momentum_5d':   momentum_5d,
+        'intraday_pct':  intraday_pct,
+        'above_200':     above_200,
+        'conviction':    {'tier': tier, 'direction': direction, 'signals': signal_count, 'narrative': narrative},
         'catalyst_days': catalyst_days,
-        'catalyst_id':  catalyst_id,
+        'catalyst_id':   catalyst_id,
         'qty':          qty,
         'trade':        trade,
     }
 
     # Persist to KB (non-blocking — errors should never kill the calculator)
+    try:
+        calc_log_id = log_calc_run(result)
+        result['calc_log_id'] = calc_log_id
+    except Exception:
+        pass
+
+    return result
+
+
+def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
+    """
+    Bear put spread calculator — mirror of run_calculator() for bullish call spreads.
+    14-21 DTE, long put 0.33 SD OTM, short put at 0.67 SD OTM.
+    Bearish gates: tier==HIGH direction==BEAR, intraday <= -2%, below 200MA.
+    """
+    sym = symbol.upper()
+
+    iv_data    = get_iv_rank(sym)
+    iv_rank    = iv_data.get('iv_rank',    50.0) if iv_data else 50.0
+    current_iv = iv_data.get('current_iv')       if iv_data else None
+
+    underlying = get_underlying_price(sym)
+    if not underlying:
+        return {'error': f'Cannot fetch price for {sym}'}
+
+    chain_data = get_chain(sym)
+    if not chain_data or 'chain' not in chain_data:
+        return {'error': f'Cannot fetch option chain for {sym}'}
+
+    expiries     = [item['expiry'] for item in chain_data['chain']]
+    theo_strikes = chain_data['chain'][0]['strikes'] if chain_data['chain'] else []
+
+    stock_data  = engine.get_stock_data(sym)
+    hv30        = stock_data['hv30']
+    above_200   = stock_data['above_200']
+    momentum_5d = stock_data['momentum_5d']
+    prior_close = stock_data['prior_close']
+    intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) \
+                   if prior_close else None
+
+    iv_for_calc = current_iv if current_iv else 40.0
+    if hv30 is not None:
+        vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
+    else:
+        vol_analysis = {'edge_pts': None, 'verdict': 'UNKNOWN', 'gate_pass': True,
+                        'iv': iv_for_calc, 'hv30': None}
+
+    upcoming      = get_upcoming_catalysts(days=90)
+    sym_cats      = [c for c in upcoming if c['symbol'] == sym]
+    catalyst_days = None
+    catalyst_id   = None
+    if sym_cats:
+        cat_date      = datetime.strptime(sym_cats[0]['date'], '%Y-%m-%d').date()
+        catalyst_days = (cat_date - date.today()).days
+        catalyst_id   = sym_cats[0]['id']
+
+    conviction     = get_conviction_detail(sym)
+    tier           = conviction.get('tier', 'LOW')
+    direction      = conviction.get('direction', 'MIXED')
+    signal_count   = conviction.get('signal_count', 0)
+    narrative      = conviction.get('narrative', '')
+    last_signal_at = conviction.get('last_signal_at', '')
+    try:
+        signal_age_hrs = (datetime.now() - datetime.fromisoformat(last_signal_at)).total_seconds() / 3600
+    except Exception:
+        signal_age_hrs = 999
+    conviction_gate = (tier == 'HIGH') and (direction == 'BEAR') and (signal_age_hrs <= 24)
+
+    expiry = _find_expiry(expiries, 14, 21)
+    if not expiry:
+        expiry = _find_expiry(expiries, 10, 28)
+    if not expiry:
+        return {'error': f'No 14-21 DTE expiry for {sym}'}
+
+    dte = days_to_expiry(expiry)
+    em  = engine.compute_expected_move(underlying, iv_for_calc, dte)
+
+    # calls and puts share the same strike ladder at each expiry
+    put_strikes = _actual_strikes(sym, expiry) or theo_strikes
+    if not put_strikes:
+        return {'error': f'Cannot fetch put strike list for {sym} {expiry}'}
+
+    # Long put: near ATM, capped at 8% OTM below underlying
+    target_long  = underlying - em * 0.33
+    if iv_for_calc > 60:
+        target_long = max(target_long, underlying * 0.92)
+    # Short put: 0.67 SD OTM → delta ~0.25 (pro standard, tighter spread = better debit/width ratio)
+    target_short = underlying - em * 0.67
+
+    long_strike  = _find_nearest_strike(put_strikes, target_long)
+    short_strike = _find_nearest_strike(put_strikes, target_short)
+
+    if not long_strike or not short_strike or long_strike <= short_strike:
+        return {'error': f'Cannot determine valid put strikes for {sym} (EM=${em:.2f}, targets ${target_long:.0f}/${target_short:.0f})'}
+
+    lq = get_quote(sym, expiry, long_strike,  'P')
+    sq = get_quote(sym, expiry, short_strike, 'P')
+    if not lq or not sq:
+        return {'error': f'Cannot fetch put option quotes for {sym}'}
+
+    long_bid  = float(lq.get('bid') or 0)
+    long_ask  = float(lq.get('ask') or 0)
+    short_bid = float(sq.get('bid') or 0)
+    short_ask = float(sq.get('ask') or 0)
+
+    if not (long_bid and long_ask and short_bid and short_ask):
+        return {'error': f'Incomplete put bid/ask for {sym} — check market hours or IBKR connection'}
+
+    long_mid  = (long_bid  + long_ask)  / 2
+    short_mid = (short_bid + short_ask) / 2
+    net_debit = round(long_mid - short_mid, 2)
+
+    spread_width      = long_strike  - short_strike   # positive: long(higher) - short(lower)
+    net_debit_dollar  = round(net_debit * 100, 2)
+    max_profit_dollar = round((spread_width - net_debit) * 100, 2)
+    max_loss_dollar   = net_debit_dollar
+    breakeven         = round(long_strike - net_debit, 2)    # stock must fall below this
+    breakeven_pct     = round((underlying - breakeven) / underlying * 100, 1)
+
+    long_ba  = round(long_ask  - long_bid,  2)
+    short_ba = round(short_ask - short_bid, 2)
+    liquidity_gate = long_ba <= 0.20 and short_ba <= 0.20
+
+    # Bearish momentum: backtest proves stock must already be falling TODAY (2%+)
+    momentum_gate = (intraday_pct is not None and intraday_pct <= -2.0) or \
+                    (catalyst_days is not None and catalyst_days <= 3)
+
+    # Tech gate for bear: stock should be below 200MA
+    tech_gate = not above_200
+
+    entry_gates = engine.score_entry_gates(
+        vol_gate=vol_analysis.get('gate_pass', True),
+        tech_gate=tech_gate,
+        conviction_gate=conviction_gate,
+        liquidity_gate=liquidity_gate,
+        momentum_gate=momentum_gate,
+    )
+
+    net_greeks = engine.compute_net_greeks(lq, sq)
+
+    # MC EV: bear put spread — GBM paths with put spread BS pricing
+    mc_ev = engine.run_monte_carlo_ev(
+        price=underlying,
+        iv_pct=iv_for_calc,
+        dte=dte,
+        long_strike=long_strike,    # higher put strike (long leg)
+        short_strike=short_strike,  # lower put strike (short leg)
+        net_debit=net_debit,
+        hv30=hv30,
+        bearish=True,
+    )
+
+    # MC WR guard (same rule as bull spread)
+    mc_wr = (mc_ev or {}).get('win_rate', 0)
+    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 45:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']  = 'ENTER_REDUCED'
+        entry_gates['size_adj'] = 0.5
+
+    verdict     = entry_gates['verdict']
+    grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
+
+    trade = {
+        'qty':           qty,
+        'net_debit':     net_debit,
+        'expiry':        expiry,
+        'dte':           dte,
+        'long_strike':   long_strike,
+        'short_strike':  short_strike,
+        'underlying':    underlying,
+        'iv_rank':       iv_rank,
+        'iv_pct':        current_iv,
+        'grade':         grade_label,
+        'template':      'EM-Anchored-PUT',
+        'right':         'P',
+        'delta_long':    lq.get('delta'),
+        'catalyst_id':   catalyst_id,
+        'catalyst_days': catalyst_days,
+    }
+
+    result = {
+        'strategy':      'BEAR_PUT_SPREAD',
+        'symbol':        sym,
+        'underlying':    underlying,
+        'expiry':        expiry,
+        'dte':           dte,
+        'iv_rank':       iv_rank,
+        'current_iv':    current_iv,
+        'hv30':          hv30,
+        'vol_analysis':  vol_analysis,
+        'em':            em,
+        'long_strike':   long_strike,
+        'short_strike':  short_strike,
+        'net_debit':     net_debit,
+        'net_debit_$':   net_debit_dollar,
+        'max_profit_$':  max_profit_dollar,
+        'max_loss_$':    max_loss_dollar,
+        'breakeven':     breakeven,
+        'breakeven_pct': breakeven_pct,
+        'long_ba':       long_ba,
+        'short_ba':      short_ba,
+        'entry_gates':   entry_gates,
+        'net_greeks':    net_greeks,
+        'velocity':      {},
+        'mc_ev':         mc_ev,
+        'momentum_5d':   momentum_5d,
+        'intraday_pct':  intraday_pct,
+        'above_200':     above_200,
+        'conviction':    {'tier': tier, 'direction': direction, 'signals': signal_count, 'narrative': narrative},
+        'catalyst_days': catalyst_days,
+        'catalyst_id':   catalyst_id,
+        'qty':           qty,
+        'trade':         trade,
+    }
+
     try:
         calc_log_id = log_calc_run(result)
         result['calc_log_id'] = calc_log_id
@@ -1182,16 +1436,32 @@ def format_calc_message(calc: dict) -> str:
     if narrative:
         con_str += f" — {narrative[:40]}"
 
-    tech_str     = "✅ Above 200MA" if calc.get('above_200') else "❌ Below 200MA"
-    mom_5d       = calc.get('momentum_5d')
-    mom_str      = (f"✅ +{mom_5d:.1f}% (5d)" if (mom_5d or 0) >= 1.0
-                    else (f"❌ {mom_5d:.1f}% (5d)" if mom_5d is not None else "❌ n/a"))
+    intra = calc.get('intraday_pct')
+    if strategy == 'BEAR_PUT_SPREAD':
+        tech_str = "✅ Below 200MA (bearish)" if not calc.get('above_200') else "❌ Above 200MA (bearish needs below)"
+        mom_str  = (f"✅ {intra:.1f}% today" if (intra or 0) <= -2.0
+                    else (f"❌ {intra:.1f}% today (need ≤-2%)" if intra is not None else "❌ n/a"))
+    elif strategy == 'BULL_SPREAD':
+        # Gate is 2-7%: ≥7% = momentum exhausted at scan time (26% WR in scan_log backtest)
+        tech_str = "✅ Above 200MA" if calc.get('above_200') else "❌ Below 200MA"
+        if intra is None:
+            mom_str = "❌ n/a"
+        elif 2.0 <= intra < 7.0:
+            mom_str = f"✅ +{intra:.1f}% today"
+        elif intra >= 7.0:
+            mom_str = f"❌ +{intra:.1f}% today (≥7% — exhausted, skip)"
+        else:
+            mom_str = f"❌ {intra:.1f}% today (need +2–7%)"
+    else:   # LEAP — no upper bound, long-term position
+        tech_str = "✅ Above 200MA" if calc.get('above_200') else "❌ Below 200MA"
+        mom_str  = (f"✅ +{intra:.1f}% today" if (intra or 0) >= 2.0
+                    else (f"❌ {intra:.1f}% today (need ≥+2%)" if intra is not None else "❌ n/a"))
 
     # ── Gate summary ──────────────────────────────────────────────────────
     if verdict == 'ENTER':
         gate_verdict = f"*{gates_pass}/5 → ENTER full size*"
     elif verdict == 'ENTER_REDUCED':
-        gate_verdict = f"*{gates_pass}/5 → PROCEED (half size)*"
+        gate_verdict = f"*{gates_pass}/5 → CONFIRM REQUIRED (reduced size)*"
     else:
         gate_verdict = f"*{gates_pass}/5 → SKIP*"
         failed = []
@@ -1202,7 +1472,9 @@ def format_calc_message(calc: dict) -> str:
         if not gs.get('momentum'):   failed.append("Momentum")
 
     # ── Build message ─────────────────────────────────────────────────────
-    strat_label  = "LEAP Analysis" if strategy == 'LEAP' else "Bull Spread Analysis"
+    strat_label  = ("LEAP Analysis"       if strategy == 'LEAP'
+                    else "Bear Put Spread" if strategy == 'BEAR_PUT_SPREAD'
+                    else "Bull Spread Analysis")
     comparison   = calc.get('_comparison', '')
     auto_qty_note = calc.get('_auto_qty_note', '')
     lines = [
@@ -1256,16 +1528,22 @@ def format_calc_message(calc: dict) -> str:
             "GREEKS",
         ]
     else:
-        liq_warn = "" if (calc.get('long_ba', 1) <= 0.30 and calc.get('short_ba', 1) <= 0.30) \
+        liq_warn = "" if (calc.get('long_ba', 1) <= 0.20 and calc.get('short_ba', 1) <= 0.20) \
                    else " ⚠️ wide spread"
         tgt_dol  = round(mp_dol * 0.50, 0)
+        if strategy == 'BEAR_PUT_SPREAD':
+            be_dir = f"-{be_pct:.1f}%"   # stock must fall to breakeven
+            spread_label = f"${ls}/{ss} Put Spread"
+        else:
+            be_dir = f"+{be_pct:.1f}%"
+            spread_label = f"${ls}/{ss} Call Spread"
         lines += [
             "",
             "━━━━━━━━━━━━━━━━━━━",
             "*RECOMMENDED TRADE*",
-            f"${ls}/{ss} Call Spread · {exp_fmt} ({dte}d){liq_warn}",
+            f"{spread_label} · {exp_fmt} ({dte}d){liq_warn}",
             f"Debit: ${nd:.2f}/sh · ${nd_dol:.0f}/contract",
-            f"Breakeven: ${be:.2f} (+{be_pct:.1f}%)",
+            f"Breakeven: ${be:.2f} ({be_dir})",
             "",
             "GREEKS (net spread)",
         ]
@@ -1288,7 +1566,7 @@ def format_calc_message(calc: dict) -> str:
             f"EV: {ev_sign}${mc['ev_dollar']:.0f}/contract · Win: {win_rate:.0f}%",
         ]
 
-    time_rule = "18-month hold or 50% gain" if strategy == 'LEAP' else "21 DTE"
+    time_rule = "18-month hold or 50% gain" if strategy == 'LEAP' else "2-day max hold"
     lines += [
         "",
         "EXIT RULES",
@@ -1317,8 +1595,9 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
     mid         = tmpl['net_debit']   # baseline mid from calc (used in error message)
     start_price = mid
     try:
-        long_q  = get_quote(sym, expiry, float(tmpl['long_strike']))
-        short_q = get_quote(sym, expiry, float(tmpl['short_strike']))
+        right   = tmpl.get('right', 'C')
+        long_q  = get_quote(sym, expiry, float(tmpl['long_strike']),  right)
+        short_q = get_quote(sym, expiry, float(tmpl['short_strike']), right)
         if (long_q and short_q
                 and long_q.get('ask') is not None
                 and short_q.get('bid') is not None):
@@ -1344,7 +1623,7 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
             'symbol':       sym,
             'expiry':       expiry,
             'strike':       tmpl['long_strike'],
-            'right':        'C',
+            'right':        tmpl.get('right', 'C'),
             'qty':          qty,
             'action':       'BUY',
             'order_type':   'LIMIT',
@@ -1401,10 +1680,14 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         return
 
     # ── Log trade to DB ──
-    premium_dollar = round(filled_at * 100 * qty, 2)
-    max_profit_dollar = round((tmpl['short_strike'] - tmpl['long_strike'] - filled_at) * 100 * qty, 2)
+    strategy_used = 'BEAR_PUT_SPREAD' if tmpl.get('right', 'C') == 'P' else 'BULL_SPREAD'
+    spread_label  = 'put spread' if strategy_used == 'BEAR_PUT_SPREAD' else 'call spread'
+    right_used    = tmpl.get('right', 'C')
+    premium_dollar    = round(filled_at * 100 * qty, 2)
+    spread_width      = abs(float(tmpl['short_strike']) - float(tmpl['long_strike']))
+    max_profit_dollar = round((spread_width - filled_at) * 100 * qty, 2)
     trade_id = log_options_trade(
-        strategy='BULL_SPREAD',
+        strategy=strategy_used,
         symbol=sym,
         cap_type=cap_type(sym),
         underlying_price=tmpl.get('underlying'),
@@ -1417,10 +1700,10 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         max_profit=max_profit_dollar,
         max_loss=premium_dollar,
         entry_grade=tmpl['grade'],
-        entry_thesis=f"{tmpl['template']} spread — {tmpl['dte']}d exp",
+        entry_thesis=f"{tmpl['template']} {spread_label} — {tmpl['dte']}d exp",
         long_strike=tmpl['long_strike'],
         short_strike=tmpl['short_strike'],
-        right='C',
+        right=right_used,
         net_debit=filled_at,
         catalyst_id=tmpl.get('catalyst_id'),
         days_to_catalyst=tmpl.get('catalyst_days'),
@@ -1436,9 +1719,9 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         pass
 
     send_telegram(
-        f"✅ *{sym} SPREAD entered* [trade #{trade_id}]\n"
+        f"✅ *{sym} {spread_label.upper()} entered* [trade #{trade_id}]\n"
         f"Template: {tmpl['template']} [{tmpl['grade']}]\n"
-        f"${tmpl['long_strike']}/${tmpl['short_strike']} call spread · {tmpl['dte']}d\n"
+        f"${tmpl['long_strike']}/${tmpl['short_strike']} {spread_label} · {tmpl['dte']}d\n"
         f"Fill: ${filled_at:.2f}/contract · {qty} lot(s) = ${premium_dollar:.0f} deployed\n"
         f"Max profit: ${max_profit_dollar:.0f} | Stop: ${premium_dollar*0.5:.0f}",
         chat_id,
@@ -1574,7 +1857,7 @@ def _execute_close_bg(trade: dict, chat_id: str):
     qty   = trade['contracts']
 
     # Fetch current value to set initial limit
-    if strat == 'BULL_SPREAD':
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         lq = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
         sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
         if not lq or not sq:
@@ -2294,13 +2577,12 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
     calc_log_id = calc.get('calc_log_id')
     strategy    = calc.get('strategy', 'BULL_SPREAD')
 
-    if verdict in ('ENTER', 'ENTER_REDUCED'):
+    if verdict == 'ENTER':
         trade = calc.get('trade')
         if trade:
             new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
             if can_open_position(new_premium, chat_id):
-                label = "5/5 gates — full size" if verdict == 'ENTER' else "4/5 gates — reduced size"
-                send_telegram(f"⚡ *Auto-executing {sym}* — {label}", chat_id)
+                send_telegram(f"⚡ *Auto-executing {sym}* — 5/5 gates (full size)", chat_id)
                 if strategy == 'LEAP':
                     threading.Thread(
                         target=_execute_leap_bg,
@@ -2313,6 +2595,77 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
                         args=(sym, trade, chat_id, calc_log_id),
                         daemon=True,
                     ).start()
+    elif verdict == 'ENTER_REDUCED':
+        trade = calc.get('trade')
+        if trade and can_open_position(trade.get('net_debit', 0) * 100 * calc.get('qty', 1), chat_id):
+            _pending[chat_id] = {
+                'action':     'spread_confirm',
+                'symbol':     sym,
+                'qty':        calc.get('qty', 1),
+                'calc':       calc,
+                'expires_at': datetime.now() + timedelta(minutes=30),
+            }
+
+
+def cmd_sell(sym: str, qty: int, chat_id: str):
+    """OPT SELL <sym> [qty] — bear put spread entry (mirror of OPT BUY for call spreads)."""
+    existing = [t for t in get_open_options_trades() if t['symbol'] == sym.upper()]
+    for t in existing:
+        dte = days_to_expiry(t['expiry'])
+        if dte <= 7:
+            send_telegram(
+                f"⚠️ *{sym} has an open {t['strategy']} expiring in {dte}d*\n"
+                f"Use `OPT CLOSE {sym}` to exit before opening a new position.",
+                chat_id,
+            )
+            return
+
+    if not check_circuit_breaker(chat_id):
+        return
+    if not can_open_position(chat_id=chat_id):
+        return
+
+    cs = capital_status()
+    send_telegram(
+        f"⏳ Running BEAR PUT SPREAD analysis for *{sym}*...\n"
+        f"_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
+        chat_id,
+    )
+    calc = run_put_spread_calc(sym, qty)
+    if 'error' in calc:
+        send_telegram(f"❌ {calc['error']}", chat_id)
+        return
+
+    calc = _auto_qty_calc(calc)
+    qty  = calc['qty']
+
+    msg = format_calc_message(calc)
+    send_telegram(msg, chat_id)
+
+    verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+    calc_log_id = calc.get('calc_log_id')
+
+    if verdict == 'ENTER':
+        trade = calc.get('trade')
+        if trade:
+            new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
+            if can_open_position(new_premium, chat_id):
+                send_telegram(f"⚡ *Auto-executing {sym} PUT SPREAD* — 5/5 gates", chat_id)
+                threading.Thread(
+                    target=_execute_spread_bg,
+                    args=(sym, trade, chat_id, calc_log_id),
+                    daemon=True,
+                ).start()
+    elif verdict == 'ENTER_REDUCED':
+        trade = calc.get('trade')
+        if trade and can_open_position(trade.get('net_debit', 0) * 100 * calc.get('qty', 1), chat_id):
+            _pending[chat_id] = {
+                'action':     'spread_confirm',
+                'symbol':     sym,
+                'qty':        calc.get('qty', 1),
+                'calc':       calc,
+                'expires_at': datetime.now() + timedelta(minutes=30),
+            }
 
 
 def _live_pnl_by_symbol() -> dict:
@@ -2391,8 +2744,9 @@ def cmd_positions(chat_id: str):
         dte       = days_to_expiry(t['expiry'])
         stage_map = {1: 'hard', 2: 'breakeven', 3: 'trail'}
         stage_lbl = stage_map.get(t['stop_stage'], '?')
-        if t['strategy'] == 'BULL_SPREAD':
-            leg_str = f"${t['long_strike']}/${t['short_strike']} spread"
+        if t['strategy'] in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
+            right_lbl = 'call' if t.get('right', 'C') == 'C' else 'put'
+            leg_str = f"${t['long_strike']}/${t['short_strike']} {right_lbl} spread"
         else:
             leg_str = f"${t['strike']} LEAP"
         expiry_flag = " ⚠️ EXPIRING SOON" if dte <= 7 else ""
@@ -2769,6 +3123,10 @@ def dispatch(text: str, chat_id: str):
             sym = parts[2].upper()
             qty = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
             cmd_buy(sym, qty, chat_id)
+        elif cmd == 'SELL' and len(parts) > 2:
+            sym = parts[2].upper()
+            qty = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+            cmd_sell(sym, qty, chat_id)
         elif cmd == 'NEWS':
             sym = parts[2].upper() if len(parts) > 2 else None
             cmd_news(sym, chat_id)
@@ -2779,7 +3137,7 @@ def dispatch(text: str, chat_id: str):
                 "Unknown OPT command. Available:\n"
                 "`OPT STATUS` · `OPT POSITIONS` · `OPT CALENDAR`\n"
                 "`OPT PAUSE` · `OPT RESUME`\n"
-                "`OPT CLOSE <sym>` · `OPT BUY <sym> [qty]`\n"
+                "`OPT CLOSE <sym>` · `OPT BUY <sym> [qty]` · `OPT SELL <sym> [qty]`\n"
                 "`OPT NEWS [sym]` · `OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]`\n"
                 "`OPT KB` — session catch-up brief",
                 chat_id,
@@ -2817,7 +3175,8 @@ def dispatch(text: str, chat_id: str):
         "`OPT POSITIONS` — per-position Greeks + stop stage\n"
         "`OPT CALENDAR` — upcoming catalysts\n"
         "`OPT NEWS [sym]` — recent HIGH/MEDIUM signals\n"
-        "`OPT BUY <sym> [qty]` — spread/LEAP calculator\n"
+        "`OPT BUY <sym> [qty]` — bull call spread calculator\n"
+        "`OPT SELL <sym> [qty]` — bear put spread calculator\n"
         "`OPT CLOSE <sym>` — close a position\n"
         "`OPT PAUSE` / `OPT RESUME` — halt/resume scanning\n"
         "`OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]` — manual catalyst\n"
@@ -2877,7 +3236,7 @@ def _process_pending_suggestions():
     # Reset any PROCESSING rows stuck for > 5 min (crash recovery)
     try:
         import sqlite3 as _sq
-        _sdb = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trading.db'))
+        _sdb = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trades.db'))
         _sc  = _sq.connect(_sdb)
         _sc.execute(
             "UPDATE opt_suggestions SET status='PENDING' "
@@ -2904,8 +3263,12 @@ def _process_pending_suggestions():
                 pass
         return
 
-    # ── Step 2: proactive recycling ───────────────────────────────────────────
-    _proactive_recycle(OPT_CHAT)
+    # ── Step 2: equity A+ scan trigger (higher quality than conviction recycle) ─
+    triggered = _check_equity_scan_triggers(OPT_CHAT)
+
+    # ── Step 3: proactive recycling (fallback when no A+ trigger fires) ───────
+    if not triggered:
+        _proactive_recycle(OPT_CHAT)
 
 def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
     """Process one news_engine suggestion — the original auto-suggest path."""
@@ -2976,7 +3339,7 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
             if sug_id:
                 try:
                     import sqlite3 as _sq2
-                    _sdb2 = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trading.db'))
+                    _sdb2 = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trades.db'))
                     _sc2  = _sq2.connect(_sdb2)
                     row   = _sc2.execute("SELECT suggested_at FROM opt_suggestions WHERE id=?", (sug_id,)).fetchone()
                     _sc2.close()
@@ -3028,7 +3391,7 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
             if sug_id:
                 try:
                     import sqlite3 as _sq2
-                    _sdb2 = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trading.db'))
+                    _sdb2 = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trades.db'))
                     _sc2  = _sq2.connect(_sdb2)
                     row   = _sc2.execute("SELECT suggested_at FROM opt_suggestions WHERE id=?", (sug_id,)).fetchone()
                     _sc2.close()
@@ -3049,25 +3412,23 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
         send_telegram(msg, OPT_CHAT)
         if sug_id:
             update_suggestion_status(sug_id, 'SENT')
-        # 4/5 gates → auto-execute at reduced size (qty=1), no CONFIRM wait
+        # 4/5 gates → require CONFIRM; do not auto-execute borderline setups
         if can_open_position(trade.get('net_debit', 0) * 100 * trade.get('qty', 1)):
-            send_telegram(
-                f"⚡ *Auto-executing {sym}* — 4/5 gates ({label}, reduced size)",
-                OPT_CHAT,
-            )
-            strategy = calc.get('strategy', 'BULL_SPREAD')
-            if strategy == 'LEAP':
-                threading.Thread(
-                    target=_execute_leap_bg,
-                    args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
-                    daemon=True,
-                ).start()
-            else:
-                threading.Thread(
-                    target=_execute_spread_bg,
-                    args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
-                    daemon=True,
-                ).start()
+            if OPT_CHAT not in _pending:
+                _pending[OPT_CHAT] = {
+                    'action':        'spread_confirm',
+                    'symbol':        sym,
+                    'qty':           calc.get('qty', 1),
+                    'calc':          calc,
+                    'expires_at':    datetime.now() + timedelta(minutes=30),
+                    'suggestion_id': sug_id,
+                }
+                send_telegram(
+                    f"⚠️ *{sym}* — 4/5 gates (ENTER_REDUCED)\n"
+                    f"Reply *CONFIRM* to place or *SKIP* to cancel _(30 min timeout)_",
+                    OPT_CHAT,
+                )
+            # else: another suggestion already awaiting reply — skip this one silently
         else:
             if sug_id:
                 update_suggestion_status(sug_id, 'NO_TRADE')
@@ -3135,6 +3496,116 @@ def _proactive_recycle(OPT_CHAT: str):
         return
 
     _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id, source='recycle')
+
+
+def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
+    """
+    Read A+ equity signals from the last 10 minutes and trigger options spread calculator.
+    Bull A+ → call spread (run_calculator).  Bear A+ → put spread (run_put_spread_calc).
+    Returns True if a trigger was dispatched (prevents proactive recycle from also firing).
+    Silently skips when paused, breaker tripped, or no slot available.
+    """
+    global _proactive_cooldown
+
+    if _paused:
+        return False
+
+    cs = capital_status()
+    if cs['slots_free'] <= 0:
+        return False
+
+    n = datetime.now(ET)
+    if n.weekday() >= 5 or (n.year, n.month, n.day) in US_HOLIDAYS_2026:
+        return False
+    cutoff_dt = n.replace(hour=PROACTIVE_ENTRY_CUTOFF[0], minute=PROACTIVE_ENTRY_CUTOFF[1],
+                           second=0, microsecond=0)
+    if n > cutoff_dt:
+        return False
+
+    if not check_circuit_breaker(OPT_CHAT):
+        return False
+
+    # Read A+ signals from last 10 min in scan_log
+    try:
+        import sqlite3 as _sqscan
+        from database import DB_PATH as _db_path
+        _sconn = _sqscan.connect(_db_path, timeout=5)
+        cutoff_time = (datetime.now() - timedelta(minutes=10)).strftime('%H:%M:%S')
+        rows = _sconn.execute(
+            """SELECT symbol, direction, score, is_catalyst, intra_chg
+               FROM scan_log
+               WHERE grade = 'A+'
+                 AND scan_date = DATE('now', 'localtime')
+                 AND scan_time >= ?
+               ORDER BY score DESC""",
+            (cutoff_time,),
+        ).fetchall()
+        _sconn.close()
+    except Exception as _e:
+        print(f"[options] scan trigger DB error: {_e}")
+        return False
+
+    if not rows:
+        return False
+
+    # Expire 3-hour cooldowns (share _proactive_cooldown)
+    now = datetime.now()
+    stale = [s for s, ts in list(_proactive_cooldown.items())
+             if (now - ts).total_seconds() > PROACTIVE_COOLDOWN_HRS * 3600]
+    for s in stale:
+        del _proactive_cooldown[s]
+
+    open_syms = {t['symbol'] for t in get_open_options_trades()}
+    exclude   = open_syms | set(_proactive_cooldown.keys())
+
+    for sym, direction, score, is_catalyst, intra_chg in rows:
+        if sym in exclude:
+            continue
+
+        # scan_log backtest finding (Jun 20): for BULL call spreads, skip when:
+        # - is_catalyst=1 → IV already elevated on catalyst day → options buyers lose (24% WR)
+        # - intra_chg >= 7% → momentum exhausted at scan time → 26% WR despite stock continuing
+        # Bear puts: catalyst and high intraday DON'T hurt (60%+ WR) — no filter needed
+        if direction == 'LONG':
+            if is_catalyst:
+                print(f"[options] scan trigger {sym} LONG skip: catalyst=1 (IV elevated)")
+                continue
+            if intra_chg is not None and intra_chg >= 7.0:
+                print(f"[options] scan trigger {sym} LONG skip: intra {intra_chg:.1f}% ≥7% (exhausted)")
+                continue
+
+        _proactive_cooldown[sym] = now   # claim before network calls
+
+        if direction == 'LONG':
+            calc = run_calculator(sym, 1)
+        elif direction == 'SHORT':
+            calc = run_put_spread_calc(sym, 1)
+        else:
+            continue
+
+        if 'error' in calc:
+            print(f"[options] scan trigger {sym} error: {calc['error']}")
+            continue
+
+        calc        = _auto_qty_calc(calc)
+        calc_log_id = calc.get('calc_log_id')
+        verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+
+        if verdict == 'SKIP':
+            gates = (calc.get('entry_gates') or {}).get('gates_pass', 0)
+            print(f"[options] scan trigger {sym} {direction} SKIP ({gates}/5)")
+            continue
+
+        strat_label = 'PUT SPREAD' if direction == 'SHORT' else 'CALL SPREAD'
+        send_telegram(
+            f"⚡ *Equity A+ → {sym} {strat_label}* (score {score})\n"
+            f"Direction: {direction}",
+            OPT_CHAT,
+        )
+        _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id, source='scan_trigger')
+        return True   # one per cycle
+
+    return False
 
 
 def main():

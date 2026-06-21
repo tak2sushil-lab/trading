@@ -498,17 +498,343 @@ def report(trades: list[dict], strategy: str, symbols: list[str]):
     print(f"{'═'*62}\n")
 
 
+# ── Quick Spread: 2-day hold, EM-anchored strikes ─────────────────────────────
+# Mirrors the live strategy: long 0.33 SD OTM, short 0.67 SD OTM, 17 DTE, 2-day hold.
+# Entry signal proxy: IV rank < 35 + trend filter (above MA200 = bull, below = bear).
+
+QUICK_DTE   = 17   # midpoint of 14-21 DTE window
+QUICK_HOLD  = 2    # business days max hold
+
+def bs_put(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return max(0.0, K - S)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+def put_spread_val(S, K_long, K_short, T, r, sigma) -> float:
+    return max(0.0, bs_put(S, K_long, T, r, sigma) - bs_put(S, K_short, T, r, sigma))
+
+def sim_quick_spread(sym, entry_date, price_df, iv_series, ivr,
+                     bearish: bool = False,
+                     min_move_pct: float = 0.0,
+                     max_move_pct: float = 0.0,
+                     long_sd: float = 0.33,
+                     short_sd: float = 0.67) -> dict | None:
+    row_e  = price_df.loc[entry_date]
+    S      = row_e['close']
+    sigma  = iv_series.get(entry_date)
+    if not sigma or sigma <= 0:
+        return None
+
+    ma200  = row_e.get('ma200')
+    above  = bool(S > ma200) if pd.notna(ma200) else False
+
+    # Direction filter: bull needs above 200MA, bear needs below
+    if bearish and above:
+        return None
+    if not bearish and not above:
+        return None
+
+    # Same-day momentum filter (proxy for catalyst/news trigger)
+    # max_move_pct: upper bound for bull (live gate uses 2-7% — ≥7% = exhausted)
+    if min_move_pct > 0 or max_move_pct > 0:
+        idx = price_df.index.get_loc(entry_date)
+        if idx > 0:
+            prev_close = price_df['close'].iloc[idx - 1]
+            day_move   = (S - prev_close) / prev_close * 100
+            if bearish:
+                if day_move > -min_move_pct:
+                    return None   # need stock DOWN min_move_pct for bear
+            else:
+                if min_move_pct > 0 and day_move < min_move_pct:
+                    return None   # need stock UP min_move_pct for bull
+                if max_move_pct > 0 and day_move >= max_move_pct:
+                    return None   # ≥7%: momentum exhausted at scan time
+
+    em = S * sigma * math.sqrt(QUICK_DTE / 252)
+    r  = rfr(str(entry_date.date()))
+    T0 = QUICK_DTE / 365
+
+    if bearish:
+        K_long  = S - em * long_sd
+        K_short = S - em * short_sd
+        entry_v = put_spread_val(S, K_long, K_short, T0, r, sigma)
+    else:
+        K_long  = S + em * long_sd
+        K_short = S + em * short_sd
+        entry_v = spread_val(S, K_long, K_short, T0, r, sigma)
+
+    if entry_v < 0.10:
+        return None
+
+    max_profit = max(0.01, abs(K_short - K_long) - entry_v)
+    hard_stop  = entry_v * 0.50
+    target     = entry_v + max_profit * 0.50
+
+    g = grade(ivr, above)
+
+    # Simulate up to QUICK_HOLD business days
+    future_rows = list(price_df.loc[entry_date:].iloc[1:QUICK_HOLD + 1].iterrows())
+    if not future_rows:
+        return None
+
+    for i, (date, row) in enumerate(future_rows, 1):
+        rem = QUICK_DTE - i
+        T   = max(rem / 365, 1 / 365)
+        sig = iv_series.get(date, sigma)
+        if bearish:
+            val = put_spread_val(row['close'], K_long, K_short, T, rfr(str(date.date())), sig)
+        else:
+            val = spread_val(row['close'], K_long, K_short, T, rfr(str(date.date())), sig)
+
+        if val >= target:
+            return _res(sym, entry_date, date, entry_v, val, 'TARGET_HIT', i, g, ivr)
+        if val <= hard_stop:
+            return _res(sym, entry_date, date, entry_v, val, 'HARD_STOP', i, g, ivr)
+
+    # Time exit: forced close after 2 days
+    last_date, last_row = future_rows[-1]
+    rem = QUICK_DTE - len(future_rows)
+    T   = max(rem / 365, 1 / 365)
+    sig = iv_series.get(last_date, sigma)
+    if bearish:
+        val = put_spread_val(last_row['close'], K_long, K_short, T,
+                             rfr(str(last_date.date())), sig)
+    else:
+        val = spread_val(last_row['close'], K_long, K_short, T,
+                         rfr(str(last_date.date())), sig)
+    return _res(sym, entry_date, last_date, entry_v, val, 'TIME_EXIT', len(future_rows), g, ivr)
+
+
+def run_quick_backtest(symbols: list[str], bearish: bool = False,
+                       min_move_pct: float = 0.0, max_move_pct: float = 0.0,
+                       long_sd: float = 0.33, short_sd: float = 0.67,
+                       max_ivr: int = 35, silent: bool = False) -> list[dict]:
+    direction = 'BEAR PUT' if bearish else 'BULL CALL'
+    if not silent:
+        print(f"\n{'═'*55}")
+        print(f"  QUICK SPREAD ({direction}) — 2-day hold, EM-anchored")
+        print(f"  Long {long_sd} SD · Short {short_sd} SD · {QUICK_DTE} DTE"
+              + (f" · {min_move_pct:.0f}%+ momentum" if min_move_pct else ""))
+        print(f"  Loading {len(symbols)} symbols ...")
+        print(f"{'═'*55}")
+
+    all_trades = []
+    for sym in symbols:
+        if not silent:
+            print(f"  {sym:<6} ", end='', flush=True)
+        prices = fetch_prices(sym)
+        if prices is None or len(prices) < 200:
+            if not silent: print("✗ no price data")
+            continue
+        ivs = fetch_iv(sym, prices)
+        if ivs is None or len(ivs) < 20:
+            if not silent: print("✗ no IV data")
+            continue
+        if not silent:
+            src = "ibkr" if ivs.index[0] in prices.index else "hv30"
+            print(f"[{src}] ", end='', flush=True)
+
+        common = prices.index.intersection(ivs.index)
+        if len(common) < 20:
+            if not silent: print("✗ insufficient overlap")
+            continue
+
+        common = common[common >= pd.Timestamp('2026-01-01')]
+        if len(common) < 5:
+            if not silent: print("✗ insufficient 2026 data")
+            continue
+
+        trades    = 0
+        skip_days = 0
+
+        for date in common:
+            if skip_days > 0:
+                skip_days -= 1
+                continue
+
+            ivr = iv_rank_at(ivs, date)
+            if ivr is None or ivr > max_ivr:
+                continue
+
+            result = sim_quick_spread(sym, date, prices, ivs, ivr,
+                                      bearish=bearish,
+                                      min_move_pct=min_move_pct,
+                                      max_move_pct=max_move_pct,
+                                      long_sd=long_sd,
+                                      short_sd=short_sd)
+            if result:
+                all_trades.append(result)
+                trades   += 1
+                skip_days = QUICK_HOLD
+
+        if not silent:
+            print(f"✓ {trades} trades")
+
+    return all_trades
+
+
+def report_quick(trades: list[dict], bearish: bool = False):
+    direction = 'Bear Put Spread' if bearish else 'Bull Call Spread'
+    print(f"\n\n{'═'*62}")
+    print(f"  QUICK SPREAD BACKTEST  |  {direction}  (2026 YTD)")
+    print(f"  Long 0.33 SD OTM · Short 0.67 SD OTM · {QUICK_DTE} DTE · 2-day hold")
+    print(f"{'═'*62}")
+
+    if not trades:
+        print("  No trades — check IV data / try --symbols NVDA TSLA PLTR")
+        return
+
+    df = pd.DataFrame(trades)
+    total = len(df)
+    wr    = df['win'].mean() * 100
+    avg   = df['return_pct'].mean()
+    med   = df['return_pct'].median()
+
+    print(f"\n  Total trades  : {total}")
+    print(f"  Win rate      : {wr:.1f}%")
+    print(f"  Avg return    : {avg:+.1f}%")
+    print(f"  Median return : {med:+.1f}%")
+    print(f"  Date range    : {df['entry_date'].min()} → {df['entry_date'].max()}")
+
+    print(f"\n{'─'*62}")
+    print("  EXIT BREAKDOWN")
+    for reason, cnt in df['exit_reason'].value_counts().items():
+        pct = cnt / total * 100
+        tag = '← win' if reason == 'TARGET_HIT' else ('← loss' if reason == 'HARD_STOP' else '← neutral')
+        print(f"  {reason:<15}  {cnt:>4}  ({pct:>4.1f}%)  {tag}")
+
+    print(f"\n{'─'*62}")
+    print("  GRADE BREAKDOWN  (A+ = IV rank < 25%)")
+    for g in ['A+', 'A', 'B', 'C']:
+        sub = df[df['grade'] == g]
+        if len(sub) == 0:
+            continue
+        print(f"  Grade {g}  {len(sub):>4} trades   WR {sub['win'].mean()*100:>5.1f}%   "
+              f"Avg {sub['return_pct'].mean():>+6.1f}%")
+
+    print(f"\n{'─'*62}")
+    print("  EQUITY CURVE  ($5k account · $400 per 2-day trade)")
+    capital = 5_000.0; trade_cost = 400.0; running = capital
+    for _, row in df.sort_values('entry_date').iterrows():
+        pnl     = trade_cost * row['return_pct'] / 100
+        running += pnl
+        sym_tag = row['symbol'][:4]
+        pnl_tag = f"${pnl:>+6.0f}"
+        print(f"  {row['entry_date']}  {sym_tag:<5}  {row['exit_reason']:<14}  "
+              f"{row['return_pct']:>+6.1f}%  {pnl_tag}  running ${running:>8,.0f}")
+    total_ret = (running - capital) / capital * 100
+    print(f"\n  End capital: ${running:>8,.0f}   Total: {total_ret:>+.1f}%")
+
+    print(f"\n{'═'*62}")
+    go = wr >= 45 and avg > 0
+    print(f"  VERDICT: {'✅ GO' if go else '❌ REVIEW'}")
+    if go:
+        print("  WR ≥ 45% and avg return > 0 — enter trades Monday.")
+    else:
+        if wr < 45:
+            print(f"  WR {wr:.1f}% < 45% — too many losers. Tighten entry filter.")
+        if avg <= 0:
+            print(f"  Avg return {avg:+.1f}% ≤ 0 — size/stop not covering losses. Review.")
+    print(f"{'═'*62}\n")
+
+
+# ── High-beta options universe — stocks that actually move 3-8% in a day ──────
+# Removed: AAPL, AMZN, GOOGL, MSFT, AVGO, META, JPM, GS (equity trades, not options plays)
+HIGH_BETA_SYMBOLS = [
+    'PLTR', 'COIN', 'MSTR', 'HIMS', 'IONQ', 'SOUN', 'MARA', 'APP',
+    'SMCI', 'HOOD', 'AFRM', 'UPST', 'RKLB', 'RIOT', 'AMD',
+    'TSLA', 'NVDA', 'ARM', 'WULF', 'RIVN', 'CELH', 'JOBY',
+]
+
+
+def run_comparison(symbols: list[str], bearish: bool = False):
+    """Run scenarios and print a side-by-side comparison table."""
+    direction = 'BEAR PUT' if bearish else 'BULL CALL'
+    print(f"\n{'═'*72}")
+    print(f"  SCENARIO COMPARISON  |  {direction} spread  |  2026 YTD")
+    print(f"  Goal: find which entry filter / strike geometry creates edge")
+    print(f"{'═'*72}")
+
+    if bearish:
+        scenarios = [
+            # (label,               long_sd, short_sd, min_move, max_move, max_ivr, syms)
+            ('Baseline (0.33/0.67)',  0.33, 0.67, 0.0, 0.0, 35, symbols),
+            ('Near-ATM (0.10/0.45)', 0.10, 0.45, 0.0, 0.0, 35, symbols),
+            ('Tight (0.15/0.35)',     0.15, 0.35, 0.0, 0.0, 35, symbols),
+            ('Momentum 2%+',          0.33, 0.67, 2.0, 0.0, 35, symbols),
+            ('Momentum 3%+',          0.33, 0.67, 3.0, 0.0, 35, symbols),
+            ('Near-ATM + Mom 2%+',   0.10, 0.45, 2.0, 0.0, 35, symbols),
+        ]
+    else:
+        scenarios = [
+            # (label,               long_sd, short_sd, min_move, max_move, max_ivr, syms)
+            ('Baseline (0.33/0.67)',  0.33, 0.67, 0.0, 0.0, 35, symbols),
+            ('Near-ATM (0.10/0.45)', 0.10, 0.45, 0.0, 0.0, 35, symbols),
+            ('Tight (0.15/0.35)',     0.15, 0.35, 0.0, 0.0, 35, symbols),
+            ('Momentum 2%+',          0.33, 0.67, 2.0, 0.0, 35, symbols),
+            ('Momentum 3%+',          0.33, 0.67, 3.0, 0.0, 35, symbols),
+            ('Live gate (2-7%)',       0.33, 0.67, 2.0, 7.0, 35, symbols),  # matches live code
+            ('Near-ATM + Mom 2%+',   0.10, 0.45, 2.0, 0.0, 35, symbols),
+        ]
+
+    print(f"\n  {'Scenario':<26} {'N':>5} {'WR%':>7} {'Avg%':>7} {'TargetHits':>11}  Verdict")
+    print(f"  {'-'*68}")
+
+    for label, l_sd, s_sd, mm, mx_mv, mx_ivr, syms in scenarios:
+        trades = run_quick_backtest(syms, bearish=bearish,
+                                   min_move_pct=mm, max_move_pct=mx_mv,
+                                   long_sd=l_sd, short_sd=s_sd,
+                                   max_ivr=mx_ivr, silent=True)
+        if not trades:
+            print(f"  {label:<26}  {'–':>5}   no trades")
+            continue
+        df   = pd.DataFrame(trades)
+        wr   = df['win'].mean() * 100
+        avg  = df['return_pct'].mean()
+        hits = (df['exit_reason'] == 'TARGET_HIT').sum()
+        go   = '✅' if (wr >= 45 and avg > 0) else '❌'
+        print(f"  {label:<26} {len(df):>5} {wr:>6.1f}% {avg:>+6.1f}% {hits:>10}x  {go}")
+
+    print(f"\n  ✅ = WR≥45% and avg>0")
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Options strategy backtester')
     parser.add_argument('--strategy', default='BULL_SPREAD',
-                        choices=['BULL_SPREAD', 'LEAP'],
+                        choices=['BULL_SPREAD', 'LEAP', 'QUICK_BULL', 'QUICK_BEAR',
+                                 'QUICK_BOTH', 'COMPARE_BULL', 'COMPARE_BEAR'],
                         help='Strategy to backtest (default: BULL_SPREAD)')
     parser.add_argument('--symbols', nargs='+', default=None,
-                        help='Override symbol list (default: all 25)')
+                        help='Symbol list override')
+    parser.add_argument('--high-beta', action='store_true',
+                        help='Use high-beta universe (PLTR/COIN/MSTR/HIMS/IONQ/…)')
+    parser.add_argument('--momentum', type=float, default=0.0,
+                        help='Min same-day move %% for entry (e.g. 2.0 = stock must be up 2%%)')
+    parser.add_argument('--long-sd', type=float, default=0.33,
+                        help='Long strike in SD units (default 0.33)')
+    parser.add_argument('--short-sd', type=float, default=0.67,
+                        help='Short strike in SD units (default 0.67)')
     args = parser.parse_args()
 
-    syms   = args.symbols or DEFAULT_SYMBOLS
-    trades = run_backtest(syms, args.strategy)
-    report(trades, args.strategy, syms)
+    if args.high_beta:
+        syms = args.symbols or HIGH_BETA_SYMBOLS
+    else:
+        syms = args.symbols or DEFAULT_SYMBOLS
+
+    if args.strategy in ('COMPARE_BULL', 'COMPARE_BEAR'):
+        run_comparison(syms, bearish=(args.strategy == 'COMPARE_BEAR'))
+    elif args.strategy.startswith('QUICK'):
+        kw = dict(min_move_pct=args.momentum, long_sd=args.long_sd, short_sd=args.short_sd)
+        if args.strategy in ('QUICK_BULL', 'QUICK_BOTH'):
+            bull_trades = run_quick_backtest(syms, bearish=False, **kw)
+            report_quick(bull_trades, bearish=False)
+        if args.strategy in ('QUICK_BEAR', 'QUICK_BOTH'):
+            bear_trades = run_quick_backtest(syms, bearish=True, **kw)
+            report_quick(bear_trades, bearish=True)
+    else:
+        trades = run_backtest(syms, args.strategy)
+        report(trades, args.strategy, syms)
