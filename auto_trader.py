@@ -152,6 +152,7 @@ partial_done_trades     = {}  # trade_id → locked_pnl_usd — trades that had 
 first_bar_strong_trades = {}  # trade_id → bool — entry was on a strong first-bar day
 _last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
 peak_session_pnl    = 0.0    # highest session P&L seen today (realized + unrealized)
+_l3_pending         = {}     # trade_id → {sym, entry_time, entry_price, direction} — Layer 3 T+5 check
 pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
 _morning_pnl_snap   = None   # P&L frozen at first post-noon scan — afternoon gate uses this
 _daily_loss_alerted = False  # ensures circuit breaker Telegram fires once per day only
@@ -1242,6 +1243,81 @@ def get_days_to_earnings(symbol):
     return days
 
 # ─────────────────────────────────────────────────────────
+# LAYER 2 — PRE-ENTRY FITNESS GATE
+# Validated on 174 trades: clean entries 66.7% WR +$20 avg vs dirty 43.8% WR -$2.88 avg
+# Combined L2+L3 adds +$418 over baseline on 2026 scan_log data.
+# ─────────────────────────────────────────────────────────
+def _check_layer2_fitness(symbol, direction, entry_price):
+    """
+    Pre-entry candle fitness check using last 6 x 5-min bars from the bridge.
+    Bridge caches 5-min bars for 300s — aligned with the 5-min scan cadence.
+    Returns ('GO', None) | ('HALF', reason) | ('SKIP', reason)
+    Fails open (GO) if bars are unavailable — never blocks a trade on missing data.
+    """
+    try:
+        resp = requests.get(
+            f"{BRIDGE}/history/{symbol}",
+            params={'duration': '1 D', 'bar_size': '5 mins', 'rth': 'true'},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return ('GO', None)
+        raw_bars = resp.json()
+        if not isinstance(raw_bars, list):
+            return ('GO', None)
+        # Bridge returns bars as {'date': ..., 'open', 'high', 'low', 'close', 'volume'}
+        bars = raw_bars   # list of dicts
+
+        if len(bars) < 3:
+            return ('GO', None)
+
+        is_long = direction == 'LONG'
+        window  = bars[-6:]
+
+        # HOD / LOD test count — how many times has price probed the session extreme
+        if is_long:
+            hod = max(b['high'] for b in window)
+            tests = sum(1 for b in window if hod > 0 and (hod - b['high']) / hod < 0.005)
+        else:
+            lod = min(b['low'] for b in window)
+            tests = sum(1 for b in window if lod > 0 and (b['low'] - lod) / lod < 0.005)
+
+        if tests >= 3:
+            return ('SKIP', f'HOD×{tests} resistance confirmed')
+
+        # Consecutive directional bars — overextended run
+        consec = 0
+        for b in reversed(window):
+            if is_long and b['close'] > b['open']:
+                consec += 1
+            elif not is_long and b['close'] < b['open']:
+                consec += 1
+            else:
+                break
+        if consec >= 4:
+            return ('SKIP', f'RUN×{consec} overextended')
+
+        # VWAP extension — too stretched from intraday mean
+        cum_tv = sum((b['high'] + b['low'] + b['close']) / 3 * b['volume'] for b in bars)
+        cum_v  = sum(b['volume'] for b in bars)
+        vwap   = cum_tv / cum_v if cum_v > 0 else entry_price
+        atr_bars = window[-5:]
+        atr = sum(b['high'] - b['low'] for b in atr_bars) / len(atr_bars) if atr_bars else 0.01
+        if atr > 0:
+            ext = (entry_price - vwap) / atr if is_long else (vwap - entry_price) / atr
+            if ext > 2.5:
+                return ('SKIP', f'VWAP {ext:.1f}×ATR extended')
+
+        if tests == 2:
+            return ('HALF', 'HOD×2 double-test')
+
+        return ('GO', None)
+
+    except Exception:
+        return ('GO', None)   # fail open — data issues must never block entries
+
+
+# ─────────────────────────────────────────────────────────
 # GRADE SETUP
 # ─────────────────────────────────────────────────────────
 def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=False):
@@ -1845,6 +1921,37 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             pnl_pct = (price - entry) / entry * 100
             pnl_usd = (price - entry) * shares
 
+        # ── Layer 3: T+5 confirmation (fires once, ~5 min after entry) ──────
+        # HARD_FAIL (<-2%): move stop to entry → triggers fast exit on next 30s cycle
+        # FLAT (±0.5%):     tighten stop to break-even → cap intraday loss at $0
+        # CONFIRM (>+0.5%): log and hold — no stop change needed
+        if tid in _l3_pending:
+            _l3 = _l3_pending[tid]
+            _elapsed = (now - _l3['entry_time']).total_seconds()
+            if _elapsed >= 300:   # 5 minutes have passed
+                _l3_dir   = _l3['direction']
+                _l3_entry = _l3['entry_price']
+                _conf_pct = ((price - _l3_entry) / _l3_entry * 100 if _l3_dir == 'LONG'
+                             else (_l3_entry - price) / _l3_entry * 100)
+                if _conf_pct < -2.0:
+                    # Hard fail — move stop to entry so fast_monitor exits on next 30s cycle.
+                    # For LONG: price < entry → stop (entry) > price → stop_hit = price <= sl ✅
+                    # For SHORT: price > entry → stop (entry) < price → stop_hit = price >= sl ✅
+                    update_trade_stop(tid, _l3_entry)
+                    log(f"  ❌ L3 HARD_FAIL {sym}: {_conf_pct:+.1f}% at T+5 — stop → entry ${_l3_entry}")
+                    send_telegram(f"❌ L3 HARD_FAIL {sym}: {_conf_pct:+.1f}% at T+5 — exiting at BE")
+                elif _conf_pct < 0.5:
+                    # Flat — tighten stop to exact entry price.
+                    # Only tighten (never loosen): long → stop must move UP; short → stop must move DOWN.
+                    be_stop = _l3_entry
+                    _should_update = (not is_short and be_stop > sl) or (is_short and be_stop < sl)
+                    if _should_update:
+                        update_trade_stop(tid, be_stop)
+                        log(f"  ⚠️  L3 FLAT {sym}: {_conf_pct:+.1f}% at T+5 — BE stop ${be_stop}")
+                else:
+                    log(f"  ✅ L3 CONFIRM {sym}: {_conf_pct:+.1f}% at T+5 — hold")
+                del _l3_pending[tid]
+
         atr = get_atr(sym) or (entry * 0.02)
 
         # ── ATR trailing stop ─────────────────────────────────
@@ -2166,7 +2273,7 @@ def fast_monitor_positions():
                         'symbol': sym, 'qty': min(shares, int(ibkr_qty)),
                         'side': close_side, 'order_type': 'MARKET'
                     }, timeout=10)
-                for d in (price_history, session_high, session_low, open_positions):
+                for d in (price_history, session_high, session_low, open_positions, _l3_pending):
                     d.pop(tid if tid in d else sym, None)
                 direction = '↓SHORT' if is_short else ''
                 log(f"  ⚡ FAST EXIT {sym} {direction}: {reason} | PnL ${pnl:+.2f}")
@@ -3508,6 +3615,15 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             log(f"  ⛔ SKIP {sym} — FVG_FILL vol {pick['vol_ratio']:.1f}x < 5x required")
             continue
 
+        # ── Layer 2 fitness gate (pre-entry candle quality) ────────────
+        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'LONG', price)
+        if _l2_sig == 'SKIP':
+            log(f"  🚫 L2 SKIP {sym} — {_l2_reason}")
+            continue
+        if _l2_sig == 'HALF':
+            shares = max(1, shares // 2)
+            log(f"  ⚠️  L2 HALF {sym} — {_l2_reason} → {shares}sh")
+
         log(f"  {tag} {pick['grade']} {sym} [{sector}] ${price} | "
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | ATR stop")
 
@@ -3529,6 +3645,10 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 daily_sympathy_count += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector, 'tag': tag})
+            _l3_pending[trade_id] = {
+                'sym': sym, 'entry_time': datetime.now(ET),
+                'entry_price': price, 'direction': 'LONG',
+            }
             # Update scan_log: mark this candidate as entered and link trade_id
             # SQLite doesn't support ORDER BY/LIMIT in UPDATE directly — use subquery
             try:
@@ -3759,6 +3879,15 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
         atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
         shares         = max(1, min(int(capital / price), atr_shares))
 
+        # ── Layer 2 fitness gate (pre-entry candle quality — short side) ──
+        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'SHORT', price)
+        if _l2_sig == 'SKIP':
+            log(f"  🚫 L2 SKIP ↓{sym} — {_l2_reason}")
+            continue
+        if _l2_sig == 'HALF':
+            shares = max(1, shares // 2)
+            log(f"  ⚠️  L2 HALF ↓{sym} — {_l2_reason} → {shares}sh")
+
         log(f"  ↓ {pick['grade']} {sym} [{sector}] ${price} | "
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | "
             f"SL${pick['sl']} | {', '.join(pick['reasons'][:3])}")
@@ -3779,6 +3908,10 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             daily_bear_count  += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector})
+            _l3_pending[trade_id] = {
+                'sym': sym, 'entry_time': datetime.now(ET),
+                'entry_price': price, 'direction': 'SHORT',
+            }
             try:
                 import sqlite3 as _sq3
                 _scan_date = pick.get('scan_date', datetime.now(ET).strftime('%Y-%m-%d'))
