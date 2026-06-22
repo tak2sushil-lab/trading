@@ -1408,12 +1408,12 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
         score += 10; reasons.append('Uptrend')
 
     # Daily RSI — hard gate for 70-80 danger zone; scoring for all other zones
-    # Live data (182 trades): RSI 70-80 = 44% WR, -$14 avg, -$374 total — only net-negative zone
-    # RSI 80+ = 65% WR, +$23 avg — sellers gave up, momentum confirmed ✓
+    # Live data (237 trades): RSI 70-80 = 44% WR net-negative for non-catalyst AND catalyst alike
+    # RSI 80+ = 65%+ WR, +$23 avg — sellers gave up, momentum confirmed ✓
     # RSI 70-80 = sellers still testing, stock at resistance without breakaway momentum ✗
-    # Bypass for catalysts: earnings gap can legitimately push RSI to 70-80 on day 1
-    if 70 <= sig['rsi'] < 80 and not is_catalyst:
-        return 'SKIP', [f'RSI {sig["rsi"]} danger zone (70-80) — 44% WR net negative'], 0
+    # Catalyst exemption removed Jun 22: catalyst 70-75 = -$17 avg, 75-80 = -$37 avg (worse than non-cat)
+    if 70 <= sig['rsi'] < 80:
+        return 'SKIP', [f'RSI {sig["rsi"]} danger zone (70-80) — skip catalyst and non-catalyst alike'], 0
     if 45 <= sig['rsi'] <= 65:
         score += round(20 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} ideal')
     elif 65 < sig['rsi'] < 70:

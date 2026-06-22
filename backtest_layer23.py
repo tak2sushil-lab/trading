@@ -144,7 +144,8 @@ def run_backtest():
 
     # All entered scan_log trades with outcomes
     entries = db.execute(f"""
-        SELECT s.symbol, s.scan_date, s.direction, s.grade, s.score,
+        SELECT s.symbol, s.scan_date, s.scan_time, s.direction, s.grade, s.score,
+               s.rsi, s.is_catalyst, s.regime,
                t.id AS tid, t.entry_price, t.entry_time, t.pnl,
                t.shares, t.exit_reason, t.side
         FROM scan_log s
@@ -172,16 +173,20 @@ def run_backtest():
 
         try:
             et  = datetime.fromisoformat(f"{scan_date}T{e['entry_time']}")
-            utc = (et + timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M')
+            # Normalise to space format so comparison works for both T and space ts_utc rows
+            utc = (et + timedelta(hours=4)).strftime('%Y-%m-%d %H:%M')
         except Exception:
             continue
 
-        # All bars on this day
+        # SUBSTR approach handles both old T-format and new space-format ts_utc rows
         day_bars = mdb.execute("""
             SELECT ts_utc, open, high, low, close, volume FROM bars_5m
-            WHERE symbol = ? AND ts_utc >= ? AND ts_utc < ?
+            WHERE symbol = ?
+              AND SUBSTR(ts_utc, 1, 10) = ?
+              AND SUBSTR(ts_utc, 12, 5) >= '13:00'
+              AND SUBSTR(ts_utc, 12, 5) < '21:00'
             ORDER BY ts_utc
-        """, (sym, f"{scan_date}T13:00:00", f"{scan_date}T21:00:00")).fetchall()
+        """, (sym, scan_date)).fetchall()
 
         if not day_bars:
             skipped_no_bars += 1
@@ -189,7 +194,8 @@ def run_backtest():
 
         pre_bars, entry_bar, post_bar = [], None, None
         for b in day_bars:
-            ts = b['ts_utc'][:16]
+            # Normalise both to space format for consistent comparison
+            ts = b['ts_utc'][:16].replace('T', ' ')
             if ts < utc:
                 pre_bars.append(b)
             elif entry_bar is None:
@@ -200,6 +206,11 @@ def run_backtest():
         if len(pre_bars) < 3 or not entry_bar:
             skipped_no_bars += 1
             continue
+
+        # RSI danger-zone gate (mirrors grade_setup: RSI 70-80 → SKIP, catalyst or not)
+        rsi        = e['rsi'] or 0
+        is_cat     = bool(e['is_catalyst'])
+        rsi_skip   = (70 <= rsi < 80)   # same rule for all entries — catalyst exemption removed Jun 22
 
         # Layer 2 signal
         l2_sig, l2_reason = layer2_signal(pre_bars, direction, entry_price)
@@ -219,6 +230,7 @@ def run_backtest():
         rows.append({
             'sym': sym, 'date': scan_date, 'grade': grade,
             'actual_pnl': actual_pnl,
+            'rsi': rsi, 'is_cat': is_cat, 'rsi_skip': rsi_skip,
             'l2_sig': l2_sig, 'l2_reason': l2_reason or '',
             'l3': l3, 'conf_pct': conf_pct,
             'hard_fail_pnl': hard_fail_pnl,
@@ -328,8 +340,11 @@ def run_backtest():
     print("=" * 70)
 
     def combined_pnl(r):
+        # RSI gate fires first (grade_setup, before L2 candle check)
+        if r['rsi_skip']:
+            return 0.0
         if r['l2_sig'] == 'SKIP':
-            return 0.0  # skipped
+            return 0.0  # L2 candle gate
         factor = 0.5 if r['l2_sig'] == 'HALF' else 1.0
         if r['l3'] == 'HARD_FAIL':
             base = r['hard_fail_pnl']
@@ -416,6 +431,37 @@ def run_backtest():
             print(f"  {r['date']} {r['sym']:<6}  ${r['actual_pnl']:>7.2f}  [{r['l2_reason']}]  "
                   f"grade={r['grade']}  L3={r['l3']}")
 
+    # ── RSI gate summary ──────────────────────────────────────────────────
+    rsi_blocked = [r for r in rows if r['rsi_skip']]
+    if rsi_blocked:
+        rsi_saves = [r for r in rsi_blocked if not r['win']]
+        rsi_costs = [r for r in rsi_blocked if r['win']]
+        print("=" * 70)
+        print(f"RSI 70-80 GATE (catalyst exemption removed Jun 22) — {len(rsi_blocked)} blocked")
+        print("=" * 70)
+        print(f"  Correctly blocked (losers avoided): {len(rsi_saves)}  "
+              f"saved=${-sum(r['actual_pnl'] for r in rsi_saves):+.2f}")
+        print(f"  False blocks (winners given up):   {len(rsi_costs)}  "
+              f"cost=${sum(r['actual_pnl'] for r in rsi_costs):+.2f}")
+        for r in sorted(rsi_blocked, key=lambda x: x['actual_pnl'])[:8]:
+            tag = "SAVE" if not r['win'] else "cost"
+            print(f"    {r['date']} {r['sym']:<6} RSI={r['rsi']:>4.1f} "
+                  f"{'CAT' if r['is_cat'] else '   '}  ${r['actual_pnl']:>+8.2f}  {tag}")
+
+    # ── June spotlight ─────────────────────────────────────────────────────
+    june_rows = [r for r in rows if r['date'] >= '2026-06-01']
+    if june_rows:
+        print()
+        print("=" * 70)
+        print("JUNE 2026 SPOTLIGHT")
+        print("=" * 70)
+        base_june = sum(r['actual_pnl'] for r in june_rows)
+        comb_june = sum(r['combined_pnl'] for r in june_rows)
+        print(f"  June baseline:       ${base_june:>+8.2f}")
+        print(f"  June L2+L3+RSI gate: ${comb_june:>+8.2f}  (delta ${comb_june-base_june:>+.2f})")
+        print(f"  June trades: {len(june_rows)}  skipped: "
+              f"{sum(1 for r in june_rows if r['rsi_skip'] or r['l2_sig']=='SKIP')}")
+
     print()
     print("=" * 70)
     print("VERDICT")
@@ -423,13 +469,15 @@ def run_backtest():
     delta_l2   = l2_sim_total  - baseline_total
     delta_l3   = l3_sim_total  - baseline_total
     delta_comb = combined_total - baseline_total
-    print(f"  Layer 2 only:    ${delta_l2:+.2f}  vs baseline")
-    print(f"  Layer 3 only:    ${delta_l3:+.2f}  vs baseline")
-    print(f"  L2 + L3 combined: ${delta_comb:+.2f}  vs baseline")
+    print(f"  Layer 2 only:         ${delta_l2:>+.2f}  vs baseline")
+    print(f"  Layer 3 only:         ${delta_l3:>+.2f}  vs baseline")
+    print(f"  L2 + L3 + RSI gate:   ${delta_comb:>+.2f}  vs baseline")
+    rsi_n = len(rsi_blocked) if rsi_blocked else 0
+    print(f"  RSI gate contribution: see {rsi_n} blocked trades above")
     if delta_comb > 0:
-        print(f"\n  ✅ BUILD APPROVED — combined gates add ${delta_comb:+.2f} over {len(rows)} trades")
+        print(f"\n  ✅ BUILD APPROVED — all gates add ${delta_comb:+.2f} over {len(rows)} trades")
     else:
-        print(f"\n  ⚠️  REVIEW — combined gates subtract ${abs(delta_comb):.2f} — check assumptions")
+        print(f"\n  ⚠️  REVIEW — gates subtract ${abs(delta_comb):.2f} — check assumptions")
 
 
 if __name__ == '__main__':
