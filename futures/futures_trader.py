@@ -1952,12 +1952,12 @@ def run_scan():
     _scan_ib_range = calc_ib_range_today(df5)
     if _scan_rvol < 0.3:
         log(f"Low RVOL ({_scan_rvol:.2f}× < 0.3) — skip entry attempt")
-        try: log_block('IBKR', 'MNQ', 'LONG', 'RVOL', f'{_scan_rvol:.2f}x', price, session)
+        try: log_block('IBKR', 'MNQ', 'BOTH', 'RVOL', f'{_scan_rvol:.2f}x', price, session)
         except Exception: pass
         return
     if _scan_ib_range > 0 and _scan_ib_range < 50.0:
         log(f"Thin IB ({_scan_ib_range:.0f}pts < 50 min) — skip entry attempt")
-        try: log_block('IBKR', 'MNQ', 'LONG', 'IB_RANGE', f'{_scan_ib_range:.0f}pts', price, session)
+        try: log_block('IBKR', 'MNQ', 'BOTH', 'IB_RANGE', f'{_scan_ib_range:.0f}pts', price, session)
         except Exception: pass
         return
 

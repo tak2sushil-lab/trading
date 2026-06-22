@@ -763,7 +763,7 @@ def log_options_trade(strategy, symbol, cap_type, underlying_price,
     conn       = get_connection()
     c          = conn.cursor()
     # Stop and target: strategy-specific
-    if strategy == 'BULL_SPREAD':
+    if strategy in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         stop_value   = round(premium_paid * 0.50, 2)
         target_value = round(premium_paid + (max_profit or 0) * 0.50, 2)
     elif strategy == 'OPT_SCALP':

@@ -144,6 +144,14 @@ def score_outcomes():
             signal = row['signal']
             entry_price = row['price'] or 0.0
 
+            # Bidirectional gates (BOTH) block all entries regardless of direction.
+            # Directional pts are meaningless — mark scored without filling pts columns.
+            if signal == 'BOTH':
+                with _conn() as c:
+                    c.execute("UPDATE gate_blocks SET scored=1 WHERE id=?", (row['id'],))
+                updated += 1
+                continue
+
             results = {}
             for mins, col_p, col_pts, col_ok in [
                 (15,  'price_15m',  'pts_15m',  'correct_15m'),
@@ -226,17 +234,24 @@ def gate_report(days: int = 14):
     print(f"  {'Gate':<14} {'System':<8} {'Sig':<6} {'N':>5} {'Acc%':>7} {'AvgPts':>8}  Assessment")
     print(f"  {'-'*64}")
 
-    for r in rows:
-        gate = r['gate']
-        if gate == 'ENTER':
-            continue
+    both_rows = [r for r in rows if r['signal'] == 'BOTH' and r['gate'] != 'ENTER']
+    dir_rows  = [r for r in rows if r['signal'] != 'BOTH' and r['gate'] != 'ENTER']
+
+    for r in dir_rows:
         acc  = (r['acc'] or 0) * 100
         pts  = r['avg_pts'] or 0
         assess = ('✅ GOOD' if acc >= 60 else
                   '⚠️  WEAK' if acc >= 40 else
                   '❌ REMOVE')
-        print(f"  {gate:<14} {r['system']:<8} {r['signal']:<6} {r['n']:>5} "
+        print(f"  {r['gate']:<14} {r['system']:<8} {r['signal']:<6} {r['n']:>5} "
               f"  {acc:>5.0f}%  {pts:>+7.1f}pts  {assess}")
+
+    # Bidirectional blocks — no pts scoring (counted only)
+    if both_rows:
+        print(f"\n  {'─'*64}")
+        print(f"  Bidirectional blocks (BOTH — no directional scoring):")
+        for r in both_rows:
+            print(f"  {r['gate']:<14} {r['system']:<8} {'BOTH':<6} {r['n']:>5}  (blocks both sides)")
 
     # Entry outcomes (reference baseline)
     enters = [r for r in rows if r['gate'] == 'ENTER']
