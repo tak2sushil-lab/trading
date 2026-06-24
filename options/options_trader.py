@@ -48,6 +48,7 @@ from database import (
     log_options_trade,
     close_options_trade,
     get_closed_options_count,
+    get_options_today_closed,
     get_options_learning_data,
     get_options_total_pnl,
     get_options_deployed_capital,
@@ -3617,28 +3618,40 @@ def _live_pnl_by_symbol() -> dict:
 
 
 def cmd_status(chat_id: str):
-    trades    = get_open_options_trades()
-    closed    = get_closed_options_count()
-    cats      = get_upcoming_catalysts(days=30)
-    paused    = "PAUSED" if _paused else "ACTIVE"
-    cs        = capital_status()
-    total_pnl = get_options_total_pnl()
-    live_pnl  = _live_pnl_by_symbol()
+    trades      = get_open_options_trades()
+    closed      = get_closed_options_count()
+    today_closed = get_options_today_closed()
+    cats        = get_upcoming_catalysts(days=30)
+    paused      = "PAUSED" if _paused else "ACTIVE"
+    cs          = capital_status()
+    total_pnl   = get_options_total_pnl()
+    live_pnl    = _live_pnl_by_symbol()
 
     bar_filled = round(cs['deployed'] / cs['total'] * 10) if cs['total'] else 0
     cap_bar    = '█' * bar_filled + '░' * (10 - bar_filled)
 
-    open_upnl = sum(live_pnl.get(t['symbol'], 0) for t in trades)
+    open_upnl    = sum(live_pnl.get(t['symbol'], 0) for t in trades)
+    session_pnl  = sum(r['pnl'] for r in today_closed)
 
     lines = [f"📊 *Options Status — {paused}*\n"]
     lines.append(
         f"Capital: [{cap_bar}] ${cs['deployed']:.0f} deployed / ${cs['available']:.0f} free\n"
         f"Slots: {cs['slots_used']}/{MAX_OPTIONS_POSITIONS} | "
-        f"Closed: {closed} | Net P&L: ${total_pnl:+.0f} | Open uPnL: ${open_upnl:+.0f}"
+        f"Closed: {closed} | All-time P&L: ${total_pnl:+.0f} | Open uPnL: ${open_upnl:+.0f}"
     )
 
+    # Today's session
+    if today_closed:
+        lines.append(f"\n*Today's closed ({len(today_closed)}) — Session P&L: ${session_pnl:+.0f}*")
+        for r in today_closed:
+            icon = "✅" if r['pnl'] >= 0 else "❌"
+            lines.append(
+                f"{icon} {r['symbol']} [{r['strategy']}] "
+                f"${r['pnl']:+.0f} ({r['return_pct']:+.1f}%) — {r['exit_reason']}"
+            )
+
     if trades:
-        lines.append("")
+        lines.append("\n*Open positions:*")
         for t in trades:
             prem  = t['premium_paid'] or 0
             stop  = t['stop_value']

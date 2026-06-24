@@ -941,6 +941,28 @@ def get_closed_options_count():
     conn.close()
     return n
 
+
+def get_options_today_closed() -> list:
+    """Trades closed today — for session P&L display in OPT STATUS."""
+    from datetime import date
+    today = date.today().isoformat()
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    c    = conn.cursor()
+    c.execute('''SELECT id, symbol, strategy, premium_paid, exit_value, return_pct, exit_reason
+                 FROM options_trades
+                 WHERE status = 'CLOSED' AND exit_date = ?
+                 ORDER BY id''', (today,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    # Compute P&L per row (credit sign aware)
+    for r in rows:
+        paid = r['premium_paid'] or 0
+        exv  = r['exit_value']  or 0
+        is_credit = r['strategy'] in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+        r['pnl'] = round((paid - exv) if is_credit else (exv - paid), 2)
+    return rows
+
 def get_options_learning_data():
     """Return all closed trades with fields needed for learning analysis."""
     conn = get_connection()
