@@ -521,6 +521,15 @@ async def cancel_all():
     ib.reqGlobalCancel()
     return {"status": "all orders cancelled"}
 
+# ── Cancel single order by ID ──────────────────────────────
+@app.post("/order/{order_id}/cancel")
+async def cancel_order_by_id(order_id: int):
+    for trade in ib.trades():
+        if trade.order.orderId == order_id:
+            ib.cancelOrder(trade.order)
+            return {"status": "cancelled", "order_id": order_id}
+    return {"status": "not_found", "order_id": order_id}
+
 # ── Dynamic momentum scanner ─────────────────────────────
 @app.get("/scan/momentum")
 async def scan_momentum(
@@ -951,13 +960,15 @@ class OptionsOrderRequest(BaseModel):
     right:       str             # C or P
     qty:         int
     action:      str             # BUY or SELL
-    order_type:  str  = "LIMIT"
+    order_type:  str  = "LIMIT" # LIMIT | MIDPRICE
     limit_price: float = None
     # Spread (second leg) — omit for single-leg orders
     short_expiry:  str   = None
     short_strike:  float = None
     short_right:   str   = None
     net_debit:     float = None  # positive = debit spread (you pay), negative = credit
+    tif:           str   = "DAY" # DAY | GTC — use GTC to queue outside market hours
+    outside_rth:   bool  = False # True → allow fills outside regular trading hours (4pm–8pm ET)
 
 @app.post("/options/order")
 async def place_options_order(req: OptionsOrderRequest):
@@ -974,10 +985,22 @@ async def place_options_order(req: OptionsOrderRequest):
         qualified = await ib.qualifyContractsAsync(contract)
         if not qualified:
             return {"error": f"Could not qualify {sym} {req.expiry} {req.strike} {req.right}"}
-        if req.limit_price is None:
-            return {"error": "limit_price required — never use market orders on options"}
-        order = LimitOrder(req.action.upper(), req.qty, req.limit_price)
-        order.tif = 'DAY'
+        if req.order_type.upper() == 'MIDPRICE':
+            # IBKR MidPrice: pegs to bid-ask mid automatically — ~$3 avg improvement per trade
+            from ib_async import Order as _IbOrder
+            order = _IbOrder()
+            order.action     = req.action.upper()
+            order.totalQuantity = req.qty
+            order.orderType  = 'MidPx'
+            order.lmtPrice   = req.limit_price or 0  # floor price (won't pay more than this)
+            order.tif        = req.tif.upper()
+            order.outsideRth = req.outside_rth
+        else:
+            if req.limit_price is None:
+                return {"error": "limit_price required — never use market orders on options"}
+            order = LimitOrder(req.action.upper(), req.qty, req.limit_price)
+            order.tif = req.tif.upper()
+            order.outsideRth = req.outside_rth
         if IBKR_ACCOUNT:
             order.account = IBKR_ACCOUNT
         trade = ib.placeOrder(contract, order)
@@ -1034,7 +1057,8 @@ async def place_options_order(req: OptionsOrderRequest):
         return {"error": "net_debit required for spread orders"}
 
     order = LimitOrder(order_action, req.qty, abs(round(req.net_debit, 2)))
-    order.tif = 'DAY'
+    order.tif = req.tif.upper()
+    order.outsideRth = req.outside_rth
     order.transmit = True
     if IBKR_ACCOUNT:
         order.account = IBKR_ACCOUNT

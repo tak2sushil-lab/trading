@@ -159,7 +159,32 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
     tid   = trade['id']
     qty   = trade.get('contracts', 1)
 
-    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
+    if strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+        # Close credit spread: BUY BACK the spread.
+        # long_strike = what we sold (higher-value leg); short_strike = what we bought.
+        lq = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
+        sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
+        if not lq or not sq:
+            return False
+        long_mid   = ((lq.get('bid') or 0) + (lq.get('ask') or 0)) / 2
+        short_mid  = ((sq.get('bid') or 0) + (sq.get('ask') or 0)) / 2
+        natural_debit = round(
+            (lq.get('ask') or long_mid) - (sq.get('bid') or short_mid), 2)
+        limit_debit  = max(0.01, natural_debit)
+        exit_dollar  = round((long_mid - short_mid) * 100 * qty, 2)
+        payload = {
+            'symbol':       sym,
+            'expiry':       trade['expiry'],
+            'strike':       trade['long_strike'],
+            'right':        trade['right'],
+            'qty':          qty,
+            'action':       'BUY',
+            'order_type':   'LIMIT',
+            'limit_price':  limit_debit,
+            'short_strike': trade['short_strike'],
+            'net_debit':    limit_debit,
+        }
+    elif strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         lq = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
         sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
         if not lq or not sq:
@@ -218,44 +243,97 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         }
         exit_dollar = round(mid * 100 * qty, 2)
 
-    resp = _bridge_post('/options/order', payload)
-    if not resp or 'orderId' not in resp:
-        return False
+    MAX_CLOSE_TRIES = 3
+    filled   = False
+    order_id = None
+    st       = 'Unknown'
+    exit_dollar_final = exit_dollar
 
-    order_id = resp['orderId']
-    # Wait for IBKR paper fill simulator to settle (BAG orders need time)
-    time.sleep(30)
-    status = _bridge_get(f'/order/{order_id}/status')
-    st     = (status or {}).get('status', 'Unknown')
-    filled = status and status.get('filled', 0) >= qty or st == 'Filled'
-
-    # Portfolio fallback: if order status is ambiguous, verify position is gone from IBKR.
-    # Do NOT trust Submitted/PreSubmitted — paper simulator may still cancel after 30s.
-    if not filled and st in ('Submitted', 'PreSubmitted', 'Cancelled', 'Unknown'):
-        try:
-            r     = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
-            opts  = r.json() if r.ok else []
-            long_stk = float(trade.get('long_strike', 0))
-            exp      = trade.get('expiry', '')
-            still_open = any(
-                p.get('symbol') == sym
-                and p.get('expiry') == exp
-                and abs(float(p.get('strike', 0)) - long_stk) < 0.01
-                and float(p.get('qty', 0)) > 0
-                for p in opts
+    for attempt in range(MAX_CLOSE_TRIES):
+        # On retry: re-fetch live quotes to get fresh price (spread value can move)
+        if attempt > 0:
+            time.sleep(30)
+            try:
+                if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
+                    lq2 = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
+                    sq2 = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
+                    if lq2 and sq2:
+                        nat2 = round((lq2.get('bid') or 0) - (sq2.get('ask') or 0), 2)
+                        payload['limit_price'] = max(0.01, nat2)
+                        payload['net_debit']   = round(-max(0.01, nat2), 2)
+                elif strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+                    # Two-leg re-quote for credit close: BUY long_strike + SELL short_strike
+                    right2 = 'P' if strat == 'BULL_PUT_CREDIT' else 'C'
+                    lq2 = get_quote(sym, trade['expiry'], trade['long_strike'],  right2)
+                    sq2 = get_quote(sym, trade['expiry'], trade['short_strike'], right2)
+                    if lq2 and sq2:
+                        nat2 = round((lq2.get('ask') or 0) - (sq2.get('bid') or 0), 2)
+                        payload['limit_price'] = max(0.01, nat2)
+                        payload['net_debit']   = max(0.01, nat2)
+                else:
+                    q2 = get_quote(sym, trade['expiry'],
+                                   trade.get('long_strike') or trade.get('strike'),
+                                   trade['right'])
+                    if q2:
+                        mid2 = round(((q2.get('bid') or 0) + (q2.get('ask') or 0)) / 2, 2)
+                        payload['limit_price'] = max(0.01, round(mid2 - 0.05, 2))
+            except Exception:
+                pass
+            send_telegram(
+                f"⏳ *{sym} auto-close retry {attempt+1}/{MAX_CLOSE_TRIES}* (trade #{tid})\n"
+                f"Previous attempt {order_id} status: {st}"
             )
-            if not still_open:
-                filled = True  # position gone from IBKR — close confirmed
-        except Exception:
-            pass
+
+        resp = _bridge_post('/options/order', payload)
+        if not resp or 'orderId' not in resp:
+            continue
+
+        order_id = resp['orderId']
+        time.sleep(30)
+        status = _bridge_get(f'/order/{order_id}/status')
+        st     = (status or {}).get('status', 'Unknown')
+        filled = bool(status and status.get('filled', 0) >= qty or st == 'Filled')
+
+        # Portfolio fallback: verify position is gone from IBKR
+        if not filled and st in ('Submitted', 'PreSubmitted', 'Cancelled', 'Unknown'):
+            try:
+                r     = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
+                opts  = r.json() if r.ok else []
+                long_stk = float(trade.get('long_strike', 0))
+                exp      = trade.get('expiry', '')
+                still_open = any(
+                    p.get('symbol') == sym
+                    and p.get('expiry') == exp
+                    and abs(float(p.get('strike', 0)) - long_stk) < 0.01
+                    and float(p.get('qty', 0)) > 0
+                    for p in opts
+                )
+                if not still_open:
+                    filled = True
+            except Exception:
+                pass
+
+        if filled:
+            # Use avgFillPrice from IBKR if available
+            avg_fp = float((status or {}).get('avgFillPrice') or 0)
+            if avg_fp > 0 and strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD',
+                                              'BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+                exit_dollar_final = round(avg_fp * 100 * qty, 2)
+            break
+
+        # Cancel this specific order before retry
+        if order_id:
+            _bridge_post(f'/order/{order_id}/cancel', {})
 
     if not filled:
         send_telegram(
-            f"⚠️ *{sym} auto-close order not confirmed* (trade #{tid})\n"
-            f"Order {order_id} status: {st}\n"
-            f"DB NOT updated — check IBKR manually. Use `OPT CLOSE {sym}` to retry."
+            f"⚠️ *{sym} auto-close FAILED after {MAX_CLOSE_TRIES} attempts* (trade #{tid})\n"
+            f"Last order {order_id} status: {st}\n"
+            f"DB NOT updated — use `OPT CLOSE {sym}` to retry manually."
         )
         return False
+
+    exit_dollar = exit_dollar_final
 
     return_pct = close_options_trade(tid, exit_dollar, exit_reason=exit_reason)
 
@@ -276,7 +354,9 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             _days    = ((date.today() - date.fromisoformat(_erow[0])).days
                         if _erow[0] else 0)
             _premium = _erow[1] or 0
-            _pnl     = round(exit_dollar - _premium, 2)   # actual P&L, not exit value
+            # Credit spreads: P&L = credit_received - buyback_cost; debit: P&L = exit - entry
+            _is_credit = strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+            _pnl = round((_premium - exit_dollar) if _is_credit else (exit_dollar - _premium), 2)
             log_trade_outcome(
                 trade_id=tid, calc_log_id=_row[0],
                 predicted_ev=_row[1], predicted_wr=_row[2],
@@ -483,10 +563,11 @@ def get_scalp_value(trade: dict) -> float | None:
 
 def get_contract_value(trade: dict) -> float | None:
     """Return TOTAL current value of the position (all contracts combined).
-    premium_paid and stop_value in DB are also totals, so comparisons are consistent."""
+    premium_paid and stop_value in DB are also totals, so comparisons are consistent.
+    For credit spreads: 'value' = cost to buy back = what we monitor vs stop/target."""
     contracts = trade.get('contracts', 1) or 1
     strat     = trade.get('strategy', '')
-    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD', 'BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
         val = get_spread_value(trade)
     elif strat == 'OPT_SCALP':
         val = get_scalp_value(trade)
@@ -523,8 +604,8 @@ def compute_new_stop(trade: dict, current_value: float,
 
     Returns the stop that should be written to DB, along with the stage.
     """
-    # OPT_SCALP: stops are pre-set at entry as % of premium; don't promote stages
-    if trade.get('strategy') == 'OPT_SCALP':
+    # OPT_SCALP + credit spreads: fixed thresholds, no trailing
+    if trade.get('strategy') in ('OPT_SCALP', 'BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
         return None, None
 
     premium   = trade['premium_paid']    # true entry cost incl. commissions
@@ -626,17 +707,32 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             stop  = new_stop
             stage = new_stage
 
+    is_credit = strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+
     # ── T3b: hit profit target — AUTO-CLOSE ──
     target = trade.get('target_value')
-    if target is not None and current_value >= target and 'T3b' not in fired:
+    # Credit: profit when spread VALUE FALLS below target (spread depreciated).
+    # Debit: profit when spread VALUE RISES above target.
+    t3b_hit = (target is not None and (
+        (is_credit and current_value <= target) or
+        (not is_credit and current_value >= target)
+    )) and 'T3b' not in fired
+
+    if t3b_hit:
         fired.add('T3b')
-        gain_pct = round((current_value - prem) / prem * 100, 1) if prem else 0
-        tgt_label = '50% max profit' if trade['strategy'] in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') else '100% gain'
+        if is_credit:
+            profit_dollar = round(prem - current_value, 2)
+            gain_pct = round(profit_dollar / prem * 100, 1) if prem else 0
+            tgt_label = '50% credit profit'
+        else:
+            gain_pct = round((current_value - prem) / prem * 100, 1) if prem else 0
+            tgt_label = '50% max profit' if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') else '100% gain'
         closed = _auto_close_position(trade, current_value, exit_reason='AUTO_TARGET')
         if closed:
             alerts.append(
                 f"🎯 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
                 f"Profit target reached ({tgt_label}) · +{gain_pct}%\n"
+                f"Buyback value: ${current_value:.2f} ≤ target ${target:.2f}" if is_credit else
                 f"Value: ${current_value:.2f} ≥ target ${target:.2f}"
             )
         else:
@@ -645,27 +741,38 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                 f"{tgt_label} reached · +{gain_pct}%\n"
                 f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
             )
-        return alerts   # no further checks needed once position is closed
+        return alerts
 
-    # ── T4: value below stop — AUTO-CLOSE ──
-    if stop is not None and current_value <= stop and 'T4' not in fired:
+    # ── T4: stop hit — AUTO-CLOSE ──
+    # Credit: stop when spread VALUE RISES above stop_value (spread inflated = losing).
+    # Debit: stop when spread VALUE FALLS below stop_value.
+    t4_hit = (stop is not None and (
+        (is_credit and current_value >= stop) or
+        (not is_credit and current_value <= stop)
+    )) and 'T4' not in fired
+
+    if t4_hit:
         fired.add('T4')
-        stage_label = {1: 'hard stop (-50%)', 2: 'breakeven stop', 3: 'trail stop'}.get(stage, '')
+        if is_credit:
+            loss_dollar = round(current_value - prem, 2)
+            stop_label  = f'spread tripled — buyback ${current_value:.2f} ≥ stop ${stop:.2f}'
+        else:
+            stage_label = {1: 'hard stop (-50%)', 2: 'breakeven stop', 3: 'trail stop'}.get(stage, '')
+            stop_label  = f'{stage_label} — value ${current_value:.2f} ≤ stop ${stop:.2f}'
         closed = _auto_close_position(trade, current_value)
         if closed:
             alerts.append(
                 f"🚨 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
-                f"Stop hit ({stage_label})\n"
-                f"Value: ${current_value:.2f} | Stop level: ${stop:.2f} | Entry: ${prem:.2f}"
+                f"Stop hit ({stop_label}) | Entry credit: ${prem:.2f}"
             )
-            return alerts   # position gone, skip further checks
+            return alerts
         else:
             alerts.append(
                 f"🚨 *STOP HIT — {sym} {strat}* (trade #{tid})\n"
-                f"Value: ${current_value:.2f} | Stop: ${stop:.2f} | Stage: {stage}\n"
+                f"{stop_label}\n"
                 f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
             )
-            return alerts   # don't pile on other alerts when stop is hit
+            return alerts
 
     # ── OPT_SCALP: 2-day time stop (checked intraday + EOD) ──
     if strat == 'OPT_SCALP' and 'SCALP_TIME' not in fired:
@@ -738,8 +845,8 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
         except Exception:
             pass
 
-    # ── Standard spread: 21 DTE alert (only for older 28-45 DTE positions) ──
-    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') and dte <= 21 and 'BULL_DTE' not in fired:
+    # ── Standard spread / credit spread: 21 DTE exit alert ──
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD', 'BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT') and dte <= 21 and 'BULL_DTE' not in fired:
         try:
             entry_d = date.fromisoformat(trade.get('entry_date', '2000-01-01'))
             exp_d   = datetime.strptime(trade.get('expiry', '20000101').replace('-', ''), '%Y%m%d').date()
@@ -789,8 +896,9 @@ def _build_eod_summary(trades: list[dict]) -> str:
             strat = t['strategy']
             prem  = t['premium_paid'] or 0
             cv        = get_contract_value(t) or 0  # already total (×contracts)
-            pnl       = round(cv - prem, 2)
-            pct       = round((cv - prem) / prem * 100, 1) if prem else 0
+            is_cred   = strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+            pnl       = round((prem - cv) if is_cred else (cv - prem), 2)
+            pct       = round(pnl / prem * 100, 1) if prem else 0
             dte   = days_to_expiry(t['expiry'])
             stage = t['stop_stage'] or 1
             stop  = t['stop_value']
@@ -819,10 +927,15 @@ def _build_eod_summary(trades: list[dict]) -> str:
 
 # ── Intraday scan ─────────────────────────────────────────────────────────────
 
-def run_intraday_scan():
+def run_intraday_scan(scalp_only: bool = False):
     trades = get_open_options_trades()
     if not trades:
         return
+
+    if scalp_only:
+        trades = [t for t in trades if t.get('strategy') == 'OPT_SCALP']
+        if not trades:
+            return
 
     all_alerts: list[str] = []
     for trade in trades:
@@ -836,8 +949,9 @@ def run_intraday_scan():
         send_telegram(alert)
 
     if all_alerts:
-        print(f"[watchman] intraday scan: {len(all_alerts)} alert(s) sent")
-    else:
+        label = 'scalp-only' if scalp_only else 'intraday'
+        print(f"[watchman] {label} scan: {len(all_alerts)} alert(s) sent")
+    elif not scalp_only:
         print(f"[watchman] intraday scan: {len(trades)} position(s) checked, all quiet")
 
 
@@ -882,6 +996,7 @@ def main():
     # check per trade. Trailing stops are seeded from current price (not true intraday
     # high) after a mid-day restart. Hard stop (-50%) still protects against large losses.
     eod_sent_today: date | None = None
+    last_full_scan = 0.0   # epoch seconds
 
     while True:
         try:
@@ -891,13 +1006,19 @@ def main():
             if is_eod_window() and eod_sent_today != today:
                 run_eod()
                 eod_sent_today = today
+                last_full_scan = time.time()
             elif is_market_hours():
-                run_intraday_scan()
+                # 1-min fast loop for OPT_SCALP (can hit -50% in <5 min at 7-12 DTE)
+                run_intraday_scan(scalp_only=True)
+                # Full scan every SCAN_INTERVAL_MIN (5 min)
+                if time.time() - last_full_scan >= SCAN_INTERVAL_MIN * 60:
+                    run_intraday_scan(scalp_only=False)
+                    last_full_scan = time.time()
 
         except Exception as e:
             print(f"[watchman] loop error: {e}")
 
-        time.sleep(SCAN_INTERVAL_MIN * 60)
+        time.sleep(60)   # base tick: 1 min (scalps checked every tick)
 
 
 if __name__ == '__main__':

@@ -191,8 +191,15 @@ def init_db():
         catalyst_id         INTEGER REFERENCES catalyst_calendar(id),
         one_line_reason     TEXT,
         linked_trade_id     INTEGER REFERENCES options_trades(id),
-        created_at          TEXT
+        created_at          TEXT,
+        magnitude           INTEGER DEFAULT 3
     )''')
+    # Idempotent column add for existing DBs
+    try:
+        c.execute('ALTER TABLE options_news ADD COLUMN magnitude INTEGER DEFAULT 3')
+        conn.commit()
+    except Exception:
+        pass
 
     c.execute('''CREATE TABLE IF NOT EXISTS ticker_conviction (
         symbol          TEXT PRIMARY KEY,
@@ -766,6 +773,12 @@ def log_options_trade(strategy, symbol, cap_type, underlying_price,
     if strategy in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
         stop_value   = round(premium_paid * 0.50, 2)
         target_value = round(premium_paid + (max_profit or 0) * 0.50, 2)
+    elif strategy in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+        # Credit: premium_paid = max profit (credit received × 100 × qty).
+        # stop_value  = spread buyback cost that triggers stop (3× credit = net loss 2×).
+        # target_value = spread buyback cost at 50% profit (spread fell to 0.5× credit).
+        stop_value   = round(premium_paid * 3.0, 2)
+        target_value = round(premium_paid * 0.5, 2)
     elif strategy == 'OPT_SCALP':
         stop_value   = round(premium_paid * 0.50, 2)   # -50% exit
         target_value = round(premium_paid * 1.80, 2)   # +80% exit
@@ -820,15 +833,22 @@ def close_options_trade(trade_id, exit_value, exit_reason,
                         thesis_correct=None, lesson=None):
     conn       = get_connection()
     c          = conn.cursor()
-    c.execute('SELECT premium_paid, max_loss FROM options_trades WHERE id=?',
+    c.execute('SELECT premium_paid, max_loss, strategy FROM options_trades WHERE id=?',
               (trade_id,))
     row        = c.fetchone()
     if not row:
         conn.close()
         return None
-    premium_paid, max_loss = row
-    return_pct     = round((exit_value - premium_paid) / premium_paid * 100, 2) if premium_paid else 0
-    return_on_risk = round((exit_value - premium_paid) / abs(max_loss) * 100, 2) if max_loss else 0
+    premium_paid, max_loss, strategy = row
+    if strategy in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+        # For credit spreads: exit_value = buyback cost. P&L = credit_received - buyback.
+        # premium_paid = credit_received (max profit). return_pct = P&L / credit × 100.
+        pnl            = round(premium_paid - exit_value, 2)
+        return_pct     = round(pnl / premium_paid * 100, 2) if premium_paid else 0
+        return_on_risk = round(pnl / abs(max_loss) * 100, 2) if max_loss else 0
+    else:
+        return_pct     = round((exit_value - premium_paid) / premium_paid * 100, 2) if premium_paid else 0
+        return_on_risk = round((exit_value - premium_paid) / abs(max_loss) * 100, 2) if max_loss else 0
     c.execute('''UPDATE options_trades SET
         exit_date=?, exit_value=?, exit_reason=?, return_pct=?,
         return_on_risk=?, thesis_correct=?, lesson=?, status=\'CLOSED\'
@@ -846,10 +866,11 @@ def log_options_snapshot(trade_id, underlying_price, contract_value,
     c    = conn.cursor()
     now  = datetime.now()
     pnl  = None
-    c.execute('SELECT premium_paid FROM options_trades WHERE id=?', (trade_id,))
+    c.execute('SELECT premium_paid, strategy FROM options_trades WHERE id=?', (trade_id,))
     row  = c.fetchone()
     if row and row[0]:
-        pnl = round(contract_value - row[0], 2)
+        is_credit = row[1] in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+        pnl = round((row[0] - contract_value) if is_credit else (contract_value - row[0]), 2)
     c.execute('''INSERT INTO options_snapshots
         (trade_id, snapshot_date, snapshot_time, underlying_price, contract_value,
          pnl_unrealized, delta, iv_rank, iv_pct, days_to_expiry, stop_value, notes)
@@ -863,40 +884,50 @@ def log_options_snapshot(trade_id, underlying_price, contract_value,
 def log_options_news(symbol, headline, source, published_at, relevance,
                      news_type, direction, time_horizon, already_priced_in,
                      creates_future_event, one_line_reason,
-                     source_first=0, catalyst_id=None, linked_trade_id=None):
+                     source_first=0, catalyst_id=None, linked_trade_id=None,
+                     magnitude=3):
     conn = get_connection()
     c    = conn.cursor()
     c.execute('''INSERT INTO options_news
         (symbol, headline, source, source_first, published_at, relevance,
          news_type, direction, time_horizon, already_priced_in,
          creates_future_event, catalyst_id, one_line_reason,
-         linked_trade_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         linked_trade_id, created_at, magnitude)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (symbol.upper(), headline, source, source_first, published_at,
          relevance, news_type, direction, time_horizon, already_priced_in,
          creates_future_event, catalyst_id, one_line_reason,
-         linked_trade_id, datetime.now().isoformat()))
+         linked_trade_id, datetime.now().isoformat(), magnitude or 3))
     news_id = c.lastrowid
     conn.commit()
     conn.close()
     return news_id
 
 def get_options_total_pnl() -> float:
-    """Sum of (exit_value - premium_paid) for all CLOSED options trades.
-    Negative = net loss. Used by the $2K circuit breaker."""
+    """Net P&L across all CLOSED options trades. Used by the $2K circuit breaker.
+    Credit spreads: P&L = premium_paid - exit_value (credit received minus buyback cost).
+    Debit spreads/LEAPs/scalps: P&L = exit_value - premium_paid."""
     conn = get_connection()
     c    = conn.cursor()
-    c.execute('''SELECT COALESCE(SUM(exit_value - premium_paid), 0.0)
-                 FROM options_trades WHERE status='CLOSED' ''')
+    c.execute('''SELECT COALESCE(SUM(
+        CASE WHEN strategy IN ('BULL_PUT_CREDIT','BEAR_CALL_CREDIT')
+             THEN premium_paid - exit_value
+             ELSE exit_value - premium_paid END
+    ), 0.0) FROM options_trades WHERE status='CLOSED' ''')
     val = c.fetchone()[0]
     conn.close()
     return round(float(val), 2)
 
 def get_options_deployed_capital() -> float:
-    """Sum of premium_paid for all OPEN options trades. Used for capital re-deployment gate."""
+    """Capital currently deployed: premium paid for debit/LEAP/scalp, margin held for credits.
+    Credit margin = max_loss (spread_width - credit) × 100 × qty — what IBKR actually holds."""
     conn = get_connection()
     c    = conn.cursor()
-    c.execute("SELECT COALESCE(SUM(premium_paid), 0.0) FROM options_trades WHERE status='OPEN'")
+    c.execute("""SELECT COALESCE(SUM(
+        CASE WHEN strategy IN ('BULL_PUT_CREDIT','BEAR_CALL_CREDIT')
+             THEN ABS(max_loss)
+             ELSE premium_paid END
+    ), 0.0) FROM options_trades WHERE status='OPEN'""")
     val = c.fetchone()[0]
     conn.close()
     return round(float(val), 2)
@@ -1041,7 +1072,8 @@ def recompute_conviction(symbol: str) -> dict:
     c    = conn.cursor()
 
     c.execute("""
-        SELECT relevance, direction, source, created_at
+        SELECT relevance, direction, source, created_at, already_priced_in,
+               COALESCE(magnitude, 3)
         FROM options_news
         WHERE symbol=? AND relevance IN ('HIGH','MEDIUM')
           AND created_at >= datetime('now', '-5 days')
@@ -1060,10 +1092,14 @@ def recompute_conviction(symbol: str) -> dict:
     total_score  = 0.0
     bull_score = bear_score = 0.0
     high_count   = 0
+    bull_high = bear_high = 0
     unique_srcs  = []
     last_at      = ''
 
-    for relevance, direction, source, created_at_str in rows:
+    for relevance, direction, source, created_at_str, already_priced_in, magnitude in rows:
+        # Skip signals already priced in — they no longer move IV
+        if already_priced_in == 'YES':
+            continue
         try:
             created_at = datetime.fromisoformat(created_at_str)
         except Exception:
@@ -1072,8 +1108,9 @@ def recompute_conviction(symbol: str) -> dict:
         weight     = RELEVANCE_WEIGHT.get(relevance, 0)
         recency    = 0.5 ** (hours_old / 48)
         diversity  = 1.2 if source not in seen_sources else 1.0
+        mag_mult   = (magnitude or 3) / 3.0   # magnitude 1-5; 3=baseline, 5=+67%, 1=-67%
         seen_sources.add(source)
-        signal_contribution = weight * recency * diversity
+        signal_contribution = weight * recency * diversity * mag_mult
         total_score += signal_contribution
         if direction == 'BULLISH':
             bull_score += signal_contribution
@@ -1081,16 +1118,22 @@ def recompute_conviction(symbol: str) -> dict:
             bear_score += signal_contribution
         if relevance == 'HIGH':
             high_count += 1
+            if direction == 'BULLISH':
+                bull_high += 1
+            elif direction == 'BEARISH':
+                bear_high += 1
         if source not in unique_srcs:
             unique_srcs.append(source)
         last_at = created_at_str
 
     score     = min(1.0, total_score)
-    # HIGH tier requires at least 1 genuine HIGH-relevance signal, not just MEDIUM accumulation
-    tier      = ('HIGH'   if score >= 0.60 and high_count >= 1
+    lead_dir  = 'BULL' if bull_score > bear_score else ('BEAR' if bear_score > bull_score else 'MIXED')
+    net_high  = (bull_high - bear_high) if lead_dir == 'BULL' else (bear_high - bull_high)
+    # HIGH requires: score threshold + genuine HIGH signal + net ≥2 high signals in winning direction
+    tier      = ('HIGH'   if score >= 0.60 and high_count >= 1 and net_high >= 2
             else 'MEDIUM' if score >= 0.30
             else 'LOW')
-    direction = 'BULL' if bull_score > bear_score else ('BEAR' if bear_score > bull_score else 'MIXED')
+    direction = lead_dir
     sources   = ', '.join(unique_srcs[:5])
     now_str   = now.isoformat()
 
@@ -1474,7 +1517,11 @@ def fill_whatif_prices():
     Nightly: for SKIPped/EXPIRED suggestions, fetch current price and compute
     what the P&L would have been had the user confirmed the trade.
     Fills underlying_7d (if 7+ days old) and underlying_14d (if 14+ days old).
-    Called from learner.py.
+
+    Spread type detection from stored fields (no strategy column needed):
+      net_debit < 0            → credit spread (credit received = -net_debit)
+      net_debit > 0, ls < ss   → BULL_SPREAD (long lower call / short higher call)
+      net_debit > 0, ls > ss   → BEAR_PUT_SPREAD (long higher put / short lower put)
     """
     import yfinance as yf
     conn = get_connection()
@@ -1506,13 +1553,33 @@ def fill_whatif_prices():
                 c.execute('UPDATE opt_suggestions SET underlying_14d=? WHERE id=?',
                           (current, sid))
 
-            # Estimate what-if P&L using intrinsic value of spread at current price
-            # (simplified: spread value = clamp(current - long_strike, 0, width) * 100)
-            if ls and ss and nd and entry_price and current:
-                width   = ss - ls
-                spread_val = max(0.0, min(current - ls, width))
-                whatif_pnl = round((spread_val - nd) * 100, 2)
-                whatif_pct = round((spread_val - nd) / nd * 100, 1) if nd else 0
+            if ls and ss and nd is not None and entry_price and current:
+                if nd < 0:
+                    # Credit spread: P&L = credit_received - buyback_cost (spread intrinsic)
+                    net_credit = -nd
+                    if ls > ss:
+                        # BULL_PUT_CREDIT: sold higher put (ls), bought lower put (ss)
+                        width      = ls - ss
+                        spread_val = max(0.0, min(ls - current, width))
+                    else:
+                        # BEAR_CALL_CREDIT: sold lower call (ls), bought higher call (ss)
+                        width      = ss - ls
+                        spread_val = max(0.0, min(current - ls, width))
+                    whatif_pnl = round((net_credit - spread_val) * 100, 2)
+                    whatif_pct = round(whatif_pnl / (net_credit * 100) * 100, 1) if net_credit else 0
+                elif ls < ss:
+                    # BULL_SPREAD: long lower call (ls), short higher call (ss)
+                    width      = ss - ls
+                    spread_val = max(0.0, min(current - ls, width))
+                    whatif_pnl = round((spread_val - nd) * 100, 2)
+                    whatif_pct = round((spread_val - nd) / nd * 100, 1) if nd else 0
+                else:
+                    # BEAR_PUT_SPREAD: long higher put (ls), short lower put (ss)
+                    width      = ls - ss
+                    spread_val = max(0.0, min(ls - current, width))
+                    whatif_pnl = round((spread_val - nd) * 100, 2)
+                    whatif_pct = round((spread_val - nd) / nd * 100, 1) if nd else 0
+
                 c.execute('''UPDATE opt_suggestions
                              SET whatif_pnl=?, whatif_return_pct=? WHERE id=?''',
                           (whatif_pnl, whatif_pct, sid))

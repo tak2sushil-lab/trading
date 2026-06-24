@@ -87,11 +87,14 @@ def compute_expected_move(price: float, iv_pct: float, dte: int) -> float:
 
 # ── Volatility Edge ──────────────────────────────────────────────────────────
 
-def assess_volatility_edge(current_iv: float, hv30: float) -> dict:
+def assess_volatility_edge(current_iv: float, hv30: Optional[float]) -> dict:
     """
     VRP check: IV vs HV30. edge_pts > 0 = options cheap (IV < HV30).
-    Gate fails only if IV > HV30 + 10% (clearly expensive).
+    Gate fails if IV > HV30 + 10% (clearly expensive) or if HV30 is unknown.
     """
+    if hv30 is None:
+        return {'edge_pts': None, 'verdict': 'UNKNOWN', 'gate_pass': False,
+                'iv': current_iv, 'hv30': None}
     edge_pts = round(hv30 - current_iv, 1)
     gap      = current_iv - hv30
     if gap <= 0:
@@ -248,31 +251,33 @@ def run_monte_carlo_ev(
     hv30:         Optional[float] = None,
     n_paths:      int = 10_000,
     bearish:      bool = False,
+    credit:       bool = False,
 ) -> dict:
     """
     GBM Monte Carlo with Black-Scholes spread pricing at each step.
-    Managed exits: 50% max profit, -50% debit stop, 21 DTE time stop.
+    Debit spreads: managed exits at 50% profit, -50% stop, 21 DTE time stop.
+    Credit spreads (credit=True): win when spread shrinks; stop at 3× credit received.
 
     Uses two-sigma model when hv30 is provided:
-      - Price paths use HV30 (realized vol) — reflects actual stock movement
-      - BS pricing uses IV — reflects cheap/expensive options
-    When HV30 > IV (options cheap), paths move more than priced → positive EV edge.
+      - Price paths use HV30 (realized vol)
+      - BS pricing uses IV (entry cost reflects market price)
+    Debit: HV30 > IV → paths move more than priced → positive EV (cheap options).
+    Credit: HV30 < IV → paths move less than priced → positive EV (expensive options).
     """
     rng          = np.random.default_rng(42)
-    # VRP model: price paths and spread valuation both use realized vol (HV30).
-    # Entry cost (net_debit) stays at market price (IV-based quote).
-    # → When HV30 > IV: entry < fair value → positive EV (options cheap for buyer)
-    # → When HV30 < IV: entry > fair value → negative EV (options expensive)
     sigma        = (hv30 / 100) if hv30 is not None else (iv_pct / 100)
-    price_sigma  = sigma
-    path_sigma   = sigma
     dt           = 1 / 252
-    # For call spread: short_strike > long_strike → positive width
-    # For put spread:  long_strike  > short_strike → use abs()
     spread_width = abs(short_strike - long_strike)
 
-    profit_target_val = net_debit + (spread_width - net_debit) * 0.50
-    stop_level_val    = net_debit * 0.50
+    if credit:
+        net_credit        = abs(net_debit)
+        # Credit: profit when spread falls to 50% of credit received
+        profit_target_val = net_credit * 0.50
+        # Credit: stop when spread rises to 3× credit (net loss = 2× credit)
+        stop_level_val    = net_credit * 3.00
+    else:
+        profit_target_val = net_debit + (spread_width - net_debit) * 0.50
+        stop_level_val    = net_debit * 0.50
 
     # Price paths: (n_paths, dte)
     Z        = rng.standard_normal((n_paths, dte))
@@ -280,24 +285,22 @@ def run_monte_carlo_ev(
     cum_rets = np.cumsum(log_rets, axis=1)
     prices   = price * np.exp(cum_rets)
 
-    # Remaining time at each day step
     days_idx = np.arange(dte)
-    T_remain = ((dte - days_idx - 1) / 252).reshape(1, -1)   # (1, dte) years
+    T_remain = ((dte - days_idx - 1) / 252).reshape(1, -1)
 
-    # BS spread values: use realized sigma so EV reflects VRP edge at entry
     if bearish:
-        # Bear put spread: long_strike > short_strike (long higher put, short lower put)
-        spread_vals = _bs_put_spread_vals(prices, long_strike, short_strike, price_sigma, T_remain)
+        spread_vals = _bs_put_spread_vals(prices, long_strike, short_strike, sigma, T_remain)
     else:
-        spread_vals = _bs_spread_vals(prices, long_strike, short_strike, price_sigma, T_remain)
+        spread_vals = _bs_spread_vals(prices, long_strike, short_strike, sigma, T_remain)
 
-    # Exit masks
-    profit_mask = spread_vals >= profit_target_val
+    if credit:
+        # Credit: profit when spread SHRINKS below target; stop when it GROWS above stop
+        profit_mask = spread_vals <= profit_target_val
+        stop_mask   = (spread_vals >= stop_level_val) & (days_idx[np.newaxis, :] >= 2)
+    else:
+        profit_mask = spread_vals >= profit_target_val
+        stop_mask   = (spread_vals <= stop_level_val) & (days_idx[np.newaxis, :] >= 2)
 
-    # Stop: avoid triggering on first 2 days (spread still has time value)
-    stop_mask = (spread_vals <= stop_level_val) & (days_idx[np.newaxis, :] >= 2)
-
-    # Time stop at 21 DTE remaining
     time_stop_idx = dte - 22
     time_mask = np.zeros((n_paths, dte), dtype=bool)
     if 0 <= time_stop_idx < dte:
@@ -310,11 +313,15 @@ def run_monte_carlo_ev(
     path_idx    = np.arange(n_paths)
     exit_spread = np.where(has_exit, spread_vals[path_idx, exit_day], spread_vals[:, -1])
 
-    outcomes_dollar = (exit_spread - net_debit) * 100
+    if credit:
+        outcomes_dollar = (net_credit - exit_spread) * 100
+    else:
+        outcomes_dollar = (exit_spread - net_debit) * 100
 
     return {
         'ev_dollar': round(float(np.mean(outcomes_dollar)), 2),
         'win_rate':  round(float((outcomes_dollar > 0).mean() * 100), 1),
         'n_paths':   n_paths,
         'used_hv30': hv30 is not None,
+        'credit':    credit,
     }

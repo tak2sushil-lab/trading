@@ -33,6 +33,7 @@ import traceback
 import requests
 import yfinance as yf
 from datetime import datetime, date, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
@@ -133,7 +134,9 @@ SCALP_MAX_DTE       = 12
 SCALP_DELTA_MIN     = 0.38
 SCALP_DELTA_MAX     = 0.60
 SCALP_MAX_SPREAD    = 0.30   # bid-ask spread gate
+SCALP_MIN_IV_RANK   = 20    # dormant stock — options too cheap to scalp
 SCALP_MAX_IV_RANK   = 75
+SCALP_MAX_VIX       = 25    # high VIX = wide spreads + IV crush risk on ATM buyers
 SCALP_MAX_TOTAL_COST = 1000  # single size gate: replaces separate premium + $300 cap
                               # allows mid-cap options ($3-8 ATM premium) at 1 contract
 SCALP_ENTRY_HOUR_START  = (10, 0)
@@ -164,6 +167,35 @@ def _is_paper() -> bool:
     """Return True if connected to IBKR paper account (port 4002)."""
     info = bridge_get('/')
     return (info or {}).get('mode') == 'paper'
+
+
+def _get_current_vix() -> Optional[float]:
+    """Fetch current VIX from yfinance. Returns None on failure."""
+    try:
+        hist = yf.Ticker('^VIX').history(period='2d')
+        if not hist.empty:
+            return round(float(hist['Close'].iloc[-1]), 2)
+    except Exception:
+        pass
+    return None
+
+
+def _get_current_regime() -> Optional[str]:
+    """
+    Read the most recent equity regime from scan_log.
+    Returns NORMAL, STRONG, WEAK, CHOPPY, CAUTIOUS, or None.
+    """
+    try:
+        from database import DB_PATH
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute(
+            "SELECT regime FROM scan_log WHERE regime IS NOT NULL ORDER BY scan_date DESC, scan_time DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 
 # ── Telegram helpers ─────────────────────────────────────────────────────────
@@ -935,8 +967,12 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
 
     # ── Market data ───────────────────────────────────────────────────────
     iv_data    = get_iv_rank(sym)
-    iv_rank    = iv_data.get('iv_rank',    50.0) if iv_data else 50.0
-    current_iv = iv_data.get('current_iv')       if iv_data else None
+    iv_rank    = iv_data.get('iv_rank') if iv_data else None
+    current_iv = iv_data.get('current_iv') if iv_data else None
+
+    # Data quality guard: if IV rank unavailable, skip — stale data produces garbage MC outputs
+    if iv_rank is None:
+        return {'error': f'IV rank unavailable for {sym} — skip to avoid bad MC output'}
 
     underlying = get_underlying_price(sym)
     if not underlying:
@@ -955,18 +991,36 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     above_200   = stock_data['above_200']
     momentum_5d = stock_data['momentum_5d']
     prior_close = stock_data['prior_close']
-    # Intraday move = how much the stock has moved TODAY (catalyst confirmation)
     intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) \
                    if prior_close else None
 
     # ── Volatility edge (Gate 1) ──────────────────────────────────────────
-    # current_iv is the actual IV %; iv_rank is a percentile (0-100) — do NOT use as fallback
-    iv_for_calc = current_iv if current_iv else 40.0
-    if hv30 is not None:
-        vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
-    else:
-        vol_analysis = {'edge_pts': None, 'verdict': 'UNKNOWN', 'gate_pass': True,
-                        'iv': iv_for_calc, 'hv30': None}
+    # current_iv is actual IV%; iv_rank is percentile 0-100. Never use iv_rank as IV fallback.
+    # If current_iv missing, skip — a hardcoded 40% fallback produces wrong strikes for all symbols.
+    if not current_iv:
+        return {'error': f'Current IV unavailable for {sym} — cannot size strikes accurately'}
+    iv_for_calc = current_iv
+    # assess_volatility_edge now returns gate_pass=False when hv30 is None
+    vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
+
+    # ── Pro gate: IV rank must be 20–50% for debit spreads ───────────────
+    # Below 20%: options dirt-cheap = stock dormant, no vol expected
+    # Above 50%: overpaying premium, theta always wins on buyer — use credit spreads instead
+    is_catalyst_trade = False  # determined after catalyst lookup below
+    if iv_rank < 20:
+        return {'error': f'{sym} IV rank {iv_rank:.0f}% < 20% — options too cheap, no vol expected'}
+    if iv_rank > 50:
+        return {'error': f'{sym} IV rank {iv_rank:.0f}% > 50% — overpaying premium; use credit spread (Phase 3)'}
+
+    # ── Pro gate: VIX auto-block ──────────────────────────────────────────
+    vix_now = _get_current_vix()
+    if vix_now is not None and vix_now > 25:
+        return {'error': f'VIX {vix_now:.1f} > 25 — market fear elevated, no new debit spread entries'}
+
+    # ── Pro gate: equity regime alignment ────────────────────────────────
+    current_regime = _get_current_regime()
+    if current_regime and current_regime not in ('NORMAL', 'STRONG'):
+        return {'error': f'Equity regime {current_regime} — bull call spreads require NORMAL or STRONG regime'}
 
     # ── Upcoming catalyst ─────────────────────────────────────────────────
     upcoming      = get_upcoming_catalysts(days=90)
@@ -989,19 +1043,23 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         signal_age_hrs = (datetime.now() - datetime.fromisoformat(last_signal_at)).total_seconds() / 3600
     except Exception:
         signal_age_hrs = 999
-    # HIGH only (MEDIUM is too common) + signal within 24h (news half-life is short)
     conviction_gate = (tier == 'HIGH') and (direction == 'BULL') and (signal_age_hrs <= 24)
 
-    # ── Expiry selection (catalyst-driven or balanced DTE) ────────────────
+    # ── Expiry selection: 30–45 DTE for non-catalyst, catalyst-anchored otherwise ──
+    # Research (tastytrade 200K+ trades): 30-45 DTE = theta sweet spot for debit buyers.
+    # 14-21 DTE = theta danger zone; only justified when a binary catalyst will force a fast move.
     if catalyst_days and 21 <= catalyst_days <= 75:
+        is_catalyst_trade = True
         target_dte = catalyst_days + 14
         valid_exp  = [e for e in expiries if days_to_expiry(e) >= 21]
         expiry     = min(valid_exp, key=lambda e: abs(days_to_expiry(e) - target_dte), default=None)
     else:
-        expiry = _find_expiry(expiries, 14, 21)
+        expiry = _find_expiry(expiries, 30, 45)
+        if not expiry:
+            expiry = _find_expiry(expiries, 25, 50)  # slight flex if exact window unavailable
 
     if not expiry:
-        return {'error': f'No suitable expiry for {sym} (no options 14-21 DTE)'}
+        return {'error': f'No suitable expiry for {sym} (need 30-45 DTE for debit spread)'}
 
     dte = days_to_expiry(expiry)
 
@@ -1053,12 +1111,16 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     # ── Gate evaluation ───────────────────────────────────────────────────
     long_ba  = round(long_ask  - long_bid,  2)
     short_ba = round(short_ask - short_bid, 2)
-    liquidity_gate = long_ba <= 0.20 and short_ba <= 0.20
+    # Pro liquidity gate: relative bid-ask ≤ 15% of mid per leg.
+    # Absolute $0.20 gate fails for cheap options ($0.20 on a $0.50 option = 40% round-trip cost).
+    long_mid_price  = (long_bid  + long_ask)  / 2 if (long_bid + long_ask) > 0 else 1
+    short_mid_price = (short_bid + short_ask) / 2 if (short_bid + short_ask) > 0 else 1
+    long_ba_rel  = long_ba  / long_mid_price
+    short_ba_rel = short_ba / short_mid_price
+    liquidity_gate = long_ba_rel <= 0.15 and short_ba_rel <= 0.15
 
-    # Momentum gate: scan_log backtest (Jun 20) shows sweet spot is 2-6% intraday.
-    # ≥7% stocks have exhausted daily energy at scan time — options enter at the peak.
-    # Stocks at 7%+ continue UP (100% stock WR) but options show 26% WR / -17% avg
-    # because the move is priced in. Upper bound 7% filters this gap-and-hold effect.
+    # Momentum gate: intraday move 2–7% confirms directional energy today.
+    # Catalyst trades (≤3 days) bypass intraday pct requirement.
     momentum_gate = (intraday_pct is not None and 2.0 <= intraday_pct < 7.0) or \
                     (catalyst_days is not None and catalyst_days <= 3)
 
@@ -1088,12 +1150,30 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         hv30=hv30,   # two-sigma: paths on HV30, pricing on IV
     )
 
-    # ── MC WR guard: model says sub-45% win rate → require human review ──────
-    mc_wr = (mc_ev or {}).get('win_rate', 0)
-    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 45:
+    # ── Pro verdict filters (applied after 5-gate scoring) ───────────────
+    mc_wr        = (mc_ev or {}).get('win_rate', 0)
+    mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+
+    # Rule 1: require 5/5 gates — ENTER_REDUCED is informational only, never executable
+    if entry_gates.get('verdict') == 'ENTER_REDUCED':
         entry_gates = dict(entry_gates)
-        entry_gates['verdict']  = 'ENTER_REDUCED'
-        entry_gates['size_adj'] = 0.5
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = f'4/5 gates (need 5/5 for debit spread)'
+
+    # Rule 2: MC model must predict ≥50% win rate (model says we lose more than we win → skip)
+    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 50:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 50%'
+
+    # Rule 3: MC EV must be ≥ $50 (covers commission + slippage with margin)
+    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
 
     # ── Trade dict for execution (consumed by _execute_spread_bg) ─────────
     verdict     = entry_gates['verdict']
@@ -1164,14 +1244,18 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
 def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     """
     Bear put spread calculator — mirror of run_calculator() for bullish call spreads.
-    14-21 DTE, long put 0.33 SD OTM, short put at 0.67 SD OTM.
+    30-45 DTE, long put 0.33 SD OTM, short put at 0.67 SD OTM.
     Bearish gates: tier==HIGH direction==BEAR, intraday <= -2%, below 200MA.
+    Pro gates: IV rank 20-50%, VIX ≤ 25, WEAK regime, WR ≥ 50%, EV ≥ $50, 5/5 gates.
     """
     sym = symbol.upper()
 
     iv_data    = get_iv_rank(sym)
-    iv_rank    = iv_data.get('iv_rank',    50.0) if iv_data else 50.0
-    current_iv = iv_data.get('current_iv')       if iv_data else None
+    iv_rank    = iv_data.get('iv_rank') if iv_data else None
+    current_iv = iv_data.get('current_iv') if iv_data else None
+
+    if iv_rank is None:
+        return {'error': f'IV rank unavailable for {sym} — skip to avoid bad MC output'}
 
     underlying = get_underlying_price(sym)
     if not underlying:
@@ -1192,12 +1276,26 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) \
                    if prior_close else None
 
-    iv_for_calc = current_iv if current_iv else 40.0
-    if hv30 is not None:
-        vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
-    else:
-        vol_analysis = {'edge_pts': None, 'verdict': 'UNKNOWN', 'gate_pass': True,
-                        'iv': iv_for_calc, 'hv30': None}
+    if not current_iv:
+        return {'error': f'Current IV unavailable for {sym} — cannot size strikes accurately'}
+    iv_for_calc = current_iv
+    vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
+
+    # Pro gate: IV rank 20-50% for debit spreads
+    if iv_rank < 20:
+        return {'error': f'{sym} IV rank {iv_rank:.0f}% < 20% — options too cheap, no vol expected'}
+    if iv_rank > 50:
+        return {'error': f'{sym} IV rank {iv_rank:.0f}% > 50% — overpaying premium; use credit spread (Phase 3)'}
+
+    # Pro gate: VIX auto-block
+    vix_now = _get_current_vix()
+    if vix_now is not None and vix_now > 25:
+        return {'error': f'VIX {vix_now:.1f} > 25 — market fear elevated, no new debit spread entries'}
+
+    # Pro gate: equity regime — bear put spread needs WEAK regime
+    current_regime = _get_current_regime()
+    if current_regime and current_regime not in ('WEAK',):
+        return {'error': f'Equity regime {current_regime} — bear put spreads require WEAK regime'}
 
     upcoming      = get_upcoming_catalysts(days=90)
     sym_cats      = [c for c in upcoming if c['symbol'] == sym]
@@ -1220,25 +1318,29 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
         signal_age_hrs = 999
     conviction_gate = (tier == 'HIGH') and (direction == 'BEAR') and (signal_age_hrs <= 24)
 
-    expiry = _find_expiry(expiries, 14, 21)
+    # Expiry: 30-45 DTE for non-catalyst, catalyst-anchored otherwise
+    if catalyst_days and 21 <= catalyst_days <= 75:
+        target_dte = catalyst_days + 14
+        valid_exp  = [e for e in expiries if days_to_expiry(e) >= 21]
+        expiry     = min(valid_exp, key=lambda e: abs(days_to_expiry(e) - target_dte), default=None)
+    else:
+        expiry = _find_expiry(expiries, 30, 45)
+        if not expiry:
+            expiry = _find_expiry(expiries, 25, 50)
+
     if not expiry:
-        expiry = _find_expiry(expiries, 10, 28)
-    if not expiry:
-        return {'error': f'No 14-21 DTE expiry for {sym}'}
+        return {'error': f'No suitable expiry for {sym} (need 30-45 DTE for bear put spread)'}
 
     dte = days_to_expiry(expiry)
     em  = engine.compute_expected_move(underlying, iv_for_calc, dte)
 
-    # calls and puts share the same strike ladder at each expiry
     put_strikes = _actual_strikes(sym, expiry) or theo_strikes
     if not put_strikes:
         return {'error': f'Cannot fetch put strike list for {sym} {expiry}'}
 
-    # Long put: near ATM, capped at 8% OTM below underlying
     target_long  = underlying - em * 0.33
     if iv_for_calc > 60:
         target_long = max(target_long, underlying * 0.92)
-    # Short put: 0.67 SD OTM → delta ~0.25 (pro standard, tighter spread = better debit/width ratio)
     target_short = underlying - em * 0.67
 
     long_strike  = _find_nearest_strike(put_strikes, target_long)
@@ -1264,22 +1366,24 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     short_mid = (short_bid + short_ask) / 2
     net_debit = round(long_mid - short_mid, 2)
 
-    spread_width      = long_strike  - short_strike   # positive: long(higher) - short(lower)
+    spread_width      = long_strike  - short_strike
     net_debit_dollar  = round(net_debit * 100, 2)
     max_profit_dollar = round((spread_width - net_debit) * 100, 2)
     max_loss_dollar   = net_debit_dollar
-    breakeven         = round(long_strike - net_debit, 2)    # stock must fall below this
+    breakeven         = round(long_strike - net_debit, 2)
     breakeven_pct     = round((underlying - breakeven) / underlying * 100, 1)
 
     long_ba  = round(long_ask  - long_bid,  2)
     short_ba = round(short_ask - short_bid, 2)
-    liquidity_gate = long_ba <= 0.20 and short_ba <= 0.20
+    long_mid_price  = (long_bid  + long_ask)  / 2 if (long_bid + long_ask) > 0 else 1
+    short_mid_price = (short_bid + short_ask) / 2 if (short_bid + short_ask) > 0 else 1
+    long_ba_rel  = long_ba  / long_mid_price
+    short_ba_rel = short_ba / short_mid_price
+    liquidity_gate = long_ba_rel <= 0.15 and short_ba_rel <= 0.15
 
-    # Bearish momentum: backtest proves stock must already be falling TODAY (2%+)
     momentum_gate = (intraday_pct is not None and intraday_pct <= -2.0) or \
                     (catalyst_days is not None and catalyst_days <= 3)
 
-    # Tech gate for bear: stock should be below 200MA
     tech_gate = not above_200
 
     entry_gates = engine.score_entry_gates(
@@ -1292,24 +1396,38 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
 
     net_greeks = engine.compute_net_greeks(lq, sq)
 
-    # MC EV: bear put spread — GBM paths with put spread BS pricing
     mc_ev = engine.run_monte_carlo_ev(
         price=underlying,
         iv_pct=iv_for_calc,
         dte=dte,
-        long_strike=long_strike,    # higher put strike (long leg)
-        short_strike=short_strike,  # lower put strike (short leg)
+        long_strike=long_strike,
+        short_strike=short_strike,
         net_debit=net_debit,
         hv30=hv30,
         bearish=True,
     )
 
-    # MC WR guard (same rule as bull spread)
-    mc_wr = (mc_ev or {}).get('win_rate', 0)
-    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 45:
+    # ── Pro verdict filters (same rules as bull spread) ───────────────────
+    mc_wr        = (mc_ev or {}).get('win_rate', 0)
+    mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+
+    if entry_gates.get('verdict') == 'ENTER_REDUCED':
         entry_gates = dict(entry_gates)
-        entry_gates['verdict']  = 'ENTER_REDUCED'
-        entry_gates['size_adj'] = 0.5
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = '4/5 gates (need 5/5 for debit spread)'
+
+    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 50:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 50%'
+
+    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
 
     verdict     = entry_gates['verdict']
     grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
@@ -1374,6 +1492,673 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
         pass
 
     return result
+
+
+# ── Credit spread calculators ─────────────────────────────────────────────────
+
+def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
+    """
+    Bull put CREDIT spread: sell higher put + buy lower put = receive premium.
+    Win condition: stock stays above short put strike (theta burns the spread away).
+    Tastytrade standard: sell 0.30 delta (~1 SD below), buy 0.10 delta (~1.65 SD below).
+    Pro gates: IV rank ≥ 50%, VIX ≤ 25, NORMAL/STRONG regime, WR ≥ 60%, EV ≥ $50.
+    """
+    sym = symbol.upper()
+
+    iv_data    = get_iv_rank(sym)
+    iv_rank    = iv_data.get('iv_rank') if iv_data else None
+    current_iv = iv_data.get('current_iv') if iv_data else None
+
+    if iv_rank is None:
+        return {'error': f'IV rank unavailable for {sym}'}
+    if not current_iv:
+        return {'error': f'Current IV unavailable for {sym}'}
+
+    # Credit spreads need high IV (theta works for us)
+    if iv_rank < 50:
+        return {'error': f'{sym} IV rank {iv_rank:.0f}% < 50% — use debit spread (Phase 1). Credit spreads need IV rank ≥ 50%.'}
+
+    vix_now = _get_current_vix()
+    if vix_now is not None and vix_now > 25:
+        return {'error': f'VIX {vix_now:.1f} > 25 — elevated fear, skip new credit positions'}
+
+    current_regime = _get_current_regime()
+    if current_regime and current_regime not in ('NORMAL', 'STRONG'):
+        return {'error': f'Regime {current_regime} — bull put credit needs NORMAL/STRONG regime'}
+
+    underlying = get_underlying_price(sym)
+    if not underlying:
+        return {'error': f'Cannot fetch price for {sym}'}
+
+    chain_data = get_chain(sym)
+    if not chain_data or 'chain' not in chain_data:
+        return {'error': f'Cannot fetch option chain for {sym}'}
+
+    expiries     = [item['expiry'] for item in chain_data['chain']]
+    theo_strikes = chain_data['chain'][0]['strikes'] if chain_data['chain'] else []
+
+    stock_data   = engine.get_stock_data(sym)
+    hv30         = stock_data['hv30']
+    above_200    = stock_data['above_200']
+    prior_close  = stock_data['prior_close']
+    intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) if prior_close else None
+
+    iv_for_calc = current_iv
+
+    # DTE: VIX-adjusted 45 DTE (tastytrade standard)
+    vix = vix_now or 18.0
+    target_dte = 35 if vix < 15 else (55 if vix > 25 else 45)
+    expiry = _find_expiry(expiries, target_dte - 10, target_dte + 10)
+    if not expiry:
+        expiry = _find_expiry(expiries, 25, 65)
+    if not expiry:
+        return {'error': f'No suitable expiry for {sym} (need ~{target_dte} DTE)'}
+
+    dte = days_to_expiry(expiry)
+
+    # Earnings gate for credit spreads: skip if catalyst falls within our hold window.
+    # We always exit at 21 DTE. Hold window = dte - 21 days. Add 3-day buffer for execution.
+    # Unlike debit spreads (catalyst = tailwind), credit spreads get gapped through on earnings.
+    upcoming_cats   = get_upcoming_catalysts(days=90)
+    sym_cats        = [c for c in upcoming_cats if c['symbol'] == sym]
+    catalyst_days   = None
+    if sym_cats:
+        cat_date      = datetime.strptime(sym_cats[0]['date'], '%Y-%m-%d').date()
+        catalyst_days = (cat_date - date.today()).days
+    hold_window = max(dte - 18, 7)   # days we'd actually hold before 21-DTE exit
+    if catalyst_days is not None and 0 <= catalyst_days <= hold_window:
+        return {'error': f'{sym} earnings/catalyst in {catalyst_days}d falls within hold window ({hold_window}d) — skip credit spread (gap risk)'}
+
+    em  = engine.compute_expected_move(underlying, iv_for_calc, dte)
+
+    put_strikes = _actual_strikes(sym, expiry) or theo_strikes
+    if not put_strikes:
+        return {'error': f'Cannot fetch put strikes for {sym} {expiry}'}
+
+    # Sell put at ~1 SD below (0.30 delta), buy put at ~1.65 SD below (0.10 delta)
+    sell_target = underlying - em * 1.00
+    buy_target  = underlying - em * 1.65
+
+    sell_strike = _find_nearest_strike(put_strikes, sell_target)  # higher put (sold)
+    buy_strike  = _find_nearest_strike(put_strikes, buy_target)   # lower put (bought)
+
+    if not sell_strike or not buy_strike or sell_strike <= buy_strike:
+        return {'error': f'Cannot determine valid put strikes for {sym} (targets ${sell_target:.0f}/${buy_target:.0f})'}
+
+    sq = get_quote(sym, expiry, sell_strike, 'P')   # short leg (sold)
+    lq = get_quote(sym, expiry, buy_strike,  'P')   # long leg (bought)
+    if not lq or not sq:
+        return {'error': f'Cannot fetch put quotes for {sym}'}
+
+    sell_bid = float(sq.get('bid') or 0)
+    sell_ask = float(sq.get('ask') or 0)
+    buy_bid  = float(lq.get('bid') or 0)
+    buy_ask  = float(lq.get('ask') or 0)
+
+    if not (sell_bid and sell_ask and buy_bid and buy_ask):
+        return {'error': f'Incomplete put bid/ask for {sym} — check market hours'}
+
+    sell_mid  = (sell_bid + sell_ask) / 2
+    buy_mid   = (buy_bid  + buy_ask)  / 2
+    net_credit = round(sell_mid - buy_mid, 2)
+
+    if net_credit <= 0:
+        return {'error': f'No credit available for {sym} put spread (credit=${net_credit:.2f})'}
+
+    spread_width      = sell_strike - buy_strike
+    net_credit_dollar = round(net_credit * 100 * qty, 2)
+    max_profit_dollar = net_credit_dollar
+    max_loss_dollar   = round((spread_width - net_credit) * 100 * qty, 2)
+    breakeven         = round(sell_strike - net_credit, 2)
+    breakeven_pct     = round((underlying - breakeven) / underlying * 100, 1)
+
+    # Relative bid-ask gate: ≤15% per leg
+    sell_ba_rel = (sell_ask - sell_bid) / sell_mid if sell_mid > 0 else 1.0
+    buy_ba_rel  = (buy_ask  - buy_bid)  / buy_mid  if buy_mid  > 0 else 1.0
+    liquidity_gate = sell_ba_rel <= 0.15 and buy_ba_rel <= 0.15
+
+    # Vol gate: for credit spreads we WANT IV > HV30 (options expensive = theta works for us)
+    vol_gate = (hv30 is None) or (iv_for_calc > hv30)
+
+    tech_gate      = above_200   # stock in uptrend = put spread safer
+    momentum_gate  = (intraday_pct is None or intraday_pct >= -3.0)   # not crashing today
+
+    conviction    = get_conviction_detail(sym)
+    tier          = conviction.get('tier', 'LOW')
+    direction     = conviction.get('direction', 'MIXED')
+    last_sig      = conviction.get('last_signal_at', '')
+    try:
+        sig_age = (datetime.now() - datetime.fromisoformat(last_sig)).total_seconds() / 3600
+    except Exception:
+        sig_age = 999
+    conviction_gate = (tier == 'HIGH') and (direction == 'BULL') and (sig_age <= 24)
+
+    entry_gates = engine.score_entry_gates(
+        vol_gate=vol_gate, tech_gate=tech_gate, conviction_gate=conviction_gate,
+        liquidity_gate=liquidity_gate, momentum_gate=momentum_gate,
+    )
+
+    mc_ev = engine.run_monte_carlo_ev(
+        price=underlying, iv_pct=iv_for_calc, dte=dte,
+        long_strike=sell_strike,   # higher put (what we sold = higher value leg)
+        short_strike=buy_strike,   # lower put (what we bought = lower value leg)
+        net_debit=net_credit,      # credit received (positive)
+        hv30=hv30, bearish=True, credit=True,
+    )
+
+    # ── Pro verdict filters ───────────────────────────────────────────────────
+    mc_wr        = (mc_ev or {}).get('win_rate', 0)
+    mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+
+    if entry_gates.get('verdict') == 'ENTER_REDUCED':
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']    = 'SKIP'
+        entry_gates['size_adj']   = 0.0
+        entry_gates['skip_reason'] = '4/5 gates (need 5/5 for credit spread)'
+
+    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 60:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']    = 'SKIP'
+        entry_gates['size_adj']   = 0.0
+        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 60% (credit floor)'
+
+    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']    = 'SKIP'
+        entry_gates['size_adj']   = 0.0
+        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
+
+    # ── Build calc log entry ──────────────────────────────────────────────────
+    result = {
+        'strategy':     'BULL_PUT_CREDIT',
+        'symbol':       sym,
+        'underlying':   underlying,
+        'iv_rank':      iv_rank,
+        'current_iv':   iv_for_calc,
+        'hv30':         hv30,
+        'em':           em,
+        'dte':          dte,
+        'expiry':       expiry,
+        'sell_strike':  sell_strike,    # what we sold (higher put)
+        'buy_strike':   buy_strike,     # what we bought (lower put)
+        'long_strike':  sell_strike,    # DB convention: higher-value leg
+        'short_strike': buy_strike,
+        'right':        'P',
+        'net_credit':   net_credit,
+        'net_debit':    -net_credit,
+        'spread_width': spread_width,
+        'premium_paid': net_credit_dollar,
+        'max_profit':   max_profit_dollar,
+        'max_loss':     max_loss_dollar,
+        'breakeven':    breakeven,
+        'breakeven_pct': breakeven_pct,
+        'qty':          qty,
+        'entry_gates':  entry_gates,
+        'mc_ev':        mc_ev,
+        'vol_analysis': {'verdict': 'EXPENSIVE' if iv_for_calc > (hv30 or 0) else 'CHEAP',
+                         'gate_pass': vol_gate, 'iv': iv_for_calc, 'hv30': hv30},
+        'conviction':   conviction,
+        'vix':          vix_now,
+        'regime':       current_regime,
+        'intraday_pct': intraday_pct,
+        'grade':        'A' if entry_gates.get('verdict') == 'ENTER' else 'B',
+        'template':     f'BULL_PUT_CREDIT {sell_strike}/{buy_strike}P',
+    }
+
+    try:
+        result['calc_log_id'] = log_calc_run(result)
+    except Exception:
+        pass
+
+    return result
+
+
+def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
+    """
+    Bear call CREDIT spread: sell lower call + buy higher call = receive premium.
+    Win condition: stock stays below short call strike (theta burns the spread away).
+    Tastytrade standard: sell 0.30 delta (~1 SD above), buy 0.10 delta (~1.65 SD above).
+    Pro gates: IV rank ≥ 50%, VIX ≤ 25, WEAK regime, WR ≥ 60%, EV ≥ $50.
+    """
+    sym = symbol.upper()
+
+    iv_data    = get_iv_rank(sym)
+    iv_rank    = iv_data.get('iv_rank') if iv_data else None
+    current_iv = iv_data.get('current_iv') if iv_data else None
+
+    if iv_rank is None:
+        return {'error': f'IV rank unavailable for {sym}'}
+    if not current_iv:
+        return {'error': f'Current IV unavailable for {sym}'}
+
+    if iv_rank < 50:
+        return {'error': f'{sym} IV rank {iv_rank:.0f}% < 50% — use debit spread (Phase 1). Credit needs IV rank ≥ 50%.'}
+
+    vix_now = _get_current_vix()
+    if vix_now is not None and vix_now > 25:
+        return {'error': f'VIX {vix_now:.1f} > 25 — elevated fear, skip new credit positions'}
+
+    current_regime = _get_current_regime()
+    if current_regime and current_regime not in ('WEAK',):
+        return {'error': f'Regime {current_regime} — bear call credit needs WEAK regime'}
+
+    underlying = get_underlying_price(sym)
+    if not underlying:
+        return {'error': f'Cannot fetch price for {sym}'}
+
+    chain_data = get_chain(sym)
+    if not chain_data or 'chain' not in chain_data:
+        return {'error': f'Cannot fetch option chain for {sym}'}
+
+    expiries     = [item['expiry'] for item in chain_data['chain']]
+    theo_strikes = chain_data['chain'][0]['strikes'] if chain_data['chain'] else []
+
+    stock_data   = engine.get_stock_data(sym)
+    hv30         = stock_data['hv30']
+    above_200    = stock_data['above_200']
+    prior_close  = stock_data['prior_close']
+    intraday_pct = round((underlying - prior_close) / prior_close * 100, 2) if prior_close else None
+
+    iv_for_calc = current_iv
+
+    vix = vix_now or 18.0
+    target_dte = 35 if vix < 15 else (55 if vix > 25 else 45)
+    expiry = _find_expiry(expiries, target_dte - 10, target_dte + 10)
+    if not expiry:
+        expiry = _find_expiry(expiries, 25, 65)
+    if not expiry:
+        return {'error': f'No suitable expiry for {sym} (need ~{target_dte} DTE)'}
+
+    dte = days_to_expiry(expiry)
+
+    # Earnings gate (same logic as bull put credit — catalysts = gap risk for credit sellers)
+    upcoming_cats_b = get_upcoming_catalysts(days=90)
+    sym_cats_b      = [c for c in upcoming_cats_b if c['symbol'] == sym]
+    catalyst_days_b = None
+    if sym_cats_b:
+        cat_date_b      = datetime.strptime(sym_cats_b[0]['date'], '%Y-%m-%d').date()
+        catalyst_days_b = (cat_date_b - date.today()).days
+    hold_window_b = max(dte - 18, 7)
+    if catalyst_days_b is not None and 0 <= catalyst_days_b <= hold_window_b:
+        return {'error': f'{sym} earnings/catalyst in {catalyst_days_b}d falls within hold window ({hold_window_b}d) — skip credit spread (gap risk)'}
+
+    em  = engine.compute_expected_move(underlying, iv_for_calc, dte)
+
+    call_strikes = _actual_strikes(sym, expiry) or theo_strikes
+    if not call_strikes:
+        return {'error': f'Cannot fetch call strikes for {sym} {expiry}'}
+
+    # Sell call at ~1 SD above (0.30 delta), buy call at ~1.65 SD above (0.10 delta)
+    sell_target = underlying + em * 1.00
+    buy_target  = underlying + em * 1.65
+
+    sell_strike = _find_nearest_strike(call_strikes, sell_target)  # lower call (sold)
+    buy_strike  = _find_nearest_strike(call_strikes, buy_target)   # higher call (bought)
+
+    if not sell_strike or not buy_strike or buy_strike <= sell_strike:
+        return {'error': f'Cannot determine valid call strikes for {sym} (targets ${sell_target:.0f}/${buy_target:.0f})'}
+
+    sq = get_quote(sym, expiry, sell_strike, 'C')   # short leg (sold)
+    lq = get_quote(sym, expiry, buy_strike,  'C')   # long leg (bought)
+    if not lq or not sq:
+        return {'error': f'Cannot fetch call quotes for {sym}'}
+
+    sell_bid = float(sq.get('bid') or 0)
+    sell_ask = float(sq.get('ask') or 0)
+    buy_bid  = float(lq.get('bid') or 0)
+    buy_ask  = float(lq.get('ask') or 0)
+
+    if not (sell_bid and sell_ask and buy_bid and buy_ask):
+        return {'error': f'Incomplete call bid/ask for {sym}'}
+
+    sell_mid   = (sell_bid + sell_ask) / 2
+    buy_mid    = (buy_bid  + buy_ask)  / 2
+    net_credit = round(sell_mid - buy_mid, 2)
+
+    if net_credit <= 0:
+        return {'error': f'No credit available for {sym} call spread (credit=${net_credit:.2f})'}
+
+    spread_width      = buy_strike - sell_strike
+    net_credit_dollar = round(net_credit * 100 * qty, 2)
+    max_profit_dollar = net_credit_dollar
+    max_loss_dollar   = round((spread_width - net_credit) * 100 * qty, 2)
+    breakeven         = round(sell_strike + net_credit, 2)
+    breakeven_pct     = round((breakeven - underlying) / underlying * 100, 1)
+
+    sell_ba_rel = (sell_ask - sell_bid) / sell_mid if sell_mid > 0 else 1.0
+    buy_ba_rel  = (buy_ask  - buy_bid)  / buy_mid  if buy_mid  > 0 else 1.0
+    liquidity_gate = sell_ba_rel <= 0.15 and buy_ba_rel <= 0.15
+
+    vol_gate      = (hv30 is None) or (iv_for_calc > hv30)
+    tech_gate     = not above_200   # stock in downtrend = call spread safer
+    momentum_gate = (intraday_pct is None or intraday_pct <= 3.0)   # not surging today
+
+    conviction    = get_conviction_detail(sym)
+    tier          = conviction.get('tier', 'LOW')
+    direction     = conviction.get('direction', 'MIXED')
+    last_sig      = conviction.get('last_signal_at', '')
+    try:
+        sig_age = (datetime.now() - datetime.fromisoformat(last_sig)).total_seconds() / 3600
+    except Exception:
+        sig_age = 999
+    conviction_gate = (tier == 'HIGH') and (direction == 'BEAR') and (sig_age <= 24)
+
+    entry_gates = engine.score_entry_gates(
+        vol_gate=vol_gate, tech_gate=tech_gate, conviction_gate=conviction_gate,
+        liquidity_gate=liquidity_gate, momentum_gate=momentum_gate,
+    )
+
+    mc_ev = engine.run_monte_carlo_ev(
+        price=underlying, iv_pct=iv_for_calc, dte=dte,
+        long_strike=sell_strike,   # lower call (what we sold = higher value in call spread)
+        short_strike=buy_strike,   # higher call (what we bought = lower value)
+        net_debit=net_credit,
+        hv30=hv30, bearish=False, credit=True,
+    )
+
+    mc_wr        = (mc_ev or {}).get('win_rate', 0)
+    mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+
+    if entry_gates.get('verdict') == 'ENTER_REDUCED':
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']    = 'SKIP'
+        entry_gates['size_adj']   = 0.0
+        entry_gates['skip_reason'] = '4/5 gates (need 5/5 for credit spread)'
+
+    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 60:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']    = 'SKIP'
+        entry_gates['size_adj']   = 0.0
+        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 60% (credit floor)'
+
+    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
+        entry_gates = dict(entry_gates)
+        entry_gates['verdict']    = 'SKIP'
+        entry_gates['size_adj']   = 0.0
+        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
+
+    result = {
+        'strategy':     'BEAR_CALL_CREDIT',
+        'symbol':       sym,
+        'underlying':   underlying,
+        'iv_rank':      iv_rank,
+        'current_iv':   iv_for_calc,
+        'hv30':         hv30,
+        'em':           em,
+        'dte':          dte,
+        'expiry':       expiry,
+        'sell_strike':  sell_strike,
+        'buy_strike':   buy_strike,
+        'long_strike':  sell_strike,    # DB convention: higher-value leg (lower call)
+        'short_strike': buy_strike,
+        'right':        'C',
+        'net_credit':   net_credit,
+        'net_debit':    -net_credit,
+        'spread_width': spread_width,
+        'premium_paid': net_credit_dollar,
+        'max_profit':   max_profit_dollar,
+        'max_loss':     max_loss_dollar,
+        'breakeven':    breakeven,
+        'breakeven_pct': breakeven_pct,
+        'qty':          qty,
+        'entry_gates':  entry_gates,
+        'mc_ev':        mc_ev,
+        'vol_analysis': {'verdict': 'EXPENSIVE' if iv_for_calc > (hv30 or 0) else 'CHEAP',
+                         'gate_pass': vol_gate, 'iv': iv_for_calc, 'hv30': hv30},
+        'conviction':   conviction,
+        'vix':          vix_now,
+        'regime':       current_regime,
+        'intraday_pct': intraday_pct,
+        'grade':        'A' if entry_gates.get('verdict') == 'ENTER' else 'B',
+        'template':     f'BEAR_CALL_CREDIT {sell_strike}/{buy_strike}C',
+    }
+
+    result['calc_log_id'] = log_calc_run(result)
+
+    return result
+
+
+def format_credit_spread_message(calc: dict) -> str:
+    """Format Telegram message for credit spread (bull put or bear call)."""
+    sym      = calc['symbol']
+    und      = calc['underlying']
+    strategy = calc.get('strategy', 'BULL_PUT_CREDIT')
+    is_bull  = strategy == 'BULL_PUT_CREDIT'
+    right    = 'P' if is_bull else 'C'
+    spread_label = 'Bull Put Credit' if is_bull else 'Bear Call Credit'
+    sell_s   = calc['sell_strike']
+    buy_s    = calc['buy_strike']
+    credit   = calc['net_credit']
+    width    = calc['spread_width']
+    be       = calc['breakeven']
+    be_pct   = calc['breakeven_pct']
+    dte      = calc['dte']
+    mc       = calc.get('mc_ev') or {}
+    iv_rank  = calc.get('iv_rank') or 0
+    hv30     = calc.get('hv30')
+    cur_iv   = calc.get('current_iv') or 0
+    qty      = calc.get('qty', 1)
+    gs       = calc.get('entry_gates') or {}
+    gates    = gs.get('gates_pass', 0)
+    verdict  = gs.get('verdict', 'SKIP')
+    skip_rsn = gs.get('skip_reason', '')
+    regime   = calc.get('regime') or 'UNKNOWN'
+    vix      = calc.get('vix') or 0
+    intra    = calc.get('intraday_pct')
+
+    max_profit = calc['max_profit']
+    max_loss   = calc['max_loss']
+    tgt_credit = round(credit * 0.5, 2)
+    stop_val   = round(credit * 3.0, 2)
+
+    verdict_icon = '✅' if verdict == 'ENTER' else '⛔'
+    hv_str = f' / HV30 {hv30:.0f}%' if hv30 else ''
+    intra_str = f' | Today {intra:+.1f}%' if intra is not None else ''
+
+    gate_icons = {
+        'vol':        '✅' if gs.get('vol') else '❌',
+        'tech':       '✅' if gs.get('tech') else '❌',
+        'conviction': '✅' if gs.get('conviction') else '❌',
+        'liquidity':  '✅' if gs.get('liquidity') else '❌',
+        'momentum':   '✅' if gs.get('momentum') else '❌',
+    }
+
+    lines = [
+        f"{'📈' if is_bull else '📉'} *{sym} — {spread_label} Spread* {verdict_icon}",
+        f"Stock ${und:.2f}{intra_str}",
+        f"",
+        f"SPREAD STRUCTURE",
+        f"Sell ${sell_s}{right} / Buy ${buy_s}{right} · {dte}d exp",
+        f"Credit: ${credit:.2f}/contract = ${max_profit:.0f} max profit ({qty} lot{'s' if qty > 1 else ''})",
+        f"Max loss: ${max_loss:.0f} | Width: ${width:.0f}",
+        f"Breakeven: ${be:.2f} ({'stock must stay above' if is_bull else 'stock must stay below'})",
+        f"",
+        f"VOL REGIME",
+        f"IV rank {iv_rank:.0f}% | IV {cur_iv:.0f}%{hv_str} | VIX {vix:.1f}",
+        f"Regime: {regime}",
+        f"",
+        f"GATES ({gates}/5)",
+        f"{'IV expensive' if gs.get('vol') else 'IV not expensive'} {gate_icons['vol']} | {'Trend ✓' if gs.get('tech') else 'Trend ✗'} {gate_icons['tech']} | {'Conviction ✓' if gs.get('conviction') else 'No signal'} {gate_icons['conviction']}",
+        f"{'Liquid ✓' if gs.get('liquidity') else 'Illiquid'} {gate_icons['liquidity']} | {'Momentum ✓' if gs.get('momentum') else 'Momentum ✗'} {gate_icons['momentum']}",
+    ]
+
+    if mc.get('ev_dollar') is not None:
+        mc_wr = mc.get('win_rate') or 0
+        lines += [
+            f"",
+            f"MONTE CARLO (10K paths, credit model)",
+            f"EV: ${mc['ev_dollar']:+.0f}/contract · Win: {mc_wr:.0f}%",
+        ]
+
+    lines += [
+        f"",
+        f"EXIT RULES",
+        f"Target: buy back ≤ ${tgt_credit:.2f} (50% profit = +${max_profit*0.5:.0f})",
+        f"Stop:   buy back ≥ ${stop_val:.2f} (spread tripled = -${max_profit*2:.0f})",
+        f"Time:   21 DTE or 50% profit, whichever first",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    if verdict == 'ENTER':
+        lines.append("Reply *CONFIRM* to place · *SKIP* to cancel\n_(timeout in 30 min)_")
+    else:
+        lines.append(f"⛔ SKIP — {skip_rsn}")
+
+    return '\n'.join(lines)
+
+
+def _execute_credit_spread_bg(sym: str, calc: dict, chat_id: str,
+                               calc_log_id: int | None = None,
+                               sug_id: int | None = None):
+    """Place a credit spread (SELL the spread, receive premium). Runs in thread."""
+    qty        = calc.get('qty', 1)
+    expiry     = calc['expiry']
+    sell_strike = calc['sell_strike']   # leg we sold (higher-value leg)
+    buy_strike  = calc['buy_strike']    # leg we bought (protection)
+    right       = calc['right']
+    strategy    = calc['strategy']
+
+    # Live quotes for accurate credit and natural floor
+    lq = get_quote(sym, expiry, sell_strike, right)   # higher-value leg (what we sold)
+    hq = get_quote(sym, expiry, buy_strike,  right)   # protection leg (what we bought)
+    nat_credit = calc['net_credit']
+    mid_credit = calc['net_credit']
+    try:
+        if lq and hq:
+            sell_mid_p = (float(lq.get('bid') or 0) + float(lq.get('ask') or 0)) / 2
+            buy_mid_p  = (float(hq.get('bid') or 0) + float(hq.get('ask') or 0)) / 2
+            mid_credit = round(sell_mid_p - buy_mid_p, 2)
+            nat_credit = round(float(lq.get('bid') or 0) - float(hq.get('ask') or 0), 2)
+            nat_credit = max(nat_credit, 0.01)
+    except Exception:
+        pass
+
+    mid_at_entry = mid_credit
+
+    order_id  = None
+    filled_at = None
+    avg_fill  = None
+
+    for attempt in range(MAX_FILL_TRIES):
+        if attempt == 0:
+            limit_credit = max(0.01, mid_credit)
+            order_type   = 'MIDPRICE'
+        else:
+            # Walk DOWN from mid toward natural (accept slightly less credit each try)
+            limit_credit = round(max(nat_credit, mid_credit - attempt * 0.05), 2)
+            order_type   = 'LIMIT'
+            send_telegram(
+                f"⏳ *{sym} credit spread* — attempt {attempt+1}/{MAX_FILL_TRIES} "
+                f"accepting ≥${limit_credit:.2f} (mid ${mid_credit:.2f} → floor ${nat_credit:.2f})",
+                chat_id,
+            )
+
+        # Bridge convention for credit: action=SELL, strike=sell_leg, short_strike=buy_leg
+        payload = {
+            'symbol':       sym,
+            'expiry':       expiry,
+            'strike':       sell_strike,    # higher-value leg (gets SOLD when action=SELL)
+            'right':        right,
+            'qty':          qty,
+            'action':       'SELL',
+            'order_type':   order_type,
+            'limit_price':  limit_credit,
+            'short_strike': buy_strike,     # protection leg (gets BOUGHT when action=SELL)
+            'net_debit':    -limit_credit,  # negative = credit received
+        }
+        resp = bridge_post('/options/order', payload)
+        if not resp or 'orderId' not in resp:
+            err = (resp or {}).get('error', 'bridge unreachable')
+            send_telegram(f"❌ *{sym} credit order failed*: {err}", chat_id)
+            return
+        order_id = resp['orderId']
+
+        time.sleep(FILL_WAIT_SEC)
+
+        status = get_order_status(order_id)
+        st = (status or {}).get('status', 'Unknown')
+        print(f"[options] {sym} credit attempt {attempt+1}: orderId={order_id} status={st} filled={(status or {}).get('filled',0)}")
+
+        if status and float(status.get('avgFillPrice') or 0) > 0:
+            avg_fill = float(status['avgFillPrice'])
+
+        filled_count = (status or {}).get('filled', 0)
+        if st in ('Unknown', 'Cancelled', 'PendingSubmit', 'PreSubmitted') and filled_count == 0:
+            opts_pos = get_portfolio_options()
+            matched = [p for p in opts_pos
+                       if p.get('symbol') == sym
+                       and p.get('expiry') == expiry
+                       and abs(float(p.get('strike', 0)) - sell_strike) < 0.01
+                       and float(p.get('qty', 0)) < 0]   # short position = negative qty
+            if matched:
+                print(f"[options] {sym} credit confirmed in portfolio (status={st}) — recording fill")
+                filled_at = avg_fill or limit_credit
+                break
+
+        if status and status.get('filled', 0) >= qty:
+            filled_at = avg_fill or limit_credit
+            break
+
+        if attempt < MAX_FILL_TRIES - 1:
+            bridge_post(f'/order/{order_id}/cancel', {})
+            time.sleep(2)
+
+    if filled_at is None:
+        bridge_post(f'/order/{order_id}/cancel', {}) if order_id else None
+        send_telegram(
+            f"❌ *{sym} credit spread not filled*\n"
+            f"Tried {MAX_FILL_TRIES} attempts (mid ${mid_credit:.2f} → floor ${nat_credit:.2f})",
+            chat_id,
+        )
+        return
+
+    slippage_per_contract = round(mid_at_entry - filled_at, 4)  # positive = received less than mid
+    premium_dollar = round(filled_at * 100 * qty, 2)
+    spread_width   = calc['spread_width']
+    max_loss_dollar = round((spread_width - filled_at) * 100 * qty, 2)
+
+    trade_id = log_options_trade(
+        strategy=strategy,
+        symbol=sym,
+        cap_type=cap_type(sym),
+        underlying_price=calc.get('underlying'),
+        expiry=expiry,
+        contracts=qty,
+        delta_entry=None,
+        iv_rank_entry=calc.get('iv_rank'),
+        iv_pct_entry=calc.get('current_iv'),
+        premium_paid=premium_dollar,
+        max_profit=premium_dollar,
+        max_loss=max_loss_dollar,
+        entry_grade=calc.get('grade', 'A'),
+        entry_thesis=f"{calc.get('template', strategy)} · {calc.get('dte')}d exp · credit ${filled_at:.2f}",
+        long_strike=sell_strike,    # higher-value leg (what we sold)
+        short_strike=buy_strike,
+        right=right,
+        net_debit=-filled_at,       # negative = credit received
+    )
+
+    try:
+        if calc_log_id:
+            update_calc_action(calc_log_id, 'CONFIRM', trade_id)
+        if sug_id:
+            update_suggestion_decision(sug_id, 'CONFIRMED', trade_id)
+    except Exception:
+        pass
+
+    slip_str = (f" | Slip ${slippage_per_contract:+.2f}" if abs(slippage_per_contract) >= 0.01 else "")
+    spread_label = 'Bull Put' if strategy == 'BULL_PUT_CREDIT' else 'Bear Call'
+    send_telegram(
+        f"✅ *{sym} {spread_label.upper()} CREDIT entered* [trade #{trade_id}]\n"
+        f"${sell_strike}/{buy_strike} {'P' if right=='P' else 'C'} · {calc.get('dte')}d\n"
+        f"Credit: ${filled_at:.2f}/contract (mid ${mid_at_entry:.2f}){slip_str}\n"
+        f"{qty} lot(s) = ${premium_dollar:.0f} max profit\n"
+        f"Max loss: ${max_loss_dollar:.0f} | Stop at ${filled_at*3:.2f} buyback | Target ${filled_at*0.5:.2f} buyback",
+        chat_id,
+    )
+
+    _check_learning_milestone(chat_id)
 
 
 # ── Format calculator output for Telegram ────────────────────────────────────
@@ -1590,43 +2375,53 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
     qty      = tmpl['qty']
     expiry   = tmpl['expiry']
 
-    # Fetch live bid/ask to compute natural fill price (ask_long - bid_short).
-    # IBKR paper BAG fill simulator requires natural price, not mid-to-mid.
-    mid         = tmpl['net_debit']   # baseline mid from calc (used in error message)
-    start_price = mid
+    # Fetch live bid/ask to compute mid and natural prices.
+    # Pro fill strategy: start at MIDPRICE (IBKR's native mid-fill order = ~$3 avg improvement).
+    # On failure, walk from mid toward natural in $0.05 steps. Never exceed natural price.
+    right    = tmpl.get('right', 'C')
+    mid      = tmpl['net_debit']   # calc-time mid; refreshed below
+    natural  = mid
     try:
-        right   = tmpl.get('right', 'C')
         long_q  = get_quote(sym, expiry, float(tmpl['long_strike']),  right)
         short_q = get_quote(sym, expiry, float(tmpl['short_strike']), right)
         if (long_q and short_q
-                and long_q.get('ask') is not None
-                and short_q.get('bid') is not None):
+                and long_q.get('bid') is not None and long_q.get('ask') is not None
+                and short_q.get('bid') is not None and short_q.get('ask') is not None):
+            long_mid_p  = (float(long_q['bid'])  + float(long_q['ask']))  / 2
+            short_mid_p = (float(short_q['bid']) + float(short_q['ask'])) / 2
+            mid     = round(long_mid_p - short_mid_p, 2)
             natural = round(float(long_q['ask']) - float(short_q['bid']), 2)
-            live_mid = round(
-                (float(long_q['bid']) + float(long_q['ask'])) / 2
-                - (float(short_q['bid']) + float(short_q['ask'])) / 2, 2)
-            mid = live_mid          # refresh for error message
-            start_price = natural   # IBKR paper needs natural to fill BAG orders
     except Exception:
         pass
 
-    order_id = None
+    mid_at_entry = mid  # snapshot for slippage calculation
+
+    order_id  = None
     filled_at = None
+    avg_fill  = None   # actual IBKR avgFillPrice (may differ from limit submitted)
+
     for attempt in range(MAX_FILL_TRIES):
-        limit_price = round(start_price + attempt * 0.10, 2)  # natural, +.10, +.20, +.30
-        if attempt > 0:
+        if attempt == 0:
+            # Attempt 0: MIDPRICE order — IBKR fills at mid automatically
+            limit_price = max(0.01, mid)
+            order_type  = 'MIDPRICE'
+        else:
+            # Attempts 1+: limit orders walking from mid toward natural in $0.05 steps
+            limit_price = round(min(mid + attempt * 0.05, natural), 2)
+            order_type  = 'LIMIT'
             send_telegram(
-                f"⏳ *{sym} spread* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f}",
+                f"⏳ *{sym} spread* — attempt {attempt+1}/{MAX_FILL_TRIES} at ${limit_price:.2f} (mid ${mid:.2f} → natural ${natural:.2f})",
                 chat_id,
             )
+
         payload = {
             'symbol':       sym,
             'expiry':       expiry,
             'strike':       tmpl['long_strike'],
-            'right':        tmpl.get('right', 'C'),
+            'right':        right,
             'qty':          qty,
             'action':       'BUY',
-            'order_type':   'LIMIT',
+            'order_type':   order_type,
             'limit_price':  limit_price,
             'short_strike': tmpl['short_strike'],
             'net_debit':    limit_price,
@@ -1644,8 +2439,10 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
         st = (status or {}).get('status', 'Unknown')
         print(f"[options] {sym} spread attempt {attempt+1}: orderId={order_id} status={st} filled={(status or {}).get('filled',0)}")
 
-        # Portfolio fallback for ambiguous statuses (race condition on reconnect).
-        # Must match expiry + long_strike to avoid false positives from orphan positions.
+        # Read actual fill price from IBKR — never use limit_price as fill price
+        if status and float(status.get('avgFillPrice') or 0) > 0:
+            avg_fill = float(status['avgFillPrice'])
+
         filled_count = (status or {}).get('filled', 0)
         if st in ('Unknown', 'Cancelled', 'PendingSubmit', 'PreSubmitted') and filled_count == 0:
             opts_pos = get_portfolio_options()
@@ -1656,25 +2453,24 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
                        and abs(float(p.get('strike', 0)) - long_stk) < 0.01
                        and float(p.get('qty', 0)) > 0]
             if matched:
-                print(f"[options] {sym} position confirmed in portfolio (status={st}) — recording fill")
-                filled_at = limit_price
+                print(f"[options] {sym} position confirmed in portfolio (status={st}) — recording fill at limit ${limit_price:.2f}")
+                filled_at = avg_fill or limit_price
                 break
 
-        # Also accept clean Filled status as authoritative
         if status and status.get('filled', 0) >= qty:
-            filled_at = limit_price
+            filled_at = avg_fill or limit_price
             break
 
-        # Not filled — cancel before trying next increment
+        # Not filled — cancel THIS specific order before next attempt (not global cancel)
         if attempt < MAX_FILL_TRIES - 1:
-            cancel_all_orders()
+            bridge_post(f'/order/{order_id}/cancel', {})
             time.sleep(2)
 
     if filled_at is None:
-        cancel_all_orders()
+        bridge_post(f'/order/{order_id}/cancel', {}) if order_id else None
         send_telegram(
             f"❌ *{sym} SPREAD order cancelled*\n"
-            f"Not filled within ${MAX_SLIPPAGE:.2f} slippage from mid (${mid:.2f})",
+            f"Not filled after {MAX_FILL_TRIES} attempts (mid ${mid:.2f} → natural ${natural:.2f})",
             chat_id,
         )
         return
@@ -1683,6 +2479,7 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
     strategy_used = 'BEAR_PUT_SPREAD' if tmpl.get('right', 'C') == 'P' else 'BULL_SPREAD'
     spread_label  = 'put spread' if strategy_used == 'BEAR_PUT_SPREAD' else 'call spread'
     right_used    = tmpl.get('right', 'C')
+    slippage_per_contract = round(filled_at - mid_at_entry, 4)  # positive = paid above mid
     premium_dollar    = round(filled_at * 100 * qty, 2)
     spread_width      = abs(float(tmpl['short_strike']) - float(tmpl['long_strike']))
     max_profit_dollar = round((spread_width - filled_at) * 100 * qty, 2)
@@ -1718,11 +2515,15 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
     except Exception:
         pass
 
+    slippage_total = round(slippage_per_contract * 100 * qty, 2)
+    slip_str = (f" | Slip: ${slippage_per_contract:+.2f}/contract (${slippage_total:+.0f} total)"
+                if abs(slippage_per_contract) >= 0.01 else "")
     send_telegram(
         f"✅ *{sym} {spread_label.upper()} entered* [trade #{trade_id}]\n"
         f"Template: {tmpl['template']} [{tmpl['grade']}]\n"
         f"${tmpl['long_strike']}/${tmpl['short_strike']} {spread_label} · {tmpl['dte']}d\n"
-        f"Fill: ${filled_at:.2f}/contract · {qty} lot(s) = ${premium_dollar:.0f} deployed\n"
+        f"Fill: ${filled_at:.2f}/contract (mid was ${mid_at_entry:.2f}){slip_str}\n"
+        f"{qty} lot(s) = ${premium_dollar:.0f} deployed\n"
         f"Max profit: ${max_profit_dollar:.0f} | Stop: ${premium_dollar*0.5:.0f}",
         chat_id,
     )
@@ -1791,11 +2592,11 @@ def _execute_leap_bg(sym: str, leap: dict, chat_id: str,
                 break
 
         if attempt < MAX_FILL_TRIES - 1:
-            cancel_all_orders()
+            bridge_post(f'/order/{order_id}/cancel', {})
             time.sleep(2)
 
     if filled_at is None:
-        cancel_all_orders()
+        bridge_post(f'/order/{order_id}/cancel', {}) if order_id else None
         send_telegram(
             f"❌ *{sym} LEAP order cancelled*\n"
             f"Not filled within ${MAX_SLIPPAGE:.2f} slippage from mid (${mid:.2f})",
@@ -1887,6 +2688,34 @@ def _execute_close_bg(trade: dict, chat_id: str):
             'net_debit':    round(-(spread_mid - 0.05), 2),  # negative = credit
         }
         exit_value = round(spread_mid * 100 * qty, 2)
+    elif strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+        right_cc = 'P' if strat == 'BULL_PUT_CREDIT' else 'C'
+        lq = get_quote(sym, trade['expiry'], trade['long_strike'],  right_cc)
+        sq = get_quote(sym, trade['expiry'], trade['short_strike'], right_cc)
+        if not lq or not sq:
+            send_telegram(f"❌ Cannot fetch quotes for {sym} credit spread to close", chat_id)
+            return
+        buy_ask  = lq.get('ask') or 0   # buying back the sold leg
+        sell_bid = sq.get('bid') or 0   # selling back the protection leg
+        if not (buy_ask or sell_bid):
+            send_telegram(f"❌ {sym} credit close: no valid bid/ask — try again", chat_id)
+            return
+        buy_mid  = ((lq.get('bid') or 0) + buy_ask) / 2
+        sell_mid = (sell_bid + (sq.get('ask') or 0)) / 2
+        debit_mid = round(buy_mid - sell_mid, 2)
+        payload = {
+            'symbol':       sym,
+            'expiry':       trade['expiry'],
+            'strike':       trade['long_strike'],   # leg we originally sold (buying back)
+            'right':        right_cc,
+            'qty':          qty,
+            'action':       'BUY',
+            'order_type':   'LIMIT',
+            'limit_price':  max(0.01, round(debit_mid + 0.05, 2)),  # slight premium to fill fast
+            'short_strike': trade['short_strike'],
+            'net_debit':    max(0.01, round(debit_mid + 0.05, 2)),
+        }
+        exit_value = round(debit_mid * 100 * qty, 2)
     elif strat == 'OPT_SCALP':
         q = get_quote(sym, trade['expiry'], trade['long_strike'], trade['right'])
         if not q:
@@ -2078,6 +2907,10 @@ def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
     if not underlying:
         return {'error': f'Cannot fetch price for {sym}'}
 
+    vix = _get_current_vix()
+    if vix is not None and vix > SCALP_MAX_VIX:
+        return {'error': f'VIX {vix:.1f} > {SCALP_MAX_VIX} — skip scalp (IV crush risk on ATM buyers)'}
+
     iv_data  = get_iv_rank(sym)
     iv_rank  = iv_data.get('iv_rank', 50.0) if iv_data else 50.0
 
@@ -2139,7 +2972,7 @@ def run_scalp_calculator(symbol: str, mode: str = 'A') -> dict:
     dte_gate    = SCALP_MIN_DTE <= dte <= SCALP_MAX_DTE
     delta_gate  = (delta is not None and SCALP_DELTA_MIN <= abs(delta) <= SCALP_DELTA_MAX)
     spread_gate = ba_spread <= SCALP_MAX_SPREAD
-    ivrank_gate = iv_rank < SCALP_MAX_IV_RANK
+    ivrank_gate = SCALP_MIN_IV_RANK <= iv_rank < SCALP_MAX_IV_RANK
     cost_gate   = total_cost <= SCALP_MAX_TOTAL_COST
 
     gates      = {'dte': dte_gate, 'delta': delta_gate, 'spread': spread_gate,
@@ -2239,6 +3072,20 @@ def _scalp_cooldown_expire(stale_syms: list):
         conn.close()
     except Exception as e:
         print(f"[scalp] cooldown expire error (non-fatal): {e}")
+
+
+def _get_intraday_chg(sym: str) -> Optional[float]:
+    """Return intraday % change for sym using yfinance fast_info."""
+    try:
+        import yfinance as _yf
+        fi = _yf.Ticker(sym).fast_info
+        cur = fi.last_price
+        prev = fi.previous_close
+        if cur and prev and prev > 0:
+            return round((cur - prev) / prev * 100, 2)
+    except Exception:
+        pass
+    return None
 
 
 # ── OPT_SCALP: trigger scanners ───────────────────────────────────────────────
@@ -2360,11 +3207,11 @@ def _execute_scalp_bg(sym: str, calc: dict, chat_id: str):
                 break
 
         if attempt < MAX_FILL_TRIES - 1:
-            cancel_all_orders()
+            bridge_post(f'/order/{order_id}/cancel', {})
             time.sleep(2)
 
     if filled_at is None:
-        cancel_all_orders()
+        bridge_post(f'/order/{order_id}/cancel', {}) if order_id else None
         send_telegram(
             f"❌ *{sym} scalp order cancelled*\nNot filled within ${MAX_SLIPPAGE:.2f} slippage",
             chat_id,
@@ -2400,7 +3247,7 @@ def _execute_scalp_bg(sym: str, calc: dict, chat_id: str):
         f"Mode {calc.get('mode','?')} ({mode_label})\n"
         f"ATM ${strike} call · {calc.get('dte')}d · {contracts} contract(s)\n"
         f"Fill: ${filled_at:.2f} = ${premium_dollar:.0f} deployed\n"
-        f"Target: ${target_value:.0f} (+80%) | Stop: ${stop_value:.0f} (-50%) | Max hold: 3 days",
+        f"Target: ${target_value:.0f} (+80%) | Stop: ${stop_value:.0f} (-50%) | Max hold: {SCALP_MAX_DAYS} days",
         chat_id,
     )
     _check_scalp_learning_milestone(chat_id)
@@ -2509,6 +3356,14 @@ def scalp_scan_loop():
         return
 
     sym, mode = candidates[0]   # one trade per scan cycle
+
+    # Mode B: require ≥2% intraday before entering — news aged 3h+ with flat stock = no edge
+    if mode == 'B':
+        intra = _get_intraday_chg(sym)
+        if intra is None or intra < 2.0:
+            print(f"[scalp] mode_b skip {sym}: intraday {intra}% < 2% (no price confirmation)")
+            _scalp_cooldown_set(sym, now)
+            return
 
     calc = run_scalp_calculator(sym, mode)
     if 'error' in calc:
@@ -2679,6 +3534,72 @@ def cmd_sell(sym: str, qty: int, chat_id: str):
                 'calc':       calc,
                 'expires_at': datetime.now() + timedelta(minutes=30),
             }
+
+
+def cmd_credit(sym: str, direction: str, qty: int, chat_id: str):
+    """OPT CREDIT BULL <sym> [qty] / OPT CREDIT BEAR <sym> [qty] — credit spread entry."""
+    sym = sym.upper()
+    direction = direction.upper()
+    if direction not in ('BULL', 'BEAR'):
+        send_telegram("Usage: `OPT CREDIT BULL <sym>` or `OPT CREDIT BEAR <sym>`", chat_id)
+        return
+
+    existing = [t for t in get_open_options_trades() if t['symbol'] == sym]
+    for t in existing:
+        dte_left = days_to_expiry(t['expiry'])
+        if dte_left <= 7:
+            send_telegram(
+                f"⚠️ *{sym} has open {t['strategy']} expiring in {dte_left}d*\n"
+                f"Use `OPT CLOSE {sym}` first.",
+                chat_id,
+            )
+            return
+
+    if not check_circuit_breaker(chat_id):
+        return
+    if not can_open_position(chat_id=chat_id):
+        return
+
+    cs = capital_status()
+    label = 'BULL PUT CREDIT' if direction == 'BULL' else 'BEAR CALL CREDIT'
+    send_telegram(
+        f"⏳ Running {label} analysis for *{sym}*...\n"
+        f"_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
+        chat_id,
+    )
+
+    if direction == 'BULL':
+        calc = run_bull_put_credit_calc(sym, qty)
+    else:
+        calc = run_bear_call_credit_calc(sym, qty)
+
+    if 'error' in calc:
+        send_telegram(f"❌ {calc['error']}", chat_id)
+        return
+
+    calc = _auto_qty_calc(calc)
+    qty  = calc.get('qty', qty)
+
+    msg = format_credit_spread_message(calc)
+    send_telegram(msg, chat_id)
+
+    verdict     = (calc.get('entry_gates') or {}).get('verdict', 'SKIP')
+    calc_log_id = calc.get('calc_log_id')
+
+    if verdict == 'ENTER':
+        # For credit spreads, capital check uses margin requirement (max_loss),
+        # not the credit received — IBKR holds (spread_width - credit) × 100 × qty.
+        margin_req = calc.get('max_loss', calc.get('premium_paid', 0))
+        if can_open_position(margin_req, chat_id):
+            send_telegram(f"⚡ *Auto-executing {sym} {label}* — 5/5 gates", chat_id)
+            threading.Thread(
+                target=_execute_credit_spread_bg,
+                args=(sym, calc, chat_id, calc_log_id),
+                daemon=True,
+            ).start()
+    else:
+        skip_rsn = (calc.get('entry_gates') or {}).get('skip_reason', 'gates not met')
+        send_telegram(f"⛔ {sym} {label} SKIP — {skip_rsn}", chat_id)
 
 
 def _live_pnl_by_symbol() -> dict:
@@ -3085,6 +4006,10 @@ def handle_reply(text: str, chat_id: str):
                 send_telegram(f"⏳ Placing LEAP call for *{sym}*...", chat_id)
                 t = threading.Thread(target=_execute_leap_bg,
                                      args=(sym, trade, chat_id, calc_log_id, sug_id), daemon=True)
+            elif strategy in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+                send_telegram(f"⏳ Placing {strategy.replace('_', ' ')} for *{sym}*...", chat_id)
+                t = threading.Thread(target=_execute_credit_spread_bg,
+                                     args=(sym, calc, chat_id, calc_log_id, sug_id), daemon=True)
             else:
                 send_telegram(f"⏳ Placing EM-Anchored spread for *{sym}*...", chat_id)
                 t = threading.Thread(target=_execute_spread_bg,
@@ -3136,6 +4061,12 @@ def dispatch(text: str, chat_id: str):
             sym = parts[2].upper()
             qty = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
             cmd_buy(sym, qty, chat_id)
+        elif cmd == 'CREDIT' and len(parts) > 3:
+            # OPT CREDIT BULL <sym> [qty]  or  OPT CREDIT BEAR <sym> [qty]
+            direction = parts[2].upper()
+            sym = parts[3].upper()
+            qty = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
+            cmd_credit(sym, direction, qty, chat_id)
         elif cmd == 'SELL' and len(parts) > 2:
             sym = parts[2].upper()
             qty = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
@@ -3151,6 +4082,8 @@ def dispatch(text: str, chat_id: str):
                 "`OPT STATUS` · `OPT POSITIONS` · `OPT CALENDAR`\n"
                 "`OPT PAUSE` · `OPT RESUME`\n"
                 "`OPT CLOSE <sym>` · `OPT BUY <sym> [qty]` · `OPT SELL <sym> [qty]`\n"
+                "`OPT CREDIT BULL <sym> [qty]` — bull put credit spread (IV rank ≥50%)\n"
+                "`OPT CREDIT BEAR <sym> [qty]` — bear call credit spread (IV rank ≥50%)\n"
                 "`OPT NEWS [sym]` · `OPT ADD <sym> <date> <note> [HIGH|MEDIUM|LOW]`\n"
                 "`OPT KB` — session catch-up brief",
                 chat_id,
@@ -3303,7 +4236,10 @@ def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
     if 'error' in calc:
         err = calc['error']
         # Bridge/data outages are transient — reset to PENDING silently, no Telegram noise
-        is_transient = any(w in str(err).lower() for w in ('connection', 'timeout', 'bridge', 'empty'))
+        is_transient = any(w in str(err).lower() for w in (
+            'connection', 'timeout', 'bridge', 'empty',
+            'no suitable expiry', 'cannot fetch',   # DTE gaps — structural, not bugs
+        ))
         if is_transient:
             print(f"[options_trader] {sym} transient error, will retry: {err}")
             update_suggestion_status(sug_id, 'PENDING')
@@ -3369,33 +4305,47 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
                 if sug_id:
                     update_suggestion_status(sug_id, 'PENDING')
             return
-        msg = format_calc_message(calc)
+        strategy = calc.get('strategy', 'BULL_SPREAD')
+        if strategy in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+            msg = format_credit_spread_message(calc)
+        else:
+            msg = format_calc_message(calc)
         send_telegram(msg, OPT_CHAT)
         if sug_id:
             update_suggestion_status(sug_id, 'SENT')
-        if trade:
-            new_premium = trade.get('net_debit', 0) * 100 * trade.get('qty', 1)
-            if can_open_position(new_premium):
-                send_telegram(
-                    f"⚡ *Auto-executing {sym}* — 5/5 gates ({label})",
-                    OPT_CHAT,
-                )
-                strategy = calc.get('strategy', 'BULL_SPREAD')
-                if strategy == 'LEAP':
-                    threading.Thread(
-                        target=_execute_leap_bg,
-                        args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
-                        daemon=True,
-                    ).start()
-                else:
-                    threading.Thread(
-                        target=_execute_spread_bg,
-                        args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
-                        daemon=True,
-                    ).start()
+        if strategy in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+            # Credit spreads: IBKR holds margin = max_loss, not the credit received
+            new_premium = calc.get('max_loss', calc.get('premium_paid', 0))
+        else:
+            new_premium = calc.get('premium_paid') or (
+                (trade or {}).get('net_debit', 0) * 100 * calc.get('qty', 1)
+            )
+        if can_open_position(new_premium):
+            send_telegram(
+                f"⚡ *Auto-executing {sym}* — 5/5 gates ({label})",
+                OPT_CHAT,
+            )
+            if strategy == 'LEAP':
+                threading.Thread(
+                    target=_execute_leap_bg,
+                    args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
+                    daemon=True,
+                ).start()
+            elif strategy in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+                threading.Thread(
+                    target=_execute_credit_spread_bg,
+                    args=(sym, calc, OPT_CHAT, calc_log_id, sug_id),
+                    daemon=True,
+                ).start()
             else:
-                if sug_id:
-                    update_suggestion_status(sug_id, 'NO_TRADE')
+                threading.Thread(
+                    target=_execute_spread_bg,
+                    args=(sym, trade, OPT_CHAT, calc_log_id, sug_id),
+                    daemon=True,
+                ).start()
+        else:
+            if sug_id:
+                update_suggestion_status(sug_id, 'NO_TRADE')
 
     elif verdict == 'ENTER_REDUCED':
         trade = calc.get('trade') or {}
@@ -3589,10 +4539,24 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
 
         _proactive_cooldown[sym] = now   # claim before network calls
 
+        # IV routing: ≥50% → credit spread (theta works for us); <50% → debit spread
+        iv_d   = get_iv_rank(sym)
+        iv_rnk = (iv_d.get('iv_rank') if iv_d else None) or 0
+
         if direction == 'LONG':
-            calc = run_calculator(sym, 1)
+            if iv_rnk >= 50:
+                calc        = run_bull_put_credit_calc(sym, 1)
+                strat_label = 'BULL PUT CREDIT'
+            else:
+                calc        = run_calculator(sym, 1)
+                strat_label = 'CALL SPREAD'
         elif direction == 'SHORT':
-            calc = run_put_spread_calc(sym, 1)
+            if iv_rnk >= 50:
+                calc        = run_bear_call_credit_calc(sym, 1)
+                strat_label = 'BEAR CALL CREDIT'
+            else:
+                calc        = run_put_spread_calc(sym, 1)
+                strat_label = 'PUT SPREAD'
         else:
             continue
 
@@ -3609,9 +4573,8 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
             print(f"[options] scan trigger {sym} {direction} SKIP ({gates}/5)")
             continue
 
-        strat_label = 'PUT SPREAD' if direction == 'SHORT' else 'CALL SPREAD'
         send_telegram(
-            f"⚡ *Equity A+ → {sym} {strat_label}* (score {score})\n"
+            f"⚡ *Equity A+ → {sym} {strat_label}* (score {score}, IV rank {iv_rnk:.0f}%)\n"
             f"Direction: {direction}",
             OPT_CHAT,
         )

@@ -534,6 +534,7 @@ Return ONLY valid JSON — no extra text, no markdown:
   "direction": "BULLISH|BEARISH|NEUTRAL",
   "time_horizon": "IMMEDIATE|SHORT|LONG",
   "already_priced_in": "YES|NO|UNCLEAR",
+  "magnitude": 3,
   "creates_future_event": false,
   "future_event_date": null,
   "future_event_name": null,
@@ -546,7 +547,14 @@ Relevance rules:
   MEDIUM — noteworthy, worth tracking, moderate IV impact possible
   HIGH   — likely to move IV or price materially within days to weeks
   creates_future_event = true only if headline mentions a specific future dated event
-  future_event_date in YYYY-MM-DD format if creates_future_event is true else null"""
+  future_event_date in YYYY-MM-DD format if creates_future_event is true else null
+
+Magnitude (1-5 integer):
+  5 — FDA approval, acquisition, bankruptcy filing, major earnings beat/miss
+  4 — Phase 3 data, major contract, regulatory clearance
+  3 — partnership, product launch, restructuring (baseline)
+  2 — analyst upgrade/downgrade with target change, minor contract
+  1 — analyst reiteration, index move, generic commentary"""
 
 
 def classify_headline(symbol: str, headline: str,
@@ -593,8 +601,10 @@ _BATCH_CLASSIFY_PROMPT = (
     '{{\"relevance\":\"HIGH|MEDIUM|LOW|NOISE\",\"news_type\":\"PARTNERSHIP|REGULATORY|'
     'EARNINGS_SIGNAL|PRODUCT|LAYOFF|MACRO|ANALYST|CEO_COMMENT|LEGAL|SECTOR\",'
     '\"direction\":\"BULLISH|BEARISH|NEUTRAL\",\"time_horizon\":\"IMMEDIATE|SHORT|LONG\",'
-    '\"already_priced_in\":\"YES|NO|UNCLEAR\",\"creates_future_event\":false,'
+    '\"already_priced_in\":\"YES|NO|UNCLEAR\",\"magnitude\":3,\"creates_future_event\":false,'
     '\"future_event_date\":null,\"future_event_name\":null,\"one_line_reason\":\"one sentence\"}}\n\n'
+    "Magnitude (1-5): 5=FDA/acquisition/bankruptcy, 4=phase3/major contract, "
+    "3=partnership/product (baseline), 2=analyst change, 1=reiteration/macro.\n\n"
     "Headlines:\n{headlines}"
 )
 
@@ -921,6 +931,7 @@ def process_symbol(symbol: str, open_trades: list[dict]) -> int:
                 one_line_reason      = clf.get('one_line_reason', ''),
                 catalyst_id          = catalyst_id,
                 linked_trade_id      = linked_trade_id,
+                magnitude            = clf.get('magnitude', 3),
             )
 
             print(f"[NEWS] {symbol} {relevance:6s} {clf.get('news_type',''):20s} "

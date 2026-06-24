@@ -1247,7 +1247,7 @@ def get_days_to_earnings(symbol):
 # Validated on 174 trades: clean entries 66.7% WR +$20 avg vs dirty 43.8% WR -$2.88 avg
 # Combined L2+L3 adds +$418 over baseline on 2026 scan_log data.
 # ─────────────────────────────────────────────────────────
-def _check_layer2_fitness(symbol, direction, entry_price):
+def _check_layer2_fitness(symbol, direction, entry_price, is_catalyst=False):
     """
     Pre-entry candle fitness check using last 6 x 5-min bars from the bridge.
     Bridge caches 5-min bars for 300s — aligned with the 5-min scan cadence.
@@ -1307,6 +1307,22 @@ def _check_layer2_fitness(symbol, direction, entry_price):
             ext = (entry_price - vwap) / atr if is_long else (vwap - entry_price) / atr
             if ext > 2.5:
                 return ('SKIP', f'VWAP {ext:.1f}×ATR extended')
+
+        # Exhaustion gate — buyers spent, reversal imminent (validated Jun 23 2026)
+        # up-vol ratio: fraction of last-6-bar volume on bullish bars (close > open)
+        # >90% = all recent buyers already in, no fuel left for continuation
+        # Catalyst bypassed: catalyst moves are supply-independent (earnings/news)
+        # Checked BEFORE HOD×2 HALF: exhausted+HOD×2 = SKIP (not HALF) because
+        # testing resistance with no buying fuel left → almost certain reversal.
+        # Evidence: >80% zone WR=47% avg=-$6.32 on 17 live trades; >90% captures
+        # worst losers (NUTX -$93, SMCI -$67) with minimal false-positive cost.
+        if not is_catalyst and is_long:
+            up_vol  = sum(b['volume'] for b in window if b['close'] > b['open'])
+            tot_vol = sum(b['volume'] for b in window)
+            if tot_vol > 0:
+                up_vol_ratio = up_vol / tot_vol
+                if up_vol_ratio > 0.90:
+                    return ('SKIP', f'BAR_EXHAUST up-vol {up_vol_ratio:.0%} — buyers spent')
 
         if tests == 2:
             return ('HALF', 'HOD×2 double-test')
@@ -3499,6 +3515,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 pass  # if yfinance fails, allow — don't block on data fetch failure
 
         is_sympathy  = symbol in active_sympathy_triggers
+        _hod_val = sig.get('today_hod', price) or price
+        _pvh_val = round((price - _hod_val) / _hod_val * 100, 2) if _hod_val else 0.0
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
             'side': side, 'sl': sl, 'target': target, 'risk_pct': risk_pct, 'rr': rr,
@@ -3509,7 +3527,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             'first_bar_strong': sig.get('first_bar_strong', False),
             'burst_age_min':    sig.get('burst_age_min', 999),
             'consec_new_highs': sig.get('consec_new_highs', 0),
-            'today_hod':        sig.get('today_hod', price),
+            'today_hod':        _hod_val,
+            'price_vs_hod_pct': _pvh_val,
             'sector': _sector, 'scan_time': _now.strftime('%H:%M'),
             'scan_date': _now.strftime('%Y-%m-%d'),
         })
@@ -3522,6 +3541,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     # intra_chg is the individual "pitch report" — how fast is this stock already
     # moving? Score does NOT discriminate at A+ level (both halves avg ~215).
     # CONSUMER deprioritised: 67% WR, +2.7% avg max vs 100%/10%+ for other sectors.
+    # price_vs_hod_pct: AT_HOD (≥-0.3%) entries have 59% WR30; BELOW_HOD 29-38% WR.
+    # When multiple A+ compete for 5 slots, prefer the ones still at/near their HOD.
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
     candidates.sort(key=lambda x: (
         0 if (x['is_sympathy'] and x['grade'] == 'A+') else
@@ -3529,6 +3550,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         2 if (x['is_catalyst'] and x['grade'] == 'A')  else
         3 if x['grade'] == 'A+' else 4,
         _SLOT_SECTOR_PRIORITY.get(x.get('sector', 'OTHER'), 1),  # pitch report
+        0 if x.get('price_vs_hod_pct', -99) >= -0.3 else 1,     # wave position: at HOD beats below
         -x['intra_chg'],   # player form: harder mover goes first
         -x['vol_ratio'],   # fitness: volume conviction
         -x['score'],       # player rating: tiebreaker only
@@ -3545,8 +3567,6 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             _reason = f"Slot #{_rank+1} in batting order"
         else:
             _reason = f"Bench #{_rank+1} — awaiting slot"
-        _hod  = _c.get('today_hod') or _c['price']
-        _pvh  = round((_c['price'] - _hod) / _hod * 100, 2) if _hod else None
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'LONG', regime,
@@ -3555,8 +3575,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 is_catalyst=_c['is_catalyst'], entered=False,
                 burst_age_min=_c.get('burst_age_min', 999),
                 consec_new_highs=_c.get('consec_new_highs', 0),
-                today_hod=_hod,
-                price_vs_hod_pct=_pvh,
+                today_hod=_c['today_hod'],
+                price_vs_hod_pct=_c['price_vs_hod_pct'],
             )
         except Exception:
             pass
@@ -3616,7 +3636,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             continue
 
         # ── Layer 2 fitness gate (pre-entry candle quality) ────────────
-        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'LONG', price)
+        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'LONG', price, is_catalyst=pick['is_catalyst'])
         if _l2_sig == 'SKIP':
             log(f"  🚫 L2 SKIP {sym} — {_l2_reason}")
             continue
@@ -3802,6 +3822,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             except Exception:
                 pass
 
+        _hod_val_b = sig.get('today_hod', price) or price
+        _pvh_val_b = round((price - _hod_val_b) / _hod_val_b * 100, 2) if _hod_val_b else 0.0
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
             'side': 'SHORT', 'sl': sl, 'target': target, 'risk_pct': risk_pct, 'rr': rr,
@@ -3811,7 +3833,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             'first_bar_strong': sig.get('first_bar_strong', False),
             'burst_age_min':    sig.get('burst_age_min', 999),
             'consec_new_highs': sig.get('consec_new_highs', 0),
-            'today_hod':        sig.get('today_hod', price),
+            'today_hod':        _hod_val_b,
+            'price_vs_hod_pct': _pvh_val_b,
             'sector': _sector_b, 'scan_time': _now_b.strftime('%H:%M'),
             'scan_date': _now_b.strftime('%Y-%m-%d'),
         })
@@ -3831,8 +3854,6 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     for _rank_b, _c in enumerate(candidates):
         _reason_b = (f"Slot #{_rank_b+1} in batting order" if _rank_b < MAX_OPEN_TRADES
                      else f"Bench #{_rank_b+1} — awaiting slot")
-        _hod_b = _c.get('today_hod') or _c['price']
-        _pvh_b = round((_c['price'] - _hod_b) / _hod_b * 100, 2) if _hod_b else None
         try:
             log_scan_candidate(
                 _c['scan_date'], _c['scan_time'], _c['symbol'], 'SHORT', regime,
@@ -3841,8 +3862,8 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
                 is_catalyst=_c['is_catalyst'], entered=False,
                 burst_age_min=_c.get('burst_age_min', 999),
                 consec_new_highs=_c.get('consec_new_highs', 0),
-                today_hod=_hod_b,
-                price_vs_hod_pct=_pvh_b,
+                today_hod=_c['today_hod'],
+                price_vs_hod_pct=_c['price_vs_hod_pct'],
             )
         except Exception:
             pass
@@ -3880,7 +3901,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
         shares         = max(1, min(int(capital / price), atr_shares))
 
         # ── Layer 2 fitness gate (pre-entry candle quality — short side) ──
-        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'SHORT', price)
+        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'SHORT', price, is_catalyst=pick['is_catalyst'])
         if _l2_sig == 'SKIP':
             log(f"  🚫 L2 SKIP ↓{sym} — {_l2_reason}")
             continue
