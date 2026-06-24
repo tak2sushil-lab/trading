@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine   # options/engine.py — same directory
 from portfolio_status import format_all as _portfolio_all
 from database import (
+    init_db,
     get_open_options_trades,
     get_upcoming_catalysts,
     add_catalyst,
@@ -4586,6 +4587,8 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
 
 def main():
     global _last_update_id
+    init_db()  # apply any pending schema migrations (idempotent)
+
     if os.getenv('TRADING_MODE', 'paper') == 'live':
         if os.getenv('PROD_OPTIONS_ENABLED', 'false').lower() != 'true':
             print("PROD_OPTIONS_ENABLED is not 'true' in .env — exiting.")

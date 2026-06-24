@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 # ── Path setup: import database from parent trading/ folder ──
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import (
+    init_db,
     log_options_news, add_catalyst,
     headline_seen_recently, get_open_options_trades,
     upsert_catalyst_from_wsh,
@@ -1041,6 +1042,8 @@ def run_scan():
 
 # ── Entry point ───────────────────────────────────────────
 def main():
+    init_db()  # apply any pending schema migrations (idempotent)
+
     if os.getenv('TRADING_MODE', 'paper') == 'live':
         if os.getenv('PROD_OPTIONS_ENABLED', 'false').lower() != 'true':
             print("PROD_OPTIONS_ENABLED is not 'true' in .env — exiting.")
