@@ -4173,6 +4173,31 @@ def _get_proactive_candidates(exclude: set) -> list[str]:
         return []
 
 
+def _get_proactive_bear_candidates(exclude: set) -> list[str]:
+    """
+    Return HIGH BEAR conviction symbols ranked by score for bear call credit spreads.
+    Only used when IV rank is elevated (≥50%) — selling premium on bearish setups.
+    """
+    try:
+        import sqlite3
+        from database import DB_PATH
+        conn   = sqlite3.connect(DB_PATH)
+        c      = conn.cursor()
+        cutoff = (datetime.now() - timedelta(hours=PROACTIVE_SIGNAL_HOURS)).isoformat()
+        c.execute(
+            "SELECT symbol, score FROM ticker_conviction "
+            "WHERE tier='HIGH' AND direction='BEAR' AND last_signal_at>=? "
+            "ORDER BY score DESC",
+            (cutoff,),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0] not in exclude]
+    except Exception as e:
+        print(f"[proactive] bear candidate query error: {e}")
+        return []
+
+
 def _process_pending_suggestions():
     """
     Called from main loop every ~30s.
@@ -4414,8 +4439,9 @@ def _dispatch_calc_result(calc: dict, verdict: str, sym: str, OPT_CHAT: str,
 def _proactive_recycle(OPT_CHAT: str):
     """
     Fires when the suggestion queue is empty and a spread/LEAP slot is free.
-    Picks the top HIGH BULL conviction symbol not in cooldown, runs the calculator,
-    and auto-executes (5/5) or sends CONFIRM (4/5).  Silently skips if:
+    Routes by IV rank: <50% → debit spread/LEAP; ≥50% → credit spread (sell premium).
+    Tries BULL candidates first (debit or bull put credit), then BEAR candidates
+    (bear call credit when IV elevated).  Silently skips if:
     - all slots full
     - after 2:30pm ET
     - no qualifying conviction symbol found
@@ -4449,16 +4475,44 @@ def _proactive_recycle(OPT_CHAT: str):
     for sym in stale:
         del _proactive_cooldown[sym]
 
-    open_syms  = {t['symbol'] for t in get_open_options_trades()}
-    exclude    = open_syms | set(_proactive_cooldown.keys())
-    candidates = _get_proactive_candidates(exclude)
-    if not candidates:
+    open_syms = {t['symbol'] for t in get_open_options_trades()}
+    exclude   = open_syms | set(_proactive_cooldown.keys())
+
+    # Try BULL candidates first, then BEAR (for bear call credit when IV elevated)
+    bull_candidates = _get_proactive_candidates(exclude)
+    bear_candidates = _get_proactive_bear_candidates(exclude)
+
+    sym       = None
+    direction = None
+    if bull_candidates:
+        sym, direction = bull_candidates[0], 'BULL'
+    elif bear_candidates:
+        sym, direction = bear_candidates[0], 'BEAR'
+
+    if not sym:
         return
 
-    sym = candidates[0]
     _proactive_cooldown[sym] = now   # claim cooldown before network calls
 
-    calc = run_strategy_comparison(sym, 1)
+    # IV routing: ≥50% → sell premium (credit spread); <50% → buy premium (debit/LEAP)
+    iv_d   = get_iv_rank(sym)
+    iv_rnk = (iv_d.get('iv_rank') if iv_d else None) or 0
+
+    if direction == 'BULL':
+        if iv_rnk >= 50:
+            calc = run_bull_put_credit_calc(sym, 1)
+            strat_label = 'BULL PUT CREDIT'
+        else:
+            calc = run_strategy_comparison(sym, 1)
+            strat_label = 'DEBIT/LEAP'
+    else:  # BEAR
+        if iv_rnk >= 50:
+            calc = run_bear_call_credit_calc(sym, 1)
+            strat_label = 'BEAR CALL CREDIT'
+        else:
+            calc = run_put_spread_calc(sym, 1)
+            strat_label = 'BEAR PUT SPREAD'
+
     if 'error' in calc:
         print(f"[options_trader] {sym} proactive error: {calc['error']} — cooldown applied")
         return
@@ -4469,7 +4523,7 @@ def _proactive_recycle(OPT_CHAT: str):
 
     if verdict == 'SKIP':
         gates = (calc.get('entry_gates') or {}).get('gates_pass', 0)
-        print(f"[options_trader] {sym} proactive SKIP ({gates}/5 gates) — silent")
+        print(f"[options_trader] {sym} proactive SKIP ({gates}/5 gates) [{strat_label}] — silent")
         return
 
     _dispatch_calc_result(calc, verdict, sym, OPT_CHAT, calc_log_id, source='recycle')
