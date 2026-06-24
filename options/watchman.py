@@ -728,17 +728,21 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             gain_pct = round((current_value - prem) / prem * 100, 1) if prem else 0
             tgt_label = '50% max profit' if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') else '100% gain'
         closed = _auto_close_position(trade, current_value, exit_reason='AUTO_TARGET')
+        value_line = (
+            f"Buyback value: ${current_value:.2f} ≤ target ${target:.2f}" if is_credit else
+            f"Value: ${current_value:.2f} ≥ target ${target:.2f}"
+        )
         if closed:
             alerts.append(
                 f"🎯 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
                 f"Profit target reached ({tgt_label}) · +{gain_pct}%\n"
-                f"Buyback value: ${current_value:.2f} ≤ target ${target:.2f}" if is_credit else
-                f"Value: ${current_value:.2f} ≥ target ${target:.2f}"
+                f"{value_line}"
             )
         else:
             alerts.append(
                 f"🎯 *TARGET HIT — {sym} {strat}* (trade #{tid})\n"
                 f"{tgt_label} reached · +{gain_pct}%\n"
+                f"{value_line}\n"
                 f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
             )
         return alerts
