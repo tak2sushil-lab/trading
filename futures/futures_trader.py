@@ -62,6 +62,7 @@ MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
 MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and live price at order time
+A_EXT_LIMIT_PTS  = 70.0   # max VWAP extension (pts) before blocking entry — decoder A_ext gate
 
 # ── Profit protection (point-based — MNQ-calibrated) ─────
 # PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
@@ -2004,10 +2005,18 @@ def run_scan():
                 try: log_block('IBKR', 'MNQ', 'LONG', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
             else:
-                log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
-                if place_trade('LONG', sig, regime, score, grade):
-                    try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
+                # A_ext gate: block LONG when price is overextended above VWAP
+                vwap_ext = price_now - sig.get('vwap', price_now)
+                if vwap_ext > A_EXT_LIMIT_PTS:
+                    log(f"LONG signal: {grade} ({score}pts) — A_EXT SKIP "
+                        f"(ext={vwap_ext:+.0f}pts > {A_EXT_LIMIT_PTS:.0f}pt limit)")
+                    try: log_block('IBKR', 'MNQ', 'LONG', 'A_EXT', f'{vwap_ext:+.0f}pts', price_now, session)
                     except Exception: pass
+                else:
+                    log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
+                    if place_trade('LONG', sig, regime, score, grade):
+                        try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
+                        except Exception: pass
     else:
         try: log_block('IBKR', 'MNQ', 'LONG', 'REGIME', regime, price_now, session)
         except Exception: pass
@@ -2038,11 +2047,19 @@ def run_scan():
                 try: log_block('IBKR', 'MNQ', 'SHORT', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
             else:
-                log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
-                    f"ib={_ib_kind} — entering")
-                if place_trade('SHORT', sig, regime, score, grade):
-                    try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
+                # A_ext gate: block SHORT when price is overextended below VWAP
+                vwap_ext = price_now - sig.get('vwap', price_now)
+                if vwap_ext < -A_EXT_LIMIT_PTS:
+                    log(f"SHORT signal: {grade} ({score}pts) — A_EXT SKIP "
+                        f"(ext={vwap_ext:+.0f}pts < -{A_EXT_LIMIT_PTS:.0f}pt limit)")
+                    try: log_block('IBKR', 'MNQ', 'SHORT', 'A_EXT', f'{vwap_ext:+.0f}pts', price_now, session)
                     except Exception: pass
+                else:
+                    log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                        f"ib={_ib_kind} — entering")
+                    if place_trade('SHORT', sig, regime, score, grade):
+                        try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
+                        except Exception: pass
     else:
         try: log_block('IBKR', 'MNQ', 'SHORT', 'REGIME', regime, price_now, session)
         except Exception: pass
