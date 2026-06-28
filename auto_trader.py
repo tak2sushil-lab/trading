@@ -3216,16 +3216,19 @@ def run_scan():
         log(f"Trading blocked — monitoring only")
         exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'CHOPPY':
-        log(f"CHOPPY market — monitoring only, no new entries")
+        log(f"CHOPPY market — monitoring only; checking catalyst overrides")
+        _scan_catalyst_override(open_trades)
         exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'WEAK':
         # Require 3 consecutive WEAK scans before any bear entry (all-day rule)
         # Eliminates false signals from brief dips, lunch noise, and quick regime flips
         if confirmed_scans < 3:
-            log(f"WEAK market — need 3 confirmed scans (have {confirmed_scans}) — monitoring only")
+            log(f"WEAK market — need 3 confirmed scans (have {confirmed_scans}); checking catalyst overrides")
+            _scan_catalyst_override(open_trades)
             exits = monitor_open_trades(regime, confirmed_scans)
         else:
-            log(f"WEAK market — routing to bear strategy (short scan)")
+            log(f"WEAK market — routing to bear strategy (short scan); checking catalyst overrides")
+            _scan_catalyst_override(open_trades)
             exits = _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
     elif not spy_above_open:
         log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
@@ -3287,10 +3290,14 @@ def get_position_capital(grade, is_catalyst, deployed, first_bar_strong=False):
 
 def _scan_catalyst_override(open_trades):
     """
-    Scan for isolated catalyst plays (earnings/news gap-and-go) on WEAK market days.
-    These are market-independent: a stock up 6%+ on earnings goes up regardless of SPY.
-    Rules: gap 6%+ from prev close, still above open price now, volume 2x+, A+ grade only.
-    Position size is halved since market backdrop is not supportive.
+    Scan for isolated catalyst plays on WEAK or CHOPPY market days.
+    Two paths — both require A+ grade, half position size:
+      Path A (gap play):      gap ≥6% at open, vol ≥2x daily avg, price still above open
+      Path B (intraday momo): intra_chg ≥5%, intraday vol_ratio ≥3x, price above VWAP
+    Path B catches stocks that were flat at 8:15am but developed strong intraday momentum
+    (e.g. earnings/news released after open, sector sympathy, analyst upgrades mid-day).
+    Intraday signals are fetched first (fast IBKR bridge); daily bars only fetched for Path A.
+    Called from CHOPPY, WEAK x1-x2, and WEAK x3+ routing paths.
     """
     global daily_bull_count, traded_today
 
@@ -3315,49 +3322,62 @@ def _scan_catalyst_override(open_trades):
             break
 
         try:
-            # Quick check: is this stock gapping 6%+ with 2x+ volume?
-            hist = yf.Ticker(symbol).history(period='2d', interval='1d')
-            if len(hist) < 2:
-                continue
-            prev_close  = float(hist['Close'].iloc[-2])
-            today_open  = float(hist['Open'].iloc[-1])
-            today_vol   = float(hist['Volume'].iloc[-1])
-            avg_vol     = float(yf.Ticker(symbol).history(period='30d')['Volume'].mean())
-            gap_pct     = (today_open - prev_close) / prev_close * 100
-            vol_ratio   = today_vol / avg_vol if avg_vol > 0 else 1
-
-            # Must be gapping 6%+ with at least 2x volume — confirmed catalyst
-            if gap_pct < 6.0 or vol_ratio < 2.0:
-                continue
-
+            # Intraday signals first — fast IBKR bridge call, needed for both paths
             sig = get_intraday_signals(symbol)
             if sig is None:
                 continue
 
-            price = sig['price']
-            # Stock must still be above its open price (gap not fading)
-            if price < today_open * 0.99:
+            price     = sig['price']
+            intra_chg = sig.get('intra_chg', 0)
+            vol_intra = sig.get('vol_ratio', 0)
+            vwap      = sig.get('vwap', 0)
+
+            # Path B: intraday momentum — stock wasn't gapping at open but is running hard now
+            is_intraday_play = intra_chg >= 5.0 and vol_intra >= 3.0 and vwap > 0 and price > vwap
+
+            # Path A: pre-market gap play — only fetch slow yfinance daily bars if Path B fails
+            is_gap_play = False
+            today_open  = None
+            gap_pct     = 0.0
+            vol_ratio   = 0.0
+            if not is_intraday_play:
+                hist = yf.Ticker(symbol).history(period='2d', interval='1d')
+                if len(hist) < 2:
+                    continue
+                prev_close  = float(hist['Close'].iloc[-2])
+                today_open  = float(hist['Open'].iloc[-1])
+                today_vol   = float(hist['Volume'].iloc[-1])
+                avg_vol     = float(yf.Ticker(symbol).history(period='30d')['Volume'].mean())
+                gap_pct     = (today_open - prev_close) / prev_close * 100
+                vol_ratio   = today_vol / avg_vol if avg_vol > 0 else 1
+                # Gap play: gapped 6%+ at open, still holding above open (no gap-and-crap)
+                is_gap_play = gap_pct >= 6.0 and vol_ratio >= 2.0 and price >= today_open * 0.99
+
+            if not is_gap_play and not is_intraday_play:
                 continue
 
             sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, 'LONG')
             grade, reasons, score = grade_setup(sig, 'NORMAL', sl, target, price, rr, symbol=symbol)
 
-            # Catalyst override requires A+ only
+            # Catalyst override requires A+ only — both paths
             if grade != 'A+':
                 continue
 
             sector  = get_symbol_sector(symbol)
-            # Half position size on WEAK market day
-            deployed = get_deployed_capital()   # entries already in DB via log_trade_entry
+            # Half position size — market backdrop is not supportive
+            deployed = get_deployed_capital()
             capital  = get_position_capital(grade, True, deployed) * 0.5
             if capital < 100:
                 continue
-            # ATR-normalized: size so actual stop risk ≤ MAX_LOSS_PER_TRADE (halved for WEAK day)
             risk_per_share = round(price - sl, 4)
             atr_shares     = int((MAX_LOSS_PER_TRADE * 0.5) / risk_per_share) if risk_per_share > 0 else int(capital / price)
             shares         = max(1, min(int(capital / price), atr_shares))
 
-            log(f"  ⚡ CATALYST OVERRIDE {symbol} gap {gap_pct:+.1f}% vol {vol_ratio:.1f}x — entering despite WEAK market")
+            if is_intraday_play:
+                play_tag = f"intraday {intra_chg:+.1f}% vol {vol_intra:.1f}x above VWAP"
+            else:
+                play_tag = f"gap {gap_pct:+.1f}% vol {vol_ratio:.1f}x"
+            log(f"  ⚡ CATALYST OVERRIDE {symbol} {play_tag} — entering despite adverse market (WEAK/CHOPPY)")
 
             attempted += 1
             trade_id = place_trade(
@@ -3373,16 +3393,22 @@ def _scan_catalyst_override(open_trades):
                 first_bar_strong_trades[trade_id] = sig.get('first_bar_strong', False)
                 daily_bull_count += 1
                 entries.append({'symbol': symbol, 'price': price, 'shares': shares,
-                                'sl': sl, 'target': target, 'gap_pct': gap_pct,
-                                'vol_ratio': vol_ratio})
+                                'sl': sl, 'target': target,
+                                'is_intraday': is_intraday_play,
+                                'intra_chg': intra_chg, 'vol_intra': vol_intra,
+                                'gap_pct': gap_pct, 'vol_ratio': vol_ratio})
 
         except Exception as e:
             log(f"  Catalyst override error {symbol}: {e}")
 
     if entries:
-        lines = [f"⚡ CATALYST OVERRIDE — {len(entries)} isolated plays (WEAK mkt)"]
+        lines = [f"⚡ CATALYST OVERRIDE — {len(entries)} isolated plays (WEAK/CHOPPY mkt)"]
         for e in entries:
-            lines.append(f"  {e['symbol']} gap {e['gap_pct']:+.1f}% | {e['shares']}sh @ ${e['price']} | SL${e['sl']} T${e['target']}")
+            if e['is_intraday']:
+                tag = f"intraday {e['intra_chg']:+.1f}% {e['vol_intra']:.1f}x vol"
+            else:
+                tag = f"gap {e['gap_pct']:+.1f}% {e['vol_ratio']:.1f}x vol"
+            lines.append(f"  {e['symbol']} {tag} | {e['shares']}sh @ ${e['price']} | SL${e['sl']} T${e['target']}")
         send_telegram('\n'.join(lines))
 
     return []
@@ -3466,6 +3492,19 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             continue
 
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
+
+        # Dynamic intraday catalyst upgrade: stock wasn't moving at 8:15am but is running hard now.
+        # Adds it to catalyst_priority so the CAUTIOUS/CHOPPY bypass in grade_setup can fire.
+        _vwap = sig.get('vwap', 0)
+        if (symbol not in catalyst_priority
+                and sig.get('intra_chg', 0) >= 5.0
+                and sig.get('vol_ratio', 0) >= 3.0
+                and _vwap > 0
+                and price > _vwap):
+            catalyst_priority.append(symbol)
+            log(f"  ⚡ Intraday catalyst: {symbol} upgraded to priority "
+                f"({sig['intra_chg']:+.1f}% / {sig['vol_ratio']:.1f}x vol / above VWAP)")
+
         is_catalyst  = symbol in catalyst_priority
         grade, reasons, score = grade_setup(sig, regime, sl, target, price, rr, symbol=symbol, is_catalyst=is_catalyst)
 

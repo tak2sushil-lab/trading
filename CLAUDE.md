@@ -150,7 +150,12 @@ Three DNA clusters assigned in `auto_trader.py` — re-run `dna_analysis.py` qua
 
 ---
 
-## Regime + Entry Gates (updated Jun 2 2026)
+## Regime + Entry Gates (updated Jun 28 2026)
+
+### Changes applied Jun 28 2026:
+- **Fix: `_scan_catalyst_override` dead code wired** — function existed but had zero call sites. Now called from CHOPPY, WEAK×1-2, and WEAK×3+ routing paths.
+- **Intraday catalyst refresh (Path B):** `_scan_catalyst_override` now has two paths. Path A = pre-market gap ≥6% (original). Path B = intraday momentum ≥5% / intraday vol_ratio ≥3x / price above VWAP. Catches stocks not moving at 8:15am (e.g. MRNA/NUTX on Jun 26 which gapped flat but ran +11%/+9% during the session). Intraday signals fetched first (fast IBKR call); yfinance daily bars only fetched for Path A.
+- **Dynamic catalyst upgrade in `_scan_and_enter`:** During NORMAL/CAUTIOUS scans, if a universe stock hits 5%+ intraday / 3x intraday vol / above VWAP but isn't in `catalyst_priority`, it gets added in-flight. The `is_catalyst` flag is then True for that scan cycle, enabling the CAUTIOUS/CHOPPY bypass in `grade_setup`.
 
 ### Changes applied Jun 2 2026 (backtest-validated):
 - **Fix 1:** Catalyst stocks (is_catalyst=True) now bypass CAUTIOUS/CHOPPY regime block. Previously all entries blocked on CAUTIOUS. Catalyst = market-independent move (earnings/news). `grade_setup()` accepts `is_catalyst` param; `_scan_and_enter` computes it BEFORE calling grade_setup.
