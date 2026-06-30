@@ -1117,11 +1117,13 @@ def recompute_conviction(symbol: str) -> dict:
     bull_high = bear_high = 0
     unique_srcs  = []
     last_at      = ''
+    counted      = 0   # rows actually contributing to score (excludes already-priced-in)
 
     for relevance, direction, source, created_at_str, already_priced_in, magnitude in rows:
         # Skip signals already priced in — they no longer move IV
         if already_priced_in == 'YES':
             continue
+        counted += 1
         try:
             created_at = datetime.fromisoformat(created_at_str)
         except Exception:
@@ -1174,14 +1176,14 @@ def recompute_conviction(symbol: str) -> dict:
             sources=excluded.sources, last_signal_at=excluded.last_signal_at,
             updated_at=excluded.updated_at
     """, (symbol.upper(), direction, tier, round(score, 3),
-          len(rows), high_count, sources, last_at, now_str))
+          counted, high_count, sources, last_at, now_str))
     conn.commit()
     conn.close()
 
     tier_order   = {'LOW': 0, 'MEDIUM': 1, 'HIGH': 2}
     tier_changed = tier_order.get(tier, 0) > tier_order.get(prev_tier or 'LOW', 0)
     return {'score': score, 'tier': tier, 'direction': direction,
-            'signal_count': len(rows), 'high_count': high_count,
+            'signal_count': counted, 'high_count': high_count,
             'sources': sources, 'prev_tier': prev_tier, 'tier_changed': tier_changed}
 
 
@@ -1286,7 +1288,8 @@ def log_calc_run(calc: dict) -> int:
         calc.get('long_strike'), calc.get('short_strike'),
         calc.get('net_debit'), calc.get('breakeven'), calc.get('breakeven_pct'),
         calc.get('momentum_5d'), 1 if calc.get('above_200') else 0,
-        cv.get('tier'), cv.get('direction'), cv.get('signals'),
+        cv.get('tier'), cv.get('direction'),
+        (len(cv['signals']) if isinstance(cv.get('signals'), list) else cv.get('signals', 0)),
         1 if eg.get('vol')        else 0,
         1 if eg.get('tech')       else 0,
         1 if eg.get('conviction') else 0,

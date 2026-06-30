@@ -80,7 +80,7 @@ OPTIONS_ACCOUNT_SIZE    = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
 OPTIONS_CIRCUIT_BREAKER = float(os.getenv('OPTIONS_CIRCUIT_BREAKER', '5000'))  # max realized loss (paper: raised from $2K — $2,935 lost to OPRA blindness Jun 5)
 OPTIONS_TOTAL_CAPITAL   = float(os.getenv('OPTIONS_TOTAL_CAPITAL',   '5000'))  # total pool
 MAX_OPTIONS_POSITIONS   = int(os.getenv('MAX_OPTIONS_POSITIONS',     '4'))     # max concurrent
-LEAP_ENABLED            = False   # LEAP needs more capital — re-enable when spread pool grows
+LEAP_ENABLED            = True    # re-enabled Jun 29 2026 — auto-qty caps LEAP at ~$1,200/position like spreads, same pool/slot limits apply
 
 ET               = ZoneInfo('America/New_York')
 COMMISSION_RT    = 3.60    # round-trip per spread (2 legs × open + close)
@@ -99,6 +99,19 @@ MID_CAP_UNIVERSE = {
     'IONQ', 'CELH', 'AFRM', 'SOFI', 'HIMS', 'MARA',
 }
 AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales to this)
+
+# Mirrors auto_trader.py HIGH_VOL_SYMBOLS (equity DNA cluster, re-run quarterly via
+# dna_analysis.py). Duplicated here instead of imported — auto_trader.py pulls in
+# matplotlib/mplfinance/APScheduler at module load, too heavy/risky for this process.
+# Used to exempt chronically-high-baseline-IV small caps from the iv_rank<20 floor below
+# (Jun 29 2026 backtest: 693 trades/4yr — this cluster's <20% bucket +17.6% avg return vs
+# +6.1% cluster baseline; MOMENTUM-tier names showed the opposite, so they keep the floor).
+HIGH_VOL_SYMBOLS = frozenset([
+    'AI', 'APLD', 'APP', 'BBAI', 'BEAM', 'CHPT', 'DNN', 'EOSE', 'INDI', 'IONQ',
+    'IREN', 'JOBY', 'LAC', 'MARA', 'NTLA', 'NU', 'NUTX', 'ONDS', 'POET', 'QBTS',
+    'RDW', 'RGTI', 'RIVN', 'RKLB', 'RKT', 'SOUN', 'TOST', 'VERI',
+    'ARRY', 'CIFR', 'CLSK', 'EQT', 'HUT', 'RIOT', 'WULF',
+])
 
 # ── OPT_SCALP constants ───────────────────────────────────────────────────────
 # Full equity universe — gates handle liquidity/premium filtering.
@@ -383,9 +396,16 @@ def get_account_nav() -> float | None:
 
 
 def get_deployed_capital() -> float:
-    """Sum of premium_paid for all open options positions."""
+    """
+    Sum of capital at risk for all open options positions.
+    Uses max_loss, not premium_paid: for debit/LEAP/scalp these are equal
+    (max_loss == premium_dollar at entry), but for credit spreads premium_paid
+    is the small credit received while max_loss is the real IBKR margin held
+    (spread_width - credit) × 100 × qty — using premium_paid there understates
+    deployed capital and overstates what's actually available.
+    """
     trades = get_open_options_trades()
-    return sum(t.get('premium_paid') or 0 for t in trades)
+    return sum((t.get('max_loss') or t.get('premium_paid') or 0) for t in trades)
 
 
 def check_capital_cap(new_premium: float, chat_id: str) -> bool:
@@ -443,7 +463,9 @@ def check_circuit_breaker(chat_id: str) -> bool:
 def capital_status() -> dict:
     """Return deployed, available, and open slot count. Central fact source."""
     open_trades = get_open_options_trades()
-    deployed    = sum(t['premium_paid'] or 0 for t in open_trades)
+    # max_loss == premium_paid for debit/LEAP/scalp; for credit spreads max_loss is the
+    # real margin held, premium_paid is just the (small) credit received — see get_deployed_capital
+    deployed    = sum((t.get('max_loss') or t.get('premium_paid') or 0) for t in open_trades)
     available   = max(0.0, OPTIONS_TOTAL_CAPITAL - deployed)
     slots_used  = len(open_trades)
     slots_free  = max(0, MAX_OPTIONS_POSITIONS - slots_used)
@@ -1006,10 +1028,12 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
 
     # ── Pro gate: IV rank must be 20–50% for debit spreads ───────────────
-    # Below 20%: options dirt-cheap = stock dormant, no vol expected
+    # Below 20%: options dirt-cheap = stock dormant, no vol expected — except for
+    # HIGH_VOL DNA cluster names, whose baseline IV runs 70-90% even at low rank
+    # (backtest-validated Jun 29 2026, see HIGH_VOL_SYMBOLS comment above).
     # Above 50%: overpaying premium, theta always wins on buyer — use credit spreads instead
     is_catalyst_trade = False  # determined after catalyst lookup below
-    if iv_rank < 20:
+    if iv_rank < 20 and sym not in HIGH_VOL_SYMBOLS:
         return {'error': f'{sym} IV rank {iv_rank:.0f}% < 20% — options too cheap, no vol expected'}
     if iv_rank > 50:
         return {'error': f'{sym} IV rank {iv_rank:.0f}% > 50% — overpaying premium; use credit spread (Phase 3)'}
@@ -1283,8 +1307,9 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     iv_for_calc = current_iv
     vol_analysis = engine.assess_volatility_edge(iv_for_calc, hv30)
 
-    # Pro gate: IV rank 20-50% for debit spreads
-    if iv_rank < 20:
+    # Pro gate: IV rank 20-50% for debit spreads — HIGH_VOL DNA cluster exempt from
+    # the floor (see HIGH_VOL_SYMBOLS comment above run_calculator)
+    if iv_rank < 20 and sym not in HIGH_VOL_SYMBOLS:
         return {'error': f'{sym} IV rank {iv_rank:.0f}% < 20% — options too cheap, no vol expected'}
     if iv_rank > 50:
         return {'error': f'{sym} IV rank {iv_rank:.0f}% > 50% — overpaying premium; use credit spread (Phase 3)'}
@@ -2805,7 +2830,9 @@ def _execute_close_bg(trade: dict, chat_id: str):
             _days    = ((_date.today() - _date.fromisoformat(_erow[0])).days
                         if _erow[0] else 0)
             _premium = _erow[1] or 0
-            _pnl     = round(exit_value - _premium, 2)   # actual P&L, not exit value
+            # Credit spreads: P&L = credit_received - buyback_cost; debit: P&L = exit - entry
+            _is_credit = strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+            _pnl = round((_premium - exit_value) if _is_credit else (exit_value - _premium), 2)
             log_trade_outcome(
                 trade_id=tid, calc_log_id=_row[0],
                 predicted_ev=_row[1], predicted_wr=_row[2],
@@ -3695,6 +3722,9 @@ def cmd_positions(chat_id: str):
         if t['strategy'] in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
             right_lbl = 'call' if t.get('right', 'C') == 'C' else 'put'
             leg_str = f"${t['long_strike']}/${t['short_strike']} {right_lbl} spread"
+        elif t['strategy'] in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+            right_lbl = 'put' if t['strategy'] == 'BULL_PUT_CREDIT' else 'call'
+            leg_str = f"${t['long_strike']}/${t['short_strike']} {right_lbl} credit spread"
         else:
             leg_str = f"${t['strike']} LEAP"
         expiry_flag = " ⚠️ EXPIRING SOON" if dte <= 7 else ""

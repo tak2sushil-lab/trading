@@ -673,12 +673,15 @@ def _save_alerted_file():
 
 
 def _check_reset_daily():
-    global _alerted_today, _alerted_date, _alerts_sent_today
+    global _alerted_today, _alerted_date, _alerts_sent_today, _groq_fallback_active
     today = datetime.now(ET_TZ).strftime('%Y-%m-%d')
     if _alerted_date != today:
         _alerted_today     = _load_alerted_file(today)
         _alerted_date      = today
         _alerts_sent_today = 0
+        # Groq's daily token cap resets daily too — without this, one cap hit
+        # permanently downgrades classification to the weaker 8B model forever.
+        _groq_fallback_active = False
 
 
 # ── Consolidated per-ticker alert ─────────────────────────────────────────────

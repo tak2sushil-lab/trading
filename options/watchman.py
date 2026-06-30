@@ -351,7 +351,7 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         _erow = _cur.fetchone()
         _conn.close()
         if _row and _erow:
-            _days    = ((date.today() - date.fromisoformat(_erow[0])).days
+            _days    = ((now_et().date() - date.fromisoformat(_erow[0])).days
                         if _erow[0] else 0)
             _premium = _erow[1] or 0
             # Credit spreads: P&L = credit_received - buyback_cost; debit: P&L = exit - entry
@@ -585,7 +585,7 @@ def days_to_expiry(expiry_str: str) -> int:
     try:
         expiry_str = expiry_str.replace('-', '')
         expiry     = datetime.strptime(expiry_str, '%Y%m%d').date()
-        return (expiry - date.today()).days
+        return (expiry - now_et().date()).days
     except Exception:
         return 9999
 
@@ -719,7 +719,6 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     )) and 'T3b' not in fired
 
     if t3b_hit:
-        fired.add('T3b')
         if is_credit:
             profit_dollar = round(prem - current_value, 2)
             gain_pct = round(profit_dollar / prem * 100, 1) if prem else 0
@@ -733,6 +732,9 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             f"Value: ${current_value:.2f} ≥ target ${target:.2f}"
         )
         if closed:
+            # Only mark fired on a confirmed close — if the close fails, leave it
+            # unfired so the next loop tick retries instead of going silent until EOD.
+            fired.add('T3b')
             alerts.append(
                 f"🎯 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
                 f"Profit target reached ({tgt_label}) · +{gain_pct}%\n"
@@ -756,7 +758,6 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     )) and 'T4' not in fired
 
     if t4_hit:
-        fired.add('T4')
         if is_credit:
             loss_dollar = round(current_value - prem, 2)
             stop_label  = f'spread tripled — buyback ${current_value:.2f} ≥ stop ${stop:.2f}'
@@ -765,6 +766,9 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             stop_label  = f'{stage_label} — value ${current_value:.2f} ≤ stop ${stop:.2f}'
         closed = _auto_close_position(trade, current_value)
         if closed:
+            # Only mark fired on a confirmed close — if the close fails, leave it
+            # unfired so the next loop tick retries instead of going silent until EOD.
+            fired.add('T4')
             alerts.append(
                 f"🚨 *AUTO-CLOSED: {sym} {strat}* (trade #{tid})\n"
                 f"Stop hit ({stop_label}) | Entry credit: ${prem:.2f}"
@@ -782,7 +786,7 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     if strat == 'OPT_SCALP' and 'SCALP_TIME' not in fired:
         entry_date_str = trade.get('entry_date')
         if entry_date_str:
-            days_held = (date.today() - date.fromisoformat(entry_date_str)).days
+            days_held = (now_et().date() - date.fromisoformat(entry_date_str)).days
             if days_held >= 2:
                 fired.add('SCALP_TIME')
                 closed = _auto_close_position(trade, current_value, exit_reason='SCALP_TIME')
@@ -804,7 +808,7 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
         catalysts = get_upcoming_catalysts(days=10)
         for cat in catalysts:
             if cat.get('id') == trade['catalyst_id']:
-                days_left = (datetime.strptime(cat['date'], '%Y-%m-%d').date() - date.today()).days
+                days_left = (datetime.strptime(cat['date'], '%Y-%m-%d').date() - now_et().date()).days
                 iv_str = f"\nIV rank: {iv_rank:.0f}%" if iv_rank else ""
                 fired.add('T5')
                 alerts.append(
@@ -828,7 +832,7 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             exp_d   = datetime.strptime(trade.get('expiry', '20000101').replace('-', ''), '%Y%m%d').date()
             dte_at_entry = (exp_d - entry_d).days
             if dte_at_entry <= 23:   # quick play entered with 14-21 DTE
-                days_held = (date.today() - entry_d).days
+                days_held = (now_et().date() - entry_d).days
                 if days_held >= 2:
                     fired.add('QUICK_TIME')
                     pnl_pct = (current_value - prem) / prem * 100 if prem else 0
@@ -885,7 +889,7 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
 # ── EOD summary builder ───────────────────────────────────────────────────────
 
 def _build_eod_summary(trades: list[dict]) -> str:
-    today_str  = date.today().strftime('%b %d')
+    today_str  = now_et().date().strftime('%b %d')
     catalysts  = get_upcoming_catalysts(days=14)
     closed_cnt = get_closed_options_count()
 
