@@ -197,30 +197,61 @@ def score_outcomes():
 
 # ── Report ────────────────────────────────────────────────────────────────────
 
+_EPISODE_GAP_MIN = 10   # consecutive same-key rows within this gap = one episode, not N
+
+def _episodes(rows):
+    """
+    Collapse consecutive rows of the same (system, gate, signal) into episodes.
+
+    Gates that key off a persisting market state (extension, regime, RVOL) get
+    re-logged every scan while the state holds — a single 2-hour extended move
+    becomes 80+ rows for what is really one event. Treating each row as an
+    independent trial inflates N and lets one trending afternoon dominate the
+    accuracy stat. An episode is the first row after a gap > _EPISODE_GAP_MIN
+    minutes from the previous row of the same key — that first row's outcome
+    is what we score; the rest are the same decision repeating.
+    """
+    by_key = {}
+    for r in rows:
+        key = (r['system'], r['gate'], r['signal'])
+        by_key.setdefault(key, []).append(r)
+
+    out = {}
+    for key, rs in by_key.items():
+        rs = sorted(rs, key=lambda r: r['ts'])
+        eps, cur, last_ts = [], [], None
+        for r in rs:
+            ts = datetime.fromisoformat(r['ts'])
+            if last_ts is not None and (ts - last_ts) > timedelta(minutes=_EPISODE_GAP_MIN):
+                eps.append(cur)
+                cur = []
+            cur.append(r)
+            last_ts = ts
+        if cur:
+            eps.append(cur)
+        out[key] = [e[0] for e in eps]   # first row of each episode = the decision
+    return out
+
+
 def gate_report(days: int = 14):
     """
-    Print gate-by-gate accuracy report.
+    Print gate-by-gate accuracy report, deduped to one row per episode (see
+    _episodes). N is episode count, not raw scan count — raw_n is shown too
+    so thin episode counts behind a large raw_n are visible at a glance.
 
     For each gate:
-      blocks      — how many times it fired
-      accuracy    — % of blocks where gate was correct (blocked a loser)
+      accuracy    — % of episodes where gate was correct (blocked a loser)
       avg_pts     — average pts moved in signal direction (negative = gate was right)
-      systems     — which systems triggered this gate
     """
     init_db()
     since = (datetime.now(ET) - timedelta(days=days)).isoformat()
 
     with _conn() as c:
         rows = c.execute(
-            """SELECT gate, system, signal,
-                      COUNT(*)                        AS n,
-                      AVG(correct_30m)                AS acc,
-                      AVG(pts_30m)                    AS avg_pts,
-                      SUM(CASE WHEN gate='ENTER' THEN 1 ELSE 0 END) AS entries
+            """SELECT gate, system, signal, ts, correct_30m, pts_30m
                FROM gate_blocks
-               WHERE ts >= ? AND scored = 1
-               GROUP BY gate, system
-               ORDER BY gate, system""",
+               WHERE ts >= ? AND scored = 1 AND gate != 'SHADOW_RAW'
+               ORDER BY system, gate, signal, ts""",
             (since,)
         ).fetchall()
 
@@ -228,41 +259,62 @@ def gate_report(days: int = 14):
         print(f"gate_audit: no scored data in last {days} days")
         return
 
-    print(f"\n{'═'*68}")
-    print(f"  GATE AUDIT REPORT — last {days} days  (outcome window: 30min)")
-    print(f"{'═'*68}")
-    print(f"  {'Gate':<14} {'System':<8} {'Sig':<6} {'N':>5} {'Acc%':>7} {'AvgPts':>8}  Assessment")
-    print(f"  {'-'*64}")
+    episodes = _episodes(rows)
+    raw_n    = {}
+    for r in rows:
+        key = (r['system'], r['gate'], r['signal'])
+        raw_n[key] = raw_n.get(key, 0) + 1
 
-    both_rows = [r for r in rows if r['signal'] == 'BOTH' and r['gate'] != 'ENTER']
-    dir_rows  = [r for r in rows if r['signal'] != 'BOTH' and r['gate'] != 'ENTER']
+    print(f"\n{'═'*78}")
+    print(f"  GATE AUDIT REPORT — last {days} days  (outcome window: 30min, episode-deduped)")
+    print(f"{'═'*78}")
+    print(f"  {'Gate':<20} {'System':<8} {'Sig':<6} {'N':>4} {'raw_n':>6} {'Acc%':>6} {'AvgPts':>8}  Assessment")
+    print(f"  {'-'*74}")
 
-    for r in dir_rows:
-        acc  = (r['acc'] or 0) * 100
-        pts  = r['avg_pts'] or 0
-        assess = ('✅ GOOD' if acc >= 60 else
-                  '⚠️  WEAK' if acc >= 40 else
-                  '❌ REMOVE')
-        print(f"  {r['gate']:<14} {r['system']:<8} {r['signal']:<6} {r['n']:>5} "
-              f"  {acc:>5.0f}%  {pts:>+7.1f}pts  {assess}")
+    def _stats(firsts):
+        accs = [f['correct_30m'] for f in firsts if f['correct_30m'] is not None]
+        pts  = [f['pts_30m']     for f in firsts if f['pts_30m']     is not None]
+        acc  = (sum(accs) / len(accs) * 100) if accs else None
+        avgp = (sum(pts) / len(pts)) if pts else None
+        return acc, avgp
 
-    # Bidirectional blocks — no pts scoring (counted only)
-    if both_rows:
-        print(f"\n  {'─'*64}")
+    both_keys = sorted(k for k in episodes if k[2] == 'BOTH' and k[1] != 'ENTER')
+    dir_keys  = sorted(k for k in episodes if k[2] != 'BOTH' and k[1] != 'ENTER')
+
+    for key in dir_keys:
+        system, gate, signal = key
+        firsts = episodes[key]
+        n = len(firsts)
+        acc, avgp = _stats(firsts)
+        assess = ('—  N<5, inconclusive' if n < 5 else
+                  '✅ GOOD'   if acc is not None and acc >= 60 else
+                  '⚠️  WEAK'   if acc is not None and acc >= 40 else
+                  '❌ REMOVE' if acc is not None else '—')
+        acc_s  = f'{acc:.0f}%' if acc is not None else 'n/a'
+        avgp_s = f'{avgp:+.1f}' if avgp is not None else 'n/a'
+        print(f"  {gate:<20} {system:<8} {signal:<6} {n:>4} {raw_n[key]:>6} "
+              f"{acc_s:>6} {avgp_s:>8}  {assess}")
+
+    if both_keys:
+        print(f"\n  {'─'*74}")
         print(f"  Bidirectional blocks (BOTH — no directional scoring):")
-        for r in both_rows:
-            print(f"  {r['gate']:<14} {r['system']:<8} {'BOTH':<6} {r['n']:>5}  (blocks both sides)")
+        for key in both_keys:
+            system, gate, signal = key
+            n = len(episodes[key])
+            print(f"  {gate:<20} {system:<8} {'BOTH':<6} {n:>4} {raw_n[key]:>6}  (blocks both sides)")
 
-    # Entry outcomes (reference baseline)
-    enters = [r for r in rows if r['gate'] == 'ENTER']
-    if enters:
-        print(f"\n  {'─'*64}")
+    enter_keys = sorted(k for k in episodes if k[1] == 'ENTER')
+    if enter_keys:
+        print(f"\n  {'─'*74}")
         print(f"  Reference — actual entries:")
-        for r in enters:
-            acc = (r['acc'] or 0) * 100
-            pts = r['avg_pts'] or 0
-            print(f"  {'ENTER':<14} {r['system']:<8} {r['signal']:<6} {r['n']:>5} "
-                  f"  {acc:>5.0f}%  {pts:>+7.1f}pts")
+        for key in enter_keys:
+            system, gate, signal = key
+            firsts = episodes[key]
+            n = len(firsts)
+            acc, avgp = _stats(firsts)
+            acc_s  = f'{acc:.0f}%' if acc is not None else 'n/a'
+            avgp_s = f'{avgp:+.1f}' if avgp is not None else 'n/a'
+            print(f"  {'ENTER':<20} {system:<8} {signal:<6} {n:>4} {raw_n[key]:>6} {acc_s:>6} {avgp_s:>8}")
 
     # Unscored count
     with _conn() as c:
@@ -271,20 +323,120 @@ def gate_report(days: int = 14):
         ).fetchone()[0]
     if pending:
         print(f"\n  ⏳ {pending} decisions still pending outcome scoring")
-    print(f"{'═'*68}\n")
+    print(f"  Note: N<5 episodes is not enough to act on — treat as a watch item, not a verdict.")
+
+
+# ── Lead-time report (decoder raw-signal shadow vs actual entries) ────────────
+
+def raw_momentum_signal(closes: list, vwap):
+    """
+    Decoder's raw 3-bar momentum-vs-VWAP signal, no quality gates applied.
+    Mirrors live_rule_sim.detect_signal(): price above VWAP and rising 2 bars,
+    or below VWAP and falling 2 bars. This is the earliest possible trigger
+    point — used only as a shadow probe, never to place an order.
+    """
+    if vwap is None or len(closes) < 3:
+        return None
+    p2, p1, p = closes[-3], closes[-2], closes[-1]
+    if p > vwap and p > p1 and p1 > p2:
+        return 'LONG'
+    if p < vwap and p < p1 and p1 < p2:
+        return 'SHORT'
+    return None
+
+
+_shadow_last_signal: dict = {}
+
+def log_shadow_signal(system: str, symbol: str, closes: list,
+                       vwap, price: float, session: str):
+    """
+    Log the raw momentum signal as gate='SHADOW_RAW', but only on transition
+    into a new signal (not every scan) — logged for lead-time comparison only,
+    never acted on, never blocks or places a trade.
+    """
+    sig  = raw_momentum_signal(closes, vwap)
+    key  = f'{system}:{symbol}'
+    prev = _shadow_last_signal.get(key)
+    if sig != prev:
+        _shadow_last_signal[key] = sig
+        if sig:
+            try:
+                log_block(system, symbol, sig, 'SHADOW_RAW', f'vwap={vwap}', price, session)
+            except Exception:
+                pass
+    return sig
+
+
+def leadtime_report(days: int = 30):
+    """
+    For each real ENTER, find the earliest same-day same-direction SHADOW_RAW
+    signal from the same system and report how much earlier it appeared and
+    the price difference. Answers: would entering on the raw signal have
+    caught the move earlier, and at a better price?
+    """
+    init_db()
+    since = (datetime.now(ET) - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        shadows = c.execute(
+            """SELECT system, signal, ts, price FROM gate_blocks
+               WHERE gate='SHADOW_RAW' AND ts >= ? ORDER BY ts""", (since,)
+        ).fetchall()
+        enters = c.execute(
+            """SELECT system, signal, ts, price FROM gate_blocks
+               WHERE gate='ENTER' AND ts >= ? ORDER BY ts""", (since,)
+        ).fetchall()
+
+    print(f"\n{'═'*78}")
+    print(f"  EARLY-SIGNAL LEAD-TIME REPORT — last {days} days")
+    print(f"{'═'*78}")
+
+    if not shadows:
+        print("  No SHADOW_RAW data yet — shadow signal not wired or no signals fired.")
+        print(f"{'═'*78}\n")
+        return
+
+    matched = []
+    for e in enters:
+        e_ts  = datetime.fromisoformat(e['ts'])
+        e_day = e_ts.date()
+        cands = [s for s in shadows
+                 if s['system'] == e['system'] and s['signal'] == e['signal']
+                 and datetime.fromisoformat(s['ts']).date() == e_day
+                 and datetime.fromisoformat(s['ts']) <= e_ts]
+        if not cands:
+            continue
+        first = min(cands, key=lambda s: s['ts'])
+        lead_min = (e_ts - datetime.fromisoformat(first['ts'])).total_seconds() / 60
+        price_edge = (e['price'] - first['price']) * (1 if e['signal'] == 'LONG' else -1)
+        matched.append((e_day, e['system'], e['signal'], lead_min, price_edge))
+
+    if not matched:
+        print("  No matched pairs yet (need a real entry on the same day the raw")
+        print("  signal also fired in the same direction). Keep collecting.")
+    else:
+        for d, system, signal, lead_min, price_edge in matched:
+            print(f"  {d}  {system:<5} {signal:<5}  lead={lead_min:>5.0f}min  "
+                  f"price_edge={price_edge:+.1f}pts")
+        avg_lead = sum(m[3] for m in matched) / len(matched)
+        avg_edge = sum(m[4] for m in matched) / len(matched)
+        print(f"\n  N={len(matched)}  avg_lead={avg_lead:.0f}min  avg_price_edge={avg_edge:+.1f}pts")
+        if len(matched) < 5:
+            print("  N<5 — directional only, not enough to act on yet.")
+    print(f"{'═'*78}\n")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Gate audit tool')
-    parser.add_argument('--score',  action='store_true', help='Score pending outcomes')
-    parser.add_argument('--report', action='store_true', help='Print accuracy report')
-    parser.add_argument('--days',   type=int, default=14, help='Report window (default 14)')
-    parser.add_argument('--init',   action='store_true', help='Init DB only')
+    parser.add_argument('--score',    action='store_true', help='Score pending outcomes')
+    parser.add_argument('--report',   action='store_true', help='Print accuracy report')
+    parser.add_argument('--leadtime', action='store_true', help='Print early-signal lead-time report')
+    parser.add_argument('--days',     type=int, default=14, help='Report window (default 14)')
+    parser.add_argument('--init',     action='store_true', help='Init DB only')
     args = parser.parse_args()
 
-    if args.init or (not args.score and not args.report):
+    if args.init or (not args.score and not args.report and not args.leadtime):
         init_db()
         print(f"gate_audit: DB ready at {DB_PATH}")
 
@@ -293,3 +445,6 @@ if __name__ == '__main__':
 
     if args.report:
         gate_report(args.days)
+
+    if args.leadtime:
+        leadtime_report(args.days)

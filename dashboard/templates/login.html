@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TriVega</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 14px;
+      padding: 44px 40px 36px;
+      width: 320px;
+      text-align: center;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .logo-name {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: #e6edf3;
+    }
+    input[type="password"] {
+      width: 100%;
+      padding: 11px 14px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      font-size: 15px;
+      margin-bottom: 14px;
+      outline: none;
+    }
+    input[type="password"]:focus { border-color: #4f9cf6; }
+    button {
+      width: 100%;
+      padding: 11px;
+      background: #4f9cf6;
+      color: #0d1117;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+    }
+    button:active { background: #3a87e0; }
+    .error { color: #f85149; font-size: 12px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <svg viewBox="0 0 30 48" width="22" height="35" fill="none">
+        <line x1="8"  y1="12" x2="8"  y2="18" stroke="#f85149" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="8"  y1="16" x2="8"  y2="30" stroke="#f85149" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="15" y1="2"  x2="15" y2="47" stroke="#4f9cf6" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="22" y1="6"  x2="22" y2="12" stroke="#3fb950" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="22" y1="10" x2="22" y2="30" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="8"  y1="30" x2="22" y2="30" stroke="#4f9cf6" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <span class="logo-name">TriVega</span>
+    </div>
+    <form method="POST">
+      <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password">
+      <button type="submit">Enter</button>
+      {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    </form>
+  </div>
+</body>
+</html>

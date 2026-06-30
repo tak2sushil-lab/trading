@@ -70,7 +70,7 @@ def analyse_session_performance() -> list:
                AVG(pnl)        as avg_pnl,
                AVG(pnl_ticks)  as avg_ticks
         FROM futures_trades
-        WHERE status='CLOSED' AND session IS NOT NULL
+        WHERE status='CLOSED' AND session IS NOT NULL AND setup_type != 'RECONCILED'
         GROUP BY session
         HAVING total >= 3
         ORDER BY wins * 1.0 / total DESC
@@ -86,7 +86,7 @@ def analyse_setup_performance() -> list:
                AVG(pnl)       as avg_pnl,
                AVG(pnl_ticks) as avg_ticks
         FROM futures_trades
-        WHERE status='CLOSED' AND setup_type IS NOT NULL
+        WHERE status='CLOSED' AND setup_type IS NOT NULL AND setup_type != 'RECONCILED'
         GROUP BY setup_type
         HAVING total >= 3
         ORDER BY wins * 1.0 / total DESC
@@ -109,7 +109,7 @@ def analyse_day_of_week() -> list:
             SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
             AVG(pnl) as avg_pnl
         FROM futures_trades
-        WHERE status='CLOSED'
+        WHERE status='CLOSED' AND setup_type != 'RECONCILED'
         GROUP BY day_name
         HAVING total >= 3
         ORDER BY wins * 1.0 / total DESC
@@ -133,7 +133,7 @@ def analyse_time_of_day() -> list:
             SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
             AVG(pnl) as avg_pnl
         FROM futures_trades
-        WHERE status='CLOSED'
+        WHERE status='CLOSED' AND setup_type != 'RECONCILED'
         GROUP BY time_bucket
         HAVING total >= 3
         ORDER BY wins * 1.0 / total DESC
@@ -152,7 +152,7 @@ def analyse_hold_time() -> list:
             ) as avg_hold_minutes,
             AVG(pnl) as avg_pnl
         FROM futures_trades
-        WHERE status='CLOSED'
+        WHERE status='CLOSED' AND setup_type != 'RECONCILED'
           AND exit_date IS NOT NULL AND exit_time IS NOT NULL
         GROUP BY outcome
     ''')
@@ -167,7 +167,7 @@ def analyse_long_vs_short() -> list:
                AVG(pnl)       as avg_pnl,
                AVG(pnl_ticks) as avg_ticks
         FROM futures_trades
-        WHERE status='CLOSED'
+        WHERE status='CLOSED' AND setup_type != 'RECONCILED'
         GROUP BY side
     ''')
 

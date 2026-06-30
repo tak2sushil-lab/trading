@@ -51,7 +51,8 @@ PREMARKET_GAP_LARGE    = 6.0    # large-cap (price ≥ $150): mega/large caps ra
 PREMARKET_GAP_MID      = 8.0    # mid-cap  ($50–$149):  more volatile, need stronger signal to avoid gap-and-crap
 PREMARKET_GAP_SMALL    = 10.0   # small-cap (< $50):     highest bar — these can gap 20%+ on noise
 PREMARKET_VOL_MIN      = 200_000  # pre-market volume floor — liquidity gate
-PREMARKET_HOLD_PCT     = 0.97   # gap must hold ≥ 97% of its pre-market high (not fading)
+PREMARKET_HOLD_PCT     = 0.93   # gap must hold ≥ 93% of its pre-market high (not fading)
+                                  # 97% produced 0 entries in practice; RKLB Jun 29 held 94.7% (+7.3% EOD)
 MAX_RISK_PCT        = 8.0    # hard ATR cap — removed 2% floor, trust the ATR fully
 MIN_RR              = 2.5    # min reward:risk for entry qualification
 MAX_LOSS_PER_TRADE  = 150    # dollar circuit breaker: $150 = 5% of $3,000 position (raised May 19)
@@ -1400,6 +1401,15 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
             and price < today_open):
         return 'SKIP', [f'Failed gap: ORB low ${orb_low} violated, below open ${today_open}'], 0
 
+    # STRONG day exhaustion gate — scan_log backtest Jun 29 2026 (N=41, STRONG regime)
+    # Stocks up 8-12% intraday on STRONG days: 54% go DOWN from scan price, avg -0.48%
+    # Root cause: stock has already spent its energy against a rising market backdrop.
+    # 12%+ excluded — too small a sample (N=24) and VELO +12.8% shows they can break out.
+    # Catalyst exemption removed: AMPG (cat, +15%, RSI 77) = -$140; FRMI (cat, +8%, RSI 72) = -$110.
+    intra_at_scan = sig.get('intra_chg', 0) or 0
+    if regime == 'STRONG' and 8.0 <= intra_at_scan < 12.0:
+        return 'SKIP', [f'STRONG day exhaustion: {intra_at_scan:.1f}% already run (8-12% = 54% reverse, N=41)'], 0
+
     if sig['fvg_count'] >= 10:
         score += 30; reasons.append(f'{sig["fvg_count"]} FVGs')
     elif sig['fvg_count'] >= 5:
@@ -1437,10 +1447,12 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
     else:
         score += round(5  * w['rsi']); reasons.append(f'RSI {sig["rsi"]} (trending)')
 
-    # 5m RSI — scoring only, penalise exhaustion but don't block
+    # 5m RSI — intraday exhaustion hard gate then scoring
+    # MAX_RSI_5M=85 blocks parabolic intraday candles (blow-off tops, immediate reversal risk)
+    # This is separate from daily RSI: daily 80+ = sellers gave up (continuation); 5m 85+ = overheated RIGHT NOW
     rsi5m = sig.get('rsi_5m', 50)
     if rsi5m > MAX_RSI_5M:
-        score -= round(20 * w['rsi']); reasons.append(f'5m RSI {rsi5m} exhausted (-20)')
+        return 'SKIP', [f'5m RSI {rsi5m} exhausted — intraday candle parabolic (>{MAX_RSI_5M})'], 0
     elif rsi5m > 75:
         score -= round(10 * w['rsi']); reasons.append(f'5m RSI {rsi5m} elevated (-10)')
 
@@ -1862,8 +1874,21 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
             except Exception:
                 pass
         if not filled:
-            log(f"  {symbol}: Fill not confirmed after 6s — skipping DB entry")
-            return None
+            # Final fallback: check IBKR portfolio directly before giving up.
+            # Catches cases where fill confirmation via order endpoint is slow
+            # (volatile stocks, busy market, brief gateway lag) but the position
+            # already exists in IBKR.
+            ibkr_chk = get_ibkr_positions()
+            ibkr_qty = ibkr_chk.get(symbol, {}).get('qty', 0) or 0
+            position_match = (side == 'LONG' and ibkr_qty > 0) or (side == 'SHORT' and ibkr_qty < 0)
+            if position_match:
+                log(f"  {symbol}: Fill confirmed via portfolio fallback (order status slow) — recording fill")
+                price  = ibkr_chk[symbol].get('avgCost', price)
+                shares = abs(int(ibkr_qty))
+                filled = True
+            else:
+                log(f"  {symbol}: Fill not confirmed after {poll_attempts * 2}s — skipping DB entry")
+                return None
 
         trade_id = log_trade_entry(
             symbol=symbol, entry_price=price, shares=shares,
@@ -2952,6 +2977,10 @@ def _scan_premarket_catalyst(open_trades):
 
             # ── Gate 3: price holding near PM high (not fading) ──────────
             if pm_high > 0 and pm_price < pm_high * PREMARKET_HOLD_PCT:
+                hold_display = pm_price / pm_high * 100 if pm_high > 0 else 0
+                if hold_display >= 85:
+                    log(f"  {symbol}: gap={gap_pct:+.1f}% but fading "
+                        f"(hold={hold_display:.1f}% < {PREMARKET_HOLD_PCT*100:.0f}%) — near-miss logged")
                 continue
 
             # Scoring
@@ -3670,8 +3699,13 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
             tag      = '🎯'
 
         # FVG fills need volume confirmation — gap-fills without momentum tend to stall and exit EOD
-        if strategy == 'FVG_FILL' and pick['vol_ratio'] < 5.0:
-            log(f"  ⛔ SKIP {sym} — FVG_FILL vol {pick['vol_ratio']:.1f}x < 5x required")
+        # Tiered by price (Jun 29 2026, N=130 large-cap batting orders):
+        #   >=100: inflection at 2.0x (forward return turns +0.12% vs -0.53% below); 1.5-2.0x = 44% WR
+        #   $20-100: intermediate — 3.5x
+        #   <20: 5x (high-vol small-caps are actually worse — uniformly negative forward returns)
+        _fvg_vol_min = 2.0 if price >= 100 else (3.5 if price >= 20 else 5.0)
+        if strategy == 'FVG_FILL' and pick['vol_ratio'] < _fvg_vol_min:
+            log(f"  ⛔ SKIP {sym} — FVG_FILL vol {pick['vol_ratio']:.1f}x < {_fvg_vol_min}x required (${price:.0f} tier)")
             continue
 
         # ── Layer 2 fitness gate (pre-entry candle quality) ────────────
@@ -4621,6 +4655,12 @@ if __name__ == '__main__':
                     _last_full_scan = time.time()
                 else:
                     fast_monitor_positions()
+                time.sleep(MONITOR_INTERVAL)
+            elif is_premarket_window():
+                # 9:20–9:29am ET: fire run_scan() so _scan_premarket_catalyst() can execute.
+                # is_market_open() is False here (requires minute≥31), so without this branch
+                # the earnings-gap scanner is unreachable dead code.
+                run_scan()
                 time.sleep(MONITOR_INTERVAL)
             else:
                 now = datetime.now(ET)

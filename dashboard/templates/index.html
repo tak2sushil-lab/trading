@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TriVega — Trading Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="/static/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TriVega">
+</head>
+<body>
+
+<!-- ═══════════════════ HEADER ═══════════════════ -->
+<header id="app-header" class="header paper-mode">
+  <div class="header-left">
+    <div class="logo">
+      <svg viewBox="0 0 30 48" width="18" height="29" fill="none" style="display:inline-block;vertical-align:middle;margin-right:7px">
+        <line x1="8"  y1="12" x2="8"  y2="18" stroke="#f85149" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="8"  y1="16" x2="8"  y2="30" stroke="#f85149" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="15" y1="2"  x2="15" y2="47" stroke="#4f9cf6" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="22" y1="6"  x2="22" y2="12" stroke="#3fb950" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="22" y1="10" x2="22" y2="30" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="8"  y1="30" x2="22" y2="30" stroke="#4f9cf6" stroke-width="2.5" stroke-linecap="round"/>
+      </svg><span class="logo-name">TriVega</span>
+    </div>
+    <div class="tab-bar">
+      <button id="tab-paper" class="tab active" onclick="switchTab('paper')">
+        <span class="tab-dot"></span> PAPER
+      </button>
+      <button id="tab-prod" class="tab" onclick="switchTab('prod')">
+        <span class="tab-dot"></span> PRODUCTION
+      </button>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="refresh-dot" id="refresh-dot" title="Auto-refreshes every 30s">●</span>
+    <span class="refresh-time" id="last-refresh">Loading…</span>
+    <span class="mode-badge" id="mode-badge">PAPER</span>
+  </div>
+</header>
+
+<!-- ═══════════════════ PAPER CONTENT ═══════════════════ -->
+<div id="paper-content">
+
+  <!-- Status bar -->
+  <div class="statusbar" id="statusbar">
+    <div class="services" id="services-row"></div>
+    <div class="status-right">
+      <div class="regime-chip" id="regime-chip">REGIME —</div>
+      <div class="session-pnl" id="session-pnl-bar"></div>
+    </div>
+  </div>
+
+  <div class="main-content">
+
+    <!-- Summary cards -->
+    <div class="summary-row" id="summary-row">
+      <div class="card summary-card" id="card-equity">
+        <div class="card-label">EQUITY</div>
+        <div class="card-pnl" id="eq-pnl">—</div>
+        <div class="card-sub" id="eq-sub">—</div>
+      </div>
+      <div class="card summary-card" id="card-options">
+        <div class="card-label">OPTIONS</div>
+        <div class="card-pnl" id="opt-pnl">—</div>
+        <div class="card-sub" id="opt-sub">—</div>
+      </div>
+      <div class="card summary-card" id="card-futures">
+        <div class="card-label">FUTURES</div>
+        <div class="card-pnl" id="fut-pnl">—</div>
+        <div class="card-sub" id="fut-sub">—</div>
+      </div>
+    </div>
+
+    <!-- P&L sparkline -->
+    <div class="card section">
+      <div class="section-title">7-DAY EQUITY P&amp;L</div>
+      <div class="chart-wrap">
+        <canvas id="pnl-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Equity positions -->
+    <div class="card section">
+      <div class="section-title">
+        EQUITY POSITIONS
+        <span class="count-chip" id="eq-count">0 open</span>
+      </div>
+      <div id="equity-table"></div>
+    </div>
+
+    <!-- Options positions -->
+    <div class="card section">
+      <div class="section-title">
+        OPTIONS POSITIONS
+        <span class="count-chip" id="opt-count">0 open</span>
+        <span class="theta-chip" id="opt-theta"></span>
+      </div>
+      <div id="options-table"></div>
+    </div>
+
+    <!-- Futures positions -->
+    <div class="card section">
+      <div class="section-title">
+        FUTURES POSITIONS
+        <span class="count-chip" id="fut-count">0 open</span>
+        <span class="session-chip" id="session-chip">—</span>
+      </div>
+      <div id="futures-table"></div>
+    </div>
+
+    <!-- Sector grades -->
+    <div class="card section">
+      <div class="section-title">SECTOR GRADES</div>
+      <div id="sector-grid" class="sector-grid"></div>
+    </div>
+
+    <!-- Two-column: Alerts + Calendar -->
+    <div class="two-col">
+
+      <div class="card section">
+        <div class="section-title">
+          ALERTS
+          <span class="count-chip alert-chip" id="alert-count">0</span>
+        </div>
+        <div id="alerts-list"></div>
+      </div>
+
+      <div class="card section">
+        <div class="section-title">CALENDAR</div>
+        <div class="cal-tabs">
+          <button class="cal-tab active" onclick="showCal('earnings')">Earnings</button>
+          <button class="cal-tab" onclick="showCal('macro')">Macro Events</button>
+        </div>
+        <div id="earnings-cal"></div>
+        <div id="macro-cal" style="display:none"></div>
+      </div>
+
+    </div>
+
+    <!-- Activity feed -->
+    <div class="card section">
+      <div class="section-title">
+        RECENT ACTIVITY
+        <span class="muted-text">last 5 sessions</span>
+      </div>
+      <div class="activity-filters">
+        <button class="filter-btn active" onclick="filterActivity('ALL')">ALL</button>
+        <button class="filter-btn" onclick="filterActivity('EQUITY')">EQUITY</button>
+        <button class="filter-btn" onclick="filterActivity('OPTIONS')">OPTIONS</button>
+        <button class="filter-btn" onclick="filterActivity('FUTURES')">FUTURES</button>
+      </div>
+      <div id="activity-feed"></div>
+    </div>
+
+  </div><!-- /main-content -->
+</div><!-- /paper-content -->
+
+<!-- ═══════════════════ PRODUCTION CONTENT ═══════════════════ -->
+<div id="prod-content" style="display:none">
+  <div class="prod-placeholder">
+    <div class="prod-badge">PRODUCTION</div>
+    <div class="prod-title">Live Account Not Yet Active</div>
+    <div class="prod-go-live">Go-live: <strong>Jul 17 2026</strong> at 25% capital ($500/trade)</div>
+    <div class="prod-desc">
+      Paper validation window runs Jun 17 – Jul 17. Do not compress this timeline.
+    </div>
+    <div class="checklist-title">Pre-flight checklist</div>
+    <div id="prod-checklist" class="prod-checklist"></div>
+    <div class="prod-note">
+      When production bridge is ready, set <code>PROD_BRIDGE_URL</code> in dashboard/app.py
+      and this tab will activate automatically.
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

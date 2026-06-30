@@ -29,6 +29,7 @@ import sys
 import sqlite3
 import time
 import logging
+import threading
 import requests
 from datetime import datetime, date, timedelta, time as dt_time
 from dotenv import load_dotenv
@@ -146,6 +147,14 @@ _trade_count:    int              = 0
 _daily_pnl:      float            = 0.0
 _last_exit_time: datetime | None  = None
 _ovn_pos:        float            = -1.0   # overnight close position (set by run_scan)
+
+# monitor_position() is called from two independent scheduler jobs (the per-minute
+# london_scan cron job and the 15s london_monitor interval job). Without this lock,
+# both can see the same open _position concurrently and both submit a real closing
+# order — the second one fires on an already-flat account and flips it into a fresh
+# unintended position. Non-blocking: if monitor is already running, skip and let the
+# next tick (≤15s later) retry — never worth blocking one job on the other.
+_monitor_lock = threading.Lock()
 
 _cached_df:  pd.DataFrame         = pd.DataFrame()
 
@@ -637,8 +646,24 @@ def _pnl_usd(entry: float, price: float, side: str, contracts: int) -> float:
 def monitor_position(df: pd.DataFrame):
     """
     Check exits + update trailing stop for open position.
-    Called every MONITOR_INTERVAL seconds.
+    Called every MONITOR_INTERVAL seconds — from two independent scheduler jobs
+    (london_scan cron + london_monitor interval). The lock ensures only one of
+    them processes a given tick; without it, both can see the same open position
+    and both submit a real closing order, flipping a flat account into a fresh
+    unintended position once the first order closes it.
     """
+    if _position is None:
+        return
+    if not _monitor_lock.acquire(blocking=False):
+        log('  monitor_position already running elsewhere — skip this tick')
+        return
+    try:
+        _monitor_position_locked(df)
+    finally:
+        _monitor_lock.release()
+
+
+def _monitor_position_locked(df: pd.DataFrame):
     global _position, _daily_pnl, _last_exit_time
 
     if _position is None:

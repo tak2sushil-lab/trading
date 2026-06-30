@@ -145,7 +145,8 @@ def _futures_section(state_file: Path, label: str) -> str:
         conn  = _conn()
         trades = conn.execute(
             "SELECT pnl, status FROM futures_trades "
-            "WHERE entry_date=? AND account_mode=? AND status!='ORPHANED'",
+            "WHERE entry_date=? AND account_mode=? AND status!='ORPHANED' "
+            "AND setup_type != 'RECONCILED'",
             (today, label)
         ).fetchall()
         open_futures = conn.execute(

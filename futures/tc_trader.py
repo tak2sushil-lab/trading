@@ -49,7 +49,7 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
-from futures.gate_audit import log_block, log_enter  # noqa: E402
+from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
@@ -1110,6 +1110,18 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             _position_held = (_ibkr_qty > 0) if not is_short else (_ibkr_qty < 0)
 
             if not _position_held:
+                if _ibkr_qty != 0.0:
+                    orphan_side = 'BUY' if _ibkr_qty < 0 else 'SELL'
+                    orphan_qty  = abs(int(_ibkr_qty))
+                    log(f"  ⚠️  RACE CONDITION: IBKR qty={_ibkr_qty} — double-exit created orphan; flattening with {orphan_side} ×{orphan_qty}")
+                    _r = _bridge_post('/futures/order', {'symbol': SYMBOL, 'qty': orphan_qty, 'side': orphan_side, 'order_type': 'MARKET'})
+                    _alert = (
+                        f"⚠️ DOUBLE-EXIT RACE CONDITION\n"
+                        f"IBKR qty={_ibkr_qty} after trade {tid} stop — orphan auto-flattened\n"
+                        f"Action: {orphan_side} ×{orphan_qty} {SYMBOL} MARKET"
+                    )
+                    log(f"  Flatten order placed: {_r}")
+                    send_telegram(_alert)
                 log(f"  IBKR flat (qty={_ibkr_qty}) — backup stop filled, closing DB only")
                 _cancel_backup_stop(trade)   # cancel pending stop if any remains
                 backup_stop_px = trade.get('stop_price', '?')
@@ -1248,6 +1260,15 @@ def run_scan():
     vwap  = sig.get('vwap', 0)
     log(f"Price: {price} | VWAP: {vwap} | RSI: {sig.get('rsi',0):.0f} | "
         f"ORB: {'set' if _orb_set else 'pending'}")
+
+    # Shadow-only: log the raw 3-bar momentum-vs-VWAP signal (decoder's earliest
+    # trigger, no quality gates) so we can measure lead time vs the real ENTER
+    # once it qualifies. Never blocks or places a trade — logged for comparison
+    # only. See futures/gate_audit.py --leadtime.
+    try:
+        log_shadow_signal('TC', 'MNQ', df5['close'].tail(3).tolist(), vwap, price, session)
+    except Exception:
+        pass
 
     # Open trades count
     open_trades = get_open_futures_trades()

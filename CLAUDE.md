@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jun 17 2026
+Last updated: Jun 30 2026
 
 ---
 
@@ -199,10 +199,27 @@ Regime flip exit: auto-covers losing shorts on NORMAL/STRONG ≥3 scans (changed
 11. EOD close (3:45pm ET)
 12. Hard time stop (1 business day)
 
-## Entry Gates (added May 22 2026)
+## Entry Gates (updated Jun 30 2026)
 
 Afternoon gate: no new entries (LONG or SHORT) after 12pm ET if morning realized P&L ≥ $150.
 Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 18.2% WR / -$6.56 avg.
+
+STRONG-day exhaustion: STRONG regime + 8≤intraday_chg<12% → SKIP. N=41, 54% reverse from scan price avg -0.48%.
+12%+ excluded (N=24, VELO +12.8% shows breakouts possible). No catalyst bypass (data shows exhausted catalysts still reverse).
+
+5m RSI hard gate: `rsi_5m > 85` → SKIP (was -20pt penalty). Intraday blow-off top signal.
+Different from daily RSI: daily 80+ = true momentum continuation. 5m 85+ = overheated right now.
+
+FVG vol tier (Jun 30): `vol_ratio` minimum by price: ≥$100 → 2.0×, $20-100 → 3.5×, <$20 → 5.0× (was flat 5.0×).
+
+Pre-market scanner (Jun 30 — was dead code since May 1):
+- `PREMARKET_HOLD_PCT = 0.93` (was 0.97 — too tight, zero entries in 5 days)
+- Dispatch bug fixed: `elif is_premarket_window(): run_scan()` in main loop
+- Fires at 9:20–9:29am ET, max 2 positions, half size, 6% stop, limit orders (outsideRth)
+- Gate tiers: gap ≥6% (≥$150), ≥8% ($50–149), ≥10% (<$50) | vol ≥200K | hold ≥93% of PM high
+- Near-miss logging: hold 85-93% logs "near-miss" for threshold calibration
+
+pvh ≤ -10% gate: PENDING (not yet built). Backtest N=3, all losers, zero FP. One-liner in grade_setup().
 
 ---
 
@@ -222,8 +239,8 @@ Data: afternoon LONG 44.8% WR / -$0.91 avg (vs 58.5% morning), afternoon SHORT 1
 | Date | Holiday |
 |------|---------|
 | ~~May 25~~ | ~~Memorial Day~~ |
-| Jun 19 | Juneteenth ← **next closed day** |
-| Jul 3 | Independence Day (observed) |
+| ~~Jun 19~~ | ~~Juneteenth~~ |
+| Jul 3 | Independence Day (observed) ← **next closed day** |
 | Sep 7 | Labor Day |
 | Nov 26 | Thanksgiving |
 | Dec 25 | Christmas |

@@ -51,7 +51,7 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
-from futures.gate_audit import log_block, log_enter  # noqa: E402
+from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0          # $ max risk per trade (1 contract × 50-tick stop)
@@ -1069,7 +1069,8 @@ def get_futures_daily_pnl() -> float:
     today = str(datetime.now(ET).date())   # use ET date, consistent with log_futures_entry
     conn  = sqlite3.connect(DB_PATH)
     row   = conn.execute(
-        "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED' AND account_mode=?",
+        "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED' "
+        "AND account_mode=? AND setup_type != 'RECONCILED'",
         (today, ACCOUNT_MODE)
     ).fetchone()
     conn.close()
@@ -1077,10 +1078,13 @@ def get_futures_daily_pnl() -> float:
 
 
 def _get_all_time_futures_pnl() -> float:
-    """Total realized P&L across all futures trades — used to reconcile ibkr_state balance."""
+    """Total realized P&L across all futures trades — used to reconcile ibkr_state balance.
+    Excludes RECONCILED rows (manual broker-side fixes for bot bugs, e.g. duplicate-order
+    cleanup) — those aren't strategy P&L and shouldn't count toward win-rate or balance math."""
     conn = sqlite3.connect(DB_PATH)
     row  = conn.execute(
-        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED' AND account_mode=?",
+        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED' "
+        "AND account_mode=? AND setup_type != 'RECONCILED'",
         (ACCOUNT_MODE,)
     ).fetchone()
     conn.close()
@@ -1456,6 +1460,22 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             _position_held = (_ibkr_qty > 0) if not is_short else (_ibkr_qty < 0)
 
             if not _position_held:
+                # Check for race-condition orphan: backup stop AND software exit both fired
+                # within the same cycle, leaving the position inverted (e.g. intended LONG
+                # but qty=-2 in IBKR).  This happens when the software places a SELL market
+                # order AND the IBKR backup stop also executes before the cancel reaches IBKR.
+                if _ibkr_qty != 0.0:
+                    orphan_side = 'BUY' if _ibkr_qty < 0 else 'SELL'
+                    orphan_qty  = abs(int(_ibkr_qty))
+                    log(f"  ⚠️  RACE CONDITION: IBKR qty={_ibkr_qty} — double-exit created orphan; flattening with {orphan_side} ×{orphan_qty}")
+                    _r = _bridge_post('/futures/order', {'symbol': SYMBOL, 'qty': orphan_qty, 'side': orphan_side, 'order_type': 'MARKET'})
+                    _alert = (
+                        f"⚠️ DOUBLE-EXIT RACE CONDITION\n"
+                        f"IBKR qty={_ibkr_qty} after trade {tid} stop — orphan auto-flattened\n"
+                        f"Action: {orphan_side} ×{orphan_qty} {SYMBOL} MARKET"
+                    )
+                    log(f"  Flatten order placed: {_r}")
+                    send_telegram(_alert)
                 log(f"  IBKR flat (qty={_ibkr_qty}) — backup stop filled, closing DB only")
                 _cancel_backup_stop(trade)   # cancel pending stop if any remains
                 backup_stop_px = trade.get('stop_price', '?')
@@ -1943,6 +1963,15 @@ def run_scan():
     vwap  = sig.get('vwap', 0)
     log(f"Price: {price} | VWAP: {vwap} | RSI: {sig.get('rsi',0):.0f} | "
         f"ORB: {'set' if _orb_set else 'pending'}")
+
+    # Shadow-only: log the raw 3-bar momentum-vs-VWAP signal (decoder's earliest
+    # trigger, no quality gates) so we can measure lead time vs the real ENTER
+    # once it qualifies. Never blocks or places a trade — logged for comparison
+    # only. See futures/gate_audit.py --leadtime.
+    try:
+        log_shadow_signal('IBKR', 'MNQ', df5['close'].tail(3).tolist(), vwap, price, session)
+    except Exception:
+        pass
 
     # ── RVOL + IB range gates ────────────────────────────────────────────────
     # min_rvol=0.3: 550-day averages include 2021-22 high-vol era; June 2026
