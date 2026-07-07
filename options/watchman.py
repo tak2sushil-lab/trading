@@ -99,14 +99,20 @@ def now_et() -> datetime:
 
 
 def is_market_hours() -> bool:
-    """9:30am–8:00pm ET Mon-Fri. Extended to cover IBKR after-hours options until 8pm."""
+    """9:30am-4:15pm ET Mon-Fri — actual equity options trading session.
+    Previously extended to 8pm on the assumption IBKR works options orders
+    after-hours; it doesn't for SMART-routed equity options (confirmed via
+    IBKR Warning 399 "order will not be placed at the exchange until
+    <next session>"). The old window caused watchman to spend hours after
+    the real close submitting orders IBKR just queued for the next day,
+    then cancel+retry every tick — a self-inflicted alert loop."""
     n = now_et()
     if n.weekday() >= 5:
         return False
     if n.date() in US_HOLIDAYS_2026:
         return False
     open_  = n.replace(hour=9, minute=30, second=0, microsecond=0)
-    close_ = n.replace(hour=20, minute=0,  second=0, microsecond=0)
+    close_ = n.replace(hour=16, minute=15, second=0, microsecond=0)
     return open_ <= n <= close_
 
 
@@ -294,21 +300,29 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         st     = (status or {}).get('status', 'Unknown')
         filled = bool(status and status.get('filled', 0) >= qty or st == 'Filled')
 
-        # Portfolio fallback: verify position is gone from IBKR
+        # Portfolio fallback: verify EVERY leg is gone from IBKR.
+        # Bug found Jul 6 2026: this only checked long_strike with qty > 0, so a
+        # spread whose combo close only filled the long leg (paper BAG fill
+        # simulation can do this) was wrongly marked CLOSED while the short leg
+        # sat naked and unmonitored (CHPT: 5x short $6P ran 2 weeks untracked).
+        # Fix: check every leg this trade has (long_strike, short_strike, strike
+        # for single-leg), and treat any nonzero qty — short legs are negative —
+        # as still open.
         if not filled and st in ('Submitted', 'PreSubmitted', 'Cancelled', 'Unknown'):
             try:
-                r     = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
-                opts  = r.json() if r.ok else []
-                long_stk = float(trade.get('long_strike', 0))
-                exp      = trade.get('expiry', '')
-                still_open = any(
+                r    = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
+                opts = r.json() if r.ok else []
+                exp  = trade.get('expiry', '')
+                leg_strikes = [s for s in (trade.get('long_strike'), trade.get('short_strike'),
+                                            trade.get('strike')) if s is not None]
+                any_leg_open = any(
                     p.get('symbol') == sym
                     and p.get('expiry') == exp
-                    and abs(float(p.get('strike', 0)) - long_stk) < 0.01
-                    and float(p.get('qty', 0)) > 0
+                    and any(abs(float(p.get('strike', 0)) - float(ls)) < 0.01 for ls in leg_strikes)
+                    and abs(float(p.get('qty', 0))) > 0
                     for p in opts
                 )
-                if not still_open:
+                if not any_leg_open:
                     filled = True
             except Exception:
                 pass

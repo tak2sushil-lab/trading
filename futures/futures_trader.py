@@ -54,32 +54,65 @@ from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, 
 from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
-MAX_RISK_PER_TRADE   = 100.0          # $ max risk per trade (1 contract × 50-tick stop)
-MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $250 (12.5% of $2K) — mirrors prop_rules IBKR soft stop
-DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $400 — mirrors prop_rules IBKR daily cap
-MIN_RR               = 2.0     # minimum reward:risk ratio
+# Jul 6 2026 — widened for $15K account. Gate-audit + 66-day bar backtest showed
+# the old 1.5xATR (~45-58pt) stop was catching routine noise, not real reversals:
+# 52% of losers were near-zero "breakeven scratch" exits, and losers recovered
+# +135pts on average shortly after the system's own exit. RTH daily range is
+# 447pts avg (66-day sample) — a stop an order of magnitude smaller than that
+# can't survive real MNQ movement. New sizing grid-searched against real bars;
+# $15K/280pt-stop was the return-maximizing point (61.5% WR, beyond which wider
+# stops stop paying for the extra risk). See conversation Jul 6 2026 for the full analysis.
+MAX_RISK_PER_TRADE   = 560.0          # $ max risk per trade (1 contract x 280pt stop x $2/pt)
+MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $3,750 (25% of $15K) — mirrors prop_rules IBKR soft stop
+DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $1,200 — mirrors prop_rules IBKR daily cap
+MIN_RR               = 1.4     # minimum reward:risk ratio — trivially satisfied now that
+                                # target is a 1500pt backstop (RR~5.4); kept as a floor
+                                # in case target is ever tightened back down
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
 MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
 MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and live price at order time
-A_EXT_LIMIT_PTS  = 70.0   # max VWAP extension (pts) before blocking entry — decoder A_ext gate
+# A_EXT gate REMOVED Jul 6 2026 — gate_audit scored it 33% accuracy / "REMOVE"
+# verdict on live IBKR SHORT (N=6) after being wired off a small N=11/64% sample
+# Jun 24. Also structurally conflicts with the new wide-stop philosophy: blocking
+# entries at 70pts extension makes no sense when the target itself is 400+pts.
 
-# ── Profit protection (point-based — MNQ-calibrated) ─────
-# PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
-# Use absolute points instead. Typical trade: entry ~30,000, target ~99pts.
-BE_ACTIVATE_PTS  = 30.0   # +30pts → move stop to entry (scratch worst case)
-TRAIL_WIDE_PTS   = 60.0   # +60pts → trail 20pts behind session peak
-TRAIL_TIGHT_PTS  = 85.0   # +85pts → tighten trail to 10pts (near 99pt target)
-TRAIL_WIDE_GAP   = 20.0   # trail distance in wide mode
-TRAIL_TIGHT_GAP  = 10.0   # trail distance in tight mode
+# ── Base stop/target (point-based, RVOL-adaptive) — MNQ-calibrated ──────────
+# Replaces the old ATR-multiple calc (1.5x/3.0x ATR ~ 45-58pt stop, 90-116pt
+# target) which was sized for a ~30-40pt instrument, not one with a 447pt avg
+# daily range. Grid-searched against 66 days of real 5-min bars; RVOL tercile
+# adaptation (0.484 / 0.651 boundaries) came from the decoder's own outcome data:
+# high-RVOL scans preceded ~1.8x bigger subsequent moves than low-RVOL scans.
+BASE_STOP_PTS     = 280.0   # base hard stop (was ~45-58pts)
+# Backstop only, not a real profit-take level — verified via backtest (bug sweep
+# Jul 6): a literal 420pt hard target clipped winners at $5,812 total; letting
+# the trail tiers (below) manage the exit instead reached $8,378 on the same 65
+# trades, same win rate. 1500 essentially never binds — it exists only to cap a
+# truly unprecedented single-direction move the trail somehow didn't catch.
+BASE_TARGET_PTS   = 1500.0
+RVOL_HIGH_THRESH  = 0.65    # >= this -> widen (elevated participation, bigger move likely)
+RVOL_LOW_THRESH   = 0.48    # <= this -> tighten (quiet/chop, smaller move likely)
+RVOL_WIDE_MULT    = 1.3
+RVOL_TIGHT_MULT   = 0.8
+
+# ── Profit protection (point-based — MNQ-calibrated, widened Jul 6 2026) ────
+# Old tiers (BE at +30, trail at +60/+85) were ~1x ATR — pure noise triggered
+# breakeven immediately, then any wiggle stopped the trade for a few dollars.
+# New tiers require a real, meaningful move before protecting/trailing.
+BE_ACTIVATE_PTS  = 150.0   # +150pts → move stop to entry (real move required first)
+TRAIL_WIDE_PTS   = 250.0   # +250pts → trail 120pts behind session peak — let it run
+TRAIL_TIGHT_PTS  = 400.0   # +400pts → tighten trail to 60pts (past base target)
+TRAIL_WIDE_GAP   = 120.0   # trail distance in wide mode
+TRAIL_TIGHT_GAP  = 60.0    # trail distance in tight mode
 
 # ── No-move exit (time-based — frees dead trade slots) ───
-# 14% of backtest exits. Live system must match or it over-holds dead positions.
-# Fires when a trade has been open NO_MOVE_MINUTES and is stuck in the dead zone:
-#   pnl ≤ +25pts (not moving toward target) AND pnl ≥ -10pts (stop not triggered).
-NO_MOVE_MINUTES = 90      # minutes open before checking
-NO_MOVE_MAX_PTS = 25.0    # above this → trade IS progressing, let it run
-NO_MOVE_MIN_PTS = -10.0   # below this → hard stop will manage it
+# Widened Jul 6 2026 to a 45min decision checkpoint (was 90min) with a dead-zone
+# band scaled to the new 280pt stop, per the "watch it 45min-1hr, then decide"
+# design: if a trade hasn't shown a real move by 45min, cut with minimum loss
+# rather than let it keep drifting toward the full stop.
+NO_MOVE_MINUTES = 45      # minutes open before checking
+NO_MOVE_MAX_PTS = 60.0    # above this → trade IS progressing, let it run
+NO_MOVE_MIN_PTS = -40.0   # below this → hard stop will manage it
 
 # ── ELEPHANT TRADE (Liquidity Grab Reversal) ─────────────
 # Algos sweep stop-loss clusters then reverse — we enter at the sweep extreme.
@@ -828,17 +861,56 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
 
 # ── Stop / target calculation (tick-based) ───────────────
 
-def calc_sl_target(price: float, atr: float, side: str) -> tuple[float, float]:
+def calc_session_rvol(df5: pd.DataFrame) -> float:
+    """
+    Current bar volume / average volume of TODAY's RTH bars so far (9:30am ET
+    onward). NOT the same metric as calc_rvol_current() (preloaded time-of-day
+    historical average) — this matches the decoder's (live_rule_sim.py) exact
+    formula, because the RVOL_HIGH_THRESH/RVOL_LOW_THRESH tercile boundaries
+    used by calc_sl_target were derived from the decoder's outcome data using
+    this specific definition.
+    Must filter to today's RTH bars only — get_bars() returns 2 raw days
+    including illiquid overnight/Globex bars, which would drag the baseline
+    average down and make every RTH bar look artificially "high volume"
+    (caught during bug sweep Jul 6 2026 — do not merge with calc_rvol_current,
+    and do not pass the raw unfiltered df5).
+    """
+    if df5.empty:
+        return 1.0
+    today   = datetime.now(ET).date()
+    rth_start = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    today_bars = df5[df5.index >= rth_start]
+    if len(today_bars) < 2:
+        return 1.0
+    avg_v = today_bars['volume'].mean()
+    if not avg_v:
+        return 1.0
+    return float(today_bars['volume'].iloc[-1]) / float(avg_v)
+
+
+def calc_sl_target(price: float, atr: float, side: str, rvol: float = 1.0) -> tuple[float, float]:
     """
     Calculate stop-loss and target in price terms.
-    Uses ATR-based stops rounded to tick size.
+    Point-based (not ATR-multiple) — MNQ's real daily range (447pt avg) is an
+    order of magnitude bigger than its 5-min ATR (~39pt avg), so an ATR-multiple
+    stop chases the wrong scale. RVOL-adaptive: elevated relative volume
+    precedes bigger moves (confirmed via decoder outcome data — high-RVOL scans
+    saw ~1.8x bigger forward swings than low-RVOL scans), so widen/tighten the
+    base stop and target accordingly. `atr` param kept for signature compat /
+    future use but no longer drives the base distance. `rvol` must come from
+    calc_session_rvol(), not calc_rvol_current() — see that function's docstring.
     """
     tick = TICK_SIZE
-    stop_atr_mult   = 1.5
-    target_atr_mult = 3.0   # 2:1 R:R minimum
 
-    raw_stop   = atr * stop_atr_mult
-    raw_target = atr * target_atr_mult
+    if rvol >= RVOL_HIGH_THRESH:
+        mult = RVOL_WIDE_MULT
+    elif rvol <= RVOL_LOW_THRESH:
+        mult = RVOL_TIGHT_MULT
+    else:
+        mult = 1.0
+
+    raw_stop   = BASE_STOP_PTS * mult
+    raw_target = BASE_TARGET_PTS * mult
 
     # Round to nearest tick
     def round_tick(v):
@@ -937,7 +1009,7 @@ def calc_contracts_dynamic(price: float, sl: float,
                             rvol: float, ib_range: float) -> int:
     """
     RVOL-based contract scaling (ported from backtest _dynamic_contracts()).
-    Base = 1 (IBKR personal $2K account).
+    Base = 1 (IBKR personal $15K account).
     Scale up on conviction; scale down after a loss; hard cap = IBKR_MAX_CONTRACTS (2).
 
     Tiers (additive):
@@ -1173,17 +1245,21 @@ def place_trade(side: str, sig: dict, regime: str,
             f"(gap={abs(price-scan_price):.1f}pts > max {MAX_PRICE_DIVERGENCE}pts)")
         return False
 
-    df5        = get_bars()
-    atr        = calc_atr(df5) if not df5.empty else 10.0
-    sl, target = calc_sl_target(price, atr, side)
+    df5          = get_bars()
+    atr          = calc_atr(df5) if not df5.empty else 10.0
+    session_rvol = calc_session_rvol(df5)     # for stop/target sizing — matches decoder's rvol definition
+    rvol         = calc_rvol_current(df5)     # for contract sizing — time-of-day historical baseline (unchanged)
+    sl, target   = calc_sl_target(price, atr, side, session_rvol)
 
-    # tc_champion: max_stop_pts=150 — skip when ATR-based stop is extreme ($300+ risk)
+    # Sanity ceiling — catches broken/extreme data, not the intended 280-364pt
+    # range (base 280pt x up to 1.3x RVOL-wide multiplier = 364pt max by design).
+    # Raised from 150 Jul 6 2026 — that ceiling would have blocked every single
+    # trade under the new wider-stop scheme.
     stop_pts = abs(price - sl)
-    if stop_pts > 150.0:
-        log(f"  SKIP: stop {stop_pts:.0f}pts > 150 max (high-ATR day)")
+    if stop_pts > 450.0:
+        log(f"  SKIP: stop {stop_pts:.0f}pts > 450 max (broken/extreme data)")
         return False
 
-    rvol       = calc_rvol_current(df5)
     ib_range   = calc_ib_range_today(df5)
     contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range)
 
@@ -1317,12 +1393,16 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         pnl_usd   = pnl_ticks * TICK_VALUE * contracts
         pnl_pct   = pnl_pts / entry * 100
 
-        # ── Point-based profit protection ─────────────────
-        # MNQ target ~99pts. PCT-based thresholds (1.5% = 450pts) never fire.
-        # Three tiers, each only tightens — never loosens the stop.
+        # ── Point-based profit protection (widened Jul 6 2026) ─────────────
+        # PCT-based thresholds (1.5% = 450pts) never fire — points-based instead.
+        # Target is now a 1500pt backstop; these trail tiers do the real exit work
+        # so a genuine big swing isn't clipped early. Three tiers, each only
+        # tightens — never loosens the stop.
         s_peak  = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
 
-        # Tier 1 (+30pts): break-even — stop moves to entry, trade cannot lose
+        # Tier 1 (+150pts): break-even — stop moves to entry, trade cannot lose.
+        # Requires a real move first (was +30pts — pure noise triggered this
+        # immediately, then any wiggle scratched the trade for a few dollars).
         if pnl_pts >= BE_ACTIVATE_PTS:
             be = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
             if (not is_short and be > sl) or (is_short and be < sl):
@@ -1330,21 +1410,21 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to BE level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE stop → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 2 (+60pts): trail 20pts behind session peak
+        # Tier 2 (+250pts): trail 120pts behind session peak — let it run
         if pnl_pts >= TRAIL_WIDE_PTS:
             trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to trail level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(20) → {sl} (+{pnl_pts:.0f}pts)")
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(120) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 3 (+85pts, near target): tighten to 10pts — lock in most of the gain
+        # Tier 3 (+400pts): tighten to 60pts behind peak — lock in most of the gain
         if pnl_pts >= TRAIL_TIGHT_PTS:
             trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to tight trail level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(10) → {sl} (+{pnl_pts:.0f}pts)")
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(60) → {sl} (+{pnl_pts:.0f}pts)")
 
         # VWAP for exit decisions
         vwap = vwap_now   # pre-fetched once above the loop
@@ -2034,18 +2114,12 @@ def run_scan():
                 try: log_block('IBKR', 'MNQ', 'LONG', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
             else:
-                # A_ext gate: block LONG when price is overextended above VWAP
-                vwap_ext = price_now - sig.get('vwap', price_now)
-                if vwap_ext > A_EXT_LIMIT_PTS:
-                    log(f"LONG signal: {grade} ({score}pts) — A_EXT SKIP "
-                        f"(ext={vwap_ext:+.0f}pts > {A_EXT_LIMIT_PTS:.0f}pt limit)")
-                    try: log_block('IBKR', 'MNQ', 'LONG', 'A_EXT', f'{vwap_ext:+.0f}pts', price_now, session)
+                # A_ext gate REMOVED Jul 6 2026 — gate_audit scored 33% accuracy
+                # / REMOVE verdict on live IBKR SHORT; conflicts with wide-stop scheme.
+                log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
+                if place_trade('LONG', sig, regime, score, grade):
+                    try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
                     except Exception: pass
-                else:
-                    log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
-                    if place_trade('LONG', sig, regime, score, grade):
-                        try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
-                        except Exception: pass
     else:
         try: log_block('IBKR', 'MNQ', 'LONG', 'REGIME', regime, price_now, session)
         except Exception: pass
@@ -2076,19 +2150,13 @@ def run_scan():
                 try: log_block('IBKR', 'MNQ', 'SHORT', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
             else:
-                # A_ext gate: block SHORT when price is overextended below VWAP
-                vwap_ext = price_now - sig.get('vwap', price_now)
-                if vwap_ext < -A_EXT_LIMIT_PTS:
-                    log(f"SHORT signal: {grade} ({score}pts) — A_EXT SKIP "
-                        f"(ext={vwap_ext:+.0f}pts < -{A_EXT_LIMIT_PTS:.0f}pt limit)")
-                    try: log_block('IBKR', 'MNQ', 'SHORT', 'A_EXT', f'{vwap_ext:+.0f}pts', price_now, session)
+                # A_ext gate REMOVED Jul 6 2026 — gate_audit scored 33% accuracy
+                # / REMOVE verdict on live IBKR SHORT; conflicts with wide-stop scheme.
+                log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                    f"ib={_ib_kind} — entering")
+                if place_trade('SHORT', sig, regime, score, grade):
+                    try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
                     except Exception: pass
-                else:
-                    log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
-                        f"ib={_ib_kind} — entering")
-                    if place_trade('SHORT', sig, regime, score, grade):
-                        try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
-                        except Exception: pass
     else:
         try: log_block('IBKR', 'MNQ', 'SHORT', 'REGIME', regime, price_now, session)
         except Exception: pass

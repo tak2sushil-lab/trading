@@ -2112,16 +2112,22 @@ def _execute_credit_spread_bg(sym: str, calc: dict, chat_id: str,
 
         filled_count = (status or {}).get('filled', 0)
         if st in ('Unknown', 'Cancelled', 'PendingSubmit', 'PreSubmitted') and filled_count == 0:
+            # Verify BOTH legs — confirming on the short leg alone can leave the
+            # protective long leg unopened, i.e. record a "credit spread" that is
+            # actually a naked short with undefined risk.
             opts_pos = get_portfolio_options()
-            matched = [p for p in opts_pos
-                       if p.get('symbol') == sym
-                       and p.get('expiry') == expiry
-                       and abs(float(p.get('strike', 0)) - sell_strike) < 0.01
-                       and float(p.get('qty', 0)) < 0]   # short position = negative qty
-            if matched:
+            short_matched = any(p.get('symbol') == sym and p.get('expiry') == expiry
+                                 and abs(float(p.get('strike', 0)) - sell_strike) < 0.01
+                                 and float(p.get('qty', 0)) < 0 for p in opts_pos)
+            long_matched = any(p.get('symbol') == sym and p.get('expiry') == expiry
+                                and abs(float(p.get('strike', 0)) - buy_strike) < 0.01
+                                and float(p.get('qty', 0)) > 0 for p in opts_pos)
+            if short_matched and long_matched:
                 print(f"[options] {sym} credit confirmed in portfolio (status={st}) — recording fill")
                 filled_at = avg_fill or limit_credit
                 break
+            elif short_matched or long_matched:
+                print(f"[options] {sym} credit PARTIAL fill detected (status={st}) — short_leg={short_matched} long_leg={long_matched}, NOT recording as complete")
 
         if status and status.get('filled', 0) >= qty:
             filled_at = avg_fill or limit_credit
@@ -2472,17 +2478,24 @@ def _execute_spread_bg(sym: str, tmpl: dict, chat_id: str,
 
         filled_count = (status or {}).get('filled', 0)
         if st in ('Unknown', 'Cancelled', 'PendingSubmit', 'PreSubmitted') and filled_count == 0:
-            opts_pos = get_portfolio_options()
-            long_stk = float(tmpl['long_strike'])
-            matched = [p for p in opts_pos
-                       if p.get('symbol') == sym
-                       and p.get('expiry') == expiry
-                       and abs(float(p.get('strike', 0)) - long_stk) < 0.01
-                       and float(p.get('qty', 0)) > 0]
-            if matched:
+            # Verify BOTH legs — a combo confirmed on the long leg alone can leave
+            # a naked short leg unopened (same class of bug found in watchman's
+            # close-verification Jul 6 2026: paper BAG fills can be partial).
+            opts_pos  = get_portfolio_options()
+            long_stk  = float(tmpl['long_strike'])
+            short_stk = float(tmpl['short_strike'])
+            long_matched = any(p.get('symbol') == sym and p.get('expiry') == expiry
+                                and abs(float(p.get('strike', 0)) - long_stk) < 0.01
+                                and float(p.get('qty', 0)) > 0 for p in opts_pos)
+            short_matched = any(p.get('symbol') == sym and p.get('expiry') == expiry
+                                 and abs(float(p.get('strike', 0)) - short_stk) < 0.01
+                                 and float(p.get('qty', 0)) < 0 for p in opts_pos)
+            if long_matched and short_matched:
                 print(f"[options] {sym} position confirmed in portfolio (status={st}) — recording fill at limit ${limit_price:.2f}")
                 filled_at = avg_fill or limit_price
                 break
+            elif long_matched or short_matched:
+                print(f"[options] {sym} PARTIAL fill detected (status={st}) — long_leg={long_matched} short_leg={short_matched}, NOT recording as complete")
 
         if status and status.get('filled', 0) >= qty:
             filled_at = avg_fill or limit_price
@@ -3141,10 +3154,17 @@ def _mode_a_scan() -> list[str]:
         for sym, is_catalyst, intra_chg in rows:
             if sym not in SCALP_UNIVERSE:
                 continue
+            # Same class of bug fixed in _check_equity_scan_triggers (Jul 6): without
+            # checking + claiming cooldown here, catalyst/exhausted symbols re-log
+            # every ~5min scalp cycle for as long as they stay in the 10-min window.
+            if sym in _scalp_triggered:
+                continue
             if is_catalyst:
+                _scalp_cooldown_set(sym, datetime.now(ET))
                 print(f"[scalp] mode_a skip {sym}: catalyst=1 (IV elevated)")
                 continue
             if intra_chg is not None and intra_chg >= 7.0:
+                _scalp_cooldown_set(sym, datetime.now(ET))
                 print(f"[scalp] mode_a skip {sym}: intra {intra_chg:.1f}% ≥7% (exhausted)")
                 continue
             result.append(sym)
@@ -4629,9 +4649,11 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
         # Bear puts: catalyst and high intraday DON'T hurt (60%+ WR) — no filter needed
         if direction == 'LONG':
             if is_catalyst:
+                _proactive_cooldown[sym] = now   # condition won't flip intraday — don't re-log every 30s
                 print(f"[options] scan trigger {sym} LONG skip: catalyst=1 (IV elevated)")
                 continue
             if intra_chg is not None and intra_chg >= 7.0:
+                _proactive_cooldown[sym] = now
                 print(f"[options] scan trigger {sym} LONG skip: intra {intra_chg:.1f}% ≥7% (exhausted)")
                 continue
 

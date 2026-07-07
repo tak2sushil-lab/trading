@@ -138,6 +138,14 @@ def clean(value):
     except:
         return None
 
+def clean_price(value):
+    """Like clean(), but also filters IBKR's -1 sentinel for 'no data' on live
+    ticker bid/ask/last/close fields. Real market prices are always > 0, so this
+    is safe here — do NOT use on Greeks (delta can legitimately be -1) or
+    PnL/cost fields (can legitimately be <= 0)."""
+    v = clean(value)
+    return None if v is not None and v <= 0 else v
+
 # ── Health check ──────────────────────────────────────────
 @app.get("/")
 async def health():
@@ -160,10 +168,10 @@ async def get_quote(symbol: str):
     ticker = ib.reqMktData(contract, snapshot=True)
     await asyncio.sleep(3)
 
-    bid   = clean(ticker.bid)
-    ask   = clean(ticker.ask)
-    last  = clean(ticker.last)
-    close = clean(ticker.close)
+    bid   = clean_price(ticker.bid)
+    ask   = clean_price(ticker.ask)
+    last  = clean_price(ticker.last)
+    close = clean_price(ticker.close)
     best_price = last or bid or ask or close
 
     return {
@@ -817,9 +825,9 @@ async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
         return {"error": f"Could not qualify {sym} {expiry} {strike} {right}"}
 
     def _extract(ticker):
-        bid    = clean(ticker.bid)
-        ask    = clean(ticker.ask)
-        last   = clean(ticker.last)
+        bid    = clean_price(ticker.bid)
+        ask    = clean_price(ticker.ask)
+        last   = clean_price(ticker.last)
         mid    = round((bid + ask) / 2, 4) if bid and ask else None
         greeks = ticker.modelGreeks
         return {
@@ -839,7 +847,7 @@ async def get_option_quote(symbol: str, expiry: str, strike: float, right: str):
         got_price = False
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
-            if not got_price and (clean(tkr.bid) is not None or clean(tkr.ask) is not None):
+            if not got_price and (clean_price(tkr.bid) is not None or clean_price(tkr.ask) is not None):
                 got_price = True
                 deadline = min(deadline, asyncio.get_event_loop().time() + 2.0)  # 2s more for Greeks
             if got_price and tkr.modelGreeks is not None:
@@ -1338,13 +1346,13 @@ async def get_futures_quote(symbol: str):
             ib.reqMarketDataType(1)
             ticker = ib.reqMktData(contract, '', False, False)
             await asyncio.sleep(4)
-            bid   = clean(ticker.bid)
-            ask   = clean(ticker.ask)
-            last  = clean(ticker.last)
-            close = clean(ticker.close)
+            bid   = clean_price(ticker.bid)
+            ask   = clean_price(ticker.ask)
+            last  = clean_price(ticker.last)
+            close = clean_price(ticker.close)
             ib.reqMarketDataType(1)  # restore for equity/options endpoints
             if last or bid or ask:
-                mid  = clean((bid + ask) / 2) if bid and ask else None
+                mid  = clean_price((bid + ask) / 2) if bid and ask else None
                 best = last or mid or close
                 source = 'ibkr_live'
 
@@ -1358,8 +1366,8 @@ async def get_futures_quote(symbol: str):
             loop = asyncio.get_event_loop()
             tk   = await loop.run_in_executor(None,
                    lambda: yf.Ticker(yf_ticker).fast_info)
-            last  = clean(getattr(tk, 'last_price', None))
-            close = clean(getattr(tk, 'previous_close', None))
+            last  = clean_price(getattr(tk, 'last_price', None))
+            close = clean_price(getattr(tk, 'previous_close', None))
             best  = last or close
             if best:
                 source = 'yfinance'
