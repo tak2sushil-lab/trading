@@ -324,9 +324,16 @@ def update():
     conn = init_db()
     print('=== UPDATE: fetching last 3 days ===')
     for sym, (_, yf_sym) in FUTURES_SYMBOLS.items():
-        # Databento 1-min (last 3 days)
+        # Databento 1-min (last 3 days). Bug found/fixed Jul 7 2026: this
+        # always requested end=today, but the current Databento plan embargoes
+        # anything less than ~1 day old (422 dataset_unavailable_range) — every
+        # night's request failed outright (all-or-nothing), so futures_bars_1m
+        # silently stopped updating for 3+ weeks while futures_bars_5m looked
+        # fine only because it separately falls back to yfinance below. Now
+        # requests end=yesterday to stay inside the licensed window.
         three_days_ago = (datetime.now(timezone.utc) - timedelta(days=4)).strftime('%Y-%m-%d')
-        rows_1m, rows_5m = fetch_databento(sym, start=three_days_ago)
+        yesterday       = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+        rows_1m, rows_5m = fetch_databento(sym, start=three_days_ago, end=yesterday)
         if rows_1m:
             store_bars(conn, rows_1m, 'futures_bars_1m')
         if rows_5m:
