@@ -44,25 +44,72 @@ TICK_SIZE      = 0.25
 TICK_VALUE     = 0.50
 COMMISSION_RT  = 1.24
 
-MAX_DAILY_TRADES   = 2
-MAX_DAILY_LOSS     = 1_250.0  # IBKR_DLL_SOFT — 25% of $5K capital (updated Jun 16 2026)
+# Updated Jul 7 2026 (sim/prod sync pass) to match futures_trader.py exactly.
+# Overnight bias / IB-kind / Hero gate machinery below was already correct and
+# untouched — this sync only fixes regime/signal detection, entry gates, and
+# the exit stack, which is what actually drifted (all rebuilt same-day).
+MAX_DAILY_TRADES   = 5        # was 2 — raised Jul 7 2026, see futures_trader.py comment
+MAX_DAILY_LOSS     = 3_750.0  # IBKR_DLL_SOFT — 25% of $15K capital (was $1,250/$5K)
 HERO_GATE_ENABLED           = True   # Phase 5 regime-aware scoring — disable via --no-hero-gate
 ALLOW_LONG_ON_SHORT_BIAS    = False  # Test flag: allow LONG entries even on SHORT ovn_pos bias
-MAX_RISK_PER_TRADE = 100.0
+MAX_RISK_PER_TRADE = 2000.0   # matches futures_trader.py — NOTE: real live sizing goes through
+                               # calc_contracts_dynamic() (RVOL/IB-range tiers), not this formula.
+                               # calc_contracts() below (risk-based) is an approximation used only
+                               # to feed the Hero gate's contract cap, same as it always has been.
 
-STOP_ATR_MULT   = 1.5
-TARGET_ATR_MULT = 3.0
-MIN_RR          = 2.0
+# Point-based stop/target (was ATR-multiple STOP_ATR_MULT=1.5/TARGET_ATR_MULT=3.0
+# before Jul 7 2026 morning). BASE_STOP_PTS=150 is the real loss-cutter —
+# matches current live futures_trader.py (reverted Jul 7 evening; see
+# USE_THESIS_INVALIDATION below for the opt-in comparison mode).
+BASE_STOP_PTS    = 150.0
+BASE_TARGET_PTS  = 1500.0
+MIN_RR           = 1.4    # was 2.0 — trivially satisfied now target is a backstop
 
-BE_ACTIVATE_PTS  = 30.0
-TRAIL_WIDE_PTS   = 60.0
-TRAIL_WIDE_GAP   = 20.0
-TRAIL_TIGHT_PTS  = 85.0
-TRAIL_TIGHT_GAP  = 10.0
+# Entry-quality gates added Jul 7 2026 (checked in simulate_day, not grade_entry)
+ENTRY_MIN_RVOL    = 0.85
+HTF_BARS_MIN      = 30
+HTF_TREND_BARS    = 3
+
+# Profit-lock trail tiers — these predate the Jul 7 thesis-invalidation
+# experiment entirely (already live before that work started) and were NOT
+# part of what got reverted. Proportional lock-in (BE_LOCK_FRACTION), not
+# flat +1-tick BE.
+BE_ACTIVATE_PTS  = 150.0
+BE_LOCK_FRACTION = 0.35
+TRAIL_WIDE_PTS   = 200.0
+TRAIL_WIDE_GAP   = 120.0
+TRAIL_TIGHT_PTS  = 350.0
+TRAIL_TIGHT_GAP  = 60.0
 
 NO_MOVE_MINUTES  = 90
-NO_MOVE_MAX_PTS  = 25.0
-NO_MOVE_MIN_PTS  = -10.0
+NO_MOVE_MAX_PTS  = 60.0
+NO_MOVE_MIN_PTS  = -40.0
+
+# ── Candidate ideas (Jul 7 2026 evening) — opt-in only, untested against the
+# complete pipeline before now. Named directly from the Jul 7 missed-day
+# diagnosis: wave 2 (a real ~350pt rally) never got an entry because
+# orb_bull never fired and score capped at 75 (A, not A+); wave 3's SHORT
+# re-entry was delayed ~15min by the 3-scan WEAK confirmation requirement.
+SUSTAIN_A_PLUS_BONUS   = False  # --sustain-bonus: alternate A+ path for
+                                 # sustained vwap_reclaim+momentum without an
+                                 # ORB break (6+ consecutive bars, +15pts)
+SUSTAIN_BARS           = 6
+SUSTAIN_BONUS_PTS      = 15
+SHORT_CONFIRM_SCANS    = 3      # --short-confirm N: consecutive WEAK scans
+                                 # required before SHORT is allowed (was 3)
+
+# ── Thesis invalidation — REVERTED Jul 7 2026, opt-in only via --thesis-invalidation ──
+# Tried widening BASE_STOP_PTS to 500 (rare backstop) + this signal-based exit
+# as the real loss-cutter. Once validated against the COMPLETE entry pipeline
+# (Hero gate + overnight bias + IB kind + 14:00 cutoff — all missing from the
+# quick backtests that first looked promising), it was net NEGATIVE vs the
+# flat 150pt stop: $3,770 vs $4,172 full 2026 YTD, 52.5% vs 60.0% WR. Reverted
+# same day. Kept here as an opt-in flag for anyone re-testing a variant of the
+# idea — default OFF, matching live production.
+USE_THESIS_INVALIDATION = False
+THESIS_STOP_PTS          = 500.0   # backstop width when this mode is enabled
+THESIS_FAIL_MIN_VOTES    = 2
+THESIS_FAIL_CONFIRM_BARS = 2
 
 # Session boundaries (ET) — match futures_trader.py
 NY_OPEN_END   = _dt.time(10, 30)
@@ -201,14 +248,20 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
 
 
 def calc_sl_target(price: float, atr: float, side: str) -> tuple[float, float]:
+    """
+    Point-based (was ATR-multiple before Jul 7 2026 morning). BASE_STOP_PTS
+    (150) is the real loss-cutter, matching live. If USE_THESIS_INVALIDATION
+    is on (opt-in comparison mode, off by default), the stop widens to
+    THESIS_STOP_PTS (500) and becomes a rare backstop instead.
+    `atr` param kept for signature compat with existing call sites.
+    """
     def rt(v):
         return round(round(v / TICK_SIZE) * TICK_SIZE, 2)
-    raw_sl  = atr * STOP_ATR_MULT
-    raw_tgt = atr * TARGET_ATR_MULT
+    stop_pts = THESIS_STOP_PTS if USE_THESIS_INVALIDATION else BASE_STOP_PTS
     if side == 'LONG':
-        return rt(price - raw_sl), rt(price + raw_tgt)
+        return rt(price - stop_pts), rt(price + BASE_TARGET_PTS)
     else:
-        return rt(price + raw_sl), rt(price - raw_tgt)
+        return rt(price + stop_pts), rt(price - BASE_TARGET_PTS)
 
 
 def calc_contracts(price: float, sl: float) -> int:
@@ -254,19 +307,37 @@ def get_signals(bars_today: pd.DataFrame, bars_hist: pd.DataFrame,
         'session': session,
     }
 
-    prev_bar_close = float(bars_today['close'].iloc[-2])
+    # ── Bull/bear signal patterns — redesigned Jul 7 2026 ──────────────────
+    # Old patterns had two problems: (1) orb_bull/orb_bear required
+    # session=='NY_OPEN' — orb_bear fired ZERO times in a 3-month sample
+    # because of this; (2) vwap_rejection/momentum_bear were single-bar-
+    # sensitive (any one noisy tick reset them). Fixed: ORB restriction
+    # removed; VWAP position is now a sustained 3-bar streak instead of a
+    # single crossing event; momentum is majority (3-of-4) over 5 bars
+    # instead of strict 3-of-3.
 
-    # ── Bull signals ──────────────────────────────────────────────────────────
+    # ORB break — session restriction removed (was NY_OPEN-only)
+    sig['orb_bull'] = orb_set and price > orb_high
+    sig['orb_bear'] = orb_set and price < orb_low
 
-    sig['orb_bull']       = orb_set and price > orb_high and session == 'NY_OPEN'
-    sig['vwap_reclaim']   = prev_bar_close < vwap and price > vwap
-    if len(bars_today) >= 4:
-        last3 = bars_today['close'].iloc[-4:-1]
-        sig['momentum_bull'] = (
-            all(last3.iloc[i] < last3.iloc[i+1] for i in range(2)) and price > vwap
-        )
+    # VWAP position — sustained 3-bar streak instead of a single-bar crossing
+    if len(bars_today) >= 3:
+        last3v = bars_today['close'].iloc[-3:]
+        sig['vwap_reclaim']   = bool((last3v > vwap).all())
+        sig['vwap_rejection'] = bool((last3v < vwap).all())
     else:
-        sig['momentum_bull'] = False
+        sig['vwap_reclaim'] = sig['vwap_rejection'] = False
+
+    # Momentum: majority (3-of-4) same-direction transitions over the last 5
+    # bars + on the right side of VWAP — was strict 3-of-3 over 4 bars.
+    if len(bars_today) >= 5:
+        last5 = bars_today['close'].iloc[-5:]
+        up_count   = sum(1 for i in range(len(last5)-1) if last5.iloc[i] < last5.iloc[i+1])
+        down_count = sum(1 for i in range(len(last5)-1) if last5.iloc[i] > last5.iloc[i+1])
+        sig['momentum_bull'] = (up_count >= 3) and price > vwap
+        sig['momentum_bear'] = (down_count >= 3) and price < vwap
+    else:
+        sig['momentum_bull'] = sig['momentum_bear'] = False
 
     # Session open play: price moved away from first RTH close in direction of VWAP
     if len(bars_today) >= 2:
@@ -280,58 +351,90 @@ def get_signals(bars_today: pd.DataFrame, bars_hist: pd.DataFrame,
     sig['pm_bull'] = pm_set and pm_high > 0 and price > pm_high
     sig['pm_bear'] = pm_set and pm_low  > 0 and price < pm_low
 
-    # ── Bear signals ──────────────────────────────────────────────────────────
-
-    sig['orb_bear']       = orb_set and price < orb_low and session == 'NY_OPEN'
-    sig['vwap_rejection'] = prev_bar_close > vwap and price < vwap
-    if len(bars_today) >= 4:
-        last3 = bars_today['close'].iloc[-4:-1]
-        sig['momentum_bear'] = (
-            all(last3.iloc[i] > last3.iloc[i+1] for i in range(2)) and price < vwap
-        )
-    else:
-        sig['momentum_bear'] = False
-
     return sig
 
 
 # ── Regime detection ─────────────────────────────────────────────────────────
 
+def calc_session_rvol(bars_today: pd.DataFrame) -> float:
+    """
+    Matches live calc_session_rvol() exactly: current bar volume / average
+    volume of today's RTH bars so far. Added Jul 7 2026 as a hard entry gate
+    (ENTRY_MIN_RVOL) and as an input to get_regime()'s participation filter.
+    """
+    if bars_today.empty or len(bars_today) < 2:
+        return 1.0
+    avg_v = bars_today['volume'].mean()
+    if not avg_v:
+        return 1.0
+    return float(bars_today['volume'].iloc[-1]) / float(avg_v)
+
+
+def calc_htf_trend(all_bars: pd.DataFrame, current_ts) -> int:
+    """
+    Matches live calc_htf_trend() exactly: net direction of the last
+    HTF_TREND_BARS completed HTF_BARS_MIN-minute bars. Returns 1/-1/0.
+    Added Jul 7 2026 as a hard entry gate (30-min trend must agree with side).
+    """
+    hist = all_bars[all_bars.index <= current_ts]
+    if hist.empty:
+        return 0
+    htf = hist['close'].resample(f'{HTF_BARS_MIN}min').last().dropna()
+    if len(htf) < HTF_TREND_BARS:
+        return 0
+    last_n = htf.iloc[-HTF_TREND_BARS:]
+    if last_n.iloc[-1] > last_n.iloc[0]:
+        return 1
+    if last_n.iloc[-1] < last_n.iloc[0]:
+        return -1
+    return 0
+
+
 def get_regime(bars_today: pd.DataFrame, bars_hist: pd.DataFrame,
                prev_close: float) -> str:
     """
-    Matches live get_regime() exactly.
-    bars_today = today's RTH bars (for trend, choppiness, VWAP)
+    Rebuilt Jul 7 2026 — matches live get_regime() exactly. Old formula (STRONG
+    vs NORMAL indistinguishable in backtest) replaced with: RVOL>=0.65
+    participation gate, hybrid day/session change reference (STRONG uses
+    change vs today's own open, WEAK keeps change vs yesterday's close),
+    5-bar trend (was 3 — too noise-sensitive), choppy measured against
+    session_chg (today's own range) not day_chg.
+    bars_today = today's RTH bars (for trend, choppiness, VWAP, RVOL)
     bars_hist  = 2-day history (for RSI)
     prev_close = yesterday's last close (for day_chg_pct)
     """
-    if len(bars_today) < 3:
+    if len(bars_today) < 6:
         return 'NORMAL'
 
     price = float(bars_today['close'].iloc[-1])
     vwap  = compute_vwap(bars_today)
     rsi   = compute_rsi(bars_hist['close'])
+    rvol  = calc_session_rvol(bars_today)
 
     above_vwap = price > vwap if vwap else True
 
-    # Short-term trend: last 3 bars of today
-    trend = bars_today['close'].iloc[-3:]
+    # Short-term trend: last 5 bars (was 3)
+    trend = bars_today['close'].iloc[-5:]
     trending_up   = float(trend.iloc[-1]) > float(trend.iloc[0])
     trending_down = float(trend.iloc[-1]) < float(trend.iloc[0])
 
-    # Day change vs YESTERDAY's close (matches live — not vs first RTH bar)
+    # Day change vs YESTERDAY's close (used for WEAK)
     day_chg_pct = (price - prev_close) / prev_close * 100 if prev_close else 0
 
-    # Choppiness (only meaningful with >= 6 bars today)
-    choppy = False
-    if len(bars_today) >= 6:
-        diffs = bars_today['close'].diff().dropna()
-        flips = sum(1 for i in range(1, len(diffs)) if diffs.iloc[i] * diffs.iloc[i-1] < 0)
-        choppy = (flips / max(len(diffs), 1)) > 0.4 and abs(day_chg_pct) < 0.2
+    # Change vs TODAY's own open (used for STRONG — catches intraday reversals)
+    session_open = float(bars_today['open'].iloc[0])
+    session_chg_pct = (price - session_open) / session_open * 100 if session_open else 0
+
+    # Choppiness: >40% bar reversals, measured against session_chg
+    diffs  = bars_today['close'].diff().dropna()
+    flips  = sum(1 for i in range(1, len(diffs)) if diffs.iloc[i] * diffs.iloc[i-1] < 0)
+    choppy = (flips / max(len(diffs), 1)) > 0.4 and abs(session_chg_pct) < 0.15
 
     if choppy:
         return 'NORMAL'
-    if above_vwap and trending_up and day_chg_pct > 0.3 and rsi < 80:
+    if rvol < 0.65:
+        return 'NORMAL'   # not enough participation to trust the direction
+    if above_vwap and trending_up and session_chg_pct > 0.15 and rsi < 80:
         return 'STRONG'
     if not above_vwap and trending_down and day_chg_pct < -0.3 and rsi > 20:
         return 'WEAK'
@@ -586,6 +689,11 @@ def simulate_day(
     last_regime    = 'NORMAL'
     consec_count   = 0   # how many consecutive scans in `last_regime`
 
+    # Sustained vwap_reclaim/vwap_rejection streak (candidate idea, opt-in via
+    # SUSTAIN_A_PLUS_BONUS) — consecutive bars the signal has held true.
+    reclaim_streak   = 0
+    rejection_streak = 0
+
     # Phase 5: day regime detected once at IB formation (10:30am)
     day_regime: str | None = None
 
@@ -597,6 +705,9 @@ def simulate_day(
     # Prevents entering right into the tail of IB volatility
     large_ib_delayed: bool = False
 
+    # Thesis-invalidation state (added Jul 7 2026) — per-position fail streak,
+    # tracked across bars (position dict carries 'fail_streak', reset on new entry).
+
     for i in range(3, len(rth)):
         bar         = rth.iloc[i]
         t           = rth.index[i].time()
@@ -605,6 +716,48 @@ def simulate_day(
         # 2-day history ending at current bar (for ATR, RSI — matches live 2-day bar window)
         current_ts = rth.index[i]
         bars_hist  = all_bars[all_bars.index <= current_ts].iloc[-100:]
+
+        # ── Compute signals/regime/HTF unconditionally, every bar ──────────────
+        # (Jul 7 2026 sync: previously only computed when scanning for a new
+        # entry — but thesis-invalidation needs these for OPEN positions too,
+        # matching live monitor_open_trades() which computes them once per
+        # cycle regardless of position state.)
+        sig    = get_signals(bars_today, bars_hist, orb_high, orb_low, orb_set,
+                             pm_high, pm_low, pm_set)
+        regime = get_regime(bars_today, bars_hist, prev_close)
+        htf    = calc_htf_trend(all_bars, current_ts)
+
+        if SUSTAIN_A_PLUS_BONUS and sig:
+            reclaim_streak   = reclaim_streak + 1 if sig.get('vwap_reclaim') else 0
+            rejection_streak = rejection_streak + 1 if sig.get('vwap_rejection') else 0
+
+        # Track consecutive regime scans (mirrors live _confirmed_scans)
+        if regime == last_regime:
+            consec_count += 1
+        else:
+            consec_count = 1
+            last_regime  = regime
+        confirmed_scans = consec_count
+
+        # IB range / day regime / IB-kind classification (mirrors live — happens
+        # every scan until classified, regardless of position state)
+        ib_range = float(bars_today['high'].max() - bars_today['low'].min()) if len(bars_today) >= 2 else 0.0
+        if day_regime is None and ib_range >= MIN_IB_RANGE:
+            day_regime = detect_regime(ib_range)
+            ib_hi = float(bars_today['high'].max())
+            ib_lo = float(bars_today['low'].min())
+            ib_cl = float(bars_today['close'].iloc[-1])
+            ib_rng = ib_hi - ib_lo
+            if ib_rng > 0:
+                ib_mid = (ib_cl - ib_lo) / ib_rng
+                if ib_mid < 0.25:
+                    ib_kind = 'BEAR_DIRECTIONAL'
+                elif ib_mid > 0.75:
+                    ib_kind = 'BULL_DIRECTIONAL'
+                else:
+                    ib_kind = 'ROTATIONAL'
+            if large_ib_gate_pts > 0 and ib_range > large_ib_gate_pts:
+                large_ib_delayed = True
 
         # ── Manage open position ──────────────────────────────────────────────
         if position:
@@ -620,11 +773,15 @@ def simulate_day(
             exit_price  = None
             exit_reason = None
 
-            # 1. Hard stop (SL from PREVIOUS bar — no same-bar trail race)
+            # 1. Hard stop — the primary loss-cutter (flat 150pt), UNLESS
+            # USE_THESIS_INVALIDATION opt-in mode is on, in which case it's a
+            # rare catastrophic backstop (500pt) instead. SL from PREVIOUS
+            # bar — no same-bar trail race.
+            stop_hit_label = 'stop' if not USE_THESIS_INVALIDATION else ('backstop' if position['sl'] == position['stop_init'] else 'trail_lock')
             if not is_short and float(bar['low']) <= sl:
-                exit_price, exit_reason = sl, 'stop'
+                exit_price, exit_reason = sl, stop_hit_label
             elif is_short and float(bar['high']) >= sl:
-                exit_price, exit_reason = sl, 'stop'
+                exit_price, exit_reason = sl, stop_hit_label
 
             # 2. Daily circuit breaker (realized + unrealized, checked before target)
             if not exit_reason:
@@ -633,7 +790,7 @@ def simulate_day(
                 if daily_pnl + cur_usd <= -MAX_DAILY_LOSS:
                     exit_price, exit_reason = float(bar['close']), 'dll_circuit'
 
-            # 3. Target hit
+            # 3. Target hit (1500pt backstop — essentially never fires; trail does the work)
             if not exit_reason:
                 if not is_short and float(bar['high']) >= target:
                     exit_price, exit_reason = target, 'target'
@@ -649,6 +806,22 @@ def simulate_day(
                         exit_price, exit_reason = float(bar['close']), 'vwap_cross'
                     elif is_short and float(bar['close']) > vwap_now:
                         exit_price, exit_reason = float(bar['close']), 'vwap_cross'
+
+            # 4b. Thesis invalidation — opt-in only (USE_THESIS_INVALIDATION,
+            # off by default; reverted Jul 7 2026, see constants comment
+            # above for why). Exit on evidence the setup failed instead of
+            # waiting for price to reach the backstop. 2-of-4 votes (regime
+            # flip, HTF flip, opposing momentum, opposing VWAP cross/reclaim),
+            # sustained 2 consecutive closed bars.
+            if not exit_reason and USE_THESIS_INVALIDATION and sig:
+                regime_against = (regime == 'WEAK') if not is_short else (regime in ('STRONG', 'NORMAL'))
+                htf_against    = (htf == -1) if not is_short else (htf == 1)
+                opp_signal     = sig.get('momentum_bear') if not is_short else sig.get('momentum_bull')
+                opp_vwap       = sig.get('vwap_rejection') if not is_short else sig.get('vwap_reclaim')
+                fail_votes     = sum([bool(regime_against), bool(htf_against), bool(opp_signal), bool(opp_vwap)])
+                position['fail_streak'] = position.get('fail_streak', 0) + 1 if fail_votes >= 1 else 0
+                if fail_votes >= THESIS_FAIL_MIN_VOTES and position['fail_streak'] >= THESIS_FAIL_CONFIRM_BARS:
+                    exit_price, exit_reason = float(bar['close']), 'thesis_fail'
 
             # 5. No-move exit (90 min stuck in dead zone)
             if not exit_reason:
@@ -673,8 +846,12 @@ def simulate_day(
                 # Trail thresholds use PEAK P&L (live uses current pnl but tracks s_peak)
                 pnl_pts_peak = (entry - peak) if is_short else (peak - entry)
 
+                # Proportional lock-in (protects BE_LOCK_FRACTION of peak
+                # favorable move) — predates the thesis-invalidation
+                # experiment, unconditional, matches live exactly.
                 if pnl_pts_peak >= BE_ACTIVATE_PTS:
-                    be_sl = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
+                    locked = round(pnl_pts_peak * BE_LOCK_FRACTION, 2)
+                    be_sl  = round(entry + max(locked, TICK_SIZE), 2) if not is_short else round(entry - max(locked, TICK_SIZE), 2)
                     if (not is_short and be_sl > sl) or (is_short and be_sl < sl):
                         sl = be_sl
 
@@ -717,44 +894,9 @@ def simulate_day(
             if t < ib_ready_time:
                 continue
 
-            sig    = get_signals(bars_today, bars_hist, orb_high, orb_low, orb_set,
-                                 pm_high, pm_low, pm_set)
-            regime = get_regime(bars_today, bars_hist, prev_close)
-
-            # Track consecutive regime scans (mirrors live _confirmed_scans)
-            if regime == last_regime:
-                consec_count += 1
-            else:
-                consec_count = 1
-                last_regime  = regime
-            confirmed_scans = consec_count
-
             # IB range gate: H-L from 9:30 to now must be >= 50pts (mirrors live)
-            ib_range = float(bars_today['high'].max() - bars_today['low'].min()) if len(bars_today) >= 2 else 0.0
             if 0 < ib_range < MIN_IB_RANGE:
                 continue
-
-            # Phase 5: detect day regime once at IB formation (first bar past IB gate)
-            if day_regime is None:
-                day_regime = detect_regime(ib_range)
-
-                # IB directional classification (classify once at IB formation)
-                ib_hi = float(bars_today['high'].max())
-                ib_lo = float(bars_today['low'].min())
-                ib_cl = float(bars_today['close'].iloc[-1])
-                ib_rng = ib_hi - ib_lo
-                if ib_rng > 0:
-                    ib_mid = (ib_cl - ib_lo) / ib_rng
-                    if ib_mid < 0.25:
-                        ib_kind = 'BEAR_DIRECTIONAL'
-                    elif ib_mid > 0.75:
-                        ib_kind = 'BULL_DIRECTIONAL'
-                    else:
-                        ib_kind = 'ROTATIONAL'
-
-                # Large IB gate: IB range > threshold at 10:30 → delay first entry to 10:45
-                if large_ib_gate_pts > 0 and ib_range > large_ib_gate_pts:
-                    large_ib_delayed = True
 
             # Large IB delay: skip scans until 10:45 (one extra scan to let volatility settle)
             if large_ib_delayed:
@@ -787,7 +929,7 @@ def simulate_day(
             #   even if day_chg_pct hasn't gone negative yet (market opened up, then crashed).
             #   Hero gate still applies — only A/A+ setups pass through.
             short_allowed = (
-                (regime == 'WEAK' and confirmed_scans >= 3) or
+                (regime == 'WEAK' and confirmed_scans >= SHORT_CONFIRM_SCANS) or
                 (effective_bias == 'SHORT') or
                 (ib_kind == 'BEAR_DIRECTIONAL')
             )
@@ -805,57 +947,85 @@ def simulate_day(
                 if side == 'LONG' and regime == 'WEAK':
                     continue
 
+                # A+ only (was 'A' or 'A+') — backtested Jul 7: A-grade entries
+                # diluted WR from 56% to 41% over a 9-day sample; single biggest
+                # lever in the whole redesign. Matches live exactly.
                 score, grade = grade_entry(sig, regime, side)
-                if grade not in ('A', 'A+'):
+
+                # Candidate idea (opt-in, --sustain-bonus): upgrade a sub-A+ grade
+                # to A+ if vwap_reclaim/vwap_rejection has held SUSTAIN_BARS+
+                # consecutive bars — catches sustained grinding moves (like the
+                # Jul 7 rally) that never get an ORB break and cap out at A.
+                if SUSTAIN_A_PLUS_BONUS and grade != 'A+' and grade != 'SKIP':
+                    streak = reclaim_streak if side == 'LONG' else rejection_streak
+                    if streak >= SUSTAIN_BARS and score + SUSTAIN_BONUS_PTS >= 80:
+                        grade = 'A+'
+
+                if grade != 'A+':
                     continue
 
-                # BOTH days: PM signals must align with ORB direction
-                # Exception: IB formation overrides ORB (IB=60min vs ORB=15min).
-                # BEAR_DIRECTIONAL IB (mid<0.25) lets PM_SHORT through even on UP ORB.
-                # BULL_DIRECTIONAL IB lets PM_LONG through even on DOWN ORB.
+                # NOTE: the old "PM signals must align with ORB direction" gate
+                # (orb_dir vs ib_kind) was removed during the Jul 7 sync pass —
+                # confirmed it has no equivalent anywhere in current
+                # futures_trader.py's run_scan(); it was legacy from an earlier
+                # strategy generation and kept sim artificially more restrictive
+                # than live.
                 setup = setup_name(sig, side)
-                if daily_bias == 'BOTH' and setup.startswith('PM'):
-                    if side == 'LONG'  and orb_dir != 'UP'   and ib_kind != 'BULL_DIRECTIONAL': continue
-                    if side == 'SHORT' and orb_dir != 'DOWN' and ib_kind != 'BEAR_DIRECTIONAL': continue
 
                 price      = float(bar['close'])
-                atr        = compute_atr(bars_hist)   # 2-day ATR (matches live)
+                atr        = compute_atr(bars_hist)   # 2-day ATR (kept for hero_score signature compat)
                 sl, target = calc_sl_target(price, atr, side)
 
                 rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
                 if rr < MIN_RR - 0.01:
                     continue
 
-                # Max stop gate: skip when ATR stop > 150pts (mirrors live max_stop_pts=150)
+                # Sanity ceiling — catches broken/extreme data, not the design's
+                # own stop width. BUG FIXED live Jul 7 2026 (was a bare 250pt
+                # literal left over from the 150pt-era stop — would have
+                # silently blocked every trade once BASE_STOP_PTS became 500).
+                # Scales off the active stop width so it can't desync again.
+                _active_stop = THESIS_STOP_PTS if USE_THESIS_INVALIDATION else BASE_STOP_PTS
                 stop_pts = abs(price - sl)
-                if stop_pts > 150.0:
+                if stop_pts > _active_stop + 100.0:
                     continue
 
                 # Hero quality gate — Phase 5 regime-aware scoring + H5 FIB boost
+                # (matches live gate ORDER: A+ grade -> Hero gate -> RVOL -> HTF)
                 cc = calc_contracts(price, sl)
                 if HERO_GATE_ENABLED:
                     bars_up  = all_bars[all_bars.index <= current_ts]
-                    regime   = day_regime or 'CHOPPY'   # fallback if IB data missing
-                    h_score, h_flags = score_entry_regime(price, atr, side, bars_up, prev_rth, regime)
+                    hero_regime = day_regime or 'CHOPPY'   # fallback if IB data missing
+                    h_score, h_flags = score_entry_regime(price, atr, side, bars_up, prev_rth, hero_regime)
                     h5_fib   = h_flags.get('H5_FIB_FLOOR', False)
-                    contracts = contracts_from_regime_score(h_score, regime, cc, h5_fib=h5_fib)
+                    contracts = contracts_from_regime_score(h_score, hero_regime, cc, h5_fib=h5_fib)
                     if contracts == 0:
                         continue   # below quality threshold — skip this setup
                 else:
                     contracts = cc
 
+                # RVOL + HTF gates — added Jul 7 2026, checked AFTER Hero gate
+                # (matches live run_scan() exact order).
+                entry_rvol = calc_session_rvol(bars_today)
+                if entry_rvol < ENTRY_MIN_RVOL:
+                    continue
+                # (htf already computed unconditionally at top of loop — reuse it)
+                if (side == 'LONG' and htf != 1) or (side == 'SHORT' and htf != -1):
+                    continue
+
                 position  = {
-                    'entry':      price,
-                    'sl':         sl,
-                    'stop_init':  sl,
-                    'target':     target,
-                    'side':       side,
-                    'contracts':  contracts,
-                    'entry_time': t.strftime('%H:%M'),
-                    'entry_idx':  i,
-                    'peak':       price,
-                    'setup':      setup,
-                    'grade':      grade,
+                    'entry':       price,
+                    'sl':          sl,
+                    'stop_init':   sl,
+                    'target':      target,
+                    'side':        side,
+                    'contracts':   contracts,
+                    'entry_time':  t.strftime('%H:%M'),
+                    'entry_idx':   i,
+                    'peak':        price,
+                    'setup':       setup,
+                    'grade':       grade,
+                    'fail_streak': 0,
                 }
                 trade_count += 1
                 break
@@ -975,25 +1145,45 @@ def main():
                     help='Disable Phase 5 hero gate (for baseline comparison)')
     ap.add_argument('--detail',     action='store_true', help='Print per-day detail in --all mode')
     ap.add_argument('--monthly',    action='store_true', help='Show monthly breakdown for all scenarios')
-    ap.add_argument('--stop-mult',   type=float, default=None, help='Override STOP_ATR_MULT (default 1.5)')
-    ap.add_argument('--target-mult', type=float, default=None, help='Override TARGET_ATR_MULT (default 3.0)')
-    ap.add_argument('--dll',         type=float, default=None, help='Override MAX_DAILY_LOSS DLL (default 250)')
-    ap.add_argument('--max-trades',  type=int,   default=None, help='Override MAX_DAILY_TRADES (default 2)')
-    ap.add_argument('--be-pts',      type=float, default=None, help='Override BE_ACTIVATE_PTS (default 30)')
-    ap.add_argument('--compare-stops', action='store_true', help='Run stop/target combos: 1.5/3.0 vs 2.0/4.0 vs 2.0/6.0')
+    ap.add_argument('--stop-pts',    type=float, default=None, help='Override BASE_STOP_PTS (default 150)')
+    ap.add_argument('--target-pts',  type=float, default=None, help='Override BASE_TARGET_PTS (default 1500)')
+    ap.add_argument('--dll',         type=float, default=None, help='Override MAX_DAILY_LOSS DLL (default 3750)')
+    ap.add_argument('--max-trades',  type=int,   default=None, help='Override MAX_DAILY_TRADES (default 5)')
+    ap.add_argument('--be-pts',      type=float, default=None, help='Override BE_ACTIVATE_PTS (default 150)')
+    ap.add_argument('--thesis-invalidation', action='store_true', dest='thesis_invalidation',
+                    help='Opt in to the REVERTED wide-backstop + signal-based exit experiment '
+                         '(500pt backstop, cut on regime/HTF/momentum/VWAP turning against the '
+                         'position) instead of the current live flat-150pt-stop default — for '
+                         're-testing that idea only, not for production use')
+    ap.add_argument('--no-2pm-cutoff', action='store_true', dest='no_2pm_cutoff',
+                    help='Disable the 14:00 ET no-new-entry gate (extends to normal AFTERNOON close)')
+    ap.add_argument('--sustain-bonus', action='store_true', dest='sustain_bonus',
+                    help='Candidate idea: alternate A+ path for sustained vwap_reclaim/rejection '
+                         '(6+ bars) without requiring an ORB break — targets the Jul 7 missed-rally case')
+    ap.add_argument('--short-confirm', type=int, default=None, dest='short_confirm',
+                    help='Candidate idea: override consecutive WEAK-scan requirement for SHORT (default 3)')
+    # --compare-stops REMOVED Jul 7 2026 sync pass — it compared ATR-multiple
+    # combos, a paradigm that no longer exists now that stop sizing is
+    # point-based. Use --stop-pts / --target-pts with separate runs instead
+    # if a similar comparison is needed.
     args = ap.parse_args()
 
     # Apply overrides to module-level constants so all functions pick them up
-    global STOP_ATR_MULT, TARGET_ATR_MULT, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED
-    if args.stop_mult   is not None: STOP_ATR_MULT    = args.stop_mult
-    if args.target_mult is not None: TARGET_ATR_MULT  = args.target_mult
+    global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS
+    if args.stop_pts    is not None: BASE_STOP_PTS    = args.stop_pts
+    if args.target_pts  is not None: BASE_TARGET_PTS  = args.target_pts
     if args.dll         is not None: MAX_DAILY_LOSS   = args.dll
     if args.max_trades  is not None: MAX_DAILY_TRADES = args.max_trades
     if args.be_pts      is not None: BE_ACTIVATE_PTS  = args.be_pts
     if args.no_hero_gate:            HERO_GATE_ENABLED = False
+    if args.thesis_invalidation:     USE_THESIS_INVALIDATION = True
+    if args.no_2pm_cutoff:           ENTRY_CUTOFF      = AFTERNOON_END
+    if args.sustain_bonus:           SUSTAIN_A_PLUS_BONUS = True
+    if args.short_confirm is not None: SHORT_CONFIRM_SCANS = args.short_confirm
 
     print(f'\n=== Futures Strategy Replay: {args.start} → {args.end} ===')
-    print(f'STOP_ATR_MULT={STOP_ATR_MULT}  TARGET_ATR_MULT={TARGET_ATR_MULT}  BE_ACTIVATE={BE_ACTIVATE_PTS}pts  MAX_TRADES={MAX_DAILY_TRADES}  DLL=${MAX_DAILY_LOSS:.0f}')
+    _stop_desc = f'THESIS_STOP_PTS={THESIS_STOP_PTS} (backstop, opt-in mode)' if USE_THESIS_INVALIDATION else f'BASE_STOP_PTS={BASE_STOP_PTS} (real stop)'
+    print(f'{_stop_desc}  BASE_TARGET_PTS={BASE_TARGET_PTS}  BE_ACTIVATE={BE_ACTIVATE_PTS}pts  MAX_TRADES={MAX_DAILY_TRADES}  DLL=${MAX_DAILY_LOSS:.0f}')
     print(f'Gate1: bias-regime conflict + 50-day MA macro guard')
     print(f'Gate2: opening volatility >120pt → extend IB window 10:30→10:45')
     print(f'Overnight bias: pos≥{_OVN_TREND_HI}→LONG | pos≤{_OVN_TREND_LO}→SHORT | [{_OVN_SKIP_LO},{_OVN_SKIP_HI})→skip\n')
@@ -1069,48 +1259,6 @@ def main():
               f'${total_pnl("G1"):>+7.0f} | ${total_pnl("G2"):>+7.0f} | '
               f'${total_pnl("G1+G2"):>+7.0f} {total_wr("G1+G2"):>4}')
         print(f'\n  Delta G1+G2 vs Base: ${total_pnl("G1+G2")-total_pnl("Base"):>+.2f}')
-        return
-
-    if args.compare_stops:
-        # Compare stop+target combos. Must co-scale target so R:R >= MIN_RR=2.0.
-        # Baseline: stop=1.5×ATR, target=3.0×ATR → R:R=2.0 (current)
-        # Wider:    stop=2.0×ATR, target=4.0×ATR → R:R=2.0 (same ratio, more room)
-        # London:   stop=2.0×ATR, target=6.0×ATR → R:R=3.0 (London champion)
-        print(f'Running stop/target comparison ({args.start} → {args.end}, {len(trade_dates)} trading days)...\n')
-        # (smult, tmult, dll, max_t, label)
-        stop_scenarios = [
-            (1.5, 3.0, 250.0,  2, 'stop=1.5 tgt=3.0  RR=2.0  DLL=$250  (current live)'),
-            (2.0, 4.0, 250.0,  2, 'stop=2.0 tgt=4.0  RR=2.0  DLL=$250  (wider, same RR)'),
-            (2.0, 6.0, 250.0,  2, 'stop=2.0 tgt=6.0  RR=3.0  DLL=$250  (London-style)'),
-            (2.0, 6.0, 1000.0, 5, 'stop=2.0 tgt=6.0  RR=3.0  DLL=$1000 ($5K account)'),
-        ]
-        stop_results = []
-        for smult, tmult, dll_val, max_t, lbl in stop_scenarios:
-            # global declared at top of main() — assignments here update module globals
-            STOP_ATR_MULT    = smult
-            TARGET_ATR_MULT  = tmult
-            MAX_DAILY_LOSS   = dll_val
-            MAX_DAILY_TRADES = max_t
-            print(f'  Running: {lbl}...')
-            r = _run_scenario(all_bars, trade_dates, False, False, lbl, verbose=False)
-            stop_results.append(r)
-
-        print(f'\n{"="*80}')
-        print(f'  STOP / TARGET COMPARISON  ({args.start} → {args.end})')
-        print(f'{"="*80}')
-        print(f'  {"Scenario":<52} {"Trades":>6} {"WR%":>6} {"P&L":>10} {"Avg":>8} {"MaxDD":>9}')
-        print(f'  {"─"*52} {"─"*6} {"─"*6} {"─"*10} {"─"*8} {"─"*9}')
-        for r in stop_results:
-            wr_str = f'{r["wr"]:.1f}%'
-            print(f'  {r["label"]:<52} {r["n"]:>6} {wr_str:>6} ${r["total"]:>+9.2f} ${r["avg"]:>+7.2f} ${r["dd"]:>8.2f}')
-        base = stop_results[0]
-        print(f'\n  Delta vs baseline (1ct sim — multiply by ~2 for typical RVOL 2ct live):')
-        for r in stop_results[1:]:
-            dwr  = r['wr']    - base['wr']
-            dpnl = r['total'] - base['total']
-            dn   = r['n']     - base['n']
-            print(f'    {r["label"]:<52}  WR {dwr:>+.1f}pp  P&L ${dpnl:>+.2f}  Trades {dn:>+d}')
-            print(f'    {"":52}  → at 2ct: ~${r["total"]*2:>+.0f}  (vs baseline 2ct ~${base["total"]*2:>+.0f})')
         return
 
     if args.all:

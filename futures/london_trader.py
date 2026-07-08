@@ -902,7 +902,13 @@ def run_scan():
     _cached_df = df
 
     # ── 1. Form IB (once, after 4am) ─────────────────────────────────────────
-    if not _ib_formed and (h > LONDON_IB_END[0] or (h == LONDON_IB_END[0] and m >= 0)):
+    # Bug found Jul 7 2026: the skip branch below never set _ib_formed (it can't
+    # — IB isn't computed yet at that point), so on an ambiguous-overnight day
+    # this whole block re-ran every single 60s scan for the rest of the session,
+    # re-sending the Telegram alert every minute until LONDON_EOD (9am). Gate on
+    # `not _ovn_skip` too — that flag IS set the first time through and correctly
+    # session-scoped (reset in reset_session()), so this now only evaluates once.
+    if not _ib_formed and not _ovn_skip and (h > LONDON_IB_END[0] or (h == LONDON_IB_END[0] and m >= 0)):
         # Compute overnight bias
         bias, skip, ovn_pos_val = compute_overnight_bias(df, today_et)
         _ovn_pos  = ovn_pos_val

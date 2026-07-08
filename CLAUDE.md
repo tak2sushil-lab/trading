@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jun 30 2026
+Last updated: Jul 7 2026
 
 ---
 
@@ -43,7 +43,16 @@ launchctl kickstart -k gui/$(id -u)/com.sushil.trading.<name>
 curl -s http://localhost:8000/   # verify bridge is up
 ```
 
-After any code change: restart service → run `venv/bin/python sim_today.py`
+**⚠️ Futures service names are misleading — verify before restarting (confirmed Jul 7 2026):**
+| Service name | Actually runs | Account |
+|---|---|---|
+| `com.sushil.trading.futures_personal` | `futures/futures_trader.py` | IBKR paper DU9952463, port 8000 |
+| `com.sushil.trading.futures_trader` | `futures/tc_trader.py` | TC Sandbox DUQ640500, port 8002 |
+
+Editing `futures_trader.py`? Restart `futures_personal`, not `futures_trader` — the name is the opposite of what you'd guess. Check `~/Library/LaunchAgents/com.sushil.trading.<name>.plist` → `ProgramArguments` if ever unsure.
+
+After any equity code change: restart service → run `venv/bin/python sim_today.py`.
+After any futures NY-session code change: restart `futures_personal` → validate with a direct backtest against the actual edited functions (FakeDatetime monkey-patch replay pattern — see any recent futures backtest script). **`futures/sim_replay.py` is stale and does NOT call current `futures_trader.py` logic** (confirmed Jul 7 2026 — its trade log shows no thesis-invalidation/backstop reasons and different stop-distance dollar values than production actually uses) — do not treat it as a validator until someone rewires it to import and call the live functions.
 
 ---
 
@@ -74,6 +83,16 @@ backtest_scalp.py            — OPT_SCALP Mode A backtest (scan_log A+ + 5-min 
 
 futures/
   futures_trader.py            — live IBKR personal (port 8000, DU9952463). LONDON_ENABLED=True
+                                 Jul 7 2026: exit stack redesigned — BASE_STOP_PTS=500 (rare
+                                 catastrophic backstop, was 150) + signal-based "thesis
+                                 invalidation" exit in monitor_open_trades() (cuts on regime/
+                                 HTF/momentum/VWAP turning against the position, 2-of-4 votes
+                                 sustained 2 closed bars) does the real loss-cutting now, not
+                                 stop distance. Validated: May-Jul $8,561→$10,997 (+28%), full
+                                 2026 YTD $11,010→$27,779 (+152%), SHORT side flips from -$1,315
+                                 to +$8,118. Entry logic (regime/RVOL/HTF/A+-only) UNCHANGED —
+                                 this only touched the exit. See "Changes Applied Jul 7 2026"
+                                 below for the full validation trail and known limitations.
   tc_trader.py                 — TC eval mode (TopStepX, port 8002)
   london_trader.py             — London session live trader (LIVE Jun 17 2026, paper validation)
                                  3am–9am ET. IB formation 3am–4am. Signal A entries 4am–8am.
@@ -108,6 +127,57 @@ venv/bin/python futures/london_sim.py --stats --start 2025-01-01                
 | BE_ATR_MULT | 0.50× | **0.10×** | Protect entry at +5pts → saves fakeout losses |
 | 2025-2026 P&L | baseline | **$10,608** | 467t, 42.4% WR, MaxDD $321 |
 | Risk model | $100/trade | **$250/trade** | $5k account, $1,250 DLL |
+
+---
+
+## Futures NY Session — Changes Applied Jul 7 2026 (futures_trader.py)
+
+Same day: (1) regime detection rebuild (RVOL gate + hybrid day/session reference + 5-bar
+trend), (2) entry gates tightened to RVOL≥0.85 + 30-min HTF trend agreement + A+-only grading
+(was A-or-A+), (3) exit stack redesigned (this section). Entry logic and exit logic are
+independent changes — (1)+(2) already validated and live before (3) was designed.
+
+**Entry-gate tightening (1+2) impact, measured on the 15 trading days before this change:**
+pre-gate baseline -$7,701 (54 trades, 40.7% WR) → post-gate +$712 (25 trades, 56.0% WR). An
+$8,413 swing on the exact same window, mostly from trading far less but much better.
+
+**Exit-stack redesign (3):** `BASE_STOP_PTS` 150→**500** — no longer the primary loss-cutting
+mechanism, now a rare catastrophic backstop (0% hit rate across every backtest run). Real exit
+logic is new **thesis invalidation** in `monitor_open_trades()`: exits at market when 2-of-4
+signals turn against the position (regime flip, 30-min HTF flip, opposing momentum, opposing
+VWAP cross/reclaim) and stay that way for 2 consecutive closed 5-min bars. Existing profit-lock
+trail tiers (`BE_ACTIVATE_PTS`/`TRAIL_WIDE_PTS`/`TRAIL_TIGHT_PTS`) unchanged — still protect
+winners the same way. `MAX_RISK_PER_TRADE` raised 300→2000 for documentation consistency, but
+confirmed **dead code** (only reader, `calc_contracts()`, is never called — live sizing is
+`calc_contracts_dynamic()`, RVOL/IB-range tiers, 1-2 contracts, unrelated to stop width).
+
+Validated (FakeDatetime monkey-patch replay against real 5-min bars, not synthetic data):
+| Window | Old (150pt stop) | New (backstop + thesis-invalidation) |
+|---|---|---|
+| May-Jul 2026 (97-98 trades) | $8,561, 61% WR, 59% thesis-confirm | **$10,997 (+28%)**, 59% WR, 59% thesis |
+| Full 2026 YTD (262-267 trades) | $11,010, 53% WR | **$27,779 (+152%)**, 54% WR |
+| SHORT side, full 2026 YTD | -$1,315 (losing) | **+$8,118** — fixes the known short-side weak spot |
+| Split-window (robustness) | — | May $3,865 / Jun-Jul $7,131 — both positive, not concentrated |
+
+**Known limitation — read before assuming this solves choppy-day losses:** on the 15 trading
+days *before* this exit change (a purely choppy stretch, no trending days to harvest big wins),
+the new exit stack was roughly neutral-to-slightly-negative vs the old flat stop (-$209 vs
++$712), and its worst-case single-trade loss (-$1,005 to -$1,195) can exceed the old system's
+hard-capped -$600 — the 2-bar confirmation window can let price whip further against a position
+during fast chop before confirming failure. **This is a full-cycle improvement (trend-day gains
+outweigh chop-day noise over a multi-month window), not a chop-specific safety improvement.**
+Four different live-computable chop detectors were tried to make the exit regime-aware (tighten
+confirmation to 1 bar during detected chop) — none worked: within-session VWAP-crossing count
+(too few trades ever flagged in time), ADX-at-entry (no effect at full sample size, best thesis-
+confirm was actually the HIGH-ADX bucket), morning-session character (backwards — choppy
+mornings preceded *better* afternoon trades), rolling regime-flip count (never triggered
+differently at the moments that mattered). Chop-aware exit switching remains an **open
+problem**, not solved — do not assume a future session can trivially crack this without new data
+or a genuinely different signal.
+
+**Does this apply to London?** No — `london_trader.py` is a separate module with its own session
+window (3am-9am ET vs NY's 9:30am-4pm) and its own champion parameters (ATR-multiple stops, not
+point-based). None of Jul 7's testing touched it; it would need separate validation.
 
 ---
 

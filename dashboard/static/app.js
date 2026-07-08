@@ -309,7 +309,8 @@ function renderFuturesTable(positions, session) {
   el.innerHTML = `<table class="positions-table">
     <thead><tr>
       <th>Symbol</th><th>Contract</th><th>Session</th><th>Side</th>
-      <th>Contracts</th><th>Entry</th><th>Now</th><th>Unreal P&amp;L</th><th>Status</th>
+      <th>Contracts</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th>
+      <th>Unreal P&amp;L</th><th>Status</th>
     </tr></thead>
     <tbody>${positions.map(p => {
       const pnlCls = (p.unreal_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
@@ -320,8 +321,10 @@ function renderFuturesTable(positions, session) {
         <td><small>${p.session||'—'}</small></td>
         <td><span class="side-${(p.side||'').toLowerCase()}">${p.side||'—'}</span></td>
         <td>${p.qty||0}</td>
-        <td>${p.avg_cost != null ? p.avg_cost.toFixed(2) : '—'}</td>
+        <td>${p.entry_price != null ? p.entry_price.toFixed(2) : '—'}</td>
         <td>${p.market_price != null ? p.market_price.toFixed(2) : '—'}</td>
+        <td>${p.stop_price != null ? p.stop_price.toFixed(2) : '—'}</td>
+        <td>${p.target_price != null ? p.target_price.toFixed(2) : '—'}</td>
         <td class="${pnlCls}">${p.unreal_pnl != null ? `${sign}$${Math.abs(p.unreal_pnl).toFixed(2)}` : '—'}</td>
         <td><span class="status-badge ${p.status||'OK'}">${p.status||'OK'}</span></td>
       </tr>`;

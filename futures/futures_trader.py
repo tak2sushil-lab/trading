@@ -62,14 +62,24 @@ from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: 
 # can't survive real MNQ movement. New sizing grid-searched against real bars;
 # $15K/280pt-stop was the return-maximizing point (61.5% WR, beyond which wider
 # stops stop paying for the extra risk). See conversation Jul 6 2026 for the full analysis.
-MAX_RISK_PER_TRADE   = 560.0          # $ max risk per trade (1 contract x 280pt stop x $2/pt)
+MAX_RISK_PER_TRADE   = 300.0          # $ max risk per trade (1 contract x 150pt stop x $2/pt)
+                                       # NOTE (confirmed during Jul 7 bug sweep): calc_contracts() —
+                                       # the only reader of this constant — is dead code, never
+                                       # called. Live contract sizing goes through
+                                       # calc_contracts_dynamic() instead (RVOL/IB-range tiers, base
+                                       # 1 contract, +1 only when rvol>=2.0x or ib_range>=150pts,
+                                       # hard cap 2). This constant has zero live effect; kept
+                                       # accurate for whenever calc_contracts() is wired up or removed.
 MAX_DAILY_LOSS       = IBKR_DLL_SOFT  # $3,750 (25% of $15K) — mirrors prop_rules IBKR soft stop
 DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $1,200 — mirrors prop_rules IBKR daily cap
 MIN_RR               = 1.4     # minimum reward:risk ratio — trivially satisfied now that
                                 # target is a 1500pt backstop (RR~5.4); kept as a floor
                                 # in case target is ever tightened back down
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
-MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
+MAX_DAILY_TRADES     = 5       # raised from 2 Jul 7 2026 — trial week, was matching
+                                # tc_champion.json's 2; testing whether confirmed A+
+                                # signals blocked purely by trade count (not regime/
+                                # grade/HERO) were being missed. Revisit end of week.
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
 MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and live price at order time
 # A_EXT gate REMOVED Jul 6 2026 — gate_audit scored it 33% accuracy / "REMOVE"
@@ -77,40 +87,93 @@ MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and liv
 # Jun 24. Also structurally conflicts with the new wide-stop philosophy: blocking
 # entries at 70pts extension makes no sense when the target itself is 400+pts.
 
-# ── Base stop/target (point-based, RVOL-adaptive) — MNQ-calibrated ──────────
-# Replaces the old ATR-multiple calc (1.5x/3.0x ATR ~ 45-58pt stop, 90-116pt
-# target) which was sized for a ~30-40pt instrument, not one with a 447pt avg
-# daily range. Grid-searched against 66 days of real 5-min bars; RVOL tercile
-# adaptation (0.484 / 0.651 boundaries) came from the decoder's own outcome data:
-# high-RVOL scans preceded ~1.8x bigger subsequent moves than low-RVOL scans.
-BASE_STOP_PTS     = 280.0   # base hard stop (was ~45-58pts)
-# Backstop only, not a real profit-take level — verified via backtest (bug sweep
-# Jul 6): a literal 420pt hard target clipped winners at $5,812 total; letting
-# the trail tiers (below) manage the exit instead reached $8,378 on the same 65
-# trades, same win rate. 1500 essentially never binds — it exists only to cap a
-# truly unprecedented single-direction move the trail somehow didn't catch.
+# ── Base stop/target (point-based) — MNQ-calibrated ─────────────────────────
+# Jul 6: 280pt stop grid-searched against 66 days of bars, RVOL-adaptive width
+# (0.8x/1.0x/1.3x multiplier). Jul 7 (morning): found — via full-pipeline
+# backtest with real thesis-tracking, not just aggregate P&L — that 87% of
+# losing trades never even reached +100pts favorable before reversing. The
+# wide stop wasn't giving good trades room, it was giving BAD trades a long,
+# expensive ride to a near-full stop before the system admitted the thesis
+# was wrong. Swept stop widths 80-280pt: tighter alone helped (280->80pt
+# roughly halved the month's loss) but only combined with an RVOL>=0.85 entry
+# gate (below) did any width actually flip profitable — 150pt + RVOL>=0.85
+# was the winner (+$4,053/56 trades over Jun-Jul; validated on May holdout
+# +$176/61 trades, weaker but not reversed). Adding a 30-min higher-timeframe
+# trend-agreement gate on top improved it further (+$8,561/97 trades, WR
+# 56%->61%, thesis-confirm 55%->59%).
+#
+# Jul 7 (afternoon): tried widening BASE_STOP_PTS to 500 (rare catastrophic
+# backstop) + signal-based "thesis invalidation" in monitor_open_trades() as
+# the real loss-cutter, on the theory that cutting on evidence beats cutting
+# on distance. Looked good in quick /tmp backtests (+28% May-Jul, +152% full
+# 2026 YTD) — REVERTED same day once validated against the complete, correct
+# entry pipeline (those quick backtests had missed the Hero score gate
+# entirely, plus a 14:00 ET no-new-entry cutoff — both real, both material).
+# Under the full pipeline, thesis invalidation was net NEGATIVE vs this flat
+# 150pt stop ($3,770 vs $4,172 full 2026 YTD, 52.5% vs 60.0% WR) — it wasn't
+# adding a second layer of quality control, it was cutting genuinely good
+# Hero-gate-approved trades during normal mid-trend pullbacks, redundant with
+# and worse than what Hero gate already screens for. See
+# futures_exit_stack_jul7.md memory for the full trail; do not re-attempt
+# this exact design without re-validating against the complete pipeline
+# (Hero gate + overnight bias + IB kind + 14:00 cutoff), not a partial one.
+BASE_STOP_PTS     = 150.0
+# Backstop only, not a real profit-take level — verified via backtest (Jul 6):
+# a literal 420pt hard target clipped winners at $5,812 total; letting the
+# trail tiers (below) manage the exit instead reached $8,378 on the same 65
+# trades, same win rate. 1500 essentially never binds — it exists only to cap
+# a truly unprecedented single-direction move the trail somehow didn't catch.
 BASE_TARGET_PTS   = 1500.0
-RVOL_HIGH_THRESH  = 0.65    # >= this -> widen (elevated participation, bigger move likely)
-RVOL_LOW_THRESH   = 0.48    # <= this -> tighten (quiet/chop, smaller move likely)
-RVOL_WIDE_MULT    = 1.3
-RVOL_TIGHT_MULT   = 0.8
 
-# ── Profit protection (point-based — MNQ-calibrated, widened Jul 6 2026) ────
-# Old tiers (BE at +30, trail at +60/+85) were ~1x ATR — pure noise triggered
-# breakeven immediately, then any wiggle stopped the trade for a few dollars.
-# New tiers require a real, meaningful move before protecting/trailing.
-BE_ACTIVATE_PTS  = 150.0   # +150pts → move stop to entry (real move required first)
-TRAIL_WIDE_PTS   = 250.0   # +250pts → trail 120pts behind session peak — let it run
-TRAIL_TIGHT_PTS  = 400.0   # +400pts → tighten trail to 60pts (past base target)
+# ── Entry-quality gates (Jul 7 2026) — separate from stop sizing above ──────
+# RVOL>=0.85 and 30-min HTF trend agreement are checked at entry time in
+# run_scan(), not inside calc_sl_target — they gate WHETHER to enter, not
+# how wide the stop is once in.
+ENTRY_MIN_RVOL    = 0.85    # session RVOL floor at entry — screens out low-conviction setups
+HTF_BARS_MIN      = 30      # higher-timeframe resample window (minutes)
+HTF_TREND_BARS    = 3       # number of HTF bars used for trend direction
+
+# ── Profit protection (point-based — MNQ-calibrated) ────────────────────────
+# Jul 6: BE at +30/trail at +60/+85 were ~1x ATR — pure noise triggered
+# breakeven immediately. Widened to require a real move first.
+# Jul 7: found a gap between flat-BE(150) and WIDE(250) — a trade peaking at,
+# say, 233pts (as happened live today) got ONLY flat breakeven protection,
+# then a reversal gave the whole 233pts back for an exact $0 scratch. Swept
+# 5 tier designs against the 65-trade backtest; the winner combines a
+# proportional lock-in (protects a fraction of peak immediately past BE,
+# not a flat floor) with earlier WIDE/TIGHT triggers to shrink the gap:
+# 63.1% WR (was 50.8%), only 2 scratches<5pt (was 10), $8,666 total (was
+# $8,378). A pure "lower WIDE trigger only" variant scored $8,998 total but
+# with more scratches (6) — chose this one since "don't get fully reversed
+# out of a real move" was the explicit design goal, not just max $.
+BE_ACTIVATE_PTS  = 150.0   # +150pts → start proportional lock-in (real move required first)
+BE_LOCK_FRACTION = 0.35    # once past BE_ACTIVATE_PTS, protect this fraction of peak favorable
+TRAIL_WIDE_PTS   = 200.0   # +200pts → trail 120pts behind session peak (was 250)
+TRAIL_TIGHT_PTS  = 350.0   # +350pts → tighten trail to 60pts (was 400)
 TRAIL_WIDE_GAP   = 120.0   # trail distance in wide mode
 TRAIL_TIGHT_GAP  = 60.0    # trail distance in tight mode
 
+# ── Thesis invalidation exit — REVERTED Jul 7 2026 ──────────────────────────
+# Tried: cut a trade on evidence the setup failed (regime/HTF/momentum/VWAP
+# turning against it, 2-of-4 votes sustained 2 bars) instead of waiting for
+# price to travel BASE_STOP_PTS. Looked good in quick /tmp backtests, but
+# once validated against the COMPLETE entry pipeline (Hero score gate +
+# overnight bias + IB kind + 14:00 ET cutoff — all missing from those quick
+# backtests), it was net NEGATIVE vs the flat 150pt stop this file uses now
+# ($3,770 vs $4,172 full 2026 YTD, 52.5% vs 60.0% WR). Root cause: Hero gate
+# already screens for high-conviction setups; thesis-invalidation's 2-bar
+# confirmation window was cutting genuinely good trades during normal
+# mid-trend pullbacks, not catching bad ones the Hero gate had missed. See
+# futures_exit_stack_jul7.md memory for the full trail. Do not re-add this
+# design without validating against the complete pipeline, not a partial one.
+
 # ── No-move exit (time-based — frees dead trade slots) ───
-# Widened Jul 6 2026 to a 45min decision checkpoint (was 90min) with a dead-zone
-# band scaled to the new 280pt stop, per the "watch it 45min-1hr, then decide"
-# design: if a trade hasn't shown a real move by 45min, cut with minimum loss
-# rather than let it keep drifting toward the full stop.
-NO_MOVE_MINUTES = 45      # minutes open before checking
+# Jul 6: set to 45min as a qualitative estimate ("watch it 45min-1hr"), not
+# backtested like the stop/target was. Jul 7: swept 30/45/60/90/120/disabled
+# against the same 65-trade real-bar simulation used to validate the stop/
+# target redesign — 90min was the best total return ($10,298 vs 45min's
+# $9,568; 120min close second at $10,208/best WR). Reverted to 90.
+NO_MOVE_MINUTES = 90      # minutes open before checking
 NO_MOVE_MAX_PTS = 60.0    # above this → trade IS progressing, let it run
 NO_MOVE_MIN_PTS = -40.0   # below this → hard stop will manage it
 
@@ -184,7 +247,6 @@ _overnight_computed   = False   # True after first RTH-bar computation this sess
 _ib_kind              = None    # 'BEAR_DIRECTIONAL' | 'BULL_DIRECTIONAL' | 'ROTATIONAL'
 _ib_kind_set          = False   # True once ib_mid computed at IB formation
 _day_regime           = None    # 'TRENDING' | 'CHOPPY' | 'QUIET' — for hero weighting
-_large_ib_delayed     = False   # True when IB range > 200pts — delay first entry to 10:45
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
@@ -623,6 +685,33 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
     No SPY proxy needed — NQ IS the market for this instrument.
     Returns: STRONG | NORMAL | WEAK
     Accepts pre-fetched df5 from run_scan() to avoid a redundant bridge call.
+
+    Rebuilt Jul 7 2026 after backtesting the original formula against 3 months
+    of real bars (3,721 scans) and finding STRONG and NORMAL were statistically
+    indistinguishable (both ~+2.8pt mean 30-min forward move) — the STRONG
+    label wasn't adding real signal, and WEAK's median forward move was ~0.
+    Root causes found and fixed:
+      1. No volume/participation filter — added an RVOL>=0.65 gate (matches
+         the decoder's independently-derived "high" tercile boundary). Alone,
+         this roughly tripled STRONG/WEAK separation from NORMAL.
+      2. day_chg_pct (vs YESTERDAY's close) can't detect a strong intraday
+         reversal on a gap day — if today opened down and is recovering hard,
+         day_chg vs yesterday can stay negative the whole session even during
+         a genuine intraday uptrend, so STRONG could structurally never fire.
+         Fixed with a hybrid: STRONG uses change vs TODAY's own open
+         (session_chg) which captures the reversal; WEAK keeps day_chg vs
+         yesterday's close, which tested better there (session-relative
+         WEAK's median forward move flipped positive — false negatives).
+      3. 3-bar trend was too noise-sensitive — a single reversal bar broke a
+         real multi-bar trend and reset the 3-scan confirmation counter.
+         Widened to 5 bars.
+    Backtested result (RVOL gate + hybrid + 5-bar trend): STRONG n=253
+    mean +11.14/median +12.75 (vs old +2.62/+6.62); WEAK n=205 mean -14.46/
+    median -11.25 (vs old -4.75/-0.25, which barely cleared zero). Replayed
+    against Jul 7 2026 itself: old formula produced only 2 total WEAK scans
+    all session (never confirmed); new formula confirms WEAK at 10:00am
+    (3 consecutive scans from 9:50), ~45min earlier than the actual 10:46
+    entry and at a meaningfully better SHORT price (29,443 vs 29,270-29,280).
     """
     global _last_regime
     try:
@@ -633,8 +722,8 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
 
         price      = float(df5['close'].iloc[-1])
         vwap       = calc_vwap(df5)
-        atr        = calc_atr(df5)
         rsi        = calc_rsi(df5['close'])
+        rvol       = calc_session_rvol(df5)
 
         # Today's bars only
         today      = datetime.now(ET).date()
@@ -643,40 +732,65 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
         # Price vs VWAP
         above_vwap = price > vwap if vwap else True
 
-        # Short-term trend: last 3 bars
-        if len(df_today) >= 3:
-            trend = df_today['close'].iloc[-3:]
+        # Short-term trend: last 5 bars (was 3 — too noise-sensitive)
+        if len(df_today) >= 5:
+            trend = df_today['close'].iloc[-5:]
             trending_up   = trend.iloc[-1] > trend.iloc[0]
             trending_down = trend.iloc[-1] < trend.iloc[0]
         else:
             trending_up = trending_down = False
 
-        # Day change vs prev close
+        # Day change vs prev close (used for WEAK — tested better there)
         if len(df5) >= 2:
             prev_close = float(df5['close'].iloc[-2]) if len(df_today) < 2 else float(df5[df5.index.date < today]['close'].iloc[-1]) if len(df5[df5.index.date < today]) > 0 else float(df5['close'].iloc[-2])
             day_chg_pct = (price - prev_close) / prev_close * 100 if prev_close else 0
         else:
             day_chg_pct = 0
 
-        # Choppiness: >40% bar reversals
+        # Change vs TODAY's own open (used for STRONG — catches intraday
+        # reversals that day_chg vs yesterday's close would miss on gap days)
+        if len(df_today) >= 1:
+            session_open = float(df_today['open'].iloc[0])
+            session_chg_pct = (price - session_open) / session_open * 100 if session_open else 0
+        else:
+            session_chg_pct = 0
+
+        # Choppiness: >40% bar reversals, measured against session_chg (today's
+        # own range) rather than day_chg — a big gap can make day_chg large
+        # even on a genuinely flat/choppy today.
         if len(df_today) >= 6:
             diffs  = df_today['close'].diff().dropna()
             flips  = sum(1 for i in range(1, len(diffs)) if diffs.iloc[i] * diffs.iloc[i-1] < 0)
-            choppy = (flips / max(len(diffs), 1)) > 0.4 and abs(day_chg_pct) < 0.2
+            choppy = (flips / max(len(diffs), 1)) > 0.4 and abs(session_chg_pct) < 0.15
         else:
             choppy = False
 
         # ── Classify regime ───────────────────────────────
         if choppy:
             regime = 'NORMAL'
-        elif (above_vwap and trending_up and day_chg_pct > 0.3
-              and rsi < 80 and not choppy):
+        elif rvol < 0.65:
+            regime = 'NORMAL'   # not enough participation to trust the direction
+        elif (above_vwap and trending_up and session_chg_pct > 0.15
+              and rsi < 80):
             regime = 'STRONG'
         elif (not above_vwap and trending_down and day_chg_pct < -0.3
               and rsi > 20):
             regime = 'WEAK'
         else:
             regime = 'NORMAL'
+
+        # Diagnostic detail — added Jul 7 2026. Without this, a misclassification
+        # is unprovable after the fact: on Jul 7, hand-replaying this exact
+        # formula against (later-settled) bars showed WEAK continuously from
+        # 9:45-10:15am while the live log said STRONG/NORMAL almost the whole
+        # window, blocking a SHORT entry during the session's real move. Could
+        # not pin down whether that was a genuine bug or live/streaming bars
+        # not yet settled vs. the final historical values, because the inputs
+        # were never logged. Log them every scan so next time it's provable.
+        vwap_str = f"{vwap:.2f}" if vwap is not None else "None"
+        log(f"  regime_detail: day_chg%={day_chg_pct:+.2f} sess_chg%={session_chg_pct:+.2f} "
+            f"vwap={vwap_str} above_vwap={above_vwap} trend_up={trending_up} trend_dn={trending_down} "
+            f"rsi={rsi:.1f} rvol={rvol:.2f} choppy={choppy} contract={_active_contract_month or 'unset'}")
 
         _last_regime = regime
         return regime
@@ -713,28 +827,47 @@ def get_signals(df5: pd.DataFrame) -> dict:
     if not vwap:
         return sig
 
-    # ── Bull signals ──────────────────────────────────────
+    # ── Bull/bear signal patterns — redesigned Jul 7 2026 ──────────────────
+    # Backtested against 3 months of real bars. Original patterns had two
+    # problems: (1) orb_bull/orb_bear required session=='NY_OPEN' — orb_bear
+    # literally fired ZERO times in the entire 3-month sample because of this,
+    # meaning it could never be the qualifying bear_signal for any SHORT after
+    # 10:30am, no matter what price did; (2) vwap_rejection/momentum_bear were
+    # single-bar-sensitive (momentum needed 3 *strictly* consecutive closes,
+    # any one noisy tick reset it) so they fired rarely and inconsistently.
+    # Confirmed empirically that a chart-pattern confirmation genuinely adds
+    # value on top of confirmed regime (WEAK+RVOL alone: mean fwd 30min move
+    # -14.46pts; WEAK+RVOL+old-pattern: -18.31 but only covered 102/205 WEAK
+    # instances; WEAK+RVOL+new-pattern below: -16.28, nearly the same quality,
+    # covering 204/205) — so the fix isn't dropping the requirement, it's
+    # loosening patterns that were too narrow to be usable most of the day.
 
-    # ORB break (above opening range high)
-    sig['orb_bull'] = (_orb_set and price > _orb_high
-                       and session == 'NY_OPEN')
+    # ORB break — session restriction removed (was NY_OPEN-only)
+    sig['orb_bull'] = (_orb_set and price > _orb_high)
+    sig['orb_bear'] = (_orb_set and price < _orb_low)
 
-    # VWAP reclaim (was below, now above)
+    # VWAP position — sustained 3-bar streak instead of a single-bar crossing
+    # event (which stops firing the moment price has already been on that
+    # side of VWAP for more than one bar, i.e. exactly when a trend is real).
     if len(df5) >= 3:
-        prev_close = float(df5['close'].iloc[-2])
-        sig['vwap_reclaim'] = (prev_close < vwap and price > vwap)
+        last3v = df5['close'].iloc[-3:]
+        vwap3  = df5.index[-3:]
+        sig['vwap_reclaim']   = bool((df5.loc[vwap3, 'close'] > vwap).all())
+        sig['vwap_rejection'] = bool((df5.loc[vwap3, 'close'] < vwap).all())
     else:
-        sig['vwap_reclaim'] = False
+        sig['vwap_reclaim'] = sig['vwap_rejection'] = False
 
-    # Momentum: 3 consecutive up bars + above VWAP
-    if len(df5) >= 4:
-        last3 = df5['close'].iloc[-4:-1]
-        sig['momentum_bull'] = (
-            all(last3.iloc[i] < last3.iloc[i+1] for i in range(len(last3)-1))
-            and price > vwap
-        )
+    # Momentum: majority (3-of-4) same-direction transitions over the last 5
+    # bars + on the right side of VWAP — was strict 3-of-3, so any single
+    # noisy up-tick inside a real downtrend reset it to False.
+    if len(df5) >= 5:
+        last5 = df5['close'].iloc[-5:]
+        up_count   = sum(1 for i in range(len(last5)-1) if last5.iloc[i] < last5.iloc[i+1])
+        down_count = sum(1 for i in range(len(last5)-1) if last5.iloc[i] > last5.iloc[i+1])
+        sig['momentum_bull'] = (up_count >= 3) and price > vwap
+        sig['momentum_bear'] = (down_count >= 3) and price < vwap
     else:
-        sig['momentum_bull'] = False
+        sig['momentum_bull'] = sig['momentum_bear'] = False
 
     # Session open play (first bar direction after 9:30)
     today      = datetime.now(ET).date()
@@ -745,21 +878,6 @@ def get_signals(df5: pd.DataFrame) -> dict:
         sig['open_play_bear'] = price < open_bar and price < vwap
     else:
         sig['open_play_bull'] = sig['open_play_bear'] = False
-
-    # ── Bear signals ──────────────────────────────────────
-    sig['orb_bear']       = (_orb_set and price < _orb_low
-                              and session == 'NY_OPEN')
-    sig['vwap_rejection'] = (len(df5) >= 3
-                              and float(df5['close'].iloc[-2]) > vwap
-                              and price < vwap)
-    if len(df5) >= 4:
-        last3 = df5['close'].iloc[-4:-1]
-        sig['momentum_bear'] = (
-            all(last3.iloc[i] > last3.iloc[i+1] for i in range(len(last3)-1))
-            and price < vwap
-        )
-    else:
-        sig['momentum_bear'] = False
 
     # ── Pre-market IB break (Cylinder 4) — macro event capture ───────────
     # On NFP/CPI/FOMC days: the 8:30am release creates a structural range.
@@ -866,9 +984,8 @@ def calc_session_rvol(df5: pd.DataFrame) -> float:
     Current bar volume / average volume of TODAY's RTH bars so far (9:30am ET
     onward). NOT the same metric as calc_rvol_current() (preloaded time-of-day
     historical average) — this matches the decoder's (live_rule_sim.py) exact
-    formula, because the RVOL_HIGH_THRESH/RVOL_LOW_THRESH tercile boundaries
-    used by calc_sl_target were derived from the decoder's outcome data using
-    this specific definition.
+    formula, which is what the ENTRY_MIN_RVOL entry gate (see run_scan) was
+    calibrated against.
     Must filter to today's RTH bars only — get_bars() returns 2 raw days
     including illiquid overnight/Globex bars, which would drag the baseline
     average down and make every RTH bar look artificially "high volume"
@@ -888,29 +1005,42 @@ def calc_session_rvol(df5: pd.DataFrame) -> float:
     return float(today_bars['volume'].iloc[-1]) / float(avg_v)
 
 
+def calc_htf_trend(df5: pd.DataFrame) -> int:
+    """
+    Higher-timeframe (30-min) trend direction: net direction of the last
+    HTF_TREND_BARS completed 30-min bars. Returns 1 (up), -1 (down), 0 (flat/
+    insufficient data). Added Jul 7 2026 — backtested as an entry filter:
+    trades where this agrees with the entry direction confirmed a real move
+    (thesis proven, peak >= 100pts) 58% of the time vs 46% when it disagreed,
+    and combined with the RVOL/regime/signal gates already in place, lifted
+    the full month backtest from +$4,053 (56 trades) to +$8,561 (97 trades).
+    """
+    if df5.empty:
+        return 0
+    htf = df5['close'].resample(f'{HTF_BARS_MIN}min').last().dropna()
+    if len(htf) < HTF_TREND_BARS:
+        return 0
+    last_n = htf.iloc[-HTF_TREND_BARS:]
+    if last_n.iloc[-1] > last_n.iloc[0]:
+        return 1
+    if last_n.iloc[-1] < last_n.iloc[0]:
+        return -1
+    return 0
+
+
 def calc_sl_target(price: float, atr: float, side: str, rvol: float = 1.0) -> tuple[float, float]:
     """
     Calculate stop-loss and target in price terms.
     Point-based (not ATR-multiple) — MNQ's real daily range (447pt avg) is an
     order of magnitude bigger than its 5-min ATR (~39pt avg), so an ATR-multiple
-    stop chases the wrong scale. RVOL-adaptive: elevated relative volume
-    precedes bigger moves (confirmed via decoder outcome data — high-RVOL scans
-    saw ~1.8x bigger forward swings than low-RVOL scans), so widen/tighten the
-    base stop and target accordingly. `atr` param kept for signature compat /
-    future use but no longer drives the base distance. `rvol` must come from
-    calc_session_rvol(), not calc_rvol_current() — see that function's docstring.
+    stop chases the wrong scale. Flat width now (Jul 7 2026) — RVOL moved to
+    being a hard entry gate (ENTRY_MIN_RVOL) rather than a stop-width
+    multiplier; see the BASE_STOP_PTS comment above for why. `atr` and `rvol`
+    params kept for signature compat with existing call sites.
     """
     tick = TICK_SIZE
-
-    if rvol >= RVOL_HIGH_THRESH:
-        mult = RVOL_WIDE_MULT
-    elif rvol <= RVOL_LOW_THRESH:
-        mult = RVOL_TIGHT_MULT
-    else:
-        mult = 1.0
-
-    raw_stop   = BASE_STOP_PTS * mult
-    raw_target = BASE_TARGET_PTS * mult
+    raw_stop   = BASE_STOP_PTS
+    raw_target = BASE_TARGET_PTS
 
     # Round to nearest tick
     def round_tick(v):
@@ -1251,13 +1381,20 @@ def place_trade(side: str, sig: dict, regime: str,
     rvol         = calc_rvol_current(df5)     # for contract sizing — time-of-day historical baseline (unchanged)
     sl, target   = calc_sl_target(price, atr, side, session_rvol)
 
-    # Sanity ceiling — catches broken/extreme data, not the intended 280-364pt
-    # range (base 280pt x up to 1.3x RVOL-wide multiplier = 364pt max by design).
-    # Raised from 150 Jul 6 2026 — that ceiling would have blocked every single
-    # trade under the new wider-stop scheme.
+    # Sanity ceiling — catches broken/extreme data, not the intended stop
+    # width itself (Jul 7 2026, updated same day: BASE_STOP_PTS moved 150->500
+    # as part of the wide-backstop + thesis-invalidation redesign — see that
+    # constant's comment). Kept generous above BASE_STOP_PTS so it only fires
+    # on genuinely bad data, not the design's own normal stop distance. BUG
+    # CAUGHT in same-day bug sweep: this was still hard-coded to the OLD
+    # 150pt-era ceiling (250) when BASE_STOP_PTS was raised to 500 — every
+    # single trade would have been silently blocked as "broken data." Fixed
+    # to scale off BASE_STOP_PTS instead of a bare literal so this can't
+    # silently desync from the stop width again.
     stop_pts = abs(price - sl)
-    if stop_pts > 450.0:
-        log(f"  SKIP: stop {stop_pts:.0f}pts > 450 max (broken/extreme data)")
+    stop_sanity_ceiling = BASE_STOP_PTS + 100.0
+    if stop_pts > stop_sanity_ceiling:
+        log(f"  SKIP: stop {stop_pts:.0f}pts > {stop_sanity_ceiling:.0f} max (broken/extreme data)")
         return False
 
     ib_range   = calc_ib_range_today(df5)
@@ -1393,24 +1530,29 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         pnl_usd   = pnl_ticks * TICK_VALUE * contracts
         pnl_pct   = pnl_pts / entry * 100
 
-        # ── Point-based profit protection (widened Jul 6 2026) ─────────────
+        # ── Point-based profit protection (widened Jul 6, tier gap closed Jul 7) ──
         # PCT-based thresholds (1.5% = 450pts) never fire — points-based instead.
         # Target is now a 1500pt backstop; these trail tiers do the real exit work
         # so a genuine big swing isn't clipped early. Three tiers, each only
         # tightens — never loosens the stop.
-        s_peak  = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
+        s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
+        peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)   # best favorable excursion so far
 
-        # Tier 1 (+150pts): break-even — stop moves to entry, trade cannot lose.
-        # Requires a real move first (was +30pts — pure noise triggered this
-        # immediately, then any wiggle scratched the trade for a few dollars).
+        # Tier 1 (+150pts): proportional lock-in — protect BE_LOCK_FRACTION of
+        # the peak favorable move, not a flat breakeven floor. Jul 7 2026 fix:
+        # a flat floor meant a trade peaking between BE(150) and WIDE(250) —
+        # e.g. 233pts, as happened live — got ZERO profit protection beyond
+        # breakeven, and a reversal gave the whole move back for an exact $0
+        # scratch. Proportional lock-in scales with however far it actually got.
         if pnl_pts >= BE_ACTIVATE_PTS:
-            be = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
+            locked = round(peak_pts * BE_LOCK_FRACTION, 2)
+            be = round(entry + max(locked, TICK_SIZE), 2) if not is_short else round(entry - max(locked, TICK_SIZE), 2)
             if (not is_short and be > sl) or (is_short and be < sl):
                 sl = be
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to BE level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE stop → {sl} (+{pnl_pts:.0f}pts)")
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE lock({BE_LOCK_FRACTION:.0%} of {peak_pts:.0f}pk) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 2 (+250pts): trail 120pts behind session peak — let it run
+        # Tier 2 (+200pts, was 250): trail 120pts behind session peak — let it run
         if pnl_pts >= TRAIL_WIDE_PTS:
             trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
@@ -1418,7 +1560,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to trail level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(120) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 3 (+400pts): tighten to 60pts behind peak — lock in most of the gain
+        # Tier 3 (+350pts, was 400): tighten to 60pts behind peak — lock in most of the gain
         if pnl_pts >= TRAIL_TIGHT_PTS:
             trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
@@ -1902,7 +2044,7 @@ def _enter_elephant(signal: dict) -> bool:
 def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
     global _confirmed_scans, _regime_scan_counts, _cached_df5
-    global _ib_kind, _ib_kind_set, _day_regime, _large_ib_delayed
+    global _ib_kind, _ib_kind_set, _day_regime
 
     if date.today() in CME_HOLIDAYS_2026:
         log("Market holiday — scan skipped")
@@ -1974,26 +2116,22 @@ def run_scan():
                     else:
                         _ib_kind = 'ROTATIONAL'
                 _day_regime  = detect_regime(ib_range)
-                # Large IB gate: IB > 200pts at 10:30 → first entry delayed to 10:45
-                # (10:30 on a freshly-formed large IB has 35.7% WR vs 50.8% at 10:45)
-                if ib_range > 200.0:
-                    _large_ib_delayed = True
-                    log(f"Large IB gate: {ib_range:.0f}pts > 200 — delaying first entry to 10:45")
+                # Large-IB delay gate REMOVED Jul 7 2026. It held all entries
+                # to 10:45am on any day with IB range > 200pts, justified by an
+                # old backtest (35.7% WR at 10:30 vs 50.8% at 10:45) — but that
+                # comparison was measured against the old regime/signal logic,
+                # which rarely produced real A/A+ grades at all (orb_bear fired
+                # zero times in 3 months; STRONG and NORMAL were statistically
+                # indistinguishable). With regime and signals rebuilt today,
+                # that comparison's premise no longer holds and needs its own
+                # re-validation rather than being assumed still correct. Was
+                # blocking the confirmed 09:55am SHORT entry on Jul 7 itself.
                 _ib_kind_set = True
                 log(f"IB classified: {_ib_kind} | regime={_day_regime} | range={ib_range:.0f}pts | mid={ib_mid:.2f}")
                 send_telegram(
                     f"📊 IB formed: {_ib_kind} | {_day_regime}\n"
-                    f"Range={ib_range:.0f}pts  mid={ib_mid:.2f}\n"
-                    f"{'⏳ Large IB — first entry delayed to 10:45' if _large_ib_delayed else ''}"
+                    f"Range={ib_range:.0f}pts  mid={ib_mid:.2f}"
                 )
-
-    # ── Large IB delay gate ───────────────────────────────────────────────────
-    if _large_ib_delayed:
-        ib_ready_1045 = ET.localize(datetime(today_et.year, today_et.month, today_et.day, 10, 45))
-        if now_et < ib_ready_1045:
-            log(f"Large IB delay — waiting for 10:45 ET")
-            return
-        _large_ib_delayed = False   # cleared after first scan past 10:45
 
     # ── pm_ib hold: give user 5 min to send FUT BIAS after macro range is set ──
     # Only applies in the morning window (before 11am ET). After 11am the pre-market
@@ -2100,7 +2238,10 @@ def run_scan():
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
-        if grade not in ('A+', 'A'):
+        # A+ only (was 'A+' or 'A') — backtested Jul 7: A-grade entries diluted
+        # win rate from 56% to 41% over a 9-day sample; A+-only was the single
+        # biggest lever in getting this system to a validated positive result.
+        if grade != 'A+':
             try: log_block('IBKR', 'MNQ', 'LONG', 'GRADE', f'{grade}({score})', price_now, session)
             except Exception: pass
         else:
@@ -2114,12 +2255,30 @@ def run_scan():
                 try: log_block('IBKR', 'MNQ', 'LONG', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
             else:
-                # A_ext gate REMOVED Jul 6 2026 — gate_audit scored 33% accuracy
-                # / REMOVE verdict on live IBKR SHORT; conflicts with wide-stop scheme.
-                log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} — entering")
-                if place_trade('LONG', sig, regime, score, grade):
-                    try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
+                # RVOL + HTF gates — added Jul 7 2026. A_ext gate (removed
+                # Jul 6) was replaced by these after a full-pipeline backtest
+                # showed 87% of losing trades never reached +100pts favorable
+                # before reversing — the entry itself lacked confirmation, not
+                # the stop being too tight. RVOL>=0.85 (real participation) +
+                # 30min HTF trend agreement lifted a month backtest from
+                # +$4,053/56 trades to +$8,561/97 trades (WR 56%->61%, thesis-
+                # confirm rate 55%->59%).
+                entry_rvol = calc_session_rvol(df5)
+                if entry_rvol < ENTRY_MIN_RVOL:
+                    log(f"LONG signal: {grade} ({score}pts) — RVOL SKIP "
+                        f"({entry_rvol:.2f} < {ENTRY_MIN_RVOL})")
+                    try: log_block('IBKR', 'MNQ', 'LONG', 'RVOL_ENTRY', f'{entry_rvol:.2f}', price_now, session)
                     except Exception: pass
+                elif calc_htf_trend(df5) != 1:
+                    log(f"LONG signal: {grade} ({score}pts) — HTF SKIP (30min trend not up)")
+                    try: log_block('IBKR', 'MNQ', 'LONG', 'HTF', 'not_up', price_now, session)
+                    except Exception: pass
+                else:
+                    log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                        f"rvol={entry_rvol:.2f} htf=up — entering")
+                    if place_trade('LONG', sig, regime, score, grade):
+                        try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
+                        except Exception: pass
     else:
         try: log_block('IBKR', 'MNQ', 'LONG', 'REGIME', regime, price_now, session)
         except Exception: pass
@@ -2136,7 +2295,8 @@ def run_scan():
     )
     if short_allowed:
         score, grade = grade_entry(sig, regime, 'SHORT')
-        if grade not in ('A+', 'A'):
+        # A+ only — see LONG side comment above for why.
+        if grade != 'A+':
             try: log_block('IBKR', 'MNQ', 'SHORT', 'GRADE', f'{grade}({score})', price_now, session)
             except Exception: pass
         else:
@@ -2150,13 +2310,24 @@ def run_scan():
                 try: log_block('IBKR', 'MNQ', 'SHORT', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
             else:
-                # A_ext gate REMOVED Jul 6 2026 — gate_audit scored 33% accuracy
-                # / REMOVE verdict on live IBKR SHORT; conflicts with wide-stop scheme.
-                log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
-                    f"ib={_ib_kind} — entering")
-                if place_trade('SHORT', sig, regime, score, grade):
-                    try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
+                # RVOL + HTF gates — see LONG side comment above for the
+                # backtest that validated these (also applies to SHORT).
+                entry_rvol = calc_session_rvol(df5)
+                if entry_rvol < ENTRY_MIN_RVOL:
+                    log(f"SHORT signal: {grade} ({score}pts) — RVOL SKIP "
+                        f"({entry_rvol:.2f} < {ENTRY_MIN_RVOL})")
+                    try: log_block('IBKR', 'MNQ', 'SHORT', 'RVOL_ENTRY', f'{entry_rvol:.2f}', price_now, session)
                     except Exception: pass
+                elif calc_htf_trend(df5) != -1:
+                    log(f"SHORT signal: {grade} ({score}pts) — HTF SKIP (30min trend not down)")
+                    try: log_block('IBKR', 'MNQ', 'SHORT', 'HTF', 'not_down', price_now, session)
+                    except Exception: pass
+                else:
+                    log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                        f"ib={_ib_kind} rvol={entry_rvol:.2f} htf=down — entering")
+                    if place_trade('SHORT', sig, regime, score, grade):
+                        try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
+                        except Exception: pass
     else:
         try: log_block('IBKR', 'MNQ', 'SHORT', 'REGIME', regime, price_now, session)
         except Exception: pass
@@ -2184,7 +2355,7 @@ def reset_daily_state():
     global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time, _daily_macro_bias
     global _overnight_bias, _overnight_skip_day, _overnight_position, _overnight_computed
     global _elephant_day_type, _elephant_trades_today, _elephant_flush_ids
-    global _ib_kind, _ib_kind_set, _day_regime, _large_ib_delayed
+    global _ib_kind, _ib_kind_set, _day_regime
 
     _orb_high = _orb_low = None
     _orb_set  = False
@@ -2199,7 +2370,6 @@ def reset_daily_state():
     _ib_kind          = None
     _ib_kind_set      = False
     _day_regime       = None
-    _large_ib_delayed = False
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
     _session_high = {}

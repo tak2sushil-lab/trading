@@ -1413,11 +1413,24 @@ async def get_futures_position():
             continue
         sym = p.contract.symbol
         pf  = price_map.get(sym)
+        # IBKR quirk: Position.avgCost for FUTURES includes the contract
+        # multiplier (unlike stocks, where avgCost is just the per-share price).
+        # For MNQ (multiplier=2) this reports ~2x the real index price — e.g.
+        # a real avg entry of 29273.82 shows up as avgCost=58547.63. Divide it
+        # back out so this field is an actual price, not a display bug waiting
+        # to alarm anyone who checks it (caught Jul 7 2026).
+        try:
+            mult = float(p.contract.multiplier or 1)
+        except (TypeError, ValueError):
+            mult = 1.0
+        avg_cost = clean(p.avgCost)
+        if avg_cost is not None and mult:
+            avg_cost = round(avg_cost / mult, 2)
         result.append({
             "symbol":         sym,
             "contract_month": p.contract.lastTradeDateOrContractMonth,
             "qty":            p.position,      # positive = LONG, negative = SHORT
-            "avg_cost":       clean(p.avgCost),
+            "avg_cost":       avg_cost,
             "market_price":   clean(pf.marketPrice)   if pf else None,
             "market_value":   clean(pf.marketValue)   if pf else None,
             "unrealized_pnl": clean(pf.unrealizedPNL) if pf else None,

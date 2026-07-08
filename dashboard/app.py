@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TriVega Trading Dashboard — Flask server, port 8080."""
 
-import os, sqlite3, subprocess, json, base64, functools
+import os, sys, sqlite3, subprocess, json, base64, functools
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,6 +10,9 @@ from flask import Flask, render_template, jsonify, request, Response, session, r
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from futures.strategy_core import TICK_SIZE, TICK_VALUE  # noqa: E402
 
 # ── Config ─────────────────────────────────────────────────────────────
 BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -344,23 +347,63 @@ def get_options_positions():
 
 
 def get_futures_positions():
-    live = _bridge('/futures/position') or []
-    now_et = datetime.now(tz=ET)
-    h = now_et.hour
+    """
+    Per-trade rows from our own DB, not a proxy of IBKR's broker-consolidated
+    position. IBKR nets same-symbol fills into one line (e.g. two separate
+    2-contract shorts show up there as a single qty=-4 position) — that's
+    normal broker accounting, but it hides that each trade can carry its own
+    stop/target and would only partially exit at a given price level. Fixed
+    Jul 7 2026 to match the equity/options views, which already do this.
+    """
+    now_et  = datetime.now(tz=ET)
+    h       = now_et.hour
     session = 'LONDON' if 3 <= h < 9 else ('NY' if 9 <= h < 16 else 'OFF')
 
+    rows = []
+    try:
+        with _db() as c:
+            rows = c.execute("""
+                SELECT id, symbol, contract, entry_date, entry_time, entry_price,
+                       contracts, side, target_price, stop_price, setup_type,
+                       session as trade_session
+                FROM futures_trades
+                WHERE status = 'OPEN'
+                ORDER BY entry_time DESC
+            """).fetchall()
+    except Exception:
+        pass
+
+    live = _bridge('/futures/position') or []
+    price_map = {p.get('symbol'): p.get('market_price') for p in live}
+
     result = []
-    for p in live:
-        qty = p.get('qty', 0)
+    for row in rows:
+        sym    = row['symbol']
+        ep     = row['entry_price'] or 0
+        qty    = row['contracts'] or 1
+        is_short = row['side'] == 'SHORT'
+        mp     = price_map.get(sym)
+
+        if mp is not None and ep:
+            pnl_pts = (ep - mp) if is_short else (mp - ep)
+            unreal_pnl = round(pnl_pts / TICK_SIZE * TICK_VALUE * qty, 2)
+        else:
+            unreal_pnl = None  # bridge down/reconnecting — render "---", not misleading $0
+
         result.append({
-            'symbol':         p.get('symbol'),
-            'contract_month': p.get('contract_month'),
-            'side':           'LONG' if qty > 0 else 'SHORT',
-            'qty':            abs(qty),
-            'avg_cost':       p.get('avg_cost'),
-            'market_price':   p.get('market_price'),
-            'unreal_pnl':     p.get('unrealized_pnl'),
-            'realized_pnl':   p.get('realized_pnl'),
+            'id':             row['id'],
+            'symbol':         sym,
+            'contract_month': row['contract'],
+            'entry_date':     row['entry_date'],
+            'entry_time':     row['entry_time'],
+            'side':           row['side'],
+            'qty':            qty,
+            'entry_price':    ep,
+            'market_price':   mp,
+            'target_price':   row['target_price'],
+            'stop_price':     row['stop_price'],
+            'setup_type':     row['setup_type'],
+            'unreal_pnl':     unreal_pnl,
             'session':        session,
             'status':         'OK',
         })
