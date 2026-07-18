@@ -12,7 +12,7 @@ Last updated: Jul 17 2026
 - **DB:** `trades.db` (primary), `trading.db`
 - **Bridge:** `http://localhost:8000`
 - **Clean run since:** May 1 2026 — do NOT change parameters without explicit user approval
-- **Universe:** 163 symbols (159 after May 24 DNA batch + 4 added May 26: AEHR/APD/HXL/SSYS)
+- **Universe:** 241 symbols since Jul 18 2026 (pro-grade refresh: 128 incumbents kept incl 4 ETFs, 38 pruned — low-ATR mega caps + sub-$5, 113 S&P1500 DNA-screen adds; `find_candidates_results.csv`). ⚠️ Monitor Monday: scan cycle must stay under 5 min at 241 names.
 - **Terminology:** `GLOSSARY.md` (adopted Jul 18 2026) is the canonical name for every gate/score/auditor/shadow book — use its names in docs and Telegram; never rename code/DB/launchd identifiers
 
 ---
@@ -583,9 +583,17 @@ CENX — full table `find_candidates_results.csv`). Equity replay no-book-health
 counterfactual (Jul 6-17, live code incl. new RSI band): **76 trades, 23.7% WR, +$32** vs
 Book Health ON: 0 trades $0 — the selector verdict confirmed through live-code replay
 (76 round-trips of churn for ~zero P&L; flat is correct until the tape turns).
-**Universe adds/prunes NOT shipped — needs user approval of the specific list** (scan-load
-grows with symbol count; recommend phased top-50-by-EV add + review of the 90 failing
-incumbents, next session).
+**Universe refresh SHIPPED same night (user approved full add + prune):** all 166
+incumbents re-screened under identical criteria (the earlier "76 pass" only covered
+S&P1500 members) → keep 128 (ETF sector vehicles exempt), **prune 38** (27 low-ATR mega
+caps incl AAPL/MSFT/JPM/V/MA, 7 sub-$5, 2 thin/delisted, 2 no-data). Added all **113 DNA
+passers** with clusters from find_candidates_results.csv (12 HIGH_VOL / 85 INSTITUTIONAL /
+16 MOMENTUM) + yfinance-derived sectors (30 map to OTHER = neutral scoring; refine later).
+Final universe **241**. Bars bootstrapped (yfinance 60d) for the 113 new names;
+collect_bars follows FULL_UNIVERSE automatically. Parity re-run post-refresh: divergences
+= exactly the pruned names in Friday's history (expected). SYMPATHY_MAP triggers (AAPL etc.)
+unchanged — triggers don't need to be tradeable. Databento 2yr backfill (~$33) NOT run —
+ask user if deeper history wanted for the new names.
 
 **④ Universe screen EXECUTED (S&P 1500 base, pro-grade criteria).** 867/1,499 pass
 price≥$5 + $vol≥$10M + ATR≥3%. Only **76 of the current 166 universe names pass** —

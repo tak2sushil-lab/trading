@@ -200,89 +200,36 @@ MAX_DAILY_SYMPATHY_TRADES = 2      # separate cap — additive on top of regular
 
 # ── Universe ──────────────────────────────────────────────
 FULL_UNIVERSE = list(dict.fromkeys([
-    # ── Tier 1+2: 62%+ win rate (v6 confirmed) ───────────
-    'AAPL', 'PLTR', 'COHR', 'IONQ', 'HOOD', 'JPM', 'IREN', 'NUTX',
-    'LITE', 'VST', 'ITA', 'NFLX', 'ORCL', 'OKLO', 'AMZN', 'GOOGL',
-    'CRM', 'QBTS',
-    # ── Tier 3: 54-59% win rate, positive avg ────────────
-    'TOST', 'AVGO', 'NBIS', 'CLS', 'RKLB', 'CNQ',
-    # ── Borderline: 50%, positive avg, good sample ───────
-    'AMD', 'RKT', 'NU',
-    # ── Mega cap ──────────────────────────────────────────
-    'MSFT', 'META', 'GS',
-    # ── Catalyst-only (scan for events) ──────────────────
-    'CRWV', 'SMCI', 'RBRK', 'AI', 'RGTI',
-    'USAR', 'FSLR', 'CCJ', 'UUUU', 'DNN',
-    'LLY', 'NTLA', 'BEAM',
-    'APLD', 'SOUN', 'BBAI',
-    # ── Gap-and-go confirmed (5Y backtest: 56-60% WR) ────
-    'ON', 'LRCX', 'DDOG', 'MDB',
-    # ── Momentum / sector-leader ──────────────────────────
-    'POET', 'EOSE', 'INDI', 'NVDA', 'INTC', 'TSLA',
-    # ── Energy: oil/gas/pipelines — macro + sector ETF days ──
-    'CVX', 'XOM', 'OXY', 'SLB', 'HAL', 'DVN', 'XLE',
-    # ── Healthcare / Pharma: catalyst + FDA days ─────────
-    'UNH', 'MRNA', 'PFE', 'ABBV', 'ISRG', 'DXCM', 'HIMS', 'XBI',
-    # ── Consumer Discretionary: sentiment + retail days ──
-    'COST', 'NKE', 'SBUX', 'CMG', 'UBER',
-    # ── Financials expanded: rate-sensitive + crypto ─────
-    'BAC', 'C', 'WFC', 'V', 'MA', 'COIN',
-    # ── Defence / Industrial: geopolitical + infra ───────
-    'RTX', 'LMT', 'NOC', 'CAT', 'DE',
-    # ── Semiconductor expansion ───────────────────────────
-    'QCOM', 'MRVL', 'KLAC', 'AMAT', 'MU', 'SMH',
-    # ── Clean Energy / EV / Battery materials ────────────
-    'LAC', 'RIVN', 'NIO', 'CHPT',
-    # ── Commodities / Mining ─────────────────────────────
-    'FCX', 'NEM', 'MP',
-    # ── May 1 2026 additions (5Y backtest validated) ──────
-    # APP  94% WR $74 EV — Applovin, AI advertising momentum
-    # MARA 75% WR $96 EV — Bitcoin miner, high variance/high EV, 15.5 trades/yr
-    # ARM  93% WR $105 EV — ARM Holdings, IPO 2023 (limited history, probation)
-    # AXON 98% WR $67 EV — textbook behaviour, cleanest setup stock tested
-    # SHOP 95% WR $84 EV — Shopify, e-commerce momentum (Canadian co.)
-    'APP', 'MARA', 'ARM', 'AXON', 'SHOP',
-    # ── May 4 2026 additions (full suite validated: bull+bear+WF+stress+MC) ──
-    # MSTR 93% WR $91 EV — MicroStrategy, BTC treasury; gap-and-go bad (17%) but full stack 93%
-    # ONDS 92% WR $106 EV — Ondas Holdings, drone/rail autonomy (4yr data, probation)
-    # RDW  87% WR $107 EV — Redwire Corp, space tech; BULL ONLY (bear 60% WR too thin)
-    # VERI 80% WR $99 EV — Veritone, AI platform; bear 90% WR — both directions
-    'MSTR', 'ONDS', 'RDW', 'VERI',
-    # ── May 6 2026 re-additions (re-backtested with full signal stack) ──
-    # JOBY 87% WR $81 EV — eVTOL/aviation. Was dropped at 38% WR (gap-and-go only).
-    #      Full stack (ORB+VWAP+RS+volume): 87% WR, all 6 years profitable, 13 trades/yr
-    'JOBY',
-    # ── May 24 2026 — DNA-screened expansion (batch_backtest.py validated) ──
-    # 49/49 cleared: DNA screen + full 5yr backtest + IS/OOS split + stress test
-    # Avg WR 90.3% full, avg OOS_WR 89.5% | ⚠️ BSX/HOLX (OOS 60-67%), CIFR (N=22)
-    # HIGH_VOL (7): gap fills 70% — wait for VWAP reclaim, tight trail
-    'CLSK','WULF','HUT','ARRY','RIOT','EQT','CIFR',
-    # INSTITUTIONAL (24): gaps stick 75% — extended no-move timer
-    'CPNG','SITM','KTOS','ACLS','CTRA','CACI','FTNT','IBKR','ONTO','SAIC',
-    'BWXT','SAIA','HWM','GDDY','EW','KKR','TPR','GILD','GE','TXT',
-    'YUM','BSX','HOLX','TT',
-    # MOMENTUM (18): standard behavior
-    'UPST','CELH','HL','ZM','DUOL','RBLX','WFRD','TTD','TWLO','AG',
-    'DOCU','ZS','HUBS','OKTA','DECK','LULU','PANW','AEM',
-    # ── May 26 2026 — deep-validated additions (bull+bear+OOS+stress+DNA) ─────
-    # AEHR  90.4% WR bull (N=73) / 100% WR bear (N=14) — SEMIS, MOMENTUM cluster
-    # APD   100% WR bull (N=9)  / 100% WR bear (N=9)  — COMMODITIES, INSTITUTIONAL — ⚠️ N=9, ~1.4 trades/yr, monitor to N=30
-    # HXL   95% WR bull (N=20) / 100% WR bear (N=26) — DEFENCE, INSTITUTIONAL — monitor to N=30
-    # SSYS  94.4% WR bull (N=54) / 89.7% WR bear (N=29) — TECH, MOMENTUM cluster
-    'AEHR', 'APD', 'HXL', 'SSYS',
-    # ── May 29 2026 — friend-sourced candidates (batch_backtest + bear validated) ──
-    # CRDO  93.3% bull WR / 100% bear / OOS 90.9% — AI networking silicon, $794/yr
-    # OUST  85.9% bull WR / 96% bear  / OOS 88.6% — Lidar/autonomy, $1216/yr
-    # AXTI  89.1% bull WR / 100% bear / OOS 79.2% — Compound semis (GaAs), $893/yr
-    # MU    84.8% bull WR / 100% bear / OOS 80.5% — Micron DRAM, 79 trades, $660/yr
-    # NBIS  86.1% bull WR / 100% bear / OOS 86.1% — Nebius AI cloud ⚠️ listed Sep 2024
-    # FPS   SKIPPED — 3 months history only (IPO Feb 2026), N=5 trades
-    'CRDO', 'OUST', 'AXTI', 'MU', 'NBIS',
-    # DROPPED — confirmed underperformers (gap-and-go backtest):
-    # SMR(24%), SNOW(33%), CRWD(33%)
-    # PANW(43% gap-and-go only → re-added May 24 via full A/A+ backtest: 93.2% WR)
-    # MS(43%), AFRM(43%), ACHR(44%)
-    # SOFI(50% neg avg), HPE(50% neg avg)
+    # ── Regenerated Jul 18 2026: pro-grade screen (price>=$5, $vol>=$10M, ATR>=3%)
+    # 128 incumbents kept (incl 4 sector ETFs, screen-exempt) + 113 S&P1500 DNA-screen
+    # passers (5-rule, find_candidates_results.csv). 38 pruned (low-ATR mega caps,
+    # sub-$5). Full trail: docs/AUDIT_2026-07-18_weekend_redesign.md + CLAUDE.md.
+    # ── Incumbents (May-Jul validated) ──
+    'ACLS','AEHR','AEM','AG','AI','AMAT','AMD','AMZN','APD','APLD','APP',
+    'ARM','ARRY','AVGO','AXON','AXTI','BEAM','BSX','BWXT','C','CACI','CAT',
+    'CCJ','CELH','CIFR','CLS','CLSK','CMG','COHR','COIN','CPNG','CRDO',
+    'CRM','CRWV','DDOG','DE','DECK','DOCU','DUOL','DXCM','FCX','FSLR',
+    'FTNT','GDDY','GILD','GOOGL','GS','HIMS','HL','HOOD','HUBS','HUT','HWM',
+    'IBKR','INTC','IONQ','IREN','ISRG','ITA','JOBY','KKR','KLAC','KTOS',
+    'LITE','LLY','LRCX','LULU','MARA','MDB','META','MP','MRNA','MRVL',
+    'MSTR','MU','NBIS','NEM','NFLX','NKE','NTLA','NU','NUTX','NVDA','OKLO',
+    'OKTA','ON','ONDS','ONTO','ORCL','OUST','PANW','PLTR','POET','QBTS',
+    'QCOM','RBLX','RBRK','RDW','RGTI','RIOT','RIVN','RKLB','RKT','SAIA',
+    'SAIC','SHOP','SITM','SMCI','SMH','SOUN','TOST','TPR','TSLA','TT','TTD',
+    'TWLO','UBER','UPST','USAR','UUUU','VST','WFRD','WULF','XBI','XLE',
+    'YUM','ZM','ZS',
+    # ── Jul 18 2026 S&P1500 DNA-screen additions ──
+    'AAL','AAON','AGX','ALGT','ALK','AMKR','ATI','AVAV','BHE','BKNG','BLDR',
+    'BRKR','CAR','CBOE','CC','CCOI','CDE','CEG','CENX','CIEN','CLF','CMI',
+    'CNC','COHU','CRS','CSGP','CSL','CTSH','CVNA','CW','CYTK','DAL','DELL',
+    'DHI','DKS','DT','DY','ELF','EME','EPAM','EXTR','EZPW','FFIV','FICO',
+    'FIX','FLEX','FN','GLW','GMED','GVA','HLIT','HPE','HPQ','IRDM','IT',
+    'JBL','KNX','LFUS','LQDA','MIR','MTRN','MTSI','MTZ','MXL','MYRG','NRG',
+    'NTAP','NTNX','NVT','NWL','OLLI','P','PATH','PENG','PEP','PGR','PI',
+    'PLAB','PNR','POWL','PRIM','PTGX','PWR','RMBS','RMD','RRX','RUN','SANM',
+    'SMPL','SMTC','SNEX','STRL','STX','TGTX','THC','TKO','TMUS','TPL',
+    'TTMI','TYL','UAL','UCTT','UFPT','UTI','VECO','VIAV','VICR','VIRT',
+    'VSAT','VSEC','WCC','WDC','WEN',
 ]))
 
 # ── DNA Cluster sets (dna_analysis.py, May 2026 — re-run quarterly) ──────────
@@ -290,28 +237,29 @@ FULL_UNIVERSE = list(dict.fromkeys([
 #   → L1: require VWAP reclaim on gap-up days (penalise naked ORB)
 #   → L3: tighter ATR trail (1.0× vs 1.5×) — lock gains fast, don't wait for continuation
 HIGH_VOL_SYMBOLS = frozenset([
-    'AI','APLD','APP','BBAI','BEAM','CHPT','DNN','EOSE','INDI','IONQ',
-    'IREN','JOBY','LAC','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS',
-    'RDW','RGTI','RIVN','RKLB','RKT','SOUN','TOST','VERI',
-    # May 24 2026 additions (DNA batch)
-    'ARRY','CIFR','CLSK','EQT','HUT','RIOT','WULF',
+    'AI','APLD','APP','ARRY','BEAM','CIFR','CLSK','HUT','IONQ','IREN',
+    'JOBY','MARA','NTLA','NU','NUTX','ONDS','POET','QBTS','RDW','RGTI',
+    'RIOT','RIVN','RKLB','RKT','SOUN','TOST','WULF',
+    # Jul 18 2026 DNA-screen additions
+    'CAR','CVNA','CYTK','EZPW','LQDA','MIR','OLLI','PATH','PTGX','RUN',
+    'SMPL','TGTX',
 ])
 # INSTITUTIONAL: gaps stick 75%, slow grind, multi-day continuation at 3d (ATR ~3%)
 #   → L3: extend no-move exit timer (300 min vs 240 min) — these consolidate before continuing
 INSTITUTIONAL_SYMBOLS = frozenset([
-    'AAPL','ABBV','AMAT','AVGO','AXON','BAC','C','CAT','CNQ','COST',
-    'CVX','DE','DVN','GOOGL','GS','HAL','HOOD','INTC','ISRG','ITA',
-    'JPM','KLAC','LMT','LRCX','MA','MSFT','NKE','NOC','OKLO','ON',
-    'OXY','PFE','QCOM','RTX','SBUX','SLB','SMH','UNH','V','VST',
-    'WFC','XBI','XLE','XOM',
-    # May 24 2026 additions (DNA batch)
-    'ACLS','BSX','BWXT','CACI','CPNG','CTRA','EW','FTNT','GE','GDDY',
-    'GILD','HOLX','HWM','IBKR','KKR','KTOS','ONTO','SAIC','SAIA','SITM',
-    'TPR','TT','TXT','YUM',
-    # May 26 2026 additions — ATR ~2-3%, gap_fill 0.46-0.48, institutional grind
-    'APD','HXL',
-    # May 29 2026 — large-cap, institutional-grade semis
-    'MU',
+    'ACLS','AMAT','APD','AVGO','AXON','BSX','BWXT','C','CACI','CAT','CPNG',
+    'DE','FTNT','GDDY','GILD','GOOGL','GS','HOOD','HWM','IBKR','INTC',
+    'ISRG','ITA','KKR','KLAC','KTOS','LRCX','MU','NKE','OKLO','ON','ONTO',
+    'QCOM','SAIA','SAIC','SITM','SMH','TPR','TT','VST','XBI','XLE','YUM',
+    # Jul 18 2026 DNA-screen additions
+    'AAON','AGX','ALGT','ATI','BHE','BKNG','BLDR','BRKR','CBOE','CC','CCOI',
+    'CIEN','CMI','CNC','COHU','CRS','CSGP','CSL','CTSH','CW','DAL','DELL',
+    'DHI','DKS','DY','EME','EPAM','EXTR','FFIV','FICO','FIX','FLEX','FN',
+    'GLW','GMED','GVA','HLIT','HPE','HPQ','IRDM','IT','JBL','KNX','LFUS',
+    'MTRN','MTSI','MTZ','MXL','MYRG','NRG','NTAP','NVT','NWL','P','PENG',
+    'PEP','PGR','PLAB','PNR','POWL','PRIM','PWR','RMBS','RMD','RRX','SANM',
+    'SMTC','SNEX','STX','THC','TKO','TMUS','TPL','TTMI','TYL','UFPT','UTI',
+    'VECO','VIAV','VICR','VIRT','VSAT','VSEC','WCC','WEN',
 ])
 # MOMENTUM: standard behavior (gap-go 71%, ATR ~5%) — no cluster overrides needed
 # OUTLIER: USAR only — anomalous behavior, treat as MOMENTUM (baseline)
@@ -411,6 +359,120 @@ SECTOR_MAP = {
     'AXTI':'SEMIS',         # AXT Inc — compound semiconductor substrates (GaAs/InP/Ge) (STRONG +15)
     'MU'  :'SEMIS',         # Micron Technology — DRAM/NAND memory semis (STRONG +15)
     'NBIS':'TECH',          # Nebius Group — AI cloud infra (ex-Yandex) ⚠️ Sep 2024 IPO, monitor
+    # ── Jul 18 2026 DNA-screen additions (yfinance sector -> project sector) ──
+    'AAL':'OTHER',
+    'AAON':'OTHER',
+    'AGX':'OTHER',
+    'ALGT':'OTHER',
+    'ALK':'OTHER',
+    'AMKR':'SEMIS',
+    'ATI':'OTHER',
+    'AVAV':'DEFENCE',
+    'BHE':'TECH',
+    'BKNG':'CONSUMER',
+    'BLDR':'OTHER',
+    'BRKR':'BIOTECH',
+    'CAR':'OTHER',
+    'CBOE':'FINTECH',
+    'CC':'COMMODITIES',
+    'CCOI':'TECH',
+    'CDE':'COMMODITIES',
+    'CEG':'CLEAN_ENERGY',
+    'CENX':'COMMODITIES',
+    'CIEN':'TECH',
+    'CLF':'COMMODITIES',
+    'CMI':'OTHER',
+    'CNC':'BIOTECH',
+    'COHU':'SEMIS',
+    'CRS':'OTHER',
+    'CSGP':'OTHER',
+    'CSL':'OTHER',
+    'CTSH':'TECH',
+    'CVNA':'CONSUMER',
+    'CW':'DEFENCE',
+    'CYTK':'BIOTECH',
+    'DAL':'OTHER',
+    'DELL':'TECH',
+    'DHI':'CONSUMER',
+    'DKS':'CONSUMER',
+    'DT':'TECH',
+    'DY':'OTHER',
+    'ELF':'CONSUMER',
+    'EME':'OTHER',
+    'EPAM':'TECH',
+    'EXTR':'TECH',
+    'EZPW':'FINTECH',
+    'FFIV':'TECH',
+    'FICO':'TECH',
+    'FIX':'OTHER',
+    'FLEX':'TECH',
+    'FN':'TECH',
+    'GLW':'TECH',
+    'GMED':'BIOTECH',
+    'GVA':'OTHER',
+    'HLIT':'TECH',
+    'HPE':'TECH',
+    'HPQ':'TECH',
+    'IRDM':'TECH',
+    'IT':'TECH',
+    'JBL':'TECH',
+    'KNX':'OTHER',
+    'LFUS':'TECH',
+    'LQDA':'BIOTECH',
+    'MIR':'OTHER',
+    'MTRN':'COMMODITIES',
+    'MTSI':'SEMIS',
+    'MTZ':'OTHER',
+    'MXL':'SEMIS',
+    'MYRG':'OTHER',
+    'NRG':'CLEAN_ENERGY',
+    'NTAP':'TECH',
+    'NTNX':'TECH',
+    'NVT':'OTHER',
+    'NWL':'CONSUMER',
+    'OLLI':'CONSUMER',
+    'P':'TECH',
+    'PATH':'TECH',
+    'PENG':'TECH',
+    'PEP':'CONSUMER',
+    'PGR':'FINTECH',
+    'PI':'SEMIS',
+    'PLAB':'SEMIS',
+    'PNR':'OTHER',
+    'POWL':'OTHER',
+    'PRIM':'OTHER',
+    'PTGX':'BIOTECH',
+    'PWR':'OTHER',
+    'RMBS':'SEMIS',
+    'RMD':'BIOTECH',
+    'RRX':'OTHER',
+    'RUN':'CLEAN_ENERGY',
+    'SANM':'TECH',
+    'SMPL':'CONSUMER',
+    'SMTC':'SEMIS',
+    'SNEX':'FINTECH',
+    'STRL':'OTHER',
+    'STX':'TECH',
+    'TGTX':'BIOTECH',
+    'THC':'BIOTECH',
+    'TKO':'TECH',
+    'TMUS':'TECH',
+    'TPL':'ENERGY',
+    'TTMI':'TECH',
+    'TYL':'TECH',
+    'UAL':'OTHER',
+    'UCTT':'SEMIS',
+    'UFPT':'BIOTECH',
+    'UTI':'CONSUMER',
+    'VECO':'SEMIS',
+    'VIAV':'TECH',
+    'VICR':'TECH',
+    'VIRT':'FINTECH',
+    'VSAT':'TECH',
+    'VSEC':'DEFENCE',
+    'WCC':'OTHER',
+    'WDC':'TECH',
+    'WEN':'CONSUMER',
 }
 
 # ── Sector ETF proxies for relative strength ─────────────────
