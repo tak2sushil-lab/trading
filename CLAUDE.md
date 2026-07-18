@@ -590,7 +590,9 @@ caps incl AAPL/MSFT/JPM/V/MA, 7 sub-$5, 2 thin/delisted, 2 no-data). Added all *
 passers** with clusters from find_candidates_results.csv (12 HIGH_VOL / 85 INSTITUTIONAL /
 16 MOMENTUM) + yfinance-derived sectors (30 map to OTHER = neutral scoring; refine later).
 Final universe **241**. Bars bootstrapped (yfinance 60d) for the 113 new names;
-collect_bars follows FULL_UNIVERSE automatically. Parity re-run post-refresh: divergences
+collect_bars follows FULL_UNIVERSE automatically. **Databento 2-yr 1-min backfill COMPLETED
+same night (user-approved): 111/113 new names now have full history to Jan 2024 — equal
+replay footing with incumbents (P + PENG are newer listings, shallow only; nothing missing).** Parity re-run post-refresh: divergences
 = exactly the pruned names in Friday's history (expected). SYMPATHY_MAP triggers (AAPL etc.)
 unchanged — triggers don't need to be tradeable. Databento 2yr backfill (~$33) NOT run —
 ask user if deeper history wanted for the new names.
@@ -630,6 +632,11 @@ tiering (action-required vs journal) if volume becomes noise.
 + panel in index.html/app.js): Book Health per direction with drift, today's signal funnel
 (equity A+ counts, futures gate blocks), Trade Cop last verdict, Mirror Book running total,
 universe count. Verified live: books OFF (-0.51/-0.62 drift), parity OK, Mirror +505pts.
+
+**System score after the weekend: 65 → 74 / 100.** Remaining points to 80+ are earned, not
+built: a green live week on the new config, closing the three equity-replay stubs (earnings
+calendar, catalyst/sympathy flags, sector-strength scoring), Mirror Book 30-day graduation
+(~Aug 17). Read docs/AUDIT_2026-07-18_weekend_redesign.md for the scorecard rubric.
 
 ---
 
