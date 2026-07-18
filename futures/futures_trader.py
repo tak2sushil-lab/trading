@@ -40,7 +40,7 @@ from prop_rules import (
 )
 from portfolio_status import format_all as _portfolio_all
 from futures.hero_score import (
-    score_entry_regime, contracts_from_regime_score, detect_regime,
+    score_entry_regime, contracts_from_regime_score, detect_regime, is_gold_score,
 )
 
 # ── Telegram ──────────────────────────────────────────────
@@ -117,7 +117,7 @@ MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and liv
 # futures_exit_stack_jul7.md memory for the full trail; do not re-attempt
 # this exact design without re-validating against the complete pipeline
 # (Hero gate + overnight bias + IB kind + 14:00 cutoff), not a partial one.
-BASE_STOP_PTS     = 150.0
+BASE_STOP_PTS     = 200.0  # widened from 150 Jul 8 2026 — see EXIT_PARAMS_BY_REGIME below
 # Backstop only, not a real profit-take level — verified via backtest (Jul 6):
 # a literal 420pt hard target clipped winners at $5,812 total; letting the
 # trail tiers (below) manage the exit instead reached $8,378 on the same 65
@@ -131,27 +131,53 @@ BASE_TARGET_PTS   = 1500.0
 # how wide the stop is once in.
 ENTRY_MIN_RVOL    = 0.85    # session RVOL floor at entry — screens out low-conviction setups
 HTF_BARS_MIN      = 30      # higher-timeframe resample window (minutes)
+
+# Graduated RVOL (Jul 8 2026) — backtested via sim_replay.py --graduated-rvol
+# after a Jul 7 near-miss (0.84 vs 0.85 killed a Hero-approved A+ SHORT) and
+# three more A+ SHORT signals (150/130/130pts) blocked at 0.73/0.68/0.72 on
+# Jul 8 during a confirmed WEAK-regime downtrend. Full 2026 YTD (Jan 1-Jul 7):
+# floor=0.70 → 84t (was 57), WR 60.7% (was 64.9%), P&L $4,495 (was $3,906,
+# +15%), MaxDD $2,027 (was $1,699, +19%) — floor=0.60 tested too ($4,912
+# total but MaxDD $2,363, +39% — worse risk/reward at the margin, not used).
+# Below RVOL_GRAD_FLOOR, still a hard skip regardless of Hero score.
+RVOL_GRAD_FLOOR   = 0.70
 HTF_TREND_BARS    = 3       # number of HTF bars used for trend direction
 
 # ── Profit protection (point-based — MNQ-calibrated) ────────────────────────
-# Jul 6: BE at +30/trail at +60/+85 were ~1x ATR — pure noise triggered
-# breakeven immediately. Widened to require a real move first.
-# Jul 7: found a gap between flat-BE(150) and WIDE(250) — a trade peaking at,
-# say, 233pts (as happened live today) got ONLY flat breakeven protection,
-# then a reversal gave the whole 233pts back for an exact $0 scratch. Swept
-# 5 tier designs against the 65-trade backtest; the winner combines a
-# proportional lock-in (protects a fraction of peak immediately past BE,
-# not a flat floor) with earlier WIDE/TIGHT triggers to shrink the gap:
-# 63.1% WR (was 50.8%), only 2 scratches<5pt (was 10), $8,666 total (was
-# $8,378). A pure "lower WIDE trigger only" variant scored $8,998 total but
-# with more scratches (6) — chose this one since "don't get fully reversed
-# out of a real move" was the explicit design goal, not just max $.
-BE_ACTIVATE_PTS  = 150.0   # +150pts → start proportional lock-in (real move required first)
-BE_LOCK_FRACTION = 0.35    # once past BE_ACTIVATE_PTS, protect this fraction of peak favorable
-TRAIL_WIDE_PTS   = 200.0   # +200pts → trail 120pts behind session peak (was 250)
-TRAIL_TIGHT_PTS  = 350.0   # +350pts → tighten trail to 60pts (was 400)
-TRAIL_WIDE_GAP   = 120.0   # trail distance in wide mode
-TRAIL_TIGHT_GAP  = 60.0    # trail distance in tight mode
+# History: flat BE at +30/trail at +60/+85 (~1x ATR) triggered breakeven on
+# pure noise. Jul 7 widened to a flat BE(150)/WIDE(250)/TIGHT(400) design with
+# proportional lock-in (protect a fraction of peak, not a flat floor) — fixed
+# a gap where a trade peaking at, say, 233pts got zero profit protection
+# beyond breakeven before a reversal gave it all back. Jul 8: replaced with
+# regime-aware params (below) — same proportional-lock mechanism, but the
+# specific numbers now vary by day type instead of one flat set.
+#
+# Regime-aware exits (Jul 8 2026) — user-directed redesign after finding that
+# ~50% of trades DO get a real ≥100pt favorable move within 30min ("thesis
+# right"), but average capture was only ~19-24% of it (60-day sample) because
+# one flat BE/trail threshold can't fit both choppy and trending days. Reuses
+# the SAME IB-range day classification already computed for Hero-gate
+# weighting (detect_regime, sticky at 10:30) — not a new real-time detector.
+# Backtested full 2026 YTD (via sim_replay.py --regime-aware-exits):
+#   Baseline (flat 150/150):     N=54  WR=64.8%  $+1,991  MaxDD=-$2,347
+#   Regime-aware (this config):  N=53  WR=69.8%  $+3,095  MaxDD=-$1,415
+# Beats baseline on every metric — WR, total $, avg/trade, AND drawdown.
+# KNOWN LIMITATION (not yet fixed): TRENDING bucket's low lock-fraction (0.20)
+# is tuned for genuinely large sustained moves — on a modestly-trending day
+# misclassified as TRENDING (wide IB range from a slow grind, not a real
+# trend), it under-protects vs a flat threshold (e.g. Jun 18 2026: baseline
+# rode a slow +0.34% grind to EOD for +$424, this config would exit near
+# +$102). Tried raising the lock-fraction to fix it (v4: 0.40) — made things
+# WORSE in aggregate ($2,583 vs $3,095) by clipping genuinely huge trends
+# instead. A real fix needs a smoothly graduated lock-fraction (scales with
+# how far peak actually got), not a flat number — not built yet. Shipped
+# anyway since it still beats flat-150 baseline on every metric even with
+# this known gap. See futures_jul7_deep_dive / futures_jul8_session memory.
+EXIT_PARAMS_BY_REGIME: dict[str, dict[str, float]] = {
+    'CHOPPY':   {'be_pts': 90.0,  'be_frac': 0.45, 'wide_pts': 130.0, 'wide_gap': 60.0,  'tight_pts': 200.0, 'tight_gap': 35.0},
+    'QUIET':    {'be_pts': 90.0,  'be_frac': 0.45, 'wide_pts': 130.0, 'wide_gap': 60.0,  'tight_pts': 200.0, 'tight_gap': 35.0},
+    'TRENDING': {'be_pts': 110.0, 'be_frac': 0.20, 'wide_pts': 300.0, 'wide_gap': 180.0, 'tight_pts': 550.0, 'tight_gap': 110.0},
+}
 
 # ── Thesis invalidation exit — REVERTED Jul 7 2026 ──────────────────────────
 # Tried: cut a trade on evidence the setup failed (regime/HTF/momentum/VWAP
@@ -883,7 +909,14 @@ def get_signals(df5: pd.DataFrame) -> dict:
     # On NFP/CPI/FOMC days: the 8:30am release creates a structural range.
     # Breaking pm_high/pm_low during RTH = continuation of macro move.
     sig['pm_bull'] = (_pm_ib_set and _pm_high is not None and price > _pm_high)
-    sig['pm_bear'] = (_pm_ib_set and _pm_low  is not None and price < _pm_low)
+    # PM_SHORT DISABLED Jul 8 2026 — 0-for-7 lifetime (100% loss rate, -$1,544),
+    # and all 4 independent episodes (Jun 16/17, Jul 1/7) show the identical
+    # mechanical failure: it shorts right at/near the exhaustion LOW of a
+    # decline (a stop-hunt through the pre-market low), not a genuine
+    # breakdown continuation — structurally the same phenomenon Elephant
+    # trades in the opposite (correct) direction. No evidence it has ever
+    # worked; near-zero cost to disabling. See futures_jul8_pm_signals memory.
+    sig['pm_bear'] = False
     sig['pm_high'] = _pm_high
     sig['pm_low']  = _pm_low
 
@@ -994,9 +1027,17 @@ def calc_session_rvol(df5: pd.DataFrame) -> float:
     """
     if df5.empty:
         return 1.0
-    today   = datetime.now(ET).date()
+    now     = datetime.now(ET)
+    today   = now.date()
     rth_start = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
     today_bars = df5[df5.index >= rth_start]
+    # Completed bars only: get_bars() includes the currently-forming 5-min bar,
+    # whose partial volume made this read as a saw-tooth (0.05→0.9 within each
+    # bar — visible in every regime_detail log line). The 0.85 entry gate was
+    # calibrated on completed bars (sim_replay/decoder), so scoring the partial
+    # bar silently raised the effective gate ~2x live. (Bug found Jul 17 2026)
+    if len(today_bars) and (now - today_bars.index[-1]).total_seconds() < 300:
+        today_bars = today_bars.iloc[:-1]
     if len(today_bars) < 2:
         return 1.0
     avg_v = today_bars['volume'].mean()
@@ -1538,35 +1579,42 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
         peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)   # best favorable excursion so far
 
-        # Tier 1 (+150pts): proportional lock-in — protect BE_LOCK_FRACTION of
-        # the peak favorable move, not a flat breakeven floor. Jul 7 2026 fix:
-        # a flat floor meant a trade peaking between BE(150) and WIDE(250) —
-        # e.g. 233pts, as happened live — got ZERO profit protection beyond
-        # breakeven, and a reversal gave the whole move back for an exact $0
-        # scratch. Proportional lock-in scales with however far it actually got.
-        if pnl_pts >= BE_ACTIVATE_PTS:
-            locked = round(peak_pts * BE_LOCK_FRACTION, 2)
+        # Regime-aware exit params (Jul 8 2026) — see EXIT_PARAMS_BY_REGIME
+        # above for rationale/backtest numbers/known limitation.
+        _rp = EXIT_PARAMS_BY_REGIME.get(_day_regime or 'CHOPPY', EXIT_PARAMS_BY_REGIME['CHOPPY'])
+        _be_pts, _be_frac   = _rp['be_pts'], _rp['be_frac']
+        _wide_pts, _wide_gap   = _rp['wide_pts'], _rp['wide_gap']
+        _tight_pts, _tight_gap = _rp['tight_pts'], _rp['tight_gap']
+
+        # Tier 1: proportional lock-in — protect _be_frac of the peak favorable
+        # move, not a flat breakeven floor. Jul 7 2026 fix: a flat floor meant
+        # a trade peaking between BE and WIDE got ZERO profit protection
+        # beyond breakeven, and a reversal gave the whole move back for an
+        # exact $0 scratch. Proportional lock-in scales with however far it
+        # actually got.
+        if pnl_pts >= _be_pts:
+            locked = round(peak_pts * _be_frac, 2)
             be = round(entry + max(locked, TICK_SIZE), 2) if not is_short else round(entry - max(locked, TICK_SIZE), 2)
             if (not is_short and be > sl) or (is_short and be < sl):
                 sl = be
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to BE level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE lock({BE_LOCK_FRACTION:.0%} of {peak_pts:.0f}pk) → {sl} (+{pnl_pts:.0f}pts)")
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE lock({_be_frac:.0%} of {peak_pts:.0f}pk, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 2 (+200pts, was 250): trail 120pts behind session peak — let it run
-        if pnl_pts >= TRAIL_WIDE_PTS:
-            trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
+        # Tier 2: trail _wide_gap behind session peak — let it run
+        if pnl_pts >= _wide_pts:
+            trail = round(s_peak - _wide_gap, 2) if not is_short else round(s_peak + _wide_gap, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to trail level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(120) → {sl} (+{pnl_pts:.0f}pts)")
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail({_wide_gap:.0f}, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 3 (+350pts, was 400): tighten to 60pts behind peak — lock in most of the gain
-        if pnl_pts >= TRAIL_TIGHT_PTS:
-            trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
+        # Tier 3: tighten to _tight_gap behind peak — lock in most of the gain
+        if pnl_pts >= _tight_pts:
+            trail = round(s_peak - _tight_gap, 2) if not is_short else round(s_peak + _tight_gap, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to tight trail level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(60) → {sl} (+{pnl_pts:.0f}pts)")
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail({_tight_gap:.0f}, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
         # VWAP for exit decisions
         vwap = vwap_now   # pre-fetched once above the loop
@@ -2264,7 +2312,12 @@ def run_scan():
                 # +$4,053/56 trades to +$8,561/97 trades (WR 56%->61%, thesis-
                 # confirm rate 55%->59%).
                 entry_rvol = calc_session_rvol(df5)
-                if entry_rvol < ENTRY_MIN_RVOL:
+                rvol_ok = entry_rvol >= ENTRY_MIN_RVOL
+                rvol_compensated = (
+                    not rvol_ok and entry_rvol >= RVOL_GRAD_FLOOR
+                    and is_gold_score(h_score, hero_regime)
+                )
+                if not rvol_ok and not rvol_compensated:
                     log(f"LONG signal: {grade} ({score}pts) — RVOL SKIP "
                         f"({entry_rvol:.2f} < {ENTRY_MIN_RVOL})")
                     try: log_block('IBKR', 'MNQ', 'LONG', 'RVOL_ENTRY', f'{entry_rvol:.2f}', price_now, session)
@@ -2274,8 +2327,9 @@ def run_scan():
                     try: log_block('IBKR', 'MNQ', 'LONG', 'HTF', 'not_up', price_now, session)
                     except Exception: pass
                 else:
+                    _rvol_note = ' (RVOL-compensated by Hero GOLD)' if rvol_compensated else ''
                     log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
-                        f"rvol={entry_rvol:.2f} htf=up — entering")
+                        f"rvol={entry_rvol:.2f} htf=up — entering{_rvol_note}")
                     if place_trade('LONG', sig, regime, score, grade):
                         try: log_enter('IBKR', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
                         except Exception: pass
@@ -2313,7 +2367,12 @@ def run_scan():
                 # RVOL + HTF gates — see LONG side comment above for the
                 # backtest that validated these (also applies to SHORT).
                 entry_rvol = calc_session_rvol(df5)
-                if entry_rvol < ENTRY_MIN_RVOL:
+                rvol_ok = entry_rvol >= ENTRY_MIN_RVOL
+                rvol_compensated = (
+                    not rvol_ok and entry_rvol >= RVOL_GRAD_FLOOR
+                    and is_gold_score(h_score, hero_regime)
+                )
+                if not rvol_ok and not rvol_compensated:
                     log(f"SHORT signal: {grade} ({score}pts) — RVOL SKIP "
                         f"({entry_rvol:.2f} < {ENTRY_MIN_RVOL})")
                     try: log_block('IBKR', 'MNQ', 'SHORT', 'RVOL_ENTRY', f'{entry_rvol:.2f}', price_now, session)
@@ -2323,8 +2382,9 @@ def run_scan():
                     try: log_block('IBKR', 'MNQ', 'SHORT', 'HTF', 'not_down', price_now, session)
                     except Exception: pass
                 else:
+                    _rvol_note = ' (RVOL-compensated by Hero GOLD)' if rvol_compensated else ''
                     log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
-                        f"ib={_ib_kind} rvol={entry_rvol:.2f} htf=down — entering")
+                        f"ib={_ib_kind} rvol={entry_rvol:.2f} htf=down — entering{_rvol_note}")
                     if place_trade('SHORT', sig, regime, score, grade):
                         try: log_enter('IBKR', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
                         except Exception: pass

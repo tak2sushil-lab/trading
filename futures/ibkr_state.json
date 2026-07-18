@@ -1,11 +1,11 @@
 {
   "mode": "IBKR",
-  "balance": 13781.0,
+  "balance": 13775.5,
   "high_water_mark": 15000.0,
-  "total_profit": -1219.0,
-  "session_pnl": -253.0,
-  "session_date": "2026-07-07",
-  "best_day_profit": 0.0,
-  "qualifying_days": 0,
+  "total_profit": -1224.5,
+  "session_pnl": 0,
+  "session_date": "2026-07-18",
+  "best_day_profit": 475.0,
+  "qualifying_days": 1,
   "payout_count": 0
 }

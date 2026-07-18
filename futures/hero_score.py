@@ -187,6 +187,58 @@ _REGIME_THRESHOLDS: dict[str, tuple[int, int]] = {
 }
 
 
+# ── H6 candidate (Jul 8 2026 pm) — opt-in, NOT in _REGIME_WEIGHTS by default ──
+# Root cause: H2_MTF_ALIGNED and H3_RSI_MOMENTUM are computed on 1H-resampled
+# bars spanning ~14-20 hours (multiple trading days). On Jul 7, a genuine
+# ~270pt/50min same-day rally (13:11-13:59, 5-min RSI 72-81, price 85-95pts
+# above session VWAP) still read: 1H RSI=41.67 (dominated by that morning's
+# earlier crash, still inside the same 14-period 1H window) and price BELOW
+# the 20-period 1H MA (29644.76 vs 29534.5, anchored to price levels from
+# days earlier) — both heroes read bearish during an obvious live uptrend.
+# H6 is a same-day-only substitute: RSI(14) and VWAP computed strictly from
+# TODAY's bars, so it can't be contaminated by yesterday or the pre-dawn
+# hours. Weight/threshold NOT yet calibrated — grid-search before shipping.
+H6_INTRADAY_RSI_PERIOD = 14
+
+
+def _same_day_bars(bars_up_to_entry: pd.DataFrame) -> pd.DataFrame:
+    if bars_up_to_entry is None or bars_up_to_entry.empty:
+        return pd.DataFrame()
+    today = bars_up_to_entry.index[-1].date()
+    return bars_up_to_entry[bars_up_to_entry.index.date == today]
+
+
+def score_h6_intraday_trend(price: float, side: str,
+                            bars_up_to_entry: pd.DataFrame) -> bool:
+    """
+    Same-day-only substitute for H2/H3: RSI(14) computed from today's own
+    5-min bars only (direction-aware) AND price on the correct side of
+    today's own session VWAP (volume-weighted, today's bars only).
+    """
+    is_long = (side == 'LONG')
+    bars_today = _same_day_bars(bars_up_to_entry)
+    if len(bars_today) < H6_INTRADAY_RSI_PERIOD + 2:
+        return False
+
+    rsi = _compute_rsi(bars_today['close'].values, H6_INTRADAY_RSI_PERIOD)
+    if rsi is None:
+        return False
+    rsi_dir = rsi if is_long else (100.0 - rsi)
+    if rsi_dir < RSI_DIR_FLOOR:
+        return False
+
+    if 'volume' not in bars_today.columns or bars_today['volume'].sum() <= 0:
+        return False
+    vwap = (bars_today['close'] * bars_today['volume']).sum() / bars_today['volume'].sum()
+    return (price > vwap) if is_long else (price < vwap)
+
+
+def is_gold_score(wscore: int, regime: str) -> bool:
+    """True if wscore meets or exceeds this regime's GOLD threshold (2-contract tier)."""
+    _, gold_th = _REGIME_THRESHOLDS.get(regime, (4, 5))
+    return wscore >= gold_th
+
+
 def detect_regime(ib_range_pts: float) -> str:
     """Classify day type from IB range (9:30–10:30 H-L in MNQ points)."""
     if ib_range_pts < QUIET_IB_THRESH:
@@ -199,10 +251,15 @@ def detect_regime(ib_range_pts: float) -> str:
 def score_entry_regime(price: float, atr: float, side: str,
                        bars_up_to_entry: pd.DataFrame,
                        prior_rth: pd.DataFrame,
-                       regime: str) -> tuple[int, dict]:
+                       regime: str,
+                       h6_weight: int = 0) -> tuple[int, dict]:
     """
     Regime-aware entry scoring. Computes raw hero flags then applies
     regime-specific weights to produce a weighted score.
+
+    h6_weight: opt-in, 0 by default (H6 not part of the validated live score
+    yet — see score_h6_intraday_trend). Pass >0 only for backtesting the
+    candidate; NOT calibrated for live use.
 
     Returns (weighted_score, flags_dict).
     Flags dict includes per-hero bools AND 'regime' key.
@@ -210,6 +267,9 @@ def score_entry_regime(price: float, atr: float, side: str,
     _, flags = score_entry(price, atr, side, bars_up_to_entry, prior_rth)
     weights  = _REGIME_WEIGHTS.get(regime, _REGIME_WEIGHTS['CHOPPY'])
     wscore   = sum(weights[h] * int(flags.get(h, False)) for h in weights)
+    if h6_weight > 0:
+        flags['H6_INTRADAY_TREND'] = score_h6_intraday_trend(price, side, bars_up_to_entry)
+        wscore += h6_weight * int(flags['H6_INTRADAY_TREND'])
     flags['regime'] = regime
     flags['weighted_score'] = wscore
     return wscore, flags

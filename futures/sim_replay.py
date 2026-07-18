@@ -35,7 +35,7 @@ import pytz
 from futures.collect_bars import load_bars, filter_ny_session, filter_premarket_session
 from futures.hero_score import (score_entry, contracts_from_score,
                                 detect_regime, score_entry_regime,
-                                contracts_from_regime_score)
+                                contracts_from_regime_score, is_gold_score)
 
 # ── Constants — must match futures_trader.py ─────────────────────────────────
 
@@ -70,6 +70,19 @@ ENTRY_MIN_RVOL    = 0.85
 HTF_BARS_MIN      = 30
 HTF_TREND_BARS    = 3
 
+# Candidate idea (Jul 8 2026) — opt-in via --graduated-rvol. Parked in
+# futures_next_session_recalibration memory after a Jul 7 near-miss (0.84 vs
+# 0.85 killed a Hero-approved A+ SHORT) and reinforced Jul 8 by three more
+# A+ SHORT signals (150/130/130pts) blocked at 0.73/0.68/0.72 during a
+# confirmed WEAK-regime downtrend. Idea: instead of a hard RVOL<0.85 skip,
+# let an entry through on RVOL between RVOL_GRAD_FLOOR and ENTRY_MIN_RVOL if
+# the Hero score already clears this regime's GOLD bar on its own (contracts
+# capped at 1 — thin participation still means smaller size). Below
+# RVOL_GRAD_FLOOR, always skip regardless of Hero score. No effect unless
+# HERO_GATE_ENABLED (nothing to compensate with otherwise).
+GRADUATED_RVOL    = False
+RVOL_GRAD_FLOOR   = 0.60
+
 # Profit-lock trail tiers — these predate the Jul 7 thesis-invalidation
 # experiment entirely (already live before that work started) and were NOT
 # part of what got reverted. Proportional lock-in (BE_LOCK_FRACTION), not
@@ -97,6 +110,69 @@ SUSTAIN_BARS           = 6
 SUSTAIN_BONUS_PTS      = 15
 SHORT_CONFIRM_SCANS    = 3      # --short-confirm N: consecutive WEAK scans
                                  # required before SHORT is allowed (was 3)
+
+# Candidate idea (Jul 8 2026 pm) — opt-in via --rsi-trend-exempt. Found by
+# reading the real Jul 7 production log directly: a genuine ~270pt/50min
+# grinding rally (13:11-13:59, RSI 76-81, price consistently 85-95pts above
+# VWAP) fired a LONG signal on every single scan but never scored above 70
+# (A, not A+) — the RSI>70 -10pt penalty was exactly the gap between 70 and
+# the 80 A+ threshold (50 baseline + 5 MIDDAY + 15 vwap_reclaim + 10
+# momentum_bull = 80, minus the RSI penalty = 70). The RSI gate's intent is
+# to catch fresh overbought spikes prone to reversal — but a sustained
+# elevated RSI *with* vwap_reclaim and momentum_bull already confirming is a
+# trend-continuation signature, not a fresh spike (mirrors the equity DNA
+# model's own "sustained high RSI = continuation, single-bar spike =
+# exhaustion" distinction). Idea: waive the RSI>70 penalty (LONG) / RSI<30
+# penalty (SHORT) specifically when both trend-confirmation signals are
+# already true.
+RSI_TREND_EXEMPT = False
+
+# PM_SHORT — disabled live Jul 8 2026 (0-for-7, see futures_jul8_gap_hunt
+# memory). Default here matches live; set True only to reproduce pre-Jul-8
+# behavior for an old-vs-new comparison.
+PM_SHORT_ENABLED = False
+
+# Candidate idea (Jul 8 2026, user-directed) — opt-in via --regime-aware-exits.
+# Reuses the SAME IB-range day classification (detect_regime, CHOPPY/TRENDING/
+# QUIET) already computed and validated for Hero-gate weighting — not a new
+# real-time chop detector (those were tried and rejected, see
+# futures_exit_stack_jul7 memory). Idea: don't protect profit at the same
+# fixed distance regardless of day character. On CHOPPY/QUIET days, lock in
+# fast and take less — real moves are smaller and more likely to round-trip.
+# On TRENDING days, give it more room before locking and a wider trail gap —
+# the whole point is not to get shaken out of a real, sustained move.
+REGIME_AWARE_EXITS = False
+# Combine width-based regime with IB directional commitment (ib_kind) for the
+# exit-stack lookup — opt-in via --trending-requires-directional. See the
+# rationale comment at the point of use in simulate_day().
+TRENDING_REQUIRES_DIRECTIONAL = False
+
+# Candidate idea (Jul 9 2026) — opt-in via --long-allows-a-grade. See rationale
+# comment at point of use (grade gate, just before Hero gate).
+LONG_ALLOWS_A_GRADE = False
+
+# Candidate idea (Jul 9 2026) — opt-in via --hero-trending-requires-directional.
+# See rationale at point of use (Hero gate regime input).
+HERO_TRENDING_REQUIRES_DIRECTIONAL = False
+# v3 — SHIPPED to futures_trader.py Jul 8 2026 (full 2026 YTD backtest: N=53,
+# WR=69.8%, $+3,095, MaxDD=-$1,415 vs flat-150 baseline's N=54/64.8%/$+1,991/
+# -$2,347 — beats baseline on every metric). Known limitation: TRENDING's low
+# lock-fraction (0.20) under-protects modestly-trending misclassified days
+# (e.g. Jun 18 2026) — a v4 attempt raising it to 0.40 fixed that but hurt
+# genuinely-big trends more ($2,583 total, worse than v3). Not yet fixed —
+# needs a smoothly graduated lock-fraction, not a flat number.
+EXIT_PARAMS_BY_REGIME: dict[str, dict[str, float]] = {
+    'CHOPPY':   {'be_pts': 90.0,  'be_frac': 0.45, 'wide_pts': 130.0, 'wide_gap': 60.0,  'tight_pts': 200.0, 'tight_gap': 35.0},
+    'QUIET':    {'be_pts': 90.0,  'be_frac': 0.45, 'wide_pts': 130.0, 'wide_gap': 60.0,  'tight_pts': 200.0, 'tight_gap': 35.0},
+    'TRENDING': {'be_pts': 110.0, 'be_frac': 0.20, 'wide_pts': 300.0, 'wide_gap': 180.0, 'tight_pts': 550.0, 'tight_gap': 110.0},
+}
+
+# H6 candidate (Jul 8 2026 pm) — opt-in, research-only. See hero_score.py's
+# score_h6_intraday_trend for the rationale (H2/H3 are contaminated by
+# multi-day 1H lookback; H6 is same-day-only RSI+VWAP). Not calibrated —
+# H6_WEIGHT=0 and TRENDING_SKIP_OVERRIDE=None reproduce current live exactly.
+H6_WEIGHT = 0
+TRENDING_SKIP_OVERRIDE: 'int | None' = None
 
 # ── Thesis invalidation — REVERTED Jul 7 2026, opt-in only via --thesis-invalidation ──
 # Tried widening BASE_STOP_PTS to 500 (rare backstop) + this signal-based exit
@@ -165,6 +241,13 @@ ENTRY_CUTOFF = _dt.time(14, 0)
 
 # IB window — matches live's 10:30 gate: no entries until Initial Balance is set (60 min)
 IB_READY_TIME = _dt.time(10, 30)
+
+# Candidate idea (Jul 8 2026, user-directed) — opt-in via --ib-ready. Test
+# pulling the entry window forward (e.g. 9:55, 25min IB instead of 60min) to
+# see if the extra window catches real moves the 10:30 wait misses — same
+# category of question as the Jul 7 "Large IB gate delayed entry to 10:45"
+# finding, but testing the OPPOSITE direction (earlier, not later).
+IB_READY_OVERRIDE: '_dt.time | None' = None
 
 # IB range minimum (pts) — live gate: thin IB (<50pts) → skip
 MIN_IB_RANGE = 50.0
@@ -347,9 +430,12 @@ def get_signals(bars_today: pd.DataFrame, bars_hist: pd.DataFrame,
     else:
         sig['open_play_bull'] = sig['open_play_bear'] = False
 
-    # PM IB break
+    # PM IB break — PM_SHORT DISABLED Jul 8 2026, mirrors futures_trader.py
+    # (0-for-7 lifetime, shorts exhaustion lows every time, see
+    # futures_jul8_gap_hunt memory). PM_LONG kept, still live. PM_SHORT_ENABLED
+    # exists only so old-vs-new comparisons can still be run in this file.
     sig['pm_bull'] = pm_set and pm_high > 0 and price > pm_high
-    sig['pm_bear'] = pm_set and pm_low  > 0 and price < pm_low
+    sig['pm_bear'] = PM_SHORT_ENABLED and pm_set and pm_low > 0 and price < pm_low
 
     return sig
 
@@ -473,7 +559,10 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
 
         # RSI gates — match live
         if rsi > 80:  return 0, 'SKIP'
-        if rsi > 70:  score -= 10
+        if rsi > 70:
+            trend_confirmed = sig.get('vwap_reclaim') and sig.get('momentum_bull')
+            if not (RSI_TREND_EXEMPT and trend_confirmed):
+                score -= 10
         if rsi < 45:  score += 5
 
     else:  # SHORT
@@ -495,7 +584,10 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
 
         # RSI gates — match live
         if rsi < 20:  return 0, 'SKIP'
-        if rsi < 30:  score -= 10
+        if rsi < 30:
+            trend_confirmed = sig.get('vwap_rejection') and sig.get('momentum_bear')
+            if not (RSI_TREND_EXEMPT and trend_confirmed):
+                score -= 10
         if rsi > 55:  score += 5
 
     if score >= 80:  return score, 'A+'
@@ -665,6 +757,8 @@ def simulate_day(
 
     if gate2 and opening_range > 120.0:
         ib_ready_time = _dt.time(10, 45)   # extend by one scan on extreme-open days
+    elif IB_READY_OVERRIDE is not None:
+        ib_ready_time = IB_READY_OVERRIDE
     else:
         ib_ready_time = IB_READY_TIME       # standard 10:30 IB window
 
@@ -849,19 +943,65 @@ def simulate_day(
                 # Proportional lock-in (protects BE_LOCK_FRACTION of peak
                 # favorable move) — predates the thesis-invalidation
                 # experiment, unconditional, matches live exactly.
-                if pnl_pts_peak >= BE_ACTIVATE_PTS:
-                    locked = round(pnl_pts_peak * BE_LOCK_FRACTION, 2)
+                if REGIME_AWARE_EXITS:
+                    # Combine width-based regime with IB directional commitment
+                    # (ib_kind) — Jul 9 2026. A wide IB range alone doesn't mean
+                    # a real trend: Jun 18/23 2026 both had wide (250-430pt)
+                    # ranges but closed near the MIDDLE of that range (ROTATIONAL,
+                    # ib_mid 0.62/0.75) — swung both ways without committing.
+                    # Jul 7 2026 (a day that validated well) closed at ib_mid=0.05
+                    # (BEAR_DIRECTIONAL) — genuine directional commitment. The
+                    # classic pit-trader "trend day" distinction: width AND
+                    # closing near an extreme, not width alone.
+                    _exit_regime = day_regime or 'CHOPPY'
+                    if (TRENDING_REQUIRES_DIRECTIONAL and _exit_regime == 'TRENDING'
+                            and ib_kind == 'ROTATIONAL'):
+                        _exit_regime = 'CHOPPY'   # wide range, no directional commitment — treat as chop
+                    _p = EXIT_PARAMS_BY_REGIME.get(_exit_regime, EXIT_PARAMS_BY_REGIME['CHOPPY'])
+                    _be_pts = _p['be_pts']
+                    _wide_pts, _wide_gap = _p['wide_pts'], _p['wide_gap']
+                    _tight_pts, _tight_gap = _p['tight_pts'], _p['tight_gap']
+                    # Graduated lock-fraction (opt-in via 'be_frac_near'/'be_frac_far'
+                    # in the regime's param dict) — Jul 9 2026, fixes the v3 known
+                    # limitation: a flat low fraction (tuned for genuinely huge
+                    # trends) under-protects a modest peak on a day merely
+                    # misclassified as TRENDING by IB range. Interpolates linearly
+                    # from frac_near (protective, at be_pts) to frac_far (loose,
+                    # at tight_pts) based on how far peak actually got — a modest
+                    # peak gets near-full protection, a peak that grows into
+                    # tight_pts territory earns the loose fraction because it has
+                    # now proven itself a real move. Regimes without these keys
+                    # (CHOPPY/QUIET) keep the flat 'be_frac' behavior unchanged.
+                    if 'be_frac_near' in _p:
+                        near, far = _p['be_frac_near'], _p['be_frac_far']
+                        ceiling = _p.get('be_frac_ceiling', _tight_pts)  # interpolation ceiling — separate from the tight-trail trigger
+                        if pnl_pts_peak <= _be_pts:
+                            _be_frac = near
+                        elif pnl_pts_peak >= ceiling:
+                            _be_frac = far
+                        else:
+                            frac_t = (pnl_pts_peak - _be_pts) / (ceiling - _be_pts)
+                            _be_frac = near + frac_t * (far - near)
+                    else:
+                        _be_frac = _p['be_frac']
+                else:
+                    _be_pts, _be_frac = BE_ACTIVATE_PTS, BE_LOCK_FRACTION
+                    _wide_pts, _wide_gap = TRAIL_WIDE_PTS, TRAIL_WIDE_GAP
+                    _tight_pts, _tight_gap = TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP
+
+                if pnl_pts_peak >= _be_pts:
+                    locked = round(pnl_pts_peak * _be_frac, 2)
                     be_sl  = round(entry + max(locked, TICK_SIZE), 2) if not is_short else round(entry - max(locked, TICK_SIZE), 2)
                     if (not is_short and be_sl > sl) or (is_short and be_sl < sl):
                         sl = be_sl
 
-                if pnl_pts_peak >= TRAIL_WIDE_PTS:
-                    w_sl = round(peak - TRAIL_WIDE_GAP, 2) if not is_short else round(peak + TRAIL_WIDE_GAP, 2)
+                if pnl_pts_peak >= _wide_pts:
+                    w_sl = round(peak - _wide_gap, 2) if not is_short else round(peak + _wide_gap, 2)
                     if (not is_short and w_sl > sl) or (is_short and w_sl < sl):
                         sl = w_sl
 
-                if pnl_pts_peak >= TRAIL_TIGHT_PTS:
-                    t_sl = round(peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(peak + TRAIL_TIGHT_GAP, 2)
+                if pnl_pts_peak >= _tight_pts:
+                    t_sl = round(peak - _tight_gap, 2) if not is_short else round(peak + _tight_gap, 2)
                     if (not is_short and t_sl > sl) or (is_short and t_sl < sl):
                         sl = t_sl
 
@@ -961,7 +1101,17 @@ def simulate_day(
                     if streak >= SUSTAIN_BARS and score + SUSTAIN_BONUS_PTS >= 80:
                         grade = 'A+'
 
-                if grade != 'A+':
+                # Candidate idea (Jul 9 2026) — opt-in via --long-allows-a-grade.
+                # gate_audit.py --report showed the A+-only GRADE cutoff is
+                # net-harmful specifically for LONG on IBKR (N=24, only 38% of
+                # blocks justified, avg +13.7pts if taken — i.e. 62% of blocked
+                # LONGs would have won) while Hero gate is already doing the
+                # real, validated filtering work for LONG separately (N=11, 82%
+                # accurate blocks, avg -40.9pts). SHORT's GRADE blocks were
+                #100% justified (N=7) — leave SHORT at A+-only, only loosen LONG.
+                if LONG_ALLOWS_A_GRADE and side == 'LONG' and grade == 'A':
+                    pass  # let it through to Hero gate instead of skipping here
+                elif grade != 'A+':
                     continue
 
                 # NOTE: the old "PM signals must align with ORB direction" gate
@@ -996,9 +1146,27 @@ def simulate_day(
                 if HERO_GATE_ENABLED:
                     bars_up  = all_bars[all_bars.index <= current_ts]
                     hero_regime = day_regime or 'CHOPPY'   # fallback if IB data missing
-                    h_score, h_flags = score_entry_regime(price, atr, side, bars_up, prev_rth, hero_regime)
+                    # Candidate idea (Jul 9 2026) — opt-in via
+                    # --hero-trending-requires-directional. Same pit-trader
+                    # "trend day" distinction tested on the exit side: a wide
+                    # IB range alone isn't a real trend if price closed near
+                    # the middle of that range (ROTATIONAL) rather than near
+                    # an extreme. Downgrades Hero's regime INPUT (not just the
+                    # exit stack) so entry scoring uses CHOPPY's structure-
+                    # weighted heroes instead of TRENDING's momentum-weighted
+                    # ones on a day that's wide but hasn't actually committed.
+                    if (HERO_TRENDING_REQUIRES_DIRECTIONAL and hero_regime == 'TRENDING'
+                            and ib_kind == 'ROTATIONAL'):
+                        hero_regime = 'CHOPPY'
+                    h_score, h_flags = score_entry_regime(price, atr, side, bars_up, prev_rth,
+                                                           hero_regime, h6_weight=H6_WEIGHT)
                     h5_fib   = h_flags.get('H5_FIB_FLOOR', False)
-                    contracts = contracts_from_regime_score(h_score, hero_regime, cc, h5_fib=h5_fib)
+                    skip_th  = TRENDING_SKIP_OVERRIDE if (hero_regime == 'TRENDING'
+                                                           and TRENDING_SKIP_OVERRIDE is not None) else None
+                    if skip_th is not None:
+                        contracts = 0 if h_score < skip_th else cc
+                    else:
+                        contracts = contracts_from_regime_score(h_score, hero_regime, cc, h5_fib=h5_fib)
                     if contracts == 0:
                         continue   # below quality threshold — skip this setup
                 else:
@@ -1007,7 +1175,14 @@ def simulate_day(
                 # RVOL + HTF gates — added Jul 7 2026, checked AFTER Hero gate
                 # (matches live run_scan() exact order).
                 entry_rvol = calc_session_rvol(bars_today)
-                if entry_rvol < ENTRY_MIN_RVOL:
+                if GRADUATED_RVOL and HERO_GATE_ENABLED:
+                    if entry_rvol < RVOL_GRAD_FLOOR:
+                        continue
+                    if entry_rvol < ENTRY_MIN_RVOL:
+                        if not is_gold_score(h_score, hero_regime):
+                            continue
+                        contracts = min(contracts, 1)
+                elif entry_rvol < ENTRY_MIN_RVOL:
                     continue
                 # (htf already computed unconditionally at top of loop — reuse it)
                 if (side == 'LONG' and htf != 1) or (side == 'SHORT' and htf != -1):
@@ -1150,6 +1325,33 @@ def main():
     ap.add_argument('--dll',         type=float, default=None, help='Override MAX_DAILY_LOSS DLL (default 3750)')
     ap.add_argument('--max-trades',  type=int,   default=None, help='Override MAX_DAILY_TRADES (default 5)')
     ap.add_argument('--be-pts',      type=float, default=None, help='Override BE_ACTIVATE_PTS (default 150)')
+    ap.add_argument('--be-lock-frac', type=float, default=None, dest='be_lock_frac',
+                    help='Override BE_LOCK_FRACTION (default 0.35)')
+    ap.add_argument('--trail-wide-pts', type=float, default=None, dest='trail_wide_pts',
+                    help='Override TRAIL_WIDE_PTS (default 200)')
+    ap.add_argument('--trail-wide-gap', type=float, default=None, dest='trail_wide_gap',
+                    help='Override TRAIL_WIDE_GAP (default 120)')
+    ap.add_argument('--trail-tight-pts', type=float, default=None, dest='trail_tight_pts',
+                    help='Override TRAIL_TIGHT_PTS (default 350)')
+    ap.add_argument('--trail-tight-gap', type=float, default=None, dest='trail_tight_gap',
+                    help='Override TRAIL_TIGHT_GAP (default 60)')
+    ap.add_argument('--regime-aware-exits', action='store_true', dest='regime_aware_exits',
+                    help='Candidate idea: exit BE/trail params vary by day regime '
+                         '(CHOPPY/QUIET lock in fast+small, TRENDING gets more room) '
+                         'instead of one fixed set of numbers — see EXIT_PARAMS_BY_REGIME')
+    ap.add_argument('--trending-requires-directional', action='store_true',
+                    dest='trending_requires_directional',
+                    help='Candidate idea: a wide-IB-range day only gets TRENDING exit '
+                         'treatment if ib_kind also shows directional commitment '
+                         '(not ROTATIONAL) — width alone is not enough')
+    ap.add_argument('--long-allows-a-grade', action='store_true', dest='long_allows_a_grade',
+                    help='Candidate idea: let grade=A (not just A+) reach Hero gate for '
+                         'LONG only — gate_audit.py showed A+-only GRADE cutoff blocks '
+                         'LONG setups that would have won 62%% of the time (N=24)')
+    ap.add_argument('--hero-trending-requires-directional', action='store_true',
+                    dest='hero_trending_requires_directional',
+                    help='Candidate idea: same as --trending-requires-directional but '
+                         'for Hero gate\'s regime INPUT (entry scoring), not the exit stack')
     ap.add_argument('--thesis-invalidation', action='store_true', dest='thesis_invalidation',
                     help='Opt in to the REVERTED wide-backstop + signal-based exit experiment '
                          '(500pt backstop, cut on regime/HTF/momentum/VWAP turning against the '
@@ -1162,6 +1364,17 @@ def main():
                          '(6+ bars) without requiring an ORB break — targets the Jul 7 missed-rally case')
     ap.add_argument('--short-confirm', type=int, default=None, dest='short_confirm',
                     help='Candidate idea: override consecutive WEAK-scan requirement for SHORT (default 3)')
+    ap.add_argument('--graduated-rvol', action='store_true', dest='graduated_rvol',
+                    help='Candidate idea: fold RVOL into Hero score as a graduated factor '
+                         '(floor-0.85 band allowed through if Hero score clears GOLD, capped at '
+                         '1 contract) instead of a hard 0.85 cliff — targets Jul 7/Jul 8 near-misses')
+    ap.add_argument('--rvol-floor', type=float, default=None, dest='rvol_floor',
+                    help='Override RVOL_GRAD_FLOOR for --graduated-rvol (default 0.60)')
+    ap.add_argument('--rsi-trend-exempt', action='store_true', dest='rsi_trend_exempt',
+                    help='Candidate idea: waive the RSI>70(LONG)/RSI<30(SHORT) overbought/'
+                         'oversold penalty when vwap_reclaim+momentum already confirm the '
+                         'same-direction trend — targets grinding rallies capped at A instead '
+                         'of A+ purely by the RSI penalty (found via Jul 7 log)')
     # --compare-stops REMOVED Jul 7 2026 sync pass — it compared ATR-multiple
     # combos, a paradigm that no longer exists now that stop sizing is
     # point-based. Use --stop-pts / --target-pts with separate runs instead
@@ -1169,17 +1382,30 @@ def main():
     args = ap.parse_args()
 
     # Apply overrides to module-level constants so all functions pick them up
-    global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS
+    global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
     if args.stop_pts    is not None: BASE_STOP_PTS    = args.stop_pts
+    elif args.regime_aware_exits:    BASE_STOP_PTS    = 200.0  # v3 shipped with stop=200; override with --stop-pts if needed
     if args.target_pts  is not None: BASE_TARGET_PTS  = args.target_pts
     if args.dll         is not None: MAX_DAILY_LOSS   = args.dll
     if args.max_trades  is not None: MAX_DAILY_TRADES = args.max_trades
     if args.be_pts      is not None: BE_ACTIVATE_PTS  = args.be_pts
+    if args.be_lock_frac is not None: BE_LOCK_FRACTION = args.be_lock_frac
+    if args.trail_wide_pts is not None: TRAIL_WIDE_PTS = args.trail_wide_pts
+    if args.trail_wide_gap is not None: TRAIL_WIDE_GAP = args.trail_wide_gap
+    if args.trail_tight_pts is not None: TRAIL_TIGHT_PTS = args.trail_tight_pts
+    if args.trail_tight_gap is not None: TRAIL_TIGHT_GAP = args.trail_tight_gap
+    if args.regime_aware_exits:      REGIME_AWARE_EXITS = True
+    if args.trending_requires_directional: TRENDING_REQUIRES_DIRECTIONAL = True
+    if args.long_allows_a_grade:      LONG_ALLOWS_A_GRADE = True
+    if args.hero_trending_requires_directional: HERO_TRENDING_REQUIRES_DIRECTIONAL = True
     if args.no_hero_gate:            HERO_GATE_ENABLED = False
     if args.thesis_invalidation:     USE_THESIS_INVALIDATION = True
     if args.no_2pm_cutoff:           ENTRY_CUTOFF      = AFTERNOON_END
     if args.sustain_bonus:           SUSTAIN_A_PLUS_BONUS = True
     if args.short_confirm is not None: SHORT_CONFIRM_SCANS = args.short_confirm
+    if args.graduated_rvol:          GRADUATED_RVOL   = True
+    if args.rvol_floor is not None:  RVOL_GRAD_FLOOR  = args.rvol_floor
+    if args.rsi_trend_exempt:       RSI_TREND_EXEMPT = True
 
     print(f'\n=== Futures Strategy Replay: {args.start} → {args.end} ===')
     _stop_desc = f'THESIS_STOP_PTS={THESIS_STOP_PTS} (backstop, opt-in mode)' if USE_THESIS_INVALIDATION else f'BASE_STOP_PTS={BASE_STOP_PTS} (real stop)'

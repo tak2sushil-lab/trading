@@ -303,6 +303,130 @@ def _setup_label(sig_a: bool, sig_b: bool, sig_c: bool, side: str) -> str:
     return f'LON_{side[0]}_{tag}'
 
 
+# ── Skip-day override (Jul 9 2026 candidate) ────────────────────────────────────
+# Root cause found by reading Jul 8 2026's actual log: compute_overnight_bias_london
+# looks ONLY at 7pm-prev-day -> 3am-today, then locks skip_day for the ENTIRE
+# 3am-9am session if the 3am read is ambiguous (pos in 0.20-0.40) — no matter what
+# happens after 4am. Jul 8: pos=0.21 (just past the edge), day marked skip, and at
+# 4:15am a genuine ~427pt move fired on 24,146 volume (vs ~5-9K normal) — a clean,
+# obvious, high-conviction move the gate never got a chance to see. Ports the
+# equity side's already-validated "dynamic catalyst upgrade" pattern (auto_trader.py
+# _scan_and_enter: a stock hitting 5%+ intraday/3x volume overrides an earlier
+# restrictive read, live) to London's skip_day gate. Self-referential volume
+# baseline (preceding hour's own average) — no multi-year historical table needed.
+SKIP_OVERRIDE_ENABLED  = False
+SKIP_OVERRIDE_VOL_MULT = 2.5    # current bar volume >= this x rolling baseline
+SKIP_OVERRIDE_MOVE_PTS = 150.0  # min directional range across the lookback window
+SKIP_OVERRIDE_LOOKBACK = 4      # bars in the "thrust" window (20min @ 5-min bars)
+SKIP_OVERRIDE_BASELINE = 12     # bars for rolling volume baseline (60min)
+
+
+def _scan_skip_override(entry_bars: pd.DataFrame, pre_entry_bars: pd.DataFrame,
+                        atr: float, stop_mult: float,
+                        target_mult: float, dll: float, risk_per_trade: float,
+                        date_str: str, ovn_pos: float) -> list[dict]:
+    """Watch a 'skip day' session for an obvious catalyst move instead of sitting
+    out entirely. Simplified exit stack (stop/target/BE/EOD only — not the full
+    trail tiers) to keep this tractable as a first test of the idea.
+
+    pre_entry_bars: IB-formation-window bars (3:00-4:00am) — needed so the
+    baseline-volume lookback has data available even in the first hour of the
+    entry window (BUG found Jul 9 2026: entry_bars alone starts at 4:00am, so
+    a baseline requiring 60min of prior bars couldn't evaluate until 5:00am —
+    exactly the window that missed the real Jul 8 04:15am move this was built
+    to catch)."""
+    trades: list[dict] = []
+    position: dict | None = None
+    daily_pnl = 0.0
+    full_bars = pd.concat([pre_entry_bars, entry_bars])
+
+    for i in range(len(entry_bars)):
+        bar = entry_bars.iloc[i]
+        t   = entry_bars.index[i].time()
+
+        if position is not None:
+            entry_p, sl, target = position['entry'], position['sl'], position['target']
+            side      = position['side']
+            is_short  = (side == 'SHORT')
+            contracts = position['contracts']
+
+            exit_price, exit_reason = None, None
+            if not is_short and float(bar['low'])  <= sl:
+                exit_price, exit_reason = sl, 'stop'
+            elif is_short and float(bar['high']) >= sl:
+                exit_price, exit_reason = sl, 'stop'
+
+            if exit_reason is None:
+                cur_usd = pnl_dollars(entry_p, float(bar['close']), side, contracts)
+                if daily_pnl + cur_usd <= -dll:
+                    exit_price, exit_reason = float(bar['close']), 'dll_circuit'
+
+            if exit_reason is None:
+                if not is_short and float(bar['high']) >= target:
+                    exit_price, exit_reason = target, 'target'
+                elif is_short and float(bar['low'])  <= target:
+                    exit_price, exit_reason = target, 'target'
+
+            if exit_reason is None and t >= LONDON_EOD:
+                exit_price, exit_reason = float(bar['close']), 'eod'
+
+            if exit_price is not None:
+                net = pnl_dollars(entry_p, exit_price, side, contracts)
+                daily_pnl += net
+                trades.append({
+                    'date': date_str, 'entry_time': position['entry_time'],
+                    'exit_time': t.strftime('%H:%M'), 'side': side,
+                    'setup': 'SKIP_OVERRIDE', 'grade': 'A+',
+                    'entry': entry_p, 'exit': exit_price, 'sl_init': position['sl_init'],
+                    'target': target, 'contracts': contracts, 'pnl': net,
+                    'exit_reason': exit_reason, 'ib_range': 0.0, 'ib_close_pos': 0.5,
+                    'ovn_pos': ovn_pos, 'atr': atr,
+                })
+                position = None
+            else:
+                pnl_pts = (float(bar['close']) - entry_p) if not is_short else (entry_p - float(bar['close']))
+                if pnl_pts >= BE_ATR_MULT * atr:
+                    be_sl = _tick_round(entry_p + TICK_SIZE) if not is_short else _tick_round(entry_p - TICK_SIZE)
+                    if (not is_short and be_sl > sl) or (is_short and be_sl < sl):
+                        position['sl'] = be_sl
+            continue
+
+        if t >= LONDON_EOD:
+            continue
+
+        # Position within full_bars (pre_entry_bars + entry_bars) — lets the
+        # baseline reach back into the IB-formation window (3-4am) so the
+        # first hour of the entry window isn't blind (see bugfix note above).
+        full_i = len(pre_entry_bars) + i
+        if full_i < SKIP_OVERRIDE_BASELINE:
+            continue
+
+        window   = full_bars.iloc[full_i - SKIP_OVERRIDE_LOOKBACK + 1: full_i + 1]
+        baseline = full_bars.iloc[full_i - SKIP_OVERRIDE_BASELINE: full_i - SKIP_OVERRIDE_LOOKBACK]
+        if len(baseline) < 4:
+            continue
+        baseline_vol = float(baseline['volume'].mean())
+        cur_vol      = float(bar['volume'])
+        if baseline_vol <= 0 or cur_vol < SKIP_OVERRIDE_VOL_MULT * baseline_vol:
+            continue
+
+        move = float(window['high'].max()) - float(window['low'].min())
+        if move < SKIP_OVERRIDE_MOVE_PTS:
+            continue
+
+        net_chg = float(window['close'].iloc[-1]) - float(window['open'].iloc[0])
+        side    = 'SHORT' if net_chg < 0 else 'LONG'
+        price   = float(bar['close'])
+        sl, target = calc_sl_target(price, atr, side, stop_mult, target_mult)
+        contracts  = calc_contracts(price, sl, risk_per_trade)
+        position = {
+            'entry': price, 'sl': sl, 'sl_init': sl, 'target': target,
+            'side': side, 'contracts': contracts, 'entry_time': t.strftime('%H:%M'),
+        }
+
+    return trades
+
+
 # ── Day simulation ─────────────────────────────────────────────────────────────
 
 def simulate_london_day(
@@ -347,7 +471,7 @@ def simulate_london_day(
     day_stats['bias']    = daily_bias
     day_stats['ovn_pos'] = ovn_pos
 
-    if skip_day:
+    if skip_day and not SKIP_OVERRIDE_ENABLED:
         day_stats['skip_reason'] = 'ovn_compress'
         return [], daily_bias, ovn_pos, day_stats
 
@@ -416,6 +540,17 @@ def simulate_london_day(
     atr_mask = (all_bars.index.date >= trade_date - _dt.timedelta(days=2)) & \
                (all_bars.index.date <  trade_date)
     atr = compute_atr(all_bars[atr_mask])
+
+    # Skip-day override (see _scan_skip_override docstring) — the day's overnight
+    # bias was ambiguous, but we're still watching for an obvious catalyst move
+    # instead of sitting out the whole session. Does NOT run the normal A/B/C
+    # signal loop below (skip-day bias means A/B/C's own bias-dependent logic
+    # isn't meaningful here anyway).
+    if skip_day and SKIP_OVERRIDE_ENABLED:
+        day_stats['skip_reason'] = 'ovn_compress_overridable'
+        override_trades = _scan_skip_override(entry_bars, ib_bars, atr, stop_mult, target_mult,
+                                              dll, risk_per_trade, date_str, ovn_pos)
+        return override_trades, daily_bias, ovn_pos, day_stats
 
     # Signal C is fixed for the whole day (computed once from overnight bias)
     sig_c_bull = (ovn_pos >= _OVN_TREND_HI)
