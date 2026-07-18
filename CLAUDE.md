@@ -577,6 +577,16 @@ futures/ibkr_state.json balance history stays on the old $15K baseline (bookkeep
 only; the DLL halt reads IBKR_DLL_SOFT fresh). Real money still gated on results —
 paper until a positive month on the new config.
 
+**④a Results landed same night:** DNA deep screen: **113/300 pass all 5 rules**
+(85 INSTITUTIONAL / 16 MOMENTUM / 12 HIGH_VOL; top EV: CAR $+123/93%, TGTX, CVNA, VSAT,
+CENX — full table `find_candidates_results.csv`). Equity replay no-book-health
+counterfactual (Jul 6-17, live code incl. new RSI band): **76 trades, 23.7% WR, +$32** vs
+Book Health ON: 0 trades $0 — the selector verdict confirmed through live-code replay
+(76 round-trips of churn for ~zero P&L; flat is correct until the tape turns).
+**Universe adds/prunes NOT shipped — needs user approval of the specific list** (scan-load
+grows with symbol count; recommend phased top-50-by-EV add + review of the 90 failing
+incumbents, next session).
+
 **④ Universe screen EXECUTED (S&P 1500 base, pro-grade criteria).** 867/1,499 pass
 price≥$5 + $vol≥$10M + ATR≥3%. Only **76 of the current 166 universe names pass** —
 refresh must prune, not just add. Top-300 new candidates ranked (ATR% × liquidity) in
