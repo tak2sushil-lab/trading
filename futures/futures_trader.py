@@ -387,6 +387,12 @@ def get_session() -> str:
 
 def is_entry_allowed() -> bool:
     """True only during sessions where new entries make sense."""
+    # Weekend guard (bug found Jul 18 2026): get_session() is time-of-day only,
+    # so Saturday 9:30-16:00 read as MIDDAY/AFTERNOON and the full scan pipeline
+    # ran against frozen Friday bars — 298 junk GRADE/REGIME rows written into
+    # gate_blocks (the Bouncer Report Card dataset) in one Saturday session.
+    if datetime.now(ET).weekday() >= 5:
+        return False
     return get_session() in ('NY_OPEN', 'MIDDAY', 'AFTERNOON')
 
 

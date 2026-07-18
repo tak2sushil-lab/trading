@@ -888,6 +888,12 @@ def run_scan():
     today_et = now_et.date()
     h, m     = now_et.hour, now_et.minute
 
+    # Weekend guard (Jul 18 2026, same bug class as futures_trader's Saturday
+    # scan): the scheduler cron fires Sat/Sun 3-8am too, and the window check
+    # below is time-of-day only — CME is closed, bars are stale Friday data.
+    if now_et.weekday() >= 5:
+        return
+
     # Outside London window — skip
     if h < LONDON_IB_START[0] or (h == LONDON_EOD[0] and m >= LONDON_EOD[1]) or h >= LONDON_EOD[0]:
         return
