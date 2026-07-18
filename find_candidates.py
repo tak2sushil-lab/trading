@@ -314,6 +314,20 @@ def run_backtest(sym, daily_df, spy_regime):
 
 # ── Main ─────────────────────────────────────────────────────────────
 def main():
+    # --csv <file>: screen candidates from a CSV with a 'symbol' column instead of
+    # the hardcoded CANDIDATES pool (added Jul 18 2026 for the S&P 1500 screen).
+    global CANDIDATES
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--csv', default=None)
+    ap.add_argument('--limit', type=int, default=None)
+    a = ap.parse_args()
+    if a.csv:
+        import pandas as _pd
+        CANDIDATES = list(_pd.read_csv(a.csv)['symbol'].dropna())
+    if a.limit:
+        CANDIDATES = CANDIDATES[:a.limit]
+
     scaler, km, existing_dna = load_existing_model()
     spy = get_spy_regime()
 

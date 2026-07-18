@@ -28,7 +28,8 @@ LOG = os.path.join(ROOT, 'logs', 'parity.log')
 # Production-matching sim flags — UPDATE when live config changes (and only then)
 SIM_FLAGS = ['--graduated-rvol', '--rvol-floor', '0.70',
              '--regime-aware-exits', '--stop-pts', '200',
-             '--no-ovn-skip']   # OVN whole-day veto removed live Jul 18 2026
+             '--no-ovn-skip',   # OVN whole-day veto removed live Jul 18 2026
+             '--dll', '1250']   # $5K futures allocation risk model (Jul 18 2026)
 
 TRADE_RE = re.compile(
     r'^\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(LONG|SHORT)\s+(\S+)\s+\S+\s+([\d.]+)')

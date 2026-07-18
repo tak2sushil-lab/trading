@@ -54,9 +54,12 @@ XFA_INACTIVITY_DAYS  = 25        # alert before 30-day closure
 SOFT_STOP_BUFFER     = 300.0    # stay $300 above MLL floor (slippage guard)
 DLL_SOFT             = 700.0    # TC/XFA DLL soft stop (below $700 → halt; hard limit is $1K)
 
-# ── IBKR personal mode ($15K own capital — updated Jul 6 2026) ───────────────
-IBKR_FLOOR           = 15_000.0  # starting capital; no trailing MLL
-IBKR_DLL_SOFT        = 3_750.0   # 25% of $15K capital → halt for the day
+# ── IBKR personal mode — user-confirmed Jul 18 2026: $15K TOTAL splits into
+# $10K equity + $5K futures. Futures risk caps therefore scale to the $5K
+# allocation, not the $15K total. DLL tightening validated free: sim_replay
+# --dll 1250 full YTD produced IDENTICAL results to $3,750 (never bound).
+IBKR_FLOOR           = 5_000.0   # futures allocation; no trailing MLL
+IBKR_DLL_SOFT        = 1_250.0   # 25% of $5K futures allocation → halt for the day
 IBKR_DAILY_CAP       = 1_200.0   # soft daily profit cap (don't skew performance tracking)
 IBKR_MAX_CONTRACTS   = 2         # conservative: same contract size as before
 

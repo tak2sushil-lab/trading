@@ -551,6 +551,42 @@ data quality checks). NOT yet executed.
 
 ---
 
+## Jul 18 2026 (night) — Redesign wave 2: equity replay harness, ablation matrix, risk model, universe screen
+
+**① equity_replay.py BUILT (replaces stale sim_today.py as equity validator).** Imports
+auto_trader and calls the LIVE decision chain (get_regime → get_intraday_signals →
+grade_setup → L2 → book_is_on → get_position_capital) against stored bars_5m + a yfinance
+daily cache, FakeDatetime-frozen per 5-min bar. Exit engine mirrors the live stack incl.
+L3 T+5 probation. **First parity run: 88% decision parity vs live scan_log (150/170
+symbol+grade pairs, Jul 15)** — divergences map to the documented v1 stubs (earnings=999,
+no catalyst/sympathy flags, empty sector_strength/key_levels). Modes: `--parity DATE`,
+`--start/--end`, `--no-book-health`, `--detail`. Jul 6-17 replay with Book Health ON:
+0 trades (selector correctly flat) — reproduced through live code.
+
+**② Futures gate ablation matrix (historical re-scoring — no 60-day wait needed).** Full
+YTD sim on Databento-collected bars, new production base ($6,732/113t/67.3%):
+Trend Jury OFF → $6,180 (-$552, MaxDD -$2,887): **Jury validated, keep.**
+2pm cutoff OFF → $6,593 (+22t, -$139): **cutoff validated, keep.**
+short-confirm 1 vs 3 → $6,825 (+$93, worse MaxDD): flat — keep 3.
+DLL $1,250 vs $3,750 → **IDENTICAL** (never bound): tightening free.
+
+**③ Risk model DECIDED (user-confirmed): $15K total = $10K equity + $5K futures.**
+prop_rules.py: IBKR_FLOOR 15000→5000, IBKR_DLL_SOFT 3750→**1250** (25% of futures
+allocation). parity SIM_FLAGS += --dll 1250. futures_personal restarted. Note:
+futures/ibkr_state.json balance history stays on the old $15K baseline (bookkeeping
+only; the DLL halt reads IBKR_DLL_SOFT fresh). Real money still gated on results —
+paper until a positive month on the new config.
+
+**④ Universe screen EXECUTED (S&P 1500 base, pro-grade criteria).** 867/1,499 pass
+price≥$5 + $vol≥$10M + ATR≥3%. Only **76 of the current 166 universe names pass** —
+refresh must prune, not just add. Top-300 new candidates ranked (ATR% × liquidity) in
+`universe_screen_2026-07-18.csv`; find_candidates.py gained `--csv/--limit` and the full
+5-rule DNA deep screen over the 300 was launched (results → next session; early hits:
+MXL 97% bt_wr 6/6yr, P 98% 6/6yr). Criteria provenance: $5 floor + $300M cap + $10M ADV
+are industry conventions; ATR≥3% is OUR system requirement (MIN_TODAY_GAIN needs movers).
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |
