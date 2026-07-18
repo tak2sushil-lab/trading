@@ -41,6 +41,8 @@ for all six types interchangeably. When speaking, pick the type word above.
 | **Black Box Recorder** | the "decoder", `futures/live_rule_sim.py`, launchd `mnq_decoder`, 22,973+ snapshots | Auditor | 24/7 flight recorder: logs full market state (VWAP, phase, flow, ADX…) every 60s across all CME sessions. Trades nothing. Its raw signals are proven ANTI-predictive — that's data, not failure. |
 | **Mirror Book** | shadow fish-net, `shadow_fishnet` table | Shadow book | Fades (trades the mirror of) the Black Box Recorder's LONG signals. +16.3 IS / +10.0 OOS pts/episode. Shadow only — constitution requires 30+ green days before promotion talk. |
 | **Recorder rule codes** | `A_ext` (extension), `C_stale` (stale signal), `X1_rvol`, `X4_grade` in gate_blocks | — | Internal hypothesis codes inside the Black Box Recorder, not live gates. |
+| **Day Shape** | `_ib_kind`: BULL_DIRECTIONAL / BEAR_DIRECTIONAL / ROTATIONAL | Score | Where the IB close sits in its range — trending day vs back-and-forth "rotational" day. Feeds Trend Jury weighting. |
+| **Gold Standard** | `hero_score.is_gold_score()` | Score threshold | Trend Jury score high enough to compensate for a soft Volume Pulse (graduated RVOL floor 0.70–0.85). |
 
 ## 3. Futures (London — london_trader.py / london_v2_sim.py)
 
@@ -61,6 +63,9 @@ for all six types interchangeably. When speaking, pick the type word above.
 | **Stock Personality** | DNA clusters: HIGH_VOL / INSTITUTIONAL / MOMENTUM, `dna_analysis.py` | Score modifier | Per-stock archetype adjusting entry points and exit style. Re-cluster quarterly. |
 | **Weather Report (equity)** | market regime: NORMAL / STRONG / CAUTIOUS / WEAK / CHOPPY | Score | Market-level regime; routes bull/bear scanning. |
 | **Catalyst Wildcard** | `_scan_catalyst_override`, dynamic catalyst upgrade | Entry module | News/gap movers bypass CAUTIOUS/CHOPPY weather because their move is market-independent. |
+| **Sympathy Play** | `detect_sympathy_triggers()` | Entry module | When a sector leader rips, its peers get priority — trades the echo. |
+| **Batting Order** | power-play slot ranking in `run_scan` | Score | When more candidates than slots: sympathy → catalyst A+ → catalyst A → universe, then sector strength, intraday change, volume. |
+| **Gap Zone vol tier** | FVG vol tier in `grade_setup` | Gate | Fair-value-gap plays need price-scaled volume (2.0×/3.5×/5.0× by price band). |
 | **Exit Stack** | 13 mechanisms, priority-ordered | Exit rules | See CLAUDE.md table — keep calling individual rules by their existing names. |
 | **Equity Night School** | `learner.py` via `nightly_learning()` 23:00 ET inside autotrader | Learner | Adjusts RSI/volume/momentum/sector/earnings weight multipliers + sector grades from closed trades. The ONLY writer of strategy weights and sector grades. |
 
@@ -87,6 +92,18 @@ for all six types interchangeably. When speaking, pick the type word above.
 Each stage feeds the next morning's decisions. None overlap; all six stay.
 
 ---
+
+## 6b. Parked / Research / Retired (so no name is ever a mystery)
+
+| Name | Where | Status |
+|---|---|---|
+| Rotational Mode (range-fade strategy) | `futures/rotational_sim.py` | Parked research (Jun 17, +$506/22d) — NOT live. Distinct from the live "Day Shape ROTATIONAL" label above. |
+| Oracle | `futures/research/oracle_today.py` | Research script only |
+| Avengers CSVs / feature studies | `futures/research/` | Trend Jury tuning artifacts (Jun 17) |
+| Texture Gate | never built | Rejected design (May 28) — needs catalyst-exempt re-backtest before ever building |
+| Trap Day / Wave / Bar Quality | `backtest_trapday*.py`, `backtest_wave_*.py`, `backtest_bar_quality.py` | One-off research, archived |
+| Guardian | `_retired/day_guardian.py`, `guardian_state.json` | Retired |
+| Futures Night School | `futures/archive/futures_learner.py` | Was dead code (docstring claimed APScheduler wiring; futures_trader never imported it) — archived Jul 18 2026. Wire deliberately if ever wanted. |
 
 ## 7. Naming Rules Going Forward
 
