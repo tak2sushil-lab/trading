@@ -683,6 +683,54 @@ TC eval its own row (was silently blended).
 
 ---
 
+## Jul 18 2026 (night) — Options system full audit (counterfactual gate scoring)
+
+Same treatment as equity/futures redesign. Scored all 2,024 opt_calc_log rows (deduped
+374 bull + 28 bear per symbol-day) against actual forward prices vs each row's own
+breakeven. Full trail: [[options-audit-jul18]] memory + scratchpad opt_gate_audit2.py.
+
+**Scoreboard:** lifetime -$4,169/14 closed (mostly pre-rebuild SYSTEM_RESET closes).
+Post-Jun-23 rebuild: 2 trades in 4 weeks (CHPT bear put +$360 = only AUTO_TARGET winner
+ever; USAR $22 LEAP open Jul 1, stock $15.65, no LEAP stop rule — watchman alert-only).
+Zero ENTER verdicts since Jul 2; scalp engine has NEVER fired since built May 25.
+
+**Core findings:**
+- **Verdict system is ANTI-predictive:** ENTER rows dirRight 16.7% / fwd10 -9.2% vs SKIP
+  32.7% / -5.0%. Every gate neutral or backwards (tech/vol/conviction/momentum);
+  liquidity gate = cost control only. MC model uncalibrated (WR-60+ bucket ≈ WR<40).
+- **News HIGH BULL conviction = fade signal** (65-86% short-right by month) — mirrors the
+  equity Mirror Book finding. Conviction table runs 47 BULL-HIGH vs 5 BEAR-HIGH →
+  structural bull bias in a bear tape.
+- **Bear puts are the only edge** (93% hitBE, 68% dirRight, n=28) and are structurally
+  starved: bull candidates always routed first, bear requires regime==WEAK exactly,
+  CHOPPY/CAUTIOUS = ALL strategies blocked (dead zone), bull blocked 16/22 days since
+  Jun 23 → WEAK-regime ERROR+cooldown churn burns the scan cycle on untradeable bulls.
+- **What-if verdict on the funnel wall:** 27 skipped suggestions netted -$600 → the
+  silence was correct, but because the tape fell, not because the gates knew.
+
+**FIXED (clear-bug rule, database.py `fill_whatif_prices`):** learning loop was
+dead-on-arrival since built — WHERE filtered `user_decision` (always NULL) instead of
+`status`, AND `fast_info.get('last_price')` returns None (key is `lastPrice`), AND
+backfill stamped today's price as the 7d/14d price. Now uses historical closes at true
++7d/+14d. Verified: 27 rows backfilled. Nightly learner needs no restart (one-shot).
+
+**Doc corrections:** options tables live in **trades.db** (trading.db is empty — older
+docs wrong); SCALP_UNIVERSE is ~170 symbols (not 15); outcome logging fires only on
+AUTO_* exits (manual/reset closes never logged).
+
+**APPROVED (same session): build ALL of the below + Telegram tiering revamp + dashboard
+options panel. USAR LEAP → close Monday Jul 21. Bug-sweep after build; 1-week eval, judge
+~Jul 27. Full build checklist: `docs/OPTIONS_REDESIGN_2026-07-18_PLAN.md` — resume there
+if session was interrupted.** Original proposal: (A) direction
+from tape/book-health, not news — port equity Book Health Selector; SHORT book ON → bear
+puts from A+ SHORT equity triggers (the one validated path), LONG book ON → debit calls;
+both OFF → flat. (B) fix router ordering + kill CHOPPY/CAUTIOUS dead zone. (C) demote
+tech/vol/conviction/momentum gates + MC EV to instrumentation-only (constitution:
+instrument-first); deciders = liquidity + IV routing only. (D) define LEAP exit rule +
+decide USAR fate. (E) scalp engine tied to LONG book health or shelved.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

@@ -1556,27 +1556,50 @@ def fill_whatif_prices():
                         net_debit, underlying_at_suggest,
                         underlying_7d, underlying_14d
                  FROM opt_suggestions
-                 WHERE user_decision IN ('SKIPPED','EXPIRED','NO_TRADE')
+                 WHERE (status IN ('NO_TRADE','EXPIRED')
+                        OR user_decision IN ('SKIPPED','EXPIRED','NO_TRADE'))
+                   AND trade_id IS NULL
                    AND long_strike IS NOT NULL
                    AND (underlying_7d IS NULL OR underlying_14d IS NULL)''')
     rows = c.fetchall()
 
     today = date.today()
+    _hist_cache: dict = {}
+
+    def _close_at(sym: str, target: date):
+        """Close on the first trading day at/after target (None if not yet reached)."""
+        if target > today:
+            return None
+        if sym not in _hist_cache:
+            try:
+                _hist_cache[sym] = yf.Ticker(sym).history(period='4mo')['Close']
+            except Exception:
+                _hist_cache[sym] = None
+        ser = _hist_cache[sym]
+        if ser is None or len(ser) == 0:
+            return None
+        after = ser[ser.index.date >= target]
+        return float(after.iloc[0]) if len(after) else None
+
     for row in rows:
         sid, sym, sug_at, ls, ss, nd, entry_price, u7, u14 = row
         try:
             sug_date = date.fromisoformat(sug_at[:10])
-            days_old = (today - sug_date).days
-            current  = yf.Ticker(sym).fast_info.get('last_price')
-            if not current:
-                continue
 
-            if days_old >= 7 and u7 is None:
-                c.execute('UPDATE opt_suggestions SET underlying_7d=? WHERE id=?',
-                          (current, sid))
-            if days_old >= 14 and u14 is None:
-                c.execute('UPDATE opt_suggestions SET underlying_14d=? WHERE id=?',
-                          (current, sid))
+            if u7 is None:
+                u7 = _close_at(sym, sug_date + timedelta(days=7))
+                if u7 is not None:
+                    c.execute('UPDATE opt_suggestions SET underlying_7d=? WHERE id=?',
+                              (u7, sid))
+            if u14 is None:
+                u14 = _close_at(sym, sug_date + timedelta(days=14))
+                if u14 is not None:
+                    c.execute('UPDATE opt_suggestions SET underlying_14d=? WHERE id=?',
+                              (u14, sid))
+
+            current = u14 if u14 is not None else u7
+            if current is None:
+                continue
 
             if ls and ss and nd is not None and entry_price and current:
                 if nd < 0:
