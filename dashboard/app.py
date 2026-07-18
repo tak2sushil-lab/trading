@@ -672,6 +672,77 @@ def get_sector_grades():
         return []
 
 
+def get_system_health():
+    """System-health panel (Jul 18 2026): Book Health, signal funnel, Trade Cop,
+    Mirror Book. The 'is the machine healthy and what is it seeing' view."""
+    out = {'books': {}, 'funnel': {}, 'parity': {}, 'shadow': {}, 'universe': None}
+    today = datetime.now(tz=ET).strftime('%Y-%m-%d')
+    try:
+        with _db() as c:
+            # Book Health — same trailing-10-day drift formula as auto_trader
+            for d in ('LONG', 'SHORT'):
+                days = [r[0] for r in c.execute(
+                    """SELECT DISTINCT scan_date FROM scan_log
+                       WHERE grade='A+' AND direction=? AND scan_date<? AND enriched=1
+                         AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
+                       ORDER BY scan_date DESC LIMIT 10""", (d, today)).fetchall()]
+                if len(days) < 4:
+                    out['books'][d] = {'state': 'COLD START', 'drift': None}
+                    continue
+                q = ','.join('?' * len(days))
+                rows = c.execute(
+                    f"""SELECT actual_day_pct - intra_chg FROM scan_log
+                        WHERE grade='A+' AND direction=? AND enriched=1
+                          AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
+                          AND scan_date IN ({q})""", (d, *days)).fetchall()
+                if len(rows) < 30:
+                    out['books'][d] = {'state': 'COLD START', 'drift': None}
+                    continue
+                drifts = [(-r[0] if d == 'SHORT' else r[0]) for r in rows]
+                h = sum(drifts) / len(drifts)
+                out['books'][d] = {'state': 'ON' if h > 0 else 'OFF',
+                                   'drift': round(h, 2), 'n': len(rows)}
+            # Signal funnel — equity A+ counts + futures gate blocks today
+            eq = dict(c.execute(
+                """SELECT direction, COUNT(*) FROM scan_log
+                   WHERE scan_date=? AND grade='A+' GROUP BY direction""",
+                (today,)).fetchall())
+            fut = c.execute(
+                """SELECT gate, COUNT(*) FROM gate_blocks
+                   WHERE date(ts)=? AND system='IBKR'
+                     AND gate NOT IN ('SHADOW_RAW')
+                   GROUP BY gate ORDER BY 2 DESC LIMIT 6""", (today,)).fetchall()
+            out['funnel'] = {'eq_aplus_long': eq.get('LONG', 0),
+                             'eq_aplus_short': eq.get('SHORT', 0),
+                             'fut_gates': [[g, n] for g, n in fut]}
+            # Mirror Book (shadow fish-net) — cumulative + last 14 days
+            row = c.execute(
+                """SELECT COUNT(*), ROUND(SUM(pnl_pts),1),
+                          ROUND(SUM(CASE WHEN date(entry_ts) >= date('now','-14 day')
+                                    THEN pnl_pts ELSE 0 END),1)
+                   FROM shadow_fishnet""").fetchone()
+            out['shadow'] = {'n': row[0] or 0, 'pts_total': row[1] or 0,
+                             'pts_14d': row[2] or 0}
+    except Exception:
+        pass
+    # Trade Cop — last parity verdict from the log
+    try:
+        with open(os.path.join(BASE_DIR, 'logs', 'parity.log')) as f:
+            lines = [l.strip() for l in f if 'parity ' in l and '→' in l]
+        if lines:
+            last = lines[-1]
+            out['parity'] = {'status': 'DIVERGENCE' if 'DIVERGENCE' in last else 'OK',
+                             'detail': last.split('] ')[-1]}
+    except Exception:
+        pass
+    try:
+        from auto_trader import FULL_UNIVERSE
+        out['universe'] = len(FULL_UNIVERSE)
+    except Exception:
+        pass
+    return out
+
+
 # ── Routes ──────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -698,6 +769,7 @@ def api_data():
     activity   = get_activity(5)
     earnings, macro = get_calendar(opt_pos, eq_pos)
     sectors    = get_sector_grades()
+    health     = get_system_health()
 
     prod_avail = PROD_BRIDGE_URL is not None
     prod_bridge = get_bridge_info(PROD_BRIDGE_URL) if prod_avail else None
@@ -724,6 +796,7 @@ def api_data():
         'earnings_calendar': earnings,
         'macro_calendar':    macro,
         'sector_grades': sectors,
+        'system_health': health,
     })
 
 

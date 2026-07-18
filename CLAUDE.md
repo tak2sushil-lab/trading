@@ -605,6 +605,34 @@ are industry conventions; ATR≥3% is OUR system requirement (MIN_TODAY_GAIN nee
 
 ---
 
+## Jul 18 2026 (late night) — Flip-cooldown REJECTED (inverted finding), Telegram + dashboard upgrades
+
+**Flip-cooldown experiment (oscillating-regime hypothesis): REJECTED — the data inverts it.**
+sim_replay `--flip-cooldown N` + per-trade `flip_age` diagnostics, full YTD on production
+config: entries on the FIRST bar of a fresh regime are the system's BEST trades (49t, 73% WR,
+avg +$88, $4,326 of the $6,732 total). Cooldown=2 cuts P&L to $3,654; cooldown=3 destroys it
+(-$325). **The regime flip IS the entry signal** — when the flip and all four confirms line up
+in the same bar, that's a breakout caught early; waiting = entering late. The one weak pocket
+is MID-regime entries (4-5 bars in: 21t, 43% WR, -$525) — chasing, not flipping. N too small
+to gate on; logged as a watch-item. Conclusion for the reversal problem: entry-side is NOT
+where flips hurt us (F1 fixed the false-unlock case); reversal pain is exit-side (Weather-
+Aware Locks) + environment-level (Mirror Book, currently +505pts/75 shadow trades, +369 last
+14d — on track for its 30-day review ~Aug 17).
+
+**Telegram audit — verdict: structure good, three gaps fixed:** (1) parity/Trade Cop
+divergences now SEND TELEGRAM (were file-only — nobody was alerted); (2) futures EOD message
+gained a signal-funnel line (entries + top gate blocks from gate_blocks); equity EOD gained
+Books ON/OFF + A+ signal counts; (3) canonical names in cards ("Weather:", "Day Shape:").
+Inbound command strings (FUT BIAS etc.) untouched. Recommendation logged, not built: message
+tiering (action-required vs journal) if volume becomes noise.
+
+**Dashboard upgrade — SYSTEM HEALTH panel added** (`get_system_health()` in dashboard/app.py
++ panel in index.html/app.js): Book Health per direction with drift, today's signal funnel
+(equity A+ counts, futures gate blocks), Trade Cop last verdict, Mirror Book running total,
+universe count. Verified live: books OFF (-0.51/-0.62 drift), parity OK, Mirror +505pts.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

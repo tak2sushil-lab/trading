@@ -1538,7 +1538,7 @@ def place_trade(side: str, sig: dict, regime: str,
         f"Target:    {target}  (+${target_usd:.0f})\n"
         f"Contracts: {contracts} × MNQ  (RVOL={rvol:.1f}×  IB={ib_range:.0f}pts)\n"
         f"Setup:     {setup} | Grade: {grade} ({score}pts)\n"
-        f"Session:   {session} | Regime: {regime}\n"
+        f"Session:   {session} | Weather: {regime}\n"
         f"R:R:       {rr:.1f}\n"
         f"{backup_line}"
     )
@@ -2219,7 +2219,7 @@ def run_scan():
                 _ib_kind_set = True
                 log(f"IB classified: {_ib_kind} | regime={_day_regime} | range={ib_range:.0f}pts | mid={ib_mid:.2f}")
                 send_telegram(
-                    f"📊 IB formed: {_ib_kind} | {_day_regime}\n"
+                    f"📊 IB formed — Day Shape: {_ib_kind} | Weather: {_day_regime}\n"
                     f"Range={ib_range:.0f}pts  mid={ib_mid:.2f}"
                 )
 
@@ -2511,11 +2511,32 @@ def eod_snapshot():
     # Read state AFTER balance update but re-inject today's P&L for the EOD message
     # (format_prop_status shows session_pnl=0 post-reset, so we show daily separately)
     s = prop_status()
+    # Signal-funnel line (Jul 18 2026): how many entries passed vs which gates blocked —
+    # the "did we miss opportunities today" pulse, from gate_blocks.
+    funnel = ''
+    try:
+        _c = sqlite3.connect(DB_PATH)
+        rows = _c.execute(
+            """SELECT gate, COUNT(*) FROM gate_blocks
+               WHERE date(ts)=date('now','localtime') AND system='IBKR'
+                 AND gate NOT IN ('SHADOW_RAW','ENTER')
+               GROUP BY gate ORDER BY 2 DESC LIMIT 4""").fetchall()
+        entered = _c.execute(
+            """SELECT COUNT(*) FROM gate_blocks
+               WHERE date(ts)=date('now','localtime') AND system='IBKR'
+                 AND gate='ENTER'""").fetchone()[0]
+        _c.close()
+        if rows or entered:
+            blocks = '  '.join(f"{g}×{n}" for g, n in rows)
+            funnel = f"\nFunnel:     {entered} entered | top blocks: {blocks}"
+    except Exception:
+        pass
     send_telegram(
         f"🌙 FUTURES (IBKR) EOD\n"
         f"Day P&L:    ${daily:+.2f}\n"
         f"Balance:    ${s.get('balance', 0):,.0f}\n"
-        f"All-time:   ${s.get('total_profit', 0):+,.0f}\n"
+        f"All-time:   ${s.get('total_profit', 0):+,.0f}"
+        f"{funnel}\n"
         f"Resets tomorrow at 9:28am ET (2:28pm London)"
     )
 

@@ -4532,11 +4532,29 @@ def evening_summary():
     open_trades = get_open_trades()
     deployed   = get_deployed_capital()
     hold_msg   = f"\n📦 {len(open_trades)} positions held overnight (${deployed:,.0f} deployed)" if open_trades else ""
+    # Signal-funnel + book-health line (Jul 18 2026): today's A+ signal count per
+    # direction and whether each book was open — the "what did we see vs take" pulse.
+    funnel = ''
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            """SELECT direction, COUNT(*) FROM scan_log
+               WHERE scan_date = date('now','localtime') AND grade='A+'
+               GROUP BY direction""").fetchall()
+        conn.close()
+        counts = {r[0]: r[1] for r in rows}
+        bl = 'ON' if book_is_on('LONG') else 'OFF'
+        bs = 'ON' if book_is_on('SHORT') else 'OFF'
+        funnel = (f"\n📖 Books: LONG {bl} / SHORT {bs} | A+ signals: "
+                  f"{counts.get('LONG', 0)}L / {counts.get('SHORT', 0)}S")
+    except Exception:
+        pass
     send_telegram(
         f"{emoji} EOD Summary\n"
         f"Trades: {daily['trades']} | Wins: {daily['wins']} | WR: {wr_day:.0f}%\n"
         f"P&L today: ${daily['pnl']:+.2f}\n"
         f"30d win rate: {wr_30:.0f}%"
+        f"{funnel}"
         f"{hold_msg}"
     )
 

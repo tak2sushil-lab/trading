@@ -42,6 +42,22 @@ def log(msg):
         f.write(line + '\n')
 
 
+def send_telegram(msg):
+    """Divergences must reach a human, not just a log file (added Jul 18 2026)."""
+    import requests
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(ROOT, '.env'))
+    token = os.getenv('FUTURES_TELEGRAM_TOKEN') or os.getenv('TELEGRAM_TOKEN')
+    chat  = os.getenv('FUTURES_TELEGRAM_CHAT_ID') or os.getenv('TELEGRAM_CHAT_ID')
+    if not token or not chat:
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                      json={'chat_id': chat, 'text': msg}, timeout=10)
+    except Exception:
+        pass
+
+
 def sim_trades(day):
     cmd = [os.path.join(ROOT, 'venv', 'bin', 'python'),
            os.path.join(ROOT, 'futures', 'sim_replay.py'),
@@ -162,6 +178,13 @@ def main():
             log(f"  equity invariant: {line}")
     else:
         log("equity invariants: clean")
+    if status != 'OK':
+        send_telegram(
+            f"🚓 Trade Cop DIVERGENCE {day}\n"
+            f"Futures: sim={len(sim)} live={len(live)} matched={matched}\n"
+            f"Equity invariant issues: {len(eq_v)}\n"
+            f"Details: logs/parity.log — investigate before trusting backtests."
+        )
     return 0 if status == 'OK' else 1
 
 

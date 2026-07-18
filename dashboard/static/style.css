@@ -392,3 +392,16 @@ body {
 @media (max-width: 600px) {
   .summary-row { grid-template-columns: 1fr; }
 }
+
+/* System health panel (Jul 18 2026) */
+.health-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 0;
+              border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px; }
+.health-row:last-child { border-bottom: none; }
+.health-label { min-width: 110px; color: #8b95a5; font-size: 11px;
+                text-transform: uppercase; letter-spacing: 0.5px; }
+.health-chip { padding: 2px 8px; border-radius: 10px; font-weight: 600;
+               background: rgba(255,255,255,0.06); }
+.health-chip.pos { color: #4ade80; background: rgba(74,222,128,0.12); }
+.health-chip.neg { color: #f87171; background: rgba(248,113,113,0.12); }
+.health-detail { color: #8b95a5; font-size: 11px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }

@@ -70,11 +70,53 @@ function renderAll(d) {
   renderOptionsTable(d.options_positions);
   renderFuturesTable(d.futures_positions, d.futures_session);
   renderSectors(d.sector_grades);
+  renderSystemHealth(d.system_health);
   renderAlerts(d.alerts);
   renderCalendar(d.earnings_calendar, d.macro_calendar);
   allActivity = d.activity || [];
   renderActivityFeed(allActivity);
   renderProdChecklist(d.golive_checklist);
+}
+
+// ── System health panel (Book Health / funnel / Trade Cop / Mirror Book) ──
+function renderSystemHealth(h) {
+  const el = document.getElementById('system-health');
+  if (!el) return;
+  if (!h) { el.innerHTML = '<div class="empty-msg">no health data</div>'; return; }
+  document.getElementById('sh-universe').textContent = (h.universe || '—') + ' names';
+  const bookChip = (name, b) => {
+    if (!b) return '';
+    const cls = b.state === 'ON' ? 'pos' : (b.state === 'OFF' ? 'neg' : '');
+    const drift = b.drift == null ? '' : ` ${b.drift > 0 ? '+' : ''}${b.drift}%/sig`;
+    return `<span class="health-chip ${cls}"><b>${name}</b> ${b.state}${drift}</span>`;
+  };
+  const f = h.funnel || {};
+  const gates = (f.fut_gates || []).map(g => `${g[0]}×${g[1]}`).join('&nbsp; ');
+  const p = h.parity || {};
+  const pCls = p.status === 'OK' ? 'pos' : (p.status ? 'neg' : '');
+  const s = h.shadow || {};
+  el.innerHTML = `
+    <div class="health-row">
+      <span class="health-label">Books</span>
+      ${bookChip('LONG', h.books && h.books.LONG)} ${bookChip('SHORT', h.books && h.books.SHORT)}
+    </div>
+    <div class="health-row">
+      <span class="health-label">Signals today</span>
+      <span>A+ equity: ${f.eq_aplus_long ?? 0}L / ${f.eq_aplus_short ?? 0}S</span>
+    </div>
+    <div class="health-row">
+      <span class="health-label">Futures gates</span>
+      <span>${gates || '—'}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-label">Trade Cop</span>
+      <span class="health-chip ${pCls}">${p.status || 'no run yet'}</span>
+      <span class="health-detail">${p.detail || ''}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-label">Mirror Book</span>
+      <span>${s.n ?? 0} shadow trades | ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts total | 14d: ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts</span>
+    </div>`;
 }
 
 // ── Mode badge ─────────────────────────────────────────────

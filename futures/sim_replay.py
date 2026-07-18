@@ -82,6 +82,7 @@ HTF_TREND_BARS    = 3
 # HERO_GATE_ENABLED (nothing to compensate with otherwise).
 GRADUATED_RVOL    = False
 RVOL_GRAD_FLOOR   = 0.60
+FLIP_COOLDOWN_BARS = 0   # --flip-cooldown N: no entries until regime holds N consecutive bars
 
 # Profit-lock trail tiers — these predate the Jul 7 thesis-invalidation
 # experiment entirely (already live before that work started) and were NOT
@@ -1028,6 +1029,7 @@ def simulate_day(
                     'pnl':         net,
                     'exit_reason': exit_reason,
                     'grade':       position['grade'],
+                    'flip_age':    position.get('flip_age', -1),
                 })
                 position = None
                 continue
@@ -1079,6 +1081,11 @@ def simulate_day(
             )
 
             for side in ('LONG', 'SHORT'):
+                # Flip-cooldown experiment (Jul 18 2026, --flip-cooldown N): no new
+                # entries until the regime has held N consecutive bars — hypothesis:
+                # entries right after a regime flip get whipsawed by oscillation.
+                if FLIP_COOLDOWN_BARS and consec_count <= FLIP_COOLDOWN_BARS:
+                    continue
                 # Overnight macro bias gate (mirrors live _daily_macro_bias)
                 if effective_bias == 'LONG'  and side == 'SHORT': continue
                 if effective_bias == 'SHORT' and side == 'LONG' and not ALLOW_LONG_ON_SHORT_BIAS: continue
@@ -1205,6 +1212,7 @@ def simulate_day(
                     'setup':       setup,
                     'grade':       grade,
                     'fail_streak': 0,
+                    'flip_age':    consec_count,   # bars the regime had held at entry
                 }
                 trade_count += 1
                 break
@@ -1228,6 +1236,7 @@ def simulate_day(
             'contracts':   position['contracts'],
             'pnl':         net,
             'exit_reason': 'eod_force',
+            'flip_age':    position.get('flip_age', -1),
             'grade':       position['grade'],
         })
 
@@ -1304,6 +1313,17 @@ def _print_scenario(r: dict) -> None:
     for side, grp in df.groupby('side'):
         sw = (grp['pnl'] > 0).sum()
         print(f'    {side:<6}  {len(grp)}t  {sw}/{len(grp)}W  ${grp["pnl"].sum():+.2f}')
+    if 'flip_age' in df.columns and (df['flip_age'] >= 0).any():
+        print()
+        print('  By regime age at entry (bars since last flip — flip-cooldown diagnostics):')
+        fa = df[df['flip_age'] >= 0].copy()
+        fa['bucket'] = pd.cut(fa['flip_age'], [0, 1, 2, 3, 5, 10, 10000],
+                              labels=['1', '2', '3', '4-5', '6-10', '>10'])
+        for b, grp in fa.groupby('bucket', observed=True):
+            if len(grp):
+                sw = (grp['pnl'] > 0).sum()
+                print(f'    {b:>5} bars  {len(grp):>3}t  {sw}/{len(grp)}W  '
+                      f'${grp["pnl"].sum():+9.2f}  avg ${grp["pnl"].mean():+7.2f}')
     print()
     print('  Individual trades:')
     print(f'  {"Date":<12}{"In":>6}{"Side":>6}{"Setup":<13}{"G":>3}{"Entry":>9}{"Exit":>9}{"P&L":>9}  Reason')
@@ -1374,6 +1394,9 @@ def main():
                          '1 contract) instead of a hard 0.85 cliff — targets Jul 7/Jul 8 near-misses')
     ap.add_argument('--rvol-floor', type=float, default=None, dest='rvol_floor',
                     help='Override RVOL_GRAD_FLOOR for --graduated-rvol (default 0.60)')
+    ap.add_argument('--flip-cooldown', type=int, default=None, dest='flip_cooldown',
+                    help='No new entries until the regime has held N consecutive bars '
+                         '(oscillating-regime whipsaw experiment, Jul 18 2026)')
     ap.add_argument('--no-ovn-skip', action='store_true', dest='no_ovn_skip',
                     help='Disable the overnight skip-zone whole-day veto (pos 0.20-0.40) — '
                          'day trades as BOTH. Mirrors the validated London veto removal (Jul 18 2026).')
@@ -1392,8 +1415,9 @@ def main():
 
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
-    global NO_OVN_SKIP, IB_READY_OVERRIDE
+    global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS
     if args.no_ovn_skip:             NO_OVN_SKIP = True
+    if args.flip_cooldown is not None: FLIP_COOLDOWN_BARS = args.flip_cooldown
     if args.entry_start is not None:
         _h, _m = args.entry_start.split(':')
         IB_READY_OVERRIDE = _dt.time(int(_h), int(_m))
