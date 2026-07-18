@@ -13,6 +13,7 @@ Last updated: Jul 17 2026
 - **Bridge:** `http://localhost:8000`
 - **Clean run since:** May 1 2026 — do NOT change parameters without explicit user approval
 - **Universe:** 163 symbols (159 after May 24 DNA batch + 4 added May 26: AEHR/APD/HXL/SSYS)
+- **Terminology:** `GLOSSARY.md` (adopted Jul 18 2026) is the canonical name for every gate/score/auditor/shadow book — use its names in docs and Telegram; never rename code/DB/launchd identifiers
 
 ---
 
@@ -619,6 +620,11 @@ pvh ≤ -10% gate: PENDING (not yet built). Backtest N=3, all losers, zero FP. O
    sunset date for every new rule; max 3 boolean entry gates per system; sim must match live
    code path/granularity; instrument-first-gate-later for new context sources; right-tail
    counterfactual required for exit changes. Read it before proposing any change.
+
+0b. **GLOSSARY.md is the naming authority** (adopted Jul 18 2026) — one canonical name per
+   concept (Trend Jury = hero gate, Black Box Recorder = decoder, Mirror Book = shadow fish-net,
+   Weather Report = regime, etc.). New gates/books/nightly jobs get a glossary row in the same
+   session they ship. Code identifiers, DB tables, and launchd names are never renamed.
 
 1. **No tinkering mid-run.** May 1 2026 = Day 1. Parameter changes require data + explicit approval.
 2. **Validate before build.** Always backtest first. Never suggest building without data.
