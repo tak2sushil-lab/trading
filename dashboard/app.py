@@ -464,25 +464,95 @@ def get_today_summary():
     return eq, opt, fut
 
 
-def get_pnl_history(sessions=7):
+def get_pnl_by_book(sessions=15):
+    """Daily closed P&L per vertical (equity / options / futures incl London)
+    for the last `sessions` dates that had any closed trade."""
+    cutoff = (datetime.now(tz=ET) - timedelta(days=sessions + 14)).strftime('%Y-%m-%d')
+    daily = {}   # date -> {book: pnl}
+
+    def add(rows, book):
+        for d, p in rows:
+            if d:
+                bucket = daily.setdefault(d, {})
+                bucket[book] = round(bucket.get(book, 0) + (p or 0), 2)
+
     try:
         with _db() as c:
-            rows = c.execute("""
-                SELECT exit_date, SUM(pnl) as dpnl, COUNT(*) as trades,
-                       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
-                FROM trades
-                WHERE exit_date IS NOT NULL AND setup_type != 'RECONCILED'
-                GROUP BY exit_date
-                ORDER BY exit_date DESC LIMIT ?
-            """, (sessions,)).fetchall()
-            return list(reversed([{
-                'date': r['exit_date'],
-                'pnl':  round(r['dpnl'], 2),
-                'trades': r['trades'],
-                'wins': r['wins'],
-            } for r in rows]))
+            add(c.execute(
+                "SELECT exit_date, SUM(pnl) FROM trades "
+                "WHERE exit_date>=? AND setup_type!='RECONCILED' GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'equity')
+            add(c.execute(
+                "SELECT exit_date, SUM(exit_value - net_debit) FROM options_trades "
+                "WHERE exit_date>=? AND exit_value IS NOT NULL GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'options')
+            add(c.execute(
+                "SELECT exit_date, SUM(pnl) FROM futures_trades "
+                "WHERE exit_date>=? AND setup_type!='RECONCILED' AND account_mode='IBKR' "
+                "GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'futures')
+            add(c.execute(
+                "SELECT exit_date, SUM(pnl) FROM london_trades "
+                "WHERE exit_date>=? GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'futures')
     except Exception:
         return []
+
+    dates = sorted(daily.keys())[-sessions:]
+    return [{
+        'date':    d,
+        'equity':  daily[d].get('equity'),
+        'options': daily[d].get('options'),
+        'futures': daily[d].get('futures'),
+        'total':   round(sum(v for v in daily[d].values() if v is not None), 2),
+    } for d in dates]
+
+
+def get_scorecard(since_date=None, days=21):
+    """Per-book aggregates over the chart window: trades, WR, P&L, avg,
+    best/worst day. Futures NY and London reported separately — they are
+    different strategies with different sessions."""
+    cutoff = since_date or (datetime.now(tz=ET) - timedelta(days=days)).strftime('%Y-%m-%d')
+    books = [
+        ('Equity',     "SELECT exit_date, pnl FROM trades "
+                       "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL"),
+        ('Options',    "SELECT exit_date, exit_value - net_debit FROM options_trades "
+                       "WHERE exit_date>=? AND exit_value IS NOT NULL"),
+        ('Futures NY', "SELECT exit_date, pnl FROM futures_trades "
+                       "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
+                       "AND account_mode='IBKR'"),
+        ('London',     "SELECT exit_date, pnl FROM london_trades "
+                       "WHERE exit_date>=? AND pnl IS NOT NULL"),
+        ('TC eval',    "SELECT exit_date, pnl FROM futures_trades "
+                       "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
+                       "AND account_mode='TC'"),
+    ]
+    out = []
+    try:
+        with _db() as c:
+            for name, sql in books:
+                rows = c.execute(sql, (cutoff,)).fetchall()
+                pnls = [r[1] or 0 for r in rows]
+                if not pnls:
+                    out.append({'book': name, 'n': 0})
+                    continue
+                by_day = {}
+                for d, p in rows:
+                    by_day[d] = round(by_day.get(d, 0) + (p or 0), 2)
+                best  = max(by_day.items(), key=lambda kv: kv[1])
+                worst = min(by_day.items(), key=lambda kv: kv[1])
+                wins  = sum(1 for p in pnls if p > 0)
+                out.append({
+                    'book': name, 'n': len(pnls),
+                    'wr':   round(wins / len(pnls) * 100),
+                    'pnl':  round(sum(pnls), 2),
+                    'avg':  round(sum(pnls) / len(pnls), 2),
+                    'best':  {'date': best[0],  'pnl': best[1]},
+                    'worst': {'date': worst[0], 'pnl': worst[1]},
+                })
+    except Exception:
+        pass
+    return out
 
 
 def get_alerts(eq_pos, opt_pos):
@@ -672,6 +742,21 @@ def get_sector_grades():
         return []
 
 
+# Gate code → (Glossary name, plain-English tooltip). GLOSSARY.md is the authority;
+# raw codes stay in the DB/logs, the dashboard just translates for reading.
+GATE_INFO = {
+    'REGIME':     ('Weather',        'Weather Report (trend regime) not confirmed for this side — needs 3 consecutive 5-min bars'),
+    'GRADE':      ('Setup Grade',    'Signal scored below the A+ entry bar'),
+    'RVOL_ENTRY': ('Volume Pulse',   'Session volume too thin vs 20-day norm (hard floor 0.70, full pass 0.85)'),
+    'HERO':       ('Trend Jury',     'Trend Jury vote below the entry threshold for today\'s weather'),
+    'HTF':        ('Higher-TF',      '30-min higher-timeframe trend disagrees with the entry direction'),
+    'OVN_SKIP':   ('Overnight Veto', 'Ambiguous overnight positioning — INFO-ONLY since Jul 18, no longer blocks'),
+    'RVOL':       ('Dead Tape',      'Scan skipped — market volume below the dead-tape floor'),
+    'A_EXT':      ('Extension',      'Price too extended from VWAP at signal time'),
+    'DLL':        ('Loss Halt',      'Daily loss limit reached — entries halted for the day'),
+}
+
+
 def get_system_health():
     """System-health panel (Jul 18 2026): Book Health, signal funnel, Trade Cop,
     Mirror Book. The 'is the machine healthy and what is it seeing' view."""
@@ -700,9 +785,14 @@ def get_system_health():
                     continue
                 drifts = [(-r[0] if d == 'SHORT' else r[0]) for r in rows]
                 h = sum(drifts) / len(drifts)
-                out['books'][d] = {'state': 'ON' if h > 0 else 'OFF',
-                                   'drift': round(h, 2), 'n': len(rows)}
-            # Signal funnel — equity A+ counts + futures gate blocks today
+                out['books'][d] = {
+                    'state': 'ON' if h > 0 else 'OFF',
+                    'drift': round(h, 2), 'n': len(rows),
+                    'desc': (f"Own A+ {d} signals {'gained' if h > 0 else 'faded'} "
+                             f"{h:+.2f}% per signal after firing, over the last 10 sessions "
+                             f"({len(rows)} signals). Book trades only while this is positive."),
+                }
+            # Signal funnel — equity A+ counts + futures entries/blocks today
             eq = dict(c.execute(
                 """SELECT direction, COUNT(*) FROM scan_log
                    WHERE scan_date=? AND grade='A+' GROUP BY direction""",
@@ -710,11 +800,20 @@ def get_system_health():
             fut = c.execute(
                 """SELECT gate, COUNT(*) FROM gate_blocks
                    WHERE date(ts)=? AND system='IBKR'
-                     AND gate NOT IN ('SHADOW_RAW')
+                     AND gate NOT IN ('SHADOW_RAW', 'ENTER')
                    GROUP BY gate ORDER BY 2 DESC LIMIT 6""", (today,)).fetchall()
+            entered = c.execute(
+                """SELECT COUNT(*) FROM gate_blocks
+                   WHERE date(ts)=? AND system='IBKR' AND gate='ENTER'""",
+                (today,)).fetchone()[0]
             out['funnel'] = {'eq_aplus_long': eq.get('LONG', 0),
                              'eq_aplus_short': eq.get('SHORT', 0),
-                             'fut_gates': [[g, n] for g, n in fut]}
+                             'fut_entered': entered,
+                             'fut_gates': [
+                                 [g, n,
+                                  GATE_INFO.get(g, (g, ''))[0],
+                                  GATE_INFO.get(g, (g, 'Unmapped gate — see GLOSSARY.md'))[1]]
+                                 for g, n in fut]}
             # Mirror Book (shadow fish-net) — cumulative + last 14 days
             row = c.execute(
                 """SELECT COUNT(*), ROUND(SUM(pnl_pts),1),
@@ -725,14 +824,30 @@ def get_system_health():
                              'pts_14d': row[2] or 0}
     except Exception:
         pass
-    # Trade Cop — last parity verdict from the log
+    # Trade Cop — last parity verdict, decoded into a readable sentence
     try:
+        import re as _re
         with open(os.path.join(BASE_DIR, 'logs', 'parity.log')) as f:
             lines = [l.strip() for l in f if 'parity ' in l and '→' in l]
         if lines:
             last = lines[-1]
-            out['parity'] = {'status': 'DIVERGENCE' if 'DIVERGENCE' in last else 'OK',
-                             'detail': last.split('] ')[-1]}
+            status = 'DIVERGENCE' if 'DIVERGENCE' in last else 'OK'
+            detail = last.split('] ')[-1]
+            m = _re.search(r'parity (\S+) .*?sim=(\d+) live=(\d+) matched=(\d+)', last)
+            if m:
+                day, sim, live, matched = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))
+                if status == 'OK':
+                    if sim == 0 and live == 0:
+                        friendly = f"{day}: replay and live both took 0 trades — in agreement"
+                    else:
+                        friendly = f"{day}: replay matched all live trades ({matched}/{live})"
+                else:
+                    friendly = (f"{day}: replay and live DISAGREE — sim {sim} vs live {live} "
+                                f"trades, only {matched} matched. Check logs/parity.log before "
+                                f"trusting any backtest.")
+            else:
+                friendly = detail
+            out['parity'] = {'status': status, 'detail': detail, 'friendly': friendly}
     except Exception:
         pass
     try:
@@ -764,7 +879,8 @@ def api_data():
     opt_pos    = get_options_positions()
     fut_pos, session = get_futures_positions()
     eq_sum, opt_sum, fut_sum = get_today_summary()
-    pnl_hist   = get_pnl_history(7)
+    pnl_books  = get_pnl_by_book(15)
+    scorecard  = get_scorecard(since_date=pnl_books[0]['date'] if pnl_books else None)
     alerts     = get_alerts(eq_pos, opt_pos)
     activity   = get_activity(5)
     earnings, macro = get_calendar(opt_pos, eq_pos)
@@ -790,7 +906,8 @@ def api_data():
         'eq_summary':   eq_sum,
         'opt_summary':  opt_sum,
         'fut_summary':  fut_sum,
-        'pnl_history':  pnl_hist,
+        'pnl_by_book':  pnl_books,
+        'scorecard':    scorecard,
         'alerts':       alerts,
         'activity':     activity,
         'earnings_calendar': earnings,

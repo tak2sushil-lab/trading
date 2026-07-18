@@ -75,18 +75,29 @@
       </div>
     </div>
 
-    <!-- System health: Book Health / signal funnel / Trade Cop / Mirror Book -->
-    <div class="card section">
-      <div class="section-title">SYSTEM HEALTH
-        <span class="count-chip" id="sh-universe">— names</span>
+    <!-- Two-column: System health + 15-day scorecard -->
+    <div class="two-col">
+      <div class="card section">
+        <div class="section-title">SYSTEM HEALTH
+          <span class="count-chip" id="sh-universe">— names</span>
+        </div>
+        <div id="system-health"></div>
       </div>
-      <div id="system-health"></div>
+
+      <div class="card section">
+        <div class="section-title">15-DAY SCORECARD
+          <span class="muted-text">closed trades, per book</span>
+        </div>
+        <div id="scorecard"></div>
+      </div>
     </div>
 
-    <!-- P&L sparkline -->
+    <!-- Daily P&L by system -->
     <div class="card section">
-      <div class="section-title">7-DAY EQUITY P&amp;L</div>
-      <div class="chart-wrap">
+      <div class="section-title">DAILY P&amp;L — LAST 15 SESSIONS
+        <span class="muted-text">stacked: equity + options + futures (incl London)</span>
+      </div>
+      <div class="chart-wrap chart-tall">
         <canvas id="pnl-chart"></canvas>
       </div>
     </div>

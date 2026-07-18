@@ -65,7 +65,8 @@ function renderAll(d) {
   renderRegime(d.regime);
   renderSessionPnl(d.eq_summary, d.opt_summary, d.fut_summary);
   renderSummaryCards(d.eq_summary, d.opt_summary, d.fut_summary);
-  renderPnlChart(d.pnl_history);
+  renderPnlChart(d.pnl_by_book);
+  renderScorecard(d.scorecard);
   renderEquityTable(d.equity_positions);
   renderOptionsTable(d.options_positions);
   renderFuturesTable(d.futures_positions, d.futures_session);
@@ -79,44 +80,89 @@ function renderAll(d) {
 }
 
 // ── System health panel (Book Health / funnel / Trade Cop / Mirror Book) ──
+// Hover any label or chip for the plain-English explanation.
 function renderSystemHealth(h) {
   const el = document.getElementById('system-health');
   if (!el) return;
   if (!h) { el.innerHTML = '<div class="empty-msg">no health data</div>'; return; }
   document.getElementById('sh-universe').textContent = (h.universe || '—') + ' names';
+
   const bookChip = (name, b) => {
     if (!b) return '';
     const cls = b.state === 'ON' ? 'pos' : (b.state === 'OFF' ? 'neg' : '');
     const drift = b.drift == null ? '' : ` ${b.drift > 0 ? '+' : ''}${b.drift}%/sig`;
-    return `<span class="health-chip ${cls}"><b>${name}</b> ${b.state}${drift}</span>`;
+    return `<span class="health-chip ${cls}" title="${b.desc || ''}"><b>${name}</b> ${b.state}${drift}</span>`;
   };
+  const booksNote = (h.books?.LONG?.state === 'OFF' && h.books?.SHORT?.state === 'OFF')
+    ? '<span class="health-detail">both books standing down — own signals not working; flat is intentional</span>'
+    : '';
+
   const f = h.funnel || {};
-  const gates = (f.fut_gates || []).map(g => `${g[0]}×${g[1]}`).join('&nbsp; ');
+  // fut_gates rows: [code, count, glossaryName, tooltip]
+  const gates = (f.fut_gates || []).map(g =>
+    `<span class="gate-chip" title="${g[3] || ''} (log code: ${g[0]})">${g[2] || g[0]} ×${g[1]}</span>`
+  ).join(' ');
+  const entered = f.fut_entered ?? 0;
+  const enteredChip = `<span class="health-chip ${entered > 0 ? 'pos' : ''}" title="Signals that passed every gate and became trades today">${entered} entered</span>`;
+
   const p = h.parity || {};
   const pCls = p.status === 'OK' ? 'pos' : (p.status ? 'neg' : '');
   const s = h.shadow || {};
+
   el.innerHTML = `
     <div class="health-row">
-      <span class="health-label">Books</span>
+      <span class="health-label" title="Book Health Selector: each side trades only while its own recent A+ signals show positive follow-through">Books</span>
       ${bookChip('LONG', h.books && h.books.LONG)} ${bookChip('SHORT', h.books && h.books.SHORT)}
+      ${booksNote}
     </div>
     <div class="health-row">
-      <span class="health-label">Signals today</span>
-      <span>A+ equity: ${f.eq_aplus_long ?? 0}L / ${f.eq_aplus_short ?? 0}S</span>
+      <span class="health-label" title="A+ grade equity signals seen today, whether or not a trade was taken">Signals today</span>
+      <span>A+ equity: ${f.eq_aplus_long ?? 0} long / ${f.eq_aplus_short ?? 0} short</span>
     </div>
     <div class="health-row">
-      <span class="health-label">Futures gates</span>
-      <span>${gates || '—'}</span>
+      <span class="health-label" title="MNQ signal funnel today: how many entries got through, and which gate rejected the rest">Futures funnel</span>
+      ${enteredChip}
+      <span class="health-detail-inline">${gates || 'no blocks logged'}</span>
     </div>
     <div class="health-row">
-      <span class="health-label">Trade Cop</span>
-      <span class="health-chip ${pCls}">${p.status || 'no run yet'}</span>
-      <span class="health-detail">${p.detail || ''}</span>
+      <span class="health-label" title="Nightly parity check: replays today through the backtest engine and diffs its trades against what live actually did">Trade Cop</span>
+      <span class="health-chip ${pCls}" title="${p.detail || ''}">${p.status || 'no run yet'}</span>
+      <span class="health-detail">${p.friendly || p.detail || ''}</span>
     </div>
     <div class="health-row">
-      <span class="health-label">Mirror Book</span>
-      <span>${s.n ?? 0} shadow trades | ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts total | 14d: ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts</span>
+      <span class="health-label" title="Shadow-only book that fades the Black Box Recorder's LONG signals. Places NO orders — needs 30+ green days before promotion is discussed (review ~Aug 17)">Mirror Book</span>
+      <span title="Shadow paper result — 1 MNQ contract equivalent, no real orders">${s.n ?? 0} shadow trades · ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts all-time · ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts last 14d</span>
     </div>`;
+}
+
+// ── 15-day scorecard (per-book closed-trade stats) ─────────
+function renderScorecard(rows) {
+  const el = document.getElementById('scorecard');
+  if (!el) return;
+  if (!rows || rows.length === 0) {
+    el.innerHTML = '<div class="empty-state">No closed trades in window</div>';
+    return;
+  }
+  const money = v => `<span class="${v > 0 ? 'pnl-pos' : (v < 0 ? 'pnl-neg' : 'pnl-zero')}">${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(0)}</span>`;
+  const day = d => d ? d.slice(5).replace('-', '/') : '';
+  el.innerHTML = `<table class="positions-table scorecard-table">
+    <thead><tr>
+      <th>Book</th><th>Trades</th><th>WR</th><th>P&amp;L</th><th>Avg</th>
+      <th>Best day</th><th>Worst day</th>
+    </tr></thead>
+    <tbody>${rows.map(r => {
+      if (!r.n) return `<tr><td>${r.book}</td><td>0</td><td colspan="5" class="muted-text">no closed trades</td></tr>`;
+      return `<tr>
+        <td><strong>${r.book}</strong></td>
+        <td>${r.n}</td>
+        <td>${r.wr}%</td>
+        <td>${money(r.pnl)}</td>
+        <td>${money(r.avg)}</td>
+        <td>${money(r.best.pnl)} <small class="muted-text">${day(r.best.date)}</small></td>
+        <td>${money(r.worst.pnl)} <small class="muted-text">${day(r.worst.date)}</small></td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
 }
 
 // ── Mode badge ─────────────────────────────────────────────
@@ -185,19 +231,26 @@ function renderSummaryCards(eq, opt, fut) {
     (fut?.wr != null ? `  ·  ${fut.wr}% WR` : '');
 }
 
-// ── P&L Sparkline ─────────────────────────────────────────
+// ── Daily P&L by system — stacked bars, last 15 sessions ──
+const BOOK_COLORS = {
+  equity:  { fill: 'rgba(63,185,80,0.65)',  border: '#3fb950' },   // green
+  options: { fill: 'rgba(163,113,247,0.65)', border: '#a371f7' },  // purple
+  futures: { fill: 'rgba(79,156,246,0.65)',  border: '#4f9cf6' },  // blue
+};
+
 function renderPnlChart(history) {
   if (!history || history.length === 0) return;
   const labels = history.map(d => d.date ? d.date.slice(5) : '');
-  const data   = history.map(d => d.pnl || 0);
-  const colors = data.map(v => v >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)');
-  const borders = data.map(v => v >= 0 ? '#3fb950' : '#f85149');
+  const mk = key => history.map(d => d[key] ?? 0);
+  const series = [
+    { label: 'Equity',  key: 'equity'  },
+    { label: 'Options', key: 'options' },
+    { label: 'Futures', key: 'futures' },
+  ];
 
   if (pnlChart) {
     pnlChart.data.labels = labels;
-    pnlChart.data.datasets[0].data = data;
-    pnlChart.data.datasets[0].backgroundColor = colors;
-    pnlChart.data.datasets[0].borderColor = borders;
+    series.forEach((s, i) => { pnlChart.data.datasets[i].data = mk(s.key); });
     pnlChart.update('none');
     return;
   }
@@ -207,25 +260,41 @@ function renderPnlChart(history) {
     type: 'bar',
     data: {
       labels,
-      datasets: [{ data, backgroundColor: colors, borderColor: borders, borderWidth: 1, borderRadius: 3 }]
+      datasets: series.map(s => ({
+        label: s.label,
+        data: mk(s.key),
+        backgroundColor: BOOK_COLORS[s.key].fill,
+        borderColor: BOOK_COLORS[s.key].border,
+        borderWidth: 1, borderRadius: 2,
+      })),
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: {
-        callbacks: {
-          label: ctx => {
-            const v = ctx.raw;
-            const row = history[ctx.dataIndex];
-            return ` $${v >= 0 ? '+' : ''}${v.toFixed(2)} · ${row.trades}t · ${row.wins}W`;
-          }
+      plugins: {
+        legend: { display: true, position: 'top', align: 'end',
+                  labels: { color: '#8b949e', boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.raw >= 0 ? '+' : ''}$${ctx.raw.toFixed(2)}`,
+            footer: items => {
+              const row = history[items[0].dataIndex];
+              return `Day total: ${row.total >= 0 ? '+' : ''}$${(row.total ?? 0).toFixed(2)}`;
+            },
+          },
+          backgroundColor: '#21262d', borderColor: '#30363d', borderWidth: 1,
+          titleColor: '#e6edf3', bodyColor: '#8b949e', footerColor: '#e6edf3',
         },
-        backgroundColor: '#21262d', borderColor: '#30363d', borderWidth: 1,
-        titleColor: '#e6edf3', bodyColor: '#8b949e',
-      }},
+      },
       scales: {
-        x: { grid: { display: false }, ticks: { color: '#7d8590', font: { size: 10 } } },
+        x: { stacked: true, grid: { display: false }, ticks: { color: '#7d8590', font: { size: 10 } } },
         y: {
-          grid: { color: '#21262d' },
+          stacked: true,
+          // Zero line drawn brighter + thicker so near-zero "scratch" bars
+          // clearly read as above or below breakeven.
+          grid: {
+            color:     c => c.tick.value === 0 ? '#8b949e' : '#21262d',
+            lineWidth: c => c.tick.value === 0 ? 2 : 1,
+          },
           ticks: { color: '#7d8590', font: { size: 10 },
                    callback: v => `$${v >= 0 ? '+' : ''}${v.toFixed(0)}` }
         }
