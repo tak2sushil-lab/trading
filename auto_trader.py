@@ -3330,6 +3330,13 @@ def _scan_catalyst_override(open_trades):
     """
     global daily_bull_count, traded_today
 
+    # Book health selector applies here too — these are LONG entries, and the
+    # Jul 17 validation blocked CATALYST_OVERRIDE trades along with the rest of
+    # the LONG book (July: 10 trades, -$15 under negative health).
+    if not book_is_on('LONG'):
+        log("📖 LONG book OFF — catalyst override entries skipped")
+        return []
+
     now = datetime.now(ET)
     # Only run in entry window and after opening range
     if not is_entry_window():
@@ -3442,12 +3449,90 @@ def _scan_catalyst_override(open_trades):
 
     return []
 
+# ─────────────────────────────────────────────────────────
+# BOOK HEALTH SELECTOR (added Jul 18 2026)
+# "Trade only the book whose own recent signals have been working."
+# Health = trailing-10-trading-day mean of favorable post-signal drift
+# (actual_day_pct - intra_chg, sign-flipped for SHORT) across ALL enriched
+# A+ scan_log candidates in that direction — entered or not, so the measure
+# is of the SIGNAL's current edge, independent of our own execution.
+# Validated Jul 17 2026 on all 259 live trades May 1–Jul 17 (no look-ahead):
+#   kept book  +$1,796 (162t, 59% WR)  vs  skipped book -$1,135 (97t, 38% WR)
+#   vs actual system +$661. Selector shut LONG book Jun 5 (June bleed),
+#   shut SHORT book Jul 6 (July churn), kept June shorts (+$134, 65% WR).
+# Robust: plateau across window 10-15d and thresholds -0.25..+0.25.
+# Cold start / missing data (<4 days or <30 rows) → book ON (default-permit).
+# ─────────────────────────────────────────────────────────
+BOOK_HEALTH_WINDOW_DAYS = 10
+BOOK_HEALTH_MIN_DAYS    = 4
+BOOK_HEALTH_MIN_ROWS    = 30
+BOOK_HEALTH_THRESHOLD   = 0.0
+_book_health_cache = {'date': None, 'LONG': None, 'SHORT': None}
+
+def compute_book_health(direction):
+    """Trailing favorable-drift of our own A+ signals for one book.
+    Returns (health_pct, n_days, n_rows); health is None on cold start."""
+    import sqlite3 as _sq
+    conn = _sq.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trades.db'))
+    try:
+        today_str = datetime.now(ET).strftime('%Y-%m-%d')
+        days = [r[0] for r in conn.execute(
+            """SELECT DISTINCT scan_date FROM scan_log
+               WHERE grade='A+' AND direction=? AND scan_date<? AND enriched=1
+                 AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
+               ORDER BY scan_date DESC LIMIT ?""",
+            (direction, today_str, BOOK_HEALTH_WINDOW_DAYS))]
+        if len(days) < BOOK_HEALTH_MIN_DAYS:
+            return None, len(days), 0
+        qmarks = ','.join('?' * len(days))
+        rows = conn.execute(
+            f"""SELECT actual_day_pct - intra_chg FROM scan_log
+                WHERE grade='A+' AND direction=? AND enriched=1
+                  AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
+                  AND scan_date IN ({qmarks})""",
+            (direction, *days)).fetchall()
+        if len(rows) < BOOK_HEALTH_MIN_ROWS:
+            return None, len(days), len(rows)
+        drifts = [r[0] for r in rows]
+        fav = [-d for d in drifts] if direction == 'SHORT' else drifts
+        return sum(fav) / len(fav), len(days), len(rows)
+    finally:
+        conn.close()
+
+def book_is_on(direction):
+    """Daily-cached ON/OFF for a book. ON when health > threshold or cold start."""
+    today_str = datetime.now(ET).strftime('%Y-%m-%d')
+    if _book_health_cache['date'] != today_str:
+        for d in ('LONG', 'SHORT'):
+            try:
+                _book_health_cache[d] = compute_book_health(d)
+            except Exception as e:
+                log(f"book_health({d}) error: {e} — defaulting ON")
+                _book_health_cache[d] = (None, 0, 0)
+        _book_health_cache['date'] = today_str
+        hl, hs = _book_health_cache['LONG'], _book_health_cache['SHORT']
+        def _fmt(h):
+            return 'ON (cold start)' if h[0] is None else \
+                   f"{'ON' if h[0] > BOOK_HEALTH_THRESHOLD else 'OFF'} (drift {h[0]:+.2f}%/signal, {h[1]}d/{h[2]} signals)"
+        log(f"📖 Book health — LONG: {_fmt(hl)} | SHORT: {_fmt(hs)}")
+        try:
+            send_telegram(f"📖 Book health today\nLONG: {_fmt(hl)}\nSHORT: {_fmt(hs)}")
+        except Exception:
+            pass
+    h = _book_health_cache[direction]
+    return h is None or h[0] is None or h[0] > BOOK_HEALTH_THRESHOLD
+
 def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     global daily_bull_count, traded_today
 
     # ── Manual longs-paused gate (PAUSE LONGS / WATCH commands) ───────────
     if _longs_paused:
         log("LONGS PAUSED (manual override) — monitoring only. Send RESUME to re-enable.")
+        return monitor_open_trades(regime, confirmed_scans)
+
+    # ── Book health selector: LONG book OFF when our own A+ signals aren't working ──
+    if not book_is_on('LONG'):
+        log("📖 LONG book OFF (trailing signal drift ≤ 0) — monitoring only")
         return monitor_open_trades(regime, confirmed_scans)
 
     # ── Daily max loss brake ───────────────────────────────────
@@ -3788,6 +3873,11 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
 # ─────────────────────────────────────────────────────────
 def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     global daily_bear_count, traded_today
+
+    # ── Book health selector: SHORT book OFF when our own A+ signals aren't working ──
+    if not book_is_on('SHORT'):
+        log("📖 SHORT book OFF (trailing signal drift ≤ 0) — monitoring only")
+        return monitor_open_trades(regime, confirmed_scans)
 
     # ── Daily max loss brake ───────────────────────────────────
     try:
