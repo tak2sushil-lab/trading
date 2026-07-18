@@ -916,12 +916,18 @@ def run_scan():
         _ovn_skip = skip
 
         if skip:
-            log(f'Overnight ambiguous (pos={ovn_pos_val:.2f}) — skip day')
-            send_telegram(f'🇬🇧 LONDON: overnight ambiguous (pos={ovn_pos_val:.2f}) — skip today')
+            # Jul 18 2026 — skip-day VETO REMOVED (constitution Art. 3: no whole-day
+            # vetoes). 1-min-granularity backtest 2025-01→2026-07 (london_v2_sim.py):
+            # trading through "ambiguous" days is worth +$1,114 over 18 months and
+            # flips 2026 from -$15 to +$963. The ambiguity signal is still logged
+            # (OVN_SKIP_INFO) for scoring; it just no longer pre-decides the day.
+            # Sunset review: Aug 17 2026 vs live london_trades outcomes.
+            log(f'Overnight ambiguous (pos={ovn_pos_val:.2f}) — NOT skipping (veto removed Jul 18), trading normally')
+            _ovn_skip = False
+            skip = False
             _price_now = float(df['close'].iloc[-1]) if not df.empty else 0.0
-            try: log_block('LONDON', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={ovn_pos_val:.3f}', _price_now, 'LONDON')
+            try: log_block('LONDON', 'MNQ', 'BOTH', 'OVN_SKIP_INFO', f'pos={ovn_pos_val:.3f}', _price_now, 'LONDON')
             except Exception: pass
-            return
 
         # Compute ATR from yesterday's bars (not today's London bars)
         yesterday = today_et - timedelta(days=1)

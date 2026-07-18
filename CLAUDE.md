@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jul 7 2026
+Last updated: Jul 17 2026
 
 ---
 
@@ -181,6 +181,326 @@ point-based). None of Jul 7's testing touched it; it would need separate validat
 
 ---
 
+## Futures NY Session — Changes Applied Jul 8 2026 (futures_trader.py)
+
+**Context:** Jul 8 was a down day (-$556 IBKR, -$264 TC) driven almost entirely by the Elephant
+module (`_scan_elephant`) buying dips into what turned into a real trend reversal (day_chg
++0.5%→-1.4% over ~2hrs). Investigated whether Elephant needs regime-awareness added.
+
+**Elephant module — investigated, NO CHANGE SHIPPED.** Tested two hypotheses against the full
+5.5yr backtest (`elephant_backtest.py`, N=20 trades total, only 4 in all of 2026): (1) invalidate
+the day's STRONG_BULL classification once day_chg turns meaningfully negative — **disproven**,
+the two most-negative historical day_chg-at-entry trades (-0.89%, -0.96%) were both winners
+(+$291, +$20), since this is a mean-reversion strategy where "looks bad at entry" is the normal
+premise, not a red flag. (2) Faster ES co-confirmation window (20min vs 60min) — also doesn't
+separate historical winners from losers cleanly. **Conclusion: N=20 (4/yr) is too small to fit a
+reliable new gate; today's 2-of-3 losers is ordinary variance for a 65% WR / avg-win-$194 /
+avg-loss-$140 strategy at this frequency.** Do not add an Elephant regime-invalidation gate
+without a much larger sample or a cleaner separating signal than the two tested here.
+
+**Graduated RVOL — SHIPPED.** Second real-world instance (after a Jul 7 near-miss) of the hard
+RVOL<0.85 cliff blocking good setups: three A+ SHORT signals (150/130/130pts) killed at
+0.73/0.68/0.72 during Jul 8's confirmed WEAK-regime downtrend, right as price kept falling.
+Backtested via `sim_replay.py --graduated-rvol --rvol-floor N` (full 2026 YTD, Jan 1–Jul 7,
+complete pipeline incl. Hero gate + 14:00 cutoff): entries with RVOL between a floor and 0.85 are
+now allowed through if the Hero score already clears that regime's GOLD threshold on its own
+(compensating quality signal), sized naturally thin by `calc_contracts_dynamic` since RVOL stays
+well under its own 2.0× scale-up tier.
+
+| Floor | Trades | WR | Total P&L | MaxDD |
+|---|---|---|---|---|
+| Baseline (hard 0.85) | 57 | 64.9% | $3,906 | -$1,699 |
+| 0.75 | 73 | 64.4% | $3,919 | -$1,970 (not worth it — no P&L gain, worse DD) |
+| **0.70 (shipped)** | 84 | 60.7% | $4,495 (+15%) | -$2,027 (+19%) |
+| 0.60 (tested, rejected) | 99 | 59.6% | $4,912 (+26%) | -$2,363 (+39% — worse risk/reward at the margin) |
+
+Shipped `RVOL_GRAD_FLOOR = 0.70` in `futures_trader.py` (both LONG and SHORT gate blocks) plus
+`hero_score.is_gold_score()` helper, mirrored in `sim_replay.py --graduated-rvol --rvol-floor`.
+Restarted `futures_personal` same day, verified clean startup + bridge connected. TC
+(`tc_trader.py`) has no Hero gate infrastructure to compensate with — not touched, not applicable.
+
+---
+
+## Futures NY Session — Jul 7 Deep Dive (Jul 8 2026 pm, log-forensics, not sim)
+
+User watched Jul 7 live (clean short 9:30-10:40 / consolidate+rally 10:40-13:55 / short 14:00-15:10
+day) and correctly pushed back that a backtest-only answer wasn't good enough — asked for the real
+gaps. Traced the actual production log line-by-line (not sim_replay) and found 3 causes:
+
+1. **"Large IB gate" delayed IBKR's first entry to 10:45am** (any day with pre-10:30 IB range
+   >200pts) — but Jul 7's whole first-hour decline had already happened by 10:20am, so IBKR
+   shorted at 29270-29279, just 60-70pts above the actual low (29210 @ 10:40), right as the move
+   was ending. TC (no such gate) shorted at 10:32-10:33 for clean +$92.5/+$85.5 wins on the same
+   thesis. **Already fixed** same evening, commit `1038c1a` (8:00pm ET, after close) — code
+   comment confirms: *"Was blocking the confirmed 09:55am SHORT entry on Jul 7 itself."*
+2. **`MAX_DAILY_TRADES` was still hardcoded at 2 for the entire live session** (the "raised to 5"
+   part of that same commit didn't land until 8pm). 17 more fully-graded A+ SHORT signals
+   (heroes=5/TRENDING) fired and got hard-BLOCKED between 11:32-11:49am alone. **Already fixed**,
+   same commit.
+3. **Hero gate cannot confirm intraday grinding trends without an ORB break — STILL OPEN.**
+   13:11-13:59pm, price ground up ~270pts (RSI 76-81, consistently 85-95pts above VWAP) — LONG
+   fired every scan, Hero-skipped every time. `H2_MTF_ALIGNED`/`H3_RSI_MOMENTUM` are computed on
+   1H-resampled bars (14-20hr lookback): at 13:11 the 1H RSI read **41.67** (bearish!) because
+   that morning's crash was still inside the same 14-period window, and the 20-period 1H MA
+   (29644.76) sat above current price (29534.5) — anchored to days-old levels. Same-session 5-min
+   RSI read 72-81 the whole time. Confirmed grade-level fix (`--rsi-trend-exempt`, waive RSI
+   penalty when vwap_reclaim+momentum confirm) has **zero effect** full 2026 YTD — Hero gate was
+   always the real wall, not grade. Built a same-day-only substitute hero
+   (`hero_score.score_h6_intraday_trend`, opt-in `H6_WEIGHT`) and grid-searched weight 1/2/3 —
+   **monotonically worse at every weight** (baseline 54t/64.8%/+$1,991 → weight=3: 67t/58.2%/
+   **-$226**, net loss). REJECTED, not shipped. Code kept as a disabled research hook
+   (`H6_WEIGHT=0` reproduces live exactly) — see [[futures_jul7_deep_dive]] memory for full trail.
+
+**Methodology lesson:** read the actual production log first for "why did we miss X" questions —
+`sim_replay.py` correctly mirrors `grade_entry()` byte-for-byte, but two of the three causes here
+were real production bugs only visible in the raw log, not in any backtest.
+
+---
+
+## Futures NY Session — PM_SHORT disabled + regime-aware exit stack (Jul 8 2026 evening)
+
+User pushed further: "not curve fitting, but the system doesn't read the chart in time" — asked
+for a full re-evaluation of the entry/exit design, not another single-gate patch. Pulled real
+trade history (60 days, `futures_trades` excl. RECONCILED) and measured actual 30-min forward
+price action after every entry — found the real story is different from "wrong direction":
+
+- **~45-58% of trades DO see a genuine ≥100pt favorable move within 30min** ("thesis right" rate)
+  — direction-calling works close to half the time. The system is not blind to real moves.
+- **But average capture was only 19-31% of the available move**, and 4-of-15 trades in one 15-day
+  sample turned a real 100+pt favorable move into a net LOSS. Not a single "Target hit" exit in 15
+  days — every exit was a stop or trailing-stop hit. Root cause: `BE_ACTIVATE_PTS` (profit-lock
+  activation) sat at the same 150pt distance as the hard stop itself, but empirical real moves
+  cluster at 75-160pts — under that bar most of the time, so genuine moves round-tripped back to
+  the full original stop with zero profit protection ever engaging.
+- **PM_SHORT: 0-for-7 lifetime, -$1,544, DISABLED.** All 4 independent episodes (Jun 16/17, Jul
+  1/7) show the identical mechanical failure — it shorts right at/near the exhaustion LOW of a
+  decline (a stop-hunt through the pre-market low), not a genuine breakdown continuation. Same
+  phenomenon Elephant already trades correctly in the opposite direction. `sig['pm_bear']` hard-
+  coded to `False` in `get_signals()` — near-zero cost, no evidence it ever worked.
+- **PM_LONG: kept, not disabled.** Its entire -$130 lifetime deficit is ONE bad day (Jun 12,
+  -$588); excluding it, PM_LONG is +$475/10 trades. Different problem than PM_SHORT — genuinely
+  works most of the time, needs a guard against the "buy the top" failure mode it showed once, not
+  a shutdown.
+- **Exit stack: user explicitly rejected a static-number fix ("smarter, day-aware, not threshold-
+  specific")** — reused the SAME IB-range day classification already computed for Hero-gate
+  weighting (`detect_regime`, CHOPPY/QUIET/TRENDING, sticky at 10:30 IB formation) rather than
+  inventing a new real-time chop detector (those were tried and rejected on the entry side, see
+  [[futures_exit_stack_jul7]]). **SHIPPED** `EXIT_PARAMS_BY_REGIME` in `futures_trader.py` —
+  CHOPPY/QUIET lock in fast+tight (BE at 90pts, tightens to a 35pt trail), TRENDING gets real room
+  (BE at 110pts, trail stays 110-180pts even at its tightest) so a genuine trend doesn't get
+  choked early. `BASE_STOP_PTS` widened 150→200 to support this (decouples "how wide is the hard
+  stop" from "when does profit-lock engage" — they don't need to be the same number).
+
+Full 2026 YTD backtest (re-run fresh at ship time, since `market_data.db` drifted mid-session from
+the nightly collector — see note below): baseline (flat 150/150) N=57 WR=64.9% $+3,906 MaxDD=
+-$1,699 → regime-aware N=57 WR=68.4% **$+4,824 (+23.5%)** MaxDD=**-$1,460 (14% better)**. Beats
+baseline on every metric.
+
+**Known limitation, not yet fixed:** TRENDING's low lock-fraction (0.20, tuned for genuinely huge
+moves) under-protects a *modestly*-trending day that gets misclassified as TRENDING purely because
+its first-hour IB range crossed 200pts without a real sustained trend (e.g. Jun 18 2026 — a slow
++0.34% grind). A v4 attempt raising the fraction to 0.40 fixed that case but cost more on
+genuinely-huge trends elsewhere (worse in aggregate, $2,583 vs v3's $3,095) — IB range alone can't
+cleanly separate "real trend" from "wide whipsaw," the same fundamental problem already flagged
+for entry-side chop detection. A real fix needs a smoothly graduated lock-fraction (scales
+continuously with how far peak actually got), not a flat per-regime number — parked for a future
+session, not solved today.
+
+**Also tested and rejected:** pulling the IB-ready entry window earlier (9:55 instead of 10:30,
+hypothesis: catch more of the morning move) — full 2026 YTD, adds 26 more trades but total $ stays
+flat (actually slightly down) because most of the added trades are PM_SHORT (the just-disabled
+setup) and other lower-quality signals that a more-mature 10:30 IB window naturally filters out.
+10:10 (a "middle" compromise) was worse still — there's a genuine bad-timing zone around
+10:00-10:15, not just "later is always better."
+
+**Data-integrity note (recurring):** `market_data.db` bar data visibly shifted mid-session more
+than once (baseline backtest numbers moved between otherwise-identical re-runs), consistent with
+the nightly collector actively refreshing recent days' bars while this session was running past
+market close. Always re-verify the *relative* comparison (A vs B, same run) rather than trusting
+an absolute number from earlier in a long session — this doesn't invalidate any conclusion here
+since every comparison in this section was re-run fresh immediately before the ship decision.
+
+Full diagnostic trail (60-day capture-efficiency analysis, PM_SHORT/PM_LONG episode-by-episode
+price charts, the full v3/v4 exit-stack grid search, entry-window test) in
+[[futures_jul8_gap_hunt]] memory.
+
+---
+
+## Futures — London skip-day bug found + fixed (not shipped) + confirmed cold streak (Jul 8-9 2026)
+
+User read an actual live chart (not a backtest) and spotted a missed 4:15am London short (MNQ
+29409→28982, 427pts on 24,146 volume vs ~5-9K typical). Traced to a real architectural bug:
+`compute_overnight_bias_london()` (both `london_trader.py` and `london_sim.py`) looks only at
+7pm-prev-day→3am-today, and if the 3am read is "ambiguous" (pos 0.20-0.40), sets `skip_day=True`
+— **vetoing the ENTIRE 3am-9am session** with no way to reconsider once trading is underway. Jul 8:
+pos=0.21, day skipped, missed the move 15 minutes later.
+
+**Fix built** (`london_sim.py: _scan_skip_override`) — ports the equity side's already-validated
+"dynamic catalyst upgrade" pattern (auto_trader.py `_scan_and_enter`): watch a skip-day for a
+self-referential volume spike (2.5x preceding-hour average) + large directional move (150pts/4
+bars), take one trade if found. Found and fixed a real bug during testing (baseline lookback
+needed bars only from `entry_bars`, which start at 4am — couldn't evaluate until 5am, missing the
+4:15am window it was built for; fixed by extending into the 3-4am IB-formation bars).
+
+**Backtest, full 1.5yr history**: N=14 override trades ever, WR=21.4%, net +$172 — thin, unproven,
+worse MaxDD ($321→$422). **Not shipped**, `SKIP_OVERRIDE_ENABLED=False` by default.
+**Backtest, last 10 trading days**: baseline -$13 (WR 16.7%) → with override +$490 (WR 21.4%) —
+helps a lot recently, but almost entirely from the one Jul 8 catch; don't over-read N=1.
+
+**Separately confirmed**: champion London strategy's recent 16.7% 10-day WR is a genuine anomaly —
+only 6/238 rolling 10-day windows in 1.5yr history were ever this bad (bottom 3rd percentile).
+Ruled out thin IB ranges (actually wider than average, 79th percentile) and dirty IBs (doesn't
+explain most losses). Real pattern: near-instant fakeout stop-outs (-$0.24, -$0.74 repeatedly) —
+false breakouts, not failed real moves. Signal A has no volume or retest confirmation at all.
+**Two untested candidate fixes for next session**: (1) require above-average volume on the
+breakout bar (mirrors NY's RVOL, not yet applied to London), (2) require 2 consecutive closes
+past the IB level before entering ("acceptance," not just a touch). Neither built yet — start
+here. Full trail: [[futures_london_skip_day_and_cold_streak]] memory.
+
+---
+
+## Jul 17 2026 — Full 10-day postmortem (all 3 systems) + RVOL partial-bar bug fix
+
+10-day scoreboard (Jul 2–17): Equity **-$300** (46t, 28% WR — May was +$1,670/57%). NY futures
+IBKR **+$305** but only 10 trades with 5 zero-trade days (June was -$775). TC **-$594**. London
+live **-$395 since Jun 17** (29 of 30 exits = 'stop', mostly ±$0.24 BE scratches).
+
+**FIXED same day (clear-bug rule): `calc_session_rvol` partial-bar bug** in `futures_trader.py`.
+Live `get_bars()` includes the currently-forming 5-min bar, so entry-gate RVOL saw-toothed
+0.05→0.9 within every bar (visible in each regime_detail log line) — the 0.85 gate was calibrated
+on completed bars (sim_replay/decoder), so the effective live gate was ~2× stricter than anything
+ever backtested, and the Jul 8 graduated floor (0.70) changed almost nothing live. Now scores the
+last *completed* bar only. Service restarted + verified 22:50 ET Jul 17.
+
+**Gate-audit verdicts (gate_blocks, scored vs actual 30m/60m forward moves — decisions pending
+user approval, do NOT ship without it):**
+- **A_EXT: harmful.** 245 scored blocks, 30% correct, blocked signals averaged **+57pts favorable
+  at 60m** (LONG +49, SHORT +65). Recommend disabling.
+- **GRADE (A+-only for LONG): too strict.** Blocked LONGs averaged +27pts at 60m (38% correct).
+  Blocked SHORTs averaged -66pts (correct to block). Recommend re-allowing A-grade LONGs only.
+- REGIME (59% correct, blocked avg -18pts) and HERO (59%, +0.2pts) are earning their keep on
+  average. RVOL_ENTRY scored 48% = noise, but all its data is from the partial-bar era — re-score
+  after the fix beds in before judging.
+- **Zero-trade days explained:** Jul 13/16 = OVN_SKIP vetoed the entire NY session (120+ blocks
+  each day — same whole-day-veto architecture flaw as London's skip-day). Jul 9/10 = REGIME +
+  RVOL_ENTRY walls. Jul 17 = HERO wall (90+ consecutive A+ LONG signals skipped via the known
+  1H-lag issue; note Jul 17 was a V-chop, skip roughly broke even — verified against bars).
+
+**Equity diagnosis:** L3 T+5 gate is NOT the villain — counterfactual vs bars_5m shows only 4 of
+29 L3-scratched trades since Jun 22 would have reached +2.5%; most went further adverse. The real
+disease: **the right tail is amputated** — since Jun 1 only TWO winners ≥$50 vs FOURTEEN losers
+≤-$50 (May: CATALYST LONG +$1,319 at 60% WR). L2 HALF-sizing + PCT trail (1.5%) + 5m trail cap
+winners at ~+$25-40 while 5% stops on thin catalysts still lose $50-300. Plus July churn:
+BEAR_MOMENTUM fired 28 of 46 trades (25% WR, -$205), batch-shorting 3-5 correlated names within
+seconds at ~10:03am, majority down at T+5 → L3-ejected.
+
+**London go-live (was scheduled Jul 17): NOT recommended — paper validation failed.** Live -$395
+vs sim +$148 on the identical window (sim itself shows the champion in a genuine cold streak:
+22% WR). Live-specific gap: BE=0.10×ATR (~+5pts) triggers within ~1 min on the 15-second monitor
+then noise stops out at entry — the 5-min-bar sim never modeled this churn; the champion's BE
+tuning is granularity-dependent. Before any go-live: build the two parked entry-confirmation
+fixes (breakout-bar volume, 2-bar acceptance), re-tune BE on a tick/1-min-granularity sim, and
+demand a positive paper month.
+
+---
+
+## Jul 18 2026 — Equity BOOK HEALTH SELECTOR shipped + futures redesign step 1
+
+**The redesign direction (user-approved Jul 17): trade only what is currently working, stand
+down when nothing is.** Executed equity-first, then futures IBKR.
+
+**Equity — BOOK HEALTH SELECTOR (SHIPPED, live):** `book_is_on()` / `compute_book_health()` in
+`auto_trader.py`, gating `_scan_and_enter` (LONG), `_scan_and_enter_bear` (SHORT), and
+`_scan_catalyst_override` (LONG). Health = trailing-10-trading-day mean favorable post-signal
+drift (`actual_day_pct - intra_chg`, sign-flipped for SHORT) of ALL enriched A+ scan_log
+candidates in that direction — entered or not, so it measures the SIGNAL's current edge, not our
+execution. Book trades only when health > 0; cold start (<4 days / <30 rows) defaults ON.
+- **Validated on all 259 live trades May 1–Jul 17, no look-ahead:** kept book +$1,796 (162t,
+  59% WR) vs skipped -$1,135 (97t, 38% WR) vs actual system +$661. Selector shut the LONG book
+  Jun 5 (right at June bleed onset), shut SHORT Jul 6 (July churn), kept June shorts (+$134,
+  65% WR). Robust across window 10–15d and thresholds −0.25…+0.25 (plateau); 5d window is
+  much worse — do not shorten it.
+- Values at ship time: LONG −0.51 → OFF, SHORT −0.60 → OFF (system correctly flat until tape
+  turns). Telegram posts book status daily at first scan.
+- **Why the edge died in June (postmortem for context):** signal-level fwd60 of A+ LONG
+  candidates flipped from +0.40%/64% pos (May) to −0.24…−0.28% (Jun/Jul). Headroom-to-day-high
+  after signal is stable (~+2%) in ALL months, but since June price fades below signal by the
+  close (drift −0.6…−0.7%, worse the more extended the stock). Tested and REJECTED as fixes:
+  SPY-VWAP tape filter (SPY bars end Jun 1; May-only), universe breadth filter (no separation),
+  3-day signal-health (inverts, no persistence), 5-day continuation-rate weather gauge (corr≈0),
+  earlier-entry / HOD-distance / time-of-day pockets (none positive since June), fixed
+  target/stop harvest exits on live entries (negative in Jun/Jul under EVERY combo — the June+
+  entries lose under any exit scheme; exits were never the problem, May's live exits BEAT all
+  simple exit sims by riding runners).
+
+**Futures IBKR — step 1 (same session):**
+- RVOL partial-bar bug fix already live (see Jul 17 section) — sim always used completed bars,
+  so this closes the main live/sim divergence going forward.
+- **A-grade-LONG relaxation: RE-TESTED post-RVOL-fix and REJECTED** (sim_replay full pipeline,
+  Jan 1–Jul 17: baseline 92t/65.2%/$+5,198 vs variant 93t/65.6%/$+5,145 — one extra trade, no
+  gain). Third confirmation that gate-audit per-gate drift scores (+27pts on blocked LONGs) do
+  NOT survive the full pipeline. Do not re-attempt without a new mechanism.
+- **⚠️ sim_replay.py `--end` defaults to 2026-06-16 (hardcoded)** — any "full YTD" run without
+  an explicit `--end` silently excludes everything after Jun 16. Always pass `--end`.
+- Equity-style book-health selector for MNQ: **deferred, not validatable yet** — per-side
+  pts_60m health ≈ recent market direction at MNQ (near-mirror LONG/SHORT, flips daily) and only
+  18 days of scored gate_blocks data exist. Revisit at ~60 days of post-fix audit data.
+- OVN_SKIP whole-day veto (4 full days vetoed since Jun 26): same architecture flaw as London
+  skip-day, but modeled identically in sim (not a divergence source) — left alone, needs its own
+  validated override design later.
+
+---
+
+## Jul 18 2026 — Redesign build session (decoder harness, London rebuild, parity, ledger)
+
+User authorized finishing the redesign ("overhaul this entire system"). All shipped same night:
+
+**① Parity harness — `parity_check.py` (launchd `com.sushil.trading.parity_check`, 22:45 ET
+nightly):** replays today via sim_replay with production flags, diffs trades vs live
+futures_trades (IBKR). First run immediately caught a real divergence: Jul 15 live took TWO
+ORB_SHORT entries 1 min apart, sim takes one. `SIM_FLAGS` constant inside must be updated
+whenever live futures config changes. Logs → `logs/parity.log`, exit 1 on divergence.
+
+**② Expectancy ledger — `futures/expectancy_ledger.py` (launchd
+`com.sushil.trading.expectancy_ledger`, 22:35 ET nightly):** (a) evaluates the SHADOW fish-net
+(below) into `shadow_fishnet` table, (b) joins nearest decoder snapshot onto every gate_blocks
+row → `gate_blocks_ctx` (feature store for the future scored entry model — 7,579 rows
+backfilled; train only at ~60 days), (c) prints trailing-14d expectancy per book to
+`logs/expectancy_ledger.log`.
+
+**③ Decoder fish-net (SHADOW ONLY — places no orders):** mined all 22,973 decoder snapshots
+(Jun 18–Jul 17) against 1-min bars, IS/OOS split at Jul 6. Decoder's raw signals are
+ANTI-predictive at 60m in both halves (LONG −20/−13pts, SHORT −9/−11 favorable) — that's why
+its internal sim loses; no conditioning (flow/ADX/phase/vol/session) rescues them. But FADING
+them survives everywhere: +16.3 IS / +10.0 OOS pts per episode (547 episodes, deduped), and the
+edge is entirely in fading LONG signals (+34/+15; fading SHORTs ≈ 0). Shadow book = fade
+decoder LONG-signal episodes, one position, 60-min time exit, 60pt stop. **This is a
+mean-revert-regime edge measured in ONE month of mean-revert tape — constitution Arts. 1/7:
+30+ days green shadow + health gate before promotion is even discussed.**
+
+**④ London rebuilt — verdict from `futures/london_v2_sim.py` (new, 1-MIN granularity,
+2025-01→2026-07, 535K bars):**
+- **v1's $10,608 champion was a 5-min-bar granularity artifact.** At 1-min truth the same
+  mechanics make $3–4/trade (~$2K/18mo, 90% WR of tiny BE scratches).
+- **BE=0.10 is load-bearing armor, NOT the bug** (reversing the Jul 17 hypothesis): without it
+  the raw IB-breakout LOSES −$1,647/18mo. The IB break has no follow-through edge; early BE is
+  what keeps it alive.
+- **Parked "fixes" both REJECTED:** volume confirmation and 2-bar acceptance make it WORSE
+  (+$3,067 → +$86) — they delay entry past the only good part of the move.
+- **Fading London breakouts REJECTED:** loses both years at every BE setting (NY fish-net does
+  not generalize to London hours).
+- **Skip-day veto removal VALIDATED and SHIPPED:** +$1,114/18mo, flips 2026 from −$15 to +$963,
+  MaxDD improves to −$834. `london_trader.py` now trades through "ambiguous" overnights;
+  ambiguity still logged as `OVN_SKIP_INFO` for scoring. Sunset review Aug 17 2026.
+  Survives 1.0pt round-trip slippage (+$1,581 net). Expectation is MODEST (~$130/mo/contract) —
+  London stays paper; no go-live conversation before a positive shadow/paper month.
+
+**⑤ Equity book-health selector** — see Jul 18 section above (shipped previous night).
+
+Restarts done: futures_personal (London change), autotrader (book health). Both verified.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |
@@ -294,6 +614,11 @@ pvh ≤ -10% gate: PENDING (not yet built). Backtest N=3, all losers, zero FP. O
 ---
 
 ## Standing Rules
+
+0. **CONSTITUTION.md governs all changes** (adopted Jul 18 2026) — hypothesis + auto-scoring +
+   sunset date for every new rule; max 3 boolean entry gates per system; sim must match live
+   code path/granularity; instrument-first-gate-later for new context sources; right-tail
+   counterfactual required for exit changes. Read it before proposing any change.
 
 1. **No tinkering mid-run.** May 1 2026 = Day 1. Parameter changes require data + explicit approval.
 2. **Validate before build.** Always backtest first. Never suggest building without data.
