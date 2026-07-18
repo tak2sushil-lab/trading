@@ -27,7 +27,8 @@ LOG = os.path.join(ROOT, 'logs', 'parity.log')
 
 # Production-matching sim flags — UPDATE when live config changes (and only then)
 SIM_FLAGS = ['--graduated-rvol', '--rvol-floor', '0.70',
-             '--regime-aware-exits', '--stop-pts', '200']
+             '--regime-aware-exits', '--stop-pts', '200',
+             '--no-ovn-skip']   # OVN whole-day veto removed live Jul 18 2026
 
 TRADE_RE = re.compile(
     r'^\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(LONG|SHORT)\s+(\S+)\s+\S+\s+([\d.]+)')
@@ -81,16 +82,56 @@ def diff(sim, live):
     return matched, sim_only, unmatched_live
 
 
-def equity_context():
+def equity_context(day=None):
     try:
         con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
-        day = datetime.now(ET).strftime('%Y-%m-%d')
+        day = day or datetime.now(ET).strftime('%Y-%m-%d')
         n = con.execute("select count(*) from trades where entry_date=? and setup_type!='RECONCILED'",
                         (day,)).fetchone()[0]
         con.close()
         return f"equity live trades today: {n}"
     except Exception as e:
         return f"equity context error: {e}"
+
+
+def equity_invariants(day):
+    """Decision-level equity cop (Jul 18 2026). Full bar-level equity replay is a
+    separate build; until then, verify the invariants live decisions must satisfy:
+      1. every live trade traces to a scan_log row (same symbol+day) that was
+         graded A+/A — no trade without a graded signal behind it
+      2. entry times inside the legal window (10:00-15:00 ET; pre-market module
+         entries 9:20-9:29 exempt)
+      3. daily per-direction caps respected
+    Returns list of violation strings (empty = clean)."""
+    v = []
+    try:
+        con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
+        trades = con.execute(
+            """select symbol, entry_time, side, setup_type from trades
+               where entry_date=? and setup_type!='RECONCILED'""", (day,)).fetchall()
+        for sym, etime, side, setup in trades:
+            t = (etime or '')[:5]
+            if t and not ('10:00' <= t <= '15:00') and not ('09:20' <= t <= '09:29') \
+                    and 'PREMARKET' not in (setup or ''):
+                v.append(f"entry-window violation: {sym} {side} at {etime} ({setup})")
+            direction = 'SHORT' if (side or '').upper() == 'SHORT' else 'LONG'
+            row = con.execute(
+                """select count(*) from scan_log where scan_date=? and symbol=?
+                   and direction=? and grade in ('A+','A')""",
+                (day, sym, direction)).fetchone()[0]
+            if row == 0:
+                v.append(f"no graded scan_log signal behind trade: {sym} {direction} ({setup})")
+        for d, cap in (('LONG', 20), ('SHORT', 20)):
+            n = con.execute(
+                """select count(*) from trades where entry_date=? and setup_type!='RECONCILED'
+                   and (case when upper(side)='SHORT' then 'SHORT' else 'LONG' end)=?""",
+                (day, d)).fetchone()[0]
+            if n > cap:
+                v.append(f"daily {d} cap exceeded: {n} > {cap}")
+        con.close()
+    except Exception as e:
+        v.append(f"equity invariant check error: {e}")
+    return v
 
 
 def main():
@@ -112,7 +153,14 @@ def main():
             log(f"  sim trade: {s}")
     for l in live_only:
         log(f"  live-only trade (sim never took it): {l}")
-    log(equity_context())
+    log(equity_context(day))
+    eq_v = equity_invariants(day)
+    if eq_v:
+        status = 'DIVERGENCE'
+        for line in eq_v:
+            log(f"  equity invariant: {line}")
+    else:
+        log("equity invariants: clean")
     return 0 if status == 'OK' else 1
 
 

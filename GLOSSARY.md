@@ -30,7 +30,7 @@ for all six types interchangeably. When speaking, pick the type word above.
 | **Volume Pulse gate** | RVOL gate, `calc_session_rvol()`, `RVOL_GRAD_FLOOR=0.70`, `RVOL_ENTRY` in gate_blocks | Gate | Blocks entries when relative volume is dead. Graduated: 0.70–0.85 allowed if Trend Jury score is GOLD. Fixed Jul 17 to use completed bars only. |
 | **Setup Grade** | `grade_entry()` A+/A, `GRADE` in gate_blocks | Score + Gate | Points-based entry quality; currently A+-only passes. |
 | **Higher-Timeframe Agreement gate** | HTF trend gate, `HTF` in gate_blocks | Gate | 30-min trend must agree with trade direction. |
-| **Overnight Veto** | `OVN_SKIP` | Gate | Overnight bias can veto the whole NY day. Known architecture flaw (whole-day veto, no reconsideration) — same disease London's skip-day had. |
+| **Overnight Veto (REMOVED Jul 18 2026)** | `OVN_SKIP` (still logged under this name for scoring) | Gate (retired → log-only) | Used to veto the whole NY day on ambiguous overnight (pos 0.20-0.40). Removal validated: YTD +29.5%, last-30d +21%, same-or-better WR. Sunset review Aug 17 2026. |
 | **Elephant (dip-buyer)** | `_scan_elephant()` | Entry module | Mean-reversion: buys sharp dips on STRONG_BULL days. "Looks bad at entry" is its normal premise. N≈4/yr — do not fit new gates to it. |
 | **Morning Breakout entries** | ORB_LONG / ORB_SHORT, PM_LONG (PM_SHORT is DISABLED, 0-for-7) | Entry module | Pre-market-level and opening-range breakout entries. |
 | **Weather-Aware Profit Locks** | `EXIT_PARAMS_BY_REGIME`, BE/trail tiers | Exit rule | BE + trail distances chosen per Weather Report (CHOPPY/QUIET lock fast+tight; TRENDING gets room). |

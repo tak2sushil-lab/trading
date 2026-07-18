@@ -2,6 +2,18 @@
 futures_trader.py — MNQ Futures Trading System (IBKR Personal Account)
 Third vertical: equity → options → futures
 
+CANONICAL NAMES (GLOSSARY.md is the authority — identifiers below are never renamed):
+  detect_regime / _day_regime      = Weather Report (CHOPPY/QUIET/TRENDING)
+  hero_score / HERO gate           = Trend Jury (H1-H6 jurors vote)
+  calc_session_rvol / RVOL_ENTRY   = Volume Pulse gate (graduated floor 0.70 + Gold Standard)
+  calc_htf_trend / HTF gate        = Higher-Timeframe Agreement gate (30-min)
+  _ib_kind                         = Day Shape (BULL/BEAR_DIRECTIONAL, ROTATIONAL)
+  _overnight_skip_day / OVN_SKIP   = Overnight Veto (log-only since Jul 18 2026)
+  _scan_elephant                   = Elephant dip-buyer
+  EXIT_PARAMS_BY_REGIME            = Weather-Aware Profit Locks
+  BASE_STOP_PTS                    = Catastrophic Backstop
+  grade_entry A+/A                 = Setup Grade
+
 Architecture:
   bridge.py           (port 8000)  ←→  IBKR TWS / DU9952463 paper
   prop_rules.py                    ←   IBKR mode safety layer ($2K floor, $150 DLL soft)
@@ -252,6 +264,8 @@ _active_contract_month = ''   # resolved on first live-price fetch; keeps get_ba
 _last_regime          = 'NORMAL'
 _confirmed_scans      = 0
 _regime_scan_counts   = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
+_streak_regime        = None   # F1: regime of the current consecutive-bar streak
+_streak_bar_ts        = None   # F1: last completed 5-min bar that advanced the streak
 _session_high         = {}   # trade_id → session high
 _session_low          = {}   # trade_id → session low
 _price_history        = {}   # trade_id → [prices]
@@ -1058,7 +1072,16 @@ def calc_htf_trend(df5: pd.DataFrame) -> int:
     """
     if df5.empty:
         return 0
-    htf = df5['close'].resample(f'{HTF_BARS_MIN}min').last().dropna()
+    # F2 fix (Jul 18 2026): drop the currently-forming 5-min bar before resampling —
+    # sim_replay (the calibration reference) only ever sees completed bars, and the
+    # forming bar made the verdict flip intra-bar live (same bug class as the
+    # calc_session_rvol partial-bar fix, Jul 17).
+    bars = df5
+    if len(bars) and (datetime.now(ET) - bars.index[-1]).total_seconds() < 300:
+        bars = bars.iloc[:-1]
+    if bars.empty:
+        return 0
+    htf = bars['close'].resample(f'{HTF_BARS_MIN}min').last().dropna()
     if len(htf) < HTF_TREND_BARS:
         return 0
     last_n = htf.iloc[-HTF_TREND_BARS:]
@@ -2122,9 +2145,28 @@ def run_scan():
 
     # Regime — pass pre-fetched bars to avoid a second bridge call
     regime = get_regime(df5)
-    _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1
-    _confirmed_scans = _regime_scan_counts.get(regime, 0)
-    log(f"Regime: {regime} (×{_confirmed_scans}) | Daily P&L: ${get_futures_daily_pnl():+.0f}")
+    _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1   # daily tally (logging only)
+    # F1 fix (Jul 18 2026): _confirmed_scans must be CONSECUTIVE same-regime reads,
+    # advanced at most once per completed 5-min bar — previously it was a cumulative
+    # per-day tally at 60s scan cadence, so scattered WEAK reads across a choppy
+    # morning could unlock SHORT in 3 non-consecutive minutes while sim_replay
+    # (the validated reference) requires 3 sustained 5-min bars (15 min).
+    global _streak_regime, _streak_bar_ts
+    _streak_bar = None
+    if not df5.empty:
+        _bar_age = (datetime.now(ET) - df5.index[-1]).total_seconds()
+        if _bar_age >= 300:
+            _streak_bar = df5.index[-1]
+        elif len(df5) >= 2:
+            _streak_bar = df5.index[-2]
+    if regime != _streak_regime:
+        _streak_regime  = regime
+        _streak_bar_ts  = _streak_bar
+        _confirmed_scans = 1
+    elif _streak_bar is not None and _streak_bar != _streak_bar_ts:
+        _streak_bar_ts   = _streak_bar
+        _confirmed_scans += 1
+    log(f"Regime: {regime} (×{_confirmed_scans} consec bars) | Daily P&L: ${get_futures_daily_pnl():+.0f}")
 
     if not is_entry_allowed():
         log(f"Session {session} — no new entries")
@@ -2262,11 +2304,18 @@ def run_scan():
     # have 18–36% WR in this zone (backtest data, tc_champion v3.2).
     # User can override by sending FUT BIAS LONG/SHORT via Telegram.
     if _overnight_skip_day and _daily_macro_bias == 'BOTH':
-        log(f"Overnight skip zone (pos={_overnight_position}) — no entries today. "
-            f"Override: FUT BIAS LONG or FUT BIAS SHORT")
+        # Whole-day veto REMOVED Jul 18 2026 (sunset review Aug 17 2026) — now log-only.
+        # Hypothesis: ambiguous overnight (pos 0.20-0.40) does not predict a bad RTH day
+        # once the full 2026 gate stack exists; the veto was costing whole sessions
+        # (Jul 13 + Jul 16 vetoed entirely; 544 blocks in 10 days). Validated via
+        # sim_replay --no-ovn-skip: YTD $5,198/92t -> $6,732/113t (+29.5%, WR 65.2->67.3%),
+        # last 30d $3,299/20t -> $3,977/25t (+21%, same MaxDD). Mirrors the London
+        # skip-day removal (+$1,114/18mo, Jul 18). Still logged under the same
+        # 'OVN_SKIP' gate name so the Bouncer Report Card keeps scoring it on
+        # identical footing pre/post removal.
+        log(f"Overnight skip zone (pos={_overnight_position}) — INFO ONLY (veto removed Jul 18), trading continues")
         try: log_block('IBKR', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={_overnight_position:.3f}', price, session)
         except Exception: pass
-        return
 
     # ── Hero gate (Phase 5 regime-aware scoring) ─────────────────────────────
     # Heroes vote on entry quality using regime-weighted scoring.
@@ -2432,6 +2481,9 @@ def reset_daily_state():
     _day_regime       = None
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
+    global _streak_regime, _streak_bar_ts
+    _streak_regime = None
+    _streak_bar_ts = None
     _session_high = {}
     _session_low  = {}
     _price_history = {}

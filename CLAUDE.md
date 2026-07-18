@@ -502,6 +502,55 @@ Restarts done: futures_personal (London change), autotrader (book health). Both 
 
 ---
 
+## Jul 18 2026 (evening) — Approved redesign wave 1 SHIPPED (audit: docs/AUDIT_2026-07-18_weekend_redesign.md)
+
+User approved all audit decisions except MES addition (staying MNQ-only; expansion happens on
+the equity side). Shipped, each with hypothesis + auto-scoring + sunset per CONSTITUTION.md:
+
+1. **F1 fix (futures):** `_confirmed_scans` now counts CONSECUTIVE same-regime reads advanced
+   once per completed 5-min bar (was: cumulative per-day tally at 60s cadence — SHORT could
+   unlock from 3 scattered WEAK minutes). Live now matches sim_replay, which was always the
+   validated reference. Scored by: parity harness nightly.
+2. **F2 fix (futures):** `calc_htf_trend` drops the forming 5-min bar before resampling
+   (same class as the Jul 17 RVOL partial-bar fix). Live now matches sim.
+3. **NY Overnight Veto REMOVED (log-only)** — same architecture fix as London Jul 18.
+   Hypothesis: ambiguous overnight (pos 0.20-0.40) doesn't predict a bad RTH day under the
+   2026 gate stack. Validated fresh: sim_replay --no-ovn-skip YTD $5,198/92t → **$6,732/113t
+   (+29.5%, WR 65.2→67.3%)**; last 30d $3,299/20t → **$3,977/25t (+21%, same MaxDD)**.
+   Still logged as OVN_SKIP (same name) so gate_audit keeps scoring it. **Sunset review Aug 17.**
+   parity_check SIM_FLAGS updated with --no-ovn-skip.
+4. **Equity right-tail experiment:** RSI 70-80 LONG hard skip → **-15 penalty when
+   vol_ratio ≥ 2.5×** (low-vol stays hard skip). Hypothesis from scan_log: blocked 70-80
+   candidates with vol≥2.5 ran +0.06% drift / +0.39% fwd60 (N=118) — better than the accepted
+   A+ book in every month; vol<2.5 ran -0.66% (stays blocked). Book Health still gates the
+   whole book. Scored by: scan_log enrichment (these signals now graded, not skipped).
+   **Sunset review Aug 18.**
+5. **Equity decision-parity cop** added to parity_check.py: every live trade must trace to a
+   graded A+/A scan_log row, entry-window and daily-cap invariants checked nightly. Full
+   bar-level equity replay remains a separate build (sim_today.py is STALE — no L2/L3/book
+   health; do NOT treat it as validation until rebuilt).
+6. **sim_replay new flags:** --no-ovn-skip, --entry-start HH:MM.
+7. **Canonical-name headers** added to both trader files (identifiers/DB values/launchd names
+   are never renamed — GLOSSARY.md governs; the headers teach the mapping in-code).
+8. **Risk-model doc drift flagged:** code runs $15K basis / $3,750 soft DLL (prop_rules.py,
+   grid-searched Jul 6) — older notes saying "IBKR $5K/$1,250" are STALE. User to confirm
+   which model is intended; until then code is authoritative.
+9. **9:30 entry-window retest: REJECTED (third and final time).** With the full modern stack
+   (Trend Jury + Volume Pulse + HTF + graduated floor + no-veto), YTD 9:30-start = 142t/$6,903/
+   64.1% WR vs 10:30-start 113t/$6,732/67.3% — +29 trades buys +$171 and -3pp WR. The 10:30 IB
+   wait is now VALIDATED under current gates, not folklore. Do not re-test without a new mechanism.
+
+**Universe expansion (equity, user-directed "pro-grade universe"):** live evidence — when the
+edge is ON (May), the $5-20 band was the TOP earner (+$1,023/38t/58% WR vs $100+ +$110/53t);
+since June the cheap band fades hardest (drift -2.12%) — small caps are the highest-beta
+expression of the edge, now guarded by the Book Health Selector. Direction approved: expand
+via find_candidates.py DNA screen toward ~300 names. Criteria (pro-grade): price ≥ $5,
+market cap ≥ $300M, ≥1M shares/day AND ≥$10M dollar volume, ATR% ≥ 3%, shortable, sector caps.
+Current screener already enforces ≥$5. Run scheduled as next session's job (needs market-hours
+data quality checks). NOT yet executed.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

@@ -1,6 +1,14 @@
 # auto_trader.py v2 — Consolidated single-process auto trader
 # Absorbs: trader.py (monitoring, WhatsApp commands, evening summary)
 #          scheduler.py (catalyst scan, voice summary, nightly learning)
+#
+# CANONICAL NAMES (GLOSSARY.md is the authority — identifiers are never renamed):
+#   grade_setup L1                = Entry Score        | _check_layer2_fitness L2 = Fitness Gate
+#   L3 / T+5 confirmation         = Probation Exit     | book_is_on               = Book Health Selector
+#   get_dna_cluster / DNA         = Stock Personality  | get_regime               = Weather Report (equity)
+#   _scan_catalyst_override       = Catalyst Wildcard  | detect_sympathy_triggers = Sympathy Play
+#   power-play slot ranking       = Batting Order      | FVG vol tier             = Gap Zone vol tier
+#   learner.py (11pm)             = Equity Night School
 # Depends on: bridge.py (IBKR gateway), tunnel.py (WhatsApp webhook)
 # Command: python auto_trader.py
 
@@ -1439,7 +1447,15 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
     # RSI 70-80 = sellers still testing, stock at resistance without breakaway momentum ✗
     # Catalyst exemption removed Jun 22: catalyst 70-75 = -$17 avg, 75-80 = -$37 avg (worse than non-cat)
     if 70 <= sig['rsi'] < 80:
-        return 'SKIP', [f'RSI {sig["rsi"]} danger zone (70-80) — skip catalyst and non-catalyst alike'], 0
+        # Right-tail experiment (Jul 18 2026, sunset Aug 18): scan_log shows blocked
+        # RSI-70-80 LONGs WITH vol>=2.5x ran +0.06% drift / +0.39% fwd60 (N=118) —
+        # better than the accepted A+ book in every month — while vol<2.5x ran -0.66%.
+        # So: high-volume conviction converts the danger zone to a -15 penalty;
+        # low-volume stays a hard skip. Book Health still gates the whole LONG book.
+        if sig['vol_ratio'] >= 2.5:
+            score -= 15; reasons.append(f'RSI {sig["rsi"]} danger zone but {sig["vol_ratio"]:.1f}x vol (-15, right-tail exp)')
+        else:
+            return 'SKIP', [f'RSI {sig["rsi"]} danger zone (70-80) + vol<2.5x — skip'], 0
     if 45 <= sig['rsi'] <= 65:
         score += round(20 * w['rsi']); reasons.append(f'RSI {sig["rsi"]} ideal')
     elif 65 < sig['rsi'] < 70:

@@ -248,6 +248,7 @@ IB_READY_TIME = _dt.time(10, 30)
 # category of question as the Jul 7 "Large IB gate delayed entry to 10:45"
 # finding, but testing the OPPOSITE direction (earlier, not later).
 IB_READY_OVERRIDE: '_dt.time | None' = None
+NO_OVN_SKIP = False   # --no-ovn-skip: trade through the overnight skip zone (veto becomes log-only)
 
 # IB range minimum (pts) — live gate: thin IB (<50pts) → skip
 MIN_IB_RANGE = 50.0
@@ -678,7 +679,10 @@ def simulate_day(
     # Overnight bias (mirrors live _daily_macro_bias)
     daily_bias, skip_day, ovn_pos = compute_overnight_bias_5m(all_bars, trade_date)
     if skip_day:
-        return [], daily_bias, ovn_pos
+        if NO_OVN_SKIP:
+            daily_bias = 'BOTH'   # veto disabled — ambiguous overnight trades as a normal BOTH day
+        else:
+            return [], daily_bias, ovn_pos
 
     # OVN_POS Option A: overnight closed near its low → exhausted bears → allow LONGs.
     # Even on a SHORT bias day, ovn_pos ≤ 0.13 means overnight sellers ran out of fuel.
@@ -1370,6 +1374,11 @@ def main():
                          '1 contract) instead of a hard 0.85 cliff — targets Jul 7/Jul 8 near-misses')
     ap.add_argument('--rvol-floor', type=float, default=None, dest='rvol_floor',
                     help='Override RVOL_GRAD_FLOOR for --graduated-rvol (default 0.60)')
+    ap.add_argument('--no-ovn-skip', action='store_true', dest='no_ovn_skip',
+                    help='Disable the overnight skip-zone whole-day veto (pos 0.20-0.40) — '
+                         'day trades as BOTH. Mirrors the validated London veto removal (Jul 18 2026).')
+    ap.add_argument('--entry-start', type=str, default=None, dest='entry_start',
+                    help='Override the 10:30 IB-ready entry start, e.g. --entry-start 09:30')
     ap.add_argument('--rsi-trend-exempt', action='store_true', dest='rsi_trend_exempt',
                     help='Candidate idea: waive the RSI>70(LONG)/RSI<30(SHORT) overbought/'
                          'oversold penalty when vwap_reclaim+momentum already confirm the '
@@ -1383,6 +1392,11 @@ def main():
 
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
+    global NO_OVN_SKIP, IB_READY_OVERRIDE
+    if args.no_ovn_skip:             NO_OVN_SKIP = True
+    if args.entry_start is not None:
+        _h, _m = args.entry_start.split(':')
+        IB_READY_OVERRIDE = _dt.time(int(_h), int(_m))
     if args.stop_pts    is not None: BASE_STOP_PTS    = args.stop_pts
     elif args.regime_aware_exits:    BASE_STOP_PTS    = 200.0  # v3 shipped with stop=200; override with --stop-pts if needed
     if args.target_pts  is not None: BASE_TARGET_PTS  = args.target_pts
