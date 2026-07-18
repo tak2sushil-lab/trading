@@ -640,6 +640,49 @@ calendar, catalyst/sympathy flags, sector-strength scoring), Mirror Book 30-day 
 
 ---
 
+## Jul 18 2026 (post-close) — Bug sweep of the redesign + dashboard v2
+
+**FIXED (clear-bug rule, commit c50decf):** weekend guard. `is_entry_allowed()`
+(futures) and London's `run_scan()` were time-of-day only — Saturday 9:30-16:00 read as
+MIDDAY/AFTERNOON and the full scan pipeline ran against frozen Friday bars, writing 298
+junk GRADE/REGIME rows into gate_blocks (deleted) at a stale price, with theoretical
+resting-order risk into a closed market. First weekend the bridge stayed connected is
+what exposed it. Both traders now check `weekday() >= 5`; futures_personal restarted.
+
+**FLAGGED, NOT FIXED — decisions pending user approval:**
+1. **Graduated-RVOL sizing divergence:** sim_replay caps RVOL-compensated entries at
+   1 contract (`min(contracts, 1)`); live has no cap and `calc_contracts_dynamic`'s
+   ib_range≥150 tier gives those entries 2 contracts on wide-IB days. The Jul 8 backtest
+   that shipped the 0.70 floor assumed 1 contract. Parity harness can't see it (matches
+   time/side, not size). Fix = add the cap live + contract count to parity diff.
+2. **Premarket scanner bypasses Book Health:** `_scan_premarket_catalyst` has no
+   `book_is_on('LONG')` check while both main books + catalyst override are gated —
+   premarket longs can fire 9:20-9:29 with the LONG book OFF.
+3. **F1 is a half-fix:** `get_regime` still reads the forming 5-min bar (price/RSI/
+   5-bar trend), so an intra-bar flicker flips the label and resets the consecutive-bar
+   streak to 1 — live confirmation can lag sim. Same partial-bar class as the RVOL
+   (Jul 17) and HTF (Jul 18) fixes; regime read is the remaining instance.
+Minor notes: exits fall back to CHOPPY params when `_day_regime` is None (pre-10:30
+entries); `date(ts)` in gate-block SQL converts to UTC (wrong date for post-8pm rows);
+dashboard imports auto_trader inside a request (slow first hit).
+
+**Why the falling MNQ week (Jul 14-17, -1,082pts) didn't pay:** 62% of the decline was
+overnight gaps (-674pts, incl. Jul 17's -592) — system is structurally flat overnight.
+Inside the 10:30-14:00 entry window the four days netted +183/-22/-249/+75. The one real
+in-window down-day (Jul 16, -249) was fully vetoed by OVN_SKIP — already removed Jul 18.
+NY futures actually made ~+$550 on the week (2 ORB_SHORTs Jul 15 +$475). Structural gap
+worth a future instrumented experiment: no multi-day trend memory (each day starts
+stateless at the 10:30 IB); overnight-bias classifier is the natural input, now log-only.
+
+**Dashboard v2 (commit 2c7aa84):** SYSTEM HEALTH renders glossary names + hover
+tooltips, funnel shows "N entered" first, Trade Cop verdict decoded to a sentence;
+7-day equity chart → 15-session stacked daily P&L (equity/options/futures incl London)
+with a bright zero line; new 15-DAY SCORECARD (per-book trades/WR/P&L/avg/best/worst).
+futures_trades now split by account_mode in dashboard queries — Futures NY = IBKR only,
+TC eval its own row (was silently blended).
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |
