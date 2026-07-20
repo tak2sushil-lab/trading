@@ -155,6 +155,17 @@ def _is_paper() -> bool:
     return (info or {}).get('mode') == 'paper'
 
 
+def _sell_limit_price(bid: float, ask: float) -> float:
+    """Aggressive-but-not-wasteful SELL close price: nickel off mid for tight
+    spreads, scales toward the bid as the spread widens so the order actually
+    crosses and fills (Jul 20 2026 — USAR's $1.30-wide LEAP spread sat
+    unfilled at mid-minus-a-nickel for hours, retried ~150x, never once
+    acknowledged by IBKR — a flat nickel isn't marketable on a wide spread)."""
+    mid = (bid + ask) / 2
+    discount = max(0.05, round((ask - bid) * 0.5, 2))
+    return round(mid - discount, 2)
+
+
 def _auto_close_position(trade: dict, current_value: float, exit_reason: str = 'AUTO_STOP') -> bool:
     """
     Place a market-limit sell order to close the position when stop is hit.
@@ -220,7 +231,8 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         q = get_quote(sym, trade['expiry'], trade['long_strike'], trade['right'])
         if not q:
             return False
-        mid = round(((q.get('bid') or 0) + (q.get('ask') or 0)) / 2, 2)
+        bid, ask = q.get('bid') or 0, q.get('ask') or 0
+        mid = round((bid + ask) / 2, 2)
         payload = {
             'symbol':      sym,
             'expiry':      trade['expiry'],
@@ -229,14 +241,15 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             'qty':         qty,
             'action':      'SELL',
             'order_type':  'LIMIT',
-            'limit_price': round(mid - 0.05, 2),
+            'limit_price': _sell_limit_price(bid, ask),
         }
         exit_dollar = round(mid * 100 * qty, 2)
     else:  # LEAP
         q = get_quote(sym, trade['expiry'], trade['strike'], trade['right'])
         if not q:
             return False
-        mid = round(((q.get('bid') or 0) + (q.get('ask') or 0)) / 2, 2)
+        bid, ask = q.get('bid') or 0, q.get('ask') or 0
+        mid = round((bid + ask) / 2, 2)
         payload = {
             'symbol':      sym,
             'expiry':      trade['expiry'],
@@ -245,7 +258,7 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             'qty':         qty,
             'action':      'SELL',
             'order_type':  'LIMIT',
-            'limit_price': round(mid - 0.05, 2),
+            'limit_price': _sell_limit_price(bid, ask),
         }
         exit_dollar = round(mid * 100 * qty, 2)
 
@@ -281,14 +294,14 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
                                    trade.get('long_strike') or trade.get('strike'),
                                    trade['right'])
                     if q2:
-                        mid2 = round(((q2.get('bid') or 0) + (q2.get('ask') or 0)) / 2, 2)
-                        payload['limit_price'] = max(0.01, round(mid2 - 0.05, 2))
+                        payload['limit_price'] = max(
+                            0.01, _sell_limit_price(q2.get('bid') or 0, q2.get('ask') or 0))
             except Exception:
                 pass
-            send_telegram(
-                f"⏳ *{sym} auto-close retry {attempt+1}/{MAX_CLOSE_TRIES}* (trade #{tid})\n"
-                f"Previous attempt {order_id} status: {st}"
-            )
+            # Jul 20 2026: no per-attempt Telegram here — _check_trade's T3b_FAIL/
+            # T4_FAIL already alerts once per day; this loop just keeps trying.
+            print(f"[watchman] {sym} auto-close retry {attempt+1}/{MAX_CLOSE_TRIES} "
+                  f"(trade #{tid}) — previous attempt {order_id} status: {st}")
 
         resp = _bridge_post('/options/order', payload)
         if not resp or 'orderId' not in resp:
@@ -340,11 +353,10 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             _bridge_post(f'/order/{order_id}/cancel', {})
 
     if not filled:
-        send_telegram(
-            f"⚠️ *{sym} auto-close FAILED after {MAX_CLOSE_TRIES} attempts* (trade #{tid})\n"
-            f"Last order {order_id} status: {st}\n"
-            f"DB NOT updated — use `OPT CLOSE {sym}` to retry manually."
-        )
+        # Jul 20 2026: no Telegram here — _check_trade's T3b_FAIL/T4_FAIL already
+        # alerts once per day. Log locally so the attempt is still traceable.
+        print(f"[watchman] {sym} auto-close FAILED after {MAX_CLOSE_TRIES} attempts "
+              f"(trade #{tid}) — last order {order_id} status: {st}")
         return False
 
     exit_dollar = exit_dollar_final
@@ -670,6 +682,12 @@ def compute_new_stop(trade: dict, current_value: float,
 _session_highs: dict[int, float] = {}
 # Track which threshold alerts already fired per trade today (reset at EOD)
 _alerted_thresholds: dict[int, set] = {}
+# Cap auto-close attempts per trade per day (reset at EOD). Jul 20 2026: without
+# this, a trade stuck at T3b/T4 gets a fresh 3-order burst every 5-min scan all
+# day — USAR hit ~150 order attempts in one session, likely tripping an IBKR
+# order-churn throttle that then blocked every subsequent attempt too.
+MAX_DAILY_CLOSE_ATTEMPTS = 5
+_close_attempts_today: dict[int, int] = {}
 
 
 def _check_trade(trade: dict, is_eod: bool) -> list[str]:
@@ -740,7 +758,11 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
         else:
             gain_pct = round((current_value - prem) / prem * 100, 1) if prem else 0
             tgt_label = '50% max profit' if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD') else '100% gain'
-        closed = _auto_close_position(trade, current_value, exit_reason='AUTO_TARGET')
+        if _close_attempts_today.get(tid, 0) >= MAX_DAILY_CLOSE_ATTEMPTS:
+            closed = False
+        else:
+            _close_attempts_today[tid] = _close_attempts_today.get(tid, 0) + 1
+            closed = _auto_close_position(trade, current_value, exit_reason='AUTO_TARGET')
         value_line = (
             f"Buyback value: ${current_value:.2f} ≤ target ${target:.2f}" if is_credit else
             f"Value: ${current_value:.2f} ≥ target ${target:.2f}"
@@ -785,7 +807,11 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
         else:
             stage_label = {1: 'hard stop (-50%)', 2: 'breakeven stop', 3: 'trail stop'}.get(stage, '')
             stop_label  = f'{stage_label} — value ${current_value:.2f} ≤ stop ${stop:.2f}'
-        closed = _auto_close_position(trade, current_value)
+        if _close_attempts_today.get(tid, 0) >= MAX_DAILY_CLOSE_ATTEMPTS:
+            closed = False
+        else:
+            _close_attempts_today[tid] = _close_attempts_today.get(tid, 0) + 1
+            closed = _auto_close_position(trade, current_value)
         if closed:
             # Only mark fired on a confirmed close — if the close fails, leave it
             # unfired so the next loop tick retries instead of going silent until EOD.
@@ -1008,9 +1034,10 @@ def run_eod():
     for alert in all_alerts:
         send_telegram(alert)
 
-    # Reset session highs and intraday threshold alerts after EOD
+    # Reset session highs, intraday threshold alerts, and close-attempt counts after EOD
     _session_highs.clear()
     _alerted_thresholds.clear()
+    _close_attempts_today.clear()
 
     # Always send EOD summary
     summary = _build_eod_summary(trades)

@@ -302,6 +302,16 @@ def send_telegram(message: str, chat_id: str | None = None):
         print(f"[TG error] {e}")
 
 
+def _sell_limit_price(bid: float, ask: float) -> float:
+    """Aggressive-but-not-wasteful SELL close price: nickel off mid for tight
+    spreads, scales toward the bid as the spread widens so the order actually
+    crosses and fills (Jul 20 2026 — same bug as watchman.py's auto-close;
+    see that file's copy of this helper for the full incident)."""
+    mid = (bid + ask) / 2
+    discount = max(0.05, round((ask - bid) * 0.5, 2))
+    return round(mid - discount, 2)
+
+
 _tg_fail_streak = 0
 
 def poll_telegram(timeout: int = 0) -> list[dict]:
@@ -2742,7 +2752,11 @@ def _execute_close_bg(trade: dict, chat_id: str):
         long_mid  = (long_bid + long_ask) / 2
         short_mid = (short_bid + short_ask) / 2
         spread_mid = round(long_mid - short_mid, 2)
-        # Close a bull spread = sell it back
+        # Close a bull spread = sell it back. Natural credit (sell long at bid,
+        # buy back short at ask) is fully marketable — not just a nickel off
+        # mid, which can sit unfilled on a wide spread (Jul 20 2026 fix).
+        natural_credit = round(long_bid - short_ask, 2)
+        limit_credit = max(0.01, natural_credit)
         payload = {
             'symbol':       sym,
             'expiry':       trade['expiry'],
@@ -2751,9 +2765,9 @@ def _execute_close_bg(trade: dict, chat_id: str):
             'qty':          qty,
             'action':       'SELL',
             'order_type':   'LIMIT',
-            'limit_price':  round(spread_mid - 0.05, 2),  # slight discount to fill fast
+            'limit_price':  limit_credit,
             'short_strike': trade['short_strike'],
-            'net_debit':    round(-(spread_mid - 0.05), 2),  # negative = credit
+            'net_debit':    round(-limit_credit, 2),  # negative = credit
         }
         exit_value = round(spread_mid * 100 * qty, 2)
     elif strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
@@ -2771,6 +2785,11 @@ def _execute_close_bg(trade: dict, chat_id: str):
         buy_mid  = ((lq.get('bid') or 0) + buy_ask) / 2
         sell_mid = (sell_bid + (sq.get('ask') or 0)) / 2
         debit_mid = round(buy_mid - sell_mid, 2)
+        # Natural debit (pay ask on the leg we're buying back, receive bid on
+        # the leg we're selling back) is fully marketable — not just mid plus
+        # a nickel, which can sit unfilled on a wide spread (Jul 20 2026 fix).
+        natural_debit = round(buy_ask - sell_bid, 2)
+        limit_debit = max(0.01, natural_debit)
         payload = {
             'symbol':       sym,
             'expiry':       trade['expiry'],
@@ -2779,9 +2798,9 @@ def _execute_close_bg(trade: dict, chat_id: str):
             'qty':          qty,
             'action':       'BUY',
             'order_type':   'LIMIT',
-            'limit_price':  max(0.01, round(debit_mid + 0.05, 2)),  # slight premium to fill fast
+            'limit_price':  limit_debit,
             'short_strike': trade['short_strike'],
-            'net_debit':    max(0.01, round(debit_mid + 0.05, 2)),
+            'net_debit':    limit_debit,
         }
         exit_value = round(debit_mid * 100 * qty, 2)
     elif strat == 'OPT_SCALP':
@@ -2803,7 +2822,7 @@ def _execute_close_bg(trade: dict, chat_id: str):
             'qty':         qty,
             'action':      'SELL',
             'order_type':  'LIMIT',
-            'limit_price': round(mid - 0.05, 2),
+            'limit_price': _sell_limit_price(_bid, _ask),
         }
         exit_value = round(mid * 100 * qty, 2)
     else:  # LEAP
@@ -2825,7 +2844,7 @@ def _execute_close_bg(trade: dict, chat_id: str):
             'qty':         qty,
             'action':      'SELL',
             'order_type':  'LIMIT',
-            'limit_price': round(mid - 0.05, 2),
+            'limit_price': _sell_limit_price(_bid, _ask),
         }
         exit_value = round(mid * 100 * qty, 2)
 
