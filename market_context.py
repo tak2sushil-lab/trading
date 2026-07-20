@@ -333,6 +333,12 @@ def save_brief(mech: dict, brief: dict):
     conn.close()
 
 
+def _esc(s) -> str:
+    """Escape for Telegram HTML parse mode (safer than Markdown — LLM text
+    with underscores/asterisks breaks Markdown entity parsing)."""
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
 def send_telegram(mech: dict, brief: dict):
     token = os.getenv('TELEGRAM_TOKEN')
     chat = os.getenv('TELEGRAM_CHAT_ID')
@@ -340,37 +346,65 @@ def send_telegram(mech: dict, brief: dict):
         print("[market_context] no telegram config — skipping send")
         return
     spy = mech.get('indices', {}).get('SPY', {})
+    qqq = mech.get('indices', {}).get('QQQ', {})
     mnq = mech.get('mnq', {})
     lv = mnq.get('levels', {})
     ev = mech.get('events', {})
+
+    stance = brief.get('stance', '?')
+    stance_emoji = {'RISK_ON': '🟢', 'RISK_OFF': '🔴',
+                    'NEUTRAL': '⚪️'}.get(stance, '❔')
+    conf = (brief.get('confidence') or '?').lower()
+    risk = brief.get('event_risk_today', '?')
+    risk_str = f"⚠️ event risk {risk}" if risk == 'HIGH' else f"event risk {risk.lower()}"
+
     lines = [
-        f"🌅 Field Report — {date.today().isoformat()}",
-        f"Stance: {brief.get('stance', '?')} ({brief.get('confidence', '?')}) | "
-        f"Event risk: {brief.get('event_risk_today', '?')}",
+        f"🌅 <b>Field Report — {date.today().strftime('%a %b %-d')}</b>",
+        "",
+        f"{stance_emoji} <b>{_esc(stance)}</b> ({conf} confidence) · {_esc(risk_str)}",
     ]
     if brief.get('one_line_thesis'):
-        lines.append(brief['one_line_thesis'])
-    if brief.get('themes'):
-        lines.append("Themes: " + ", ".join(brief['themes'][:5]))
+        lines += ["", f"<i>{_esc(brief['one_line_thesis'])}</i>"]
+
+    market = []
     if spy:
-        lines.append(f"SPY {spy.get('trend')} (5d {spy.get('mom_5d_pct'):+.1f}%, "
-                     f"vs 20MA {spy.get('vs_ma20_pct'):+.1f}%)")
+        market.append(f"• SPY {spy.get('trend', '?')} — 5d {spy.get('mom_5d_pct', 0):+.1f}%, "
+                      f"{spy.get('vs_ma20_pct', 0):+.1f}% vs 20-day MA")
+    if qqq:
+        market.append(f"• QQQ {qqq.get('trend', '?')} — 5d {qqq.get('mom_5d_pct', 0):+.1f}%")
     if mnq.get('trend'):
-        lines.append(f"MNQ {mnq.get('trend')} | pdH {lv.get('prior_day_high')} "
-                     f"pdL {lv.get('prior_day_low')} | wkL {lv.get('week_low')}")
+        market.append(f"• MNQ {mnq.get('trend')} — yesterday {lv.get('prior_day_low')}"
+                      f"–{lv.get('prior_day_high')}, week low {lv.get('week_low')}")
     ovn = mnq.get('overnight')
     if ovn:
-        lines.append(f"Overnight: {ovn.get('gap_vs_prior_close_pct'):+.2f}% "
-                     f"(H {ovn.get('high')} / L {ovn.get('low')})")
+        market.append(f"• Overnight {ovn.get('gap_vs_prior_close_pct'):+.2f}% "
+                      f"(range {ovn.get('low')}–{ovn.get('high')})")
+    if market:
+        lines += ["", "<b>Market</b>"] + market
+
     if ev.get('today'):
-        lines.append("⚠️ TODAY: " + ", ".join(ev['today']))
+        lines += ["", "🗓 <b>Today:</b> " + _esc(", ".join(ev['today']))]
+
+    if brief.get('themes'):
+        lines += ["", "<b>Themes:</b> " + _esc(" · ".join(brief['themes'][:4]))]
+
     if brief.get('watch_items'):
-        lines.append("Watch: " + "; ".join(brief['watch_items'][:3]))
-    lines.append("_Log-only: no gate reads this. Scored nightly after ~4 wks._")
+        lines += ["", "<b>Watch</b>"]
+        lines += [f"• {_esc(w)}" for w in brief['watch_items'][:4]]
+
+    lines += ["", "<i>log-only · scored after ~4 weeks</i>"]
+
     try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      json={'chat_id': chat, 'text': "\n".join(lines)},
-                      timeout=10)
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={'chat_id': chat, 'text': "\n".join(lines),
+                                'parse_mode': 'HTML'},
+                          timeout=10)
+        if not r.ok:
+            # HTML parse failure fallback: strip tags, send plain
+            import re
+            plain = re.sub(r'<[^>]+>', '', "\n".join(lines))
+            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={'chat_id': chat, 'text': plain}, timeout=10)
     except Exception as e:
         print(f"[market_context] telegram error: {e}")
 
