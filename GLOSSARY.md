@@ -79,6 +79,12 @@ for all six types interchangeably. When speaking, pick the type word above.
 | **Options Book Gate** | `_book_health_on()` in options_trader.py | Gate — options-side mirror of the equity Book Health Selector; each direction trades only while that equity book is healthy. Both OFF → options flat. Added Jul 19 2026. |
 | **Ghost Ledger** | `opt_suggestions.whatif_pnl/whatif_return_pct`, filled nightly by `fill_whatif_prices()` | Auditor — scores every suggestion we did NOT take (news queue is log-only since Jul 19 2026). The options what-if learning loop. |
 
+## 5b. Shared context (all three systems)
+
+| Canonical name | Code name | Type |
+|---|---|---|
+| **Field Report** | `market_context.py`, `market_brief` table, launchd `market_context` 9:15am ET | Score (LOG-ONLY) — pre-market situational brief: mechanical trend/vol/levels (SPY/QQQ/MNQ) + macro-event calendar + one claude-opus-4-8 call synthesizing headlines into a stance (RISK_ON/NEUTRAL/RISK_OFF). NO gate reads it; scored vs outcomes after ~4 weeks (`--score`), then individual components may graduate to event stand-downs or sizing tilts per CONSTITUTION.md. Added Jul 19 2026. |
+
 ---
 
 ## 6. The Nightly Assembly Line (all times ET, Mon–Fri)

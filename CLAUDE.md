@@ -758,6 +758,44 @@ decide USAR fate. (E) scalp engine tied to LONG book health or shelved.
 
 ---
 
+## Jul 19 2026 (night) — Field Report shipped (Market Context Engine, Phase 0 LOG-ONLY)
+
+User asked how to give the system big-picture awareness (multi-day trend, macro events,
+world themes, S/R levels) and approved building it same night, instrument-first.
+
+**Shipped: `market_context.py` ("Field Report" — GLOSSARY 5b), launchd
+`com.sushil.trading.market_context` at 9:15am ET weekdays** (⚠️ launchd
+StartCalendarInterval is LOCAL time — Mac runs America/Toronto; note that
+collect_bars' "21:30 UTC" plist comment is wrong, it actually fires 9:30pm ET —
+harmless, still after close, not changed).
+
+- **Layer 1 (mechanical):** SPY/QQQ daily trend state via yfinance (bars_5m SPY
+  feed dead since Jun 1 — daily download is the reliable path); MNQ trend + S/R
+  levels from our own `futures_bars_5m` with proper CME trading-day bucketing
+  (6pm ET rolls to next day; pre-market runs split the current overnight session
+  out as `overnight` levels + gap%, so `prior_day_*` always means the last
+  COMPLETED session); FOMC/CPI/NFP dates (copy of dashboard MACRO_EVENTS —
+  keep in sync) + catalyst_calendar next-3-days.
+- **Layer 2 (LLM):** one `claude-opus-4-8` call/day (~$0.03; 1.7K in/1K out
+  measured), structured JSON via `output_config.format` json_schema: stance
+  RISK_ON/NEUTRAL/RISK_OFF + confidence + event_risk + themes + sectors +
+  one-line thesis + watch items. API failure → stance UNAVAILABLE, mechanical
+  layer still logged (day never lost). Uses ANTHROPIC_KEY from .env.
+- **Storage:** `market_brief` table in trades.db (one row/day, INSERT OR
+  REPLACE, stance immutable-by-convention once the open passes — that's what
+  makes it scoreable). Telegram: one pre-market JOURNAL message. Dashboard:
+  Field Report row in SYSTEM HEALTH (stance chip + themes, thesis on hover).
+- **LOG-ONLY (Constitution: instrument-first).** No trader reads market_brief.
+  Scoring: `market_context.py --score` (stance vs SPY open→close alignment) —
+  meaningless before ~20 trading days. Graduation path agreed with user:
+  event-day stand-down (mechanical, likely first) → sizing tilt → gate, each
+  component individually, only on measured separation, with hypothesis + sunset.
+- First live brief runs Monday Jul 20 9:15am. Verified end-to-end tonight
+  (weekend --force run: RISK_OFF/MEDIUM, correct MNQ levels, telegram
+  delivered, dashboard rendering).
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

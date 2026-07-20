@@ -133,7 +133,21 @@ function renderSystemHealth(h) {
       <span class="health-label" title="Shadow-only book that fades the Black Box Recorder's LONG signals. Places NO orders — needs 30+ green days before promotion is discussed (review ~Aug 17)">Mirror Book</span>
       <span title="Shadow paper result — 1 MNQ contract equivalent, no real orders">${s.n ?? 0} shadow trades · ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts all-time · ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts last 14d</span>
     </div>
-    ${renderOptionsHealth(h.options)}`;
+    ${renderOptionsHealth(h.options)}
+    ${renderFieldReport(h.field_report)}`;
+}
+
+// ── Field Report row (market_context.py — log-only pre-market brief) ────
+function renderFieldReport(fr) {
+  if (!fr) return '';
+  const cls = fr.stance === 'RISK_ON' ? 'pos' : (fr.stance === 'RISK_OFF' ? 'neg' : '');
+  const themes = (fr.themes || []).slice(0, 4).join(', ');
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Pre-market Field Report: mechanical trend/levels + one Claude call synthesizing headlines and the event calendar. LOG-ONLY — no gate reads it. Scored nightly vs actual outcomes after ~4 weeks; graduates to a sizing tilt or event stand-down only if it earns it.">Field Report</span>
+      <span class="health-chip ${cls}" title="${fr.one_line || ''}">${fr.stance || '?'} (${fr.confidence || '?'})</span>
+      <span class="health-detail-inline">${fr.date} · event risk ${fr.event_risk || '?'}${themes ? ' · ' + themes : ''}</span>
+    </div>`;
 }
 
 // ── Options row inside SYSTEM HEALTH (Jul 18 2026 redesign) ─────────────

@@ -850,6 +850,21 @@ def get_system_health():
                      AND exit_date >= date('now','-14 day')""").fetchone()
             opt['closed_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0}
             out['options'] = opt
+            # Field Report (market_context.py) — log-only pre-market brief
+            try:
+                r = c.execute(
+                    """SELECT brief_date, stance, confidence, event_risk,
+                              themes, one_line
+                       FROM market_brief ORDER BY brief_date DESC LIMIT 1""").fetchone()
+                if r:
+                    out['field_report'] = {
+                        'date': r[0], 'stance': r[1], 'confidence': r[2],
+                        'event_risk': r[3],
+                        'themes': json.loads(r[4] or '[]'),
+                        'one_line': r[5],
+                    }
+            except Exception:
+                pass
     except Exception:
         pass
     # Trade Cop — last parity verdict, decoded into a readable sentence
