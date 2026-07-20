@@ -796,6 +796,30 @@ harmless, still after close, not changed).
 
 ---
 
+## Jul 19 2026 (late night) — Trade Cop v2: London + options legs (all 4 books covered)
+
+Pre-Monday readiness ask from user. Both IB gateways were down (paper + TC) — restarted,
+both bridges reconnected (DU9952463 / DUQ640500). Then closed the two parity gaps:
+
+- **London leg added to parity_check.py:** replays the session through london_v2_sim with
+  `LONDON_CFG` (champion: no confirms, no skip-day, BE=0.10 — update when live changes).
+  Entry-side diff only (exits diverge by design: 15s live monitor vs 1m sim). Runs **one
+  day lagged** — futures collect_bars `--update` fetches Databento 1m only through
+  YESTERDAY (availability lag), so 1m bars for day D land on D+1 evening. First live
+  check: Jul 16 sim=2 live=2 matched=2 → OK (real parity confirmed, not just plumbing).
+- **Options leg added:** decision-invariant cop from `OPTIONS_COP_SINCE='2026-07-19'` —
+  every options trade must have (1) an ENTER verdict in opt_calc_log that day, (2) an A+
+  scan_log signal same symbol/direction, (3) that direction's equity book ON (trailing-10d
+  drift recomputed as-of the day, mirroring `_book_health_on`). No bar-level options
+  replay is possible (option-chain quotes aren't stored) — this is the parity mechanism.
+  Mechanics verified: retroactively flags the Jul 1 USAR LEAP with all 3 violations
+  (exactly the entry pattern the redesign banned); correctly ignores pre-enforcement dates.
+- london_v2_sim now records entry `time` per trade (behavior-neutral; parity needs it).
+- **Parity coverage now: NY futures (full diff) + London (entry diff, lag-1) + equity
+  (invariants; equity_replay for depth) + options (invariants). Telegram fires on any leg.**
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

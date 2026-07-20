@@ -157,7 +157,8 @@ def run_day(sess, cfg):
             exit_p = float(fut1.iloc[-1]['close'])
         pnl = sign * (exit_p - e) * DOLLARS_PER_PT
         trades.append({'side': side, 'entry': e, 'exit': exit_p,
-                       'pnl': pnl, 'reason': reason})
+                       'pnl': pnl, 'reason': reason,
+                       'time': fut1.index[0].strftime('%H:%M')})
         # resume scanning after exit — find 5m index past exit time
         i = sig_i + 1
         # (simplification: continue from next 5m bar; MAX_TRADES_DAY caps churn)
