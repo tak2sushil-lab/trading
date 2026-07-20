@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jul 17 2026
+Last updated: Jul 20 2026
 
 ---
 
@@ -817,6 +817,55 @@ both bridges reconnected (DU9952463 / DUQ640500). Then closed the two parity gap
 - london_v2_sim now records entry `time` per trade (behavior-neutral; parity needs it).
 - **Parity coverage now: NY futures (full diff) + London (entry diff, lag-1) + equity
   (invariants; equity_replay for depth) + options (invariants). Telegram fires on any leg.**
+
+---
+
+## Jul 20 2026 — USAR auto-close storm root-caused + fixed (watchman.py, options_trader.py)
+
+USAR LEAP (entered Jul 1, $970 premium, stop $582) hit its stop this morning. It never
+closed all day — instead generated **~150 order attempts and 100s of Telegram messages**
+by market close, all logged as `Error 202: Order Canceled` with a blank reason, order
+status never advancing past `PendingSubmit`. User pushed for a real root cause, not a
+manual close (explicitly declined a manual workaround) — traced to three compounding bugs,
+all now fixed:
+
+1. **Alert-dedup gap:** the Jul 18 "once per day" fix covered only the *outer* T3b_FAIL/
+   T4_FAIL alert in `_check_trade`. `_auto_close_position`'s own internal 3-attempt retry
+   loop (`MAX_CLOSE_TRIES=3`, ~90s per call) sent its own "retry X/3" and "FAILED after N
+   attempts" Telegram messages on **every** watchman scan cycle (every 5 min, all day) —
+   never covered by the dedup. Removed both internal sends; the outer alert already tells
+   the user once and points them at `OPT CLOSE {sym}`.
+2. **Close price wasn't marketable on wide spreads:** LEAP/OPT_SCALP closes priced at a
+   flat `mid - $0.05`, fine for normal spreads but USAR's LEAP had a $1.30-wide spread
+   (bid $4.65 / ask $5.95) — the nickel-off-mid price ($5.25) never crossed the bid, so
+   the order could never fill. New `_sell_limit_price(bid, ask)` scales the discount to
+   half the spread width — lands exactly on the bid for wide spreads, reproduces the old
+   nickel-off-mid price unchanged for tight ones. Ported into `options_trader.py`'s manual
+   `OPT CLOSE` path too, and upgraded its credit/debit spread-combo pricing (previously
+   also a flat-nickel approximation) to the fully-marketable natural-credit/natural-debit
+   crossing that `watchman.py` already used correctly for those legs.
+3. **No cap on retry cycles:** nothing stopped watchman from re-attempting a stuck close
+   every single 5-min scan indefinitely — ~150 submit/cancel cycles on one contract in one
+   session is a plausible trigger for an IBKR order-churn throttle, which would explain why
+   every attempt today (including manually-placed test orders at the live bid) sat
+   unacknowledged regardless of price. Added `MAX_DAILY_CLOSE_ATTEMPTS=5` (per trade,
+   reset at EOD like the other daily trackers) so a stuck position still gets real chances
+   without hammering the same contract 40+ times a day.
+
+**Also found (informational, not a bug):** today's zero equity/options activity was
+correctly-behaving, not broken — Book Health Selector (both books OFF, computed once at
+first scan from trailing 10-day data, unrelated to today's chop) plus CHOPPY/WEAK regime
+routing meant the full-universe scan never ran, so `scan_log` legitimately has zero rows
+for the day. Options had nothing to trigger on for the same upstream reason. Confirmed via
+full-day `auto_trader.log` read (continuous 5-6 min cycles, no errors, regime bounced
+CHOPPY/WEAK/NORMAL/CAUTIOUS all day) — not a scan failure, just two gates agreeing to
+stand down before per-symbol evaluation began.
+
+Commit `14ef9a3`. watchman + options_trader restarted and verified healthy same session.
+USAR itself is still OPEN as of this fix — market was closed (after-hours, no bid/ask)
+by the time the fix landed; first real test is tomorrow's open. Given the daily cap and
+the ~150-attempt history today, watch the first attempt closely rather than assuming it's
+fully solved — the IBKR-throttle theory is the best available explanation but unconfirmed.
 
 ---
 
