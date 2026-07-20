@@ -755,12 +755,19 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
                 f"{value_line}"
             )
         else:
-            alerts.append(
-                f"🎯 *TARGET HIT — {sym} {strat}* (trade #{tid})\n"
-                f"{tgt_label} reached · +{gain_pct}%\n"
-                f"{value_line}\n"
-                f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
-            )
+            # Alert the failure ONCE per day; keep retrying the close silently
+            # every cycle (Jul 18 2026 telegram-noise fix — was re-alerting
+            # the same breach every 15 min all day).
+            if 'T3b_FAIL' not in fired:
+                fired.add('T3b_FAIL')
+                alerts.append(
+                    f"🎯 *TARGET HIT — {sym} {strat}* (trade #{tid})\n"
+                    f"{tgt_label} reached · +{gain_pct}%\n"
+                    f"{value_line}\n"
+                    f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
+                )
+            else:
+                print(f"[watchman] {sym} target auto-close retry failed (silent)")
         return alerts
 
     # ── T4: stop hit — AUTO-CLOSE ──
@@ -789,11 +796,17 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
             )
             return alerts
         else:
-            alerts.append(
-                f"🚨 *STOP HIT — {sym} {strat}* (trade #{tid})\n"
-                f"{stop_label}\n"
-                f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
-            )
+            # Alert the failure ONCE per day; retry silently (Jul 18 2026
+            # telegram-noise fix — was re-alerting every 15 min all day).
+            if 'T4_FAIL' not in fired:
+                fired.add('T4_FAIL')
+                alerts.append(
+                    f"🚨 *STOP HIT — {sym} {strat}* (trade #{tid})\n"
+                    f"{stop_label}\n"
+                    f"⚠️ Auto-close failed — act now: `OPT CLOSE {sym}`"
+                )
+            else:
+                print(f"[watchman] {sym} stop auto-close retry failed (silent)")
             return alerts
 
     # ── OPT_SCALP: 2-day time stop (checked intraday + EOD) ──

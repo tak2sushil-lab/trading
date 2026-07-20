@@ -132,6 +132,25 @@ function renderSystemHealth(h) {
     <div class="health-row">
       <span class="health-label" title="Shadow-only book that fades the Black Box Recorder's LONG signals. Places NO orders — needs 30+ green days before promotion is discussed (review ~Aug 17)">Mirror Book</span>
       <span title="Shadow paper result — 1 MNQ contract equivalent, no real orders">${s.n ?? 0} shadow trades · ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts all-time · ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts last 14d</span>
+    </div>
+    ${renderOptionsHealth(h.options)}`;
+}
+
+// ── Options row inside SYSTEM HEALTH (Jul 18 2026 redesign) ─────────────
+function renderOptionsHealth(o) {
+  if (!o) return '';
+  const c = o.calcs_today || {};
+  const w = o.whatif_14d || {};
+  const cl = o.closed_14d || {};
+  const openList = (o.open || [])
+    .map(t => `${t.symbol} ${t.strategy} ($${Math.round(t.premium)})`)
+    .join(', ') || 'none';
+  const wPnl = w.pnl ?? 0;
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Options trade only in directions whose equity book is healthy (same Books row above). Funnel = calculator runs today; Ghost Ledger = what the suggestions we did NOT take would have made (scored nightly)">Options</span>
+      <span>open: ${openList}</span>
+      <span class="health-detail-inline">funnel today: ${c.total ?? 0} calcs / ${c.enter ?? 0} enter · closed 14d: ${cl.n ?? 0} for ${(cl.pnl ?? 0) >= 0 ? '+' : ''}$${cl.pnl ?? 0} · ghost ledger 14d: ${w.n ?? 0} skips ${wPnl >= 0 ? '+' : ''}$${wPnl}</span>
     </div>`;
 }
 

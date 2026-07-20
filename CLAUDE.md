@@ -718,10 +718,37 @@ backfill stamped today's price as the 7d/14d price. Now uses historical closes a
 docs wrong); SCALP_UNIVERSE is ~170 symbols (not 15); outcome logging fires only on
 AUTO_* exits (manual/reset closes never logged).
 
-**APPROVED (same session): build ALL of the below + Telegram tiering revamp + dashboard
-options panel. USAR LEAP → close Monday Jul 21. Bug-sweep after build; 1-week eval, judge
-~Jul 27. Full build checklist: `docs/OPTIONS_REDESIGN_2026-07-18_PLAN.md` — resume there
-if session was interrupted.** Original proposal: (A) direction
+**APPROVED and SHIPPED Jul 19 2026 (build spec: `docs/OPTIONS_REDESIGN_2026-07-18_PLAN.md`).
+What shipped:**
+- **Options Book Gate** (`_book_health_on()` in options_trader.py): exact mirror of equity
+  Book Health Selector SQL (verified parity: LONG -0.51 / SHORT -0.62 at ship). Equity A+
+  scan triggers (`_check_equity_scan_triggers`) are now the ONLY trade source, per-direction
+  book-gated. Scalp engine gated behind LONG book. Both books OFF at ship ⇒ **options is
+  intentionally FLAT until the tape turns — do not "fix" this.**
+- **News queue → Ghost Ledger only:** suggestions still run the calculator (so strikes land
+  for nightly what-if scoring) but always mark NO_TRADE. `_proactive_recycle` +
+  `_handle_queued_suggestion` no longer called (kept as dead code/research hooks).
+- **Verdict policy in all 4 calculators:** liquidity gate decides ENTER/SKIP; regime walls
+  removed (CHOPPY/CAUTIOUS dead zone gone); 5-gate score + MC EV/WR demoted to
+  instrumentation (`legacy_verdict` kept in result; DB gate columns unchanged for scoring).
+  VIX>25 block and IVR 20-50 debit band KEPT. LEAP calculator untouched (manual OPT cmds only).
+- **Telegram revamp:** news_engine per-HIGH-signal alerts → log-only (top noise source, no
+  longer precede trades); watchman auto-close-failure alerts deduped to once/day (was
+  re-alerting every 15 min — this was the USAR spam); daily options-book-status JOURNAL
+  message (weekdays, once/day).
+- **Dashboard:** options row in SYSTEM HEALTH (open positions, funnel today, closed-14d,
+  Ghost Ledger 14d) + **fixed pre-existing P&L bug**: three queries used
+  `exit_value - net_debit` (per-share vs dollars — CHPT showed +$585 instead of +$360);
+  now `exit_value - premium_paid`.
+- **Bug-sweep findings during build:** watchman LEAP stop machinery already existed (USAR
+  stop_value=$582 set — the failure was auto-close retry spam, fixed above); outcome logging
+  already wired on manual + auto closes (no change needed).
+- Services restarted + verified: options_trader, watchman, news_engine, dashboard.
+- **PENDING Monday Jul 21: close USAR LEAP manually** (`OPT CLOSE USAR`, limit order) —
+  approved by user; market was closed at ship time. **1-week evaluation, judge ~Jul 27:**
+  trades vs book direction, Ghost Ledger P&L of skips, Telegram volume.
+
+Original proposal (all points above implement it): (A) direction
 from tape/book-health, not news — port equity Book Health Selector; SHORT book ON → bear
 puts from A+ SHORT equity triggers (the one validated path), LONG book ON → debit calls;
 both OFF → flat. (B) fix router ordering + kill CHOPPY/CAUTIOUS dead zone. (C) demote

@@ -803,19 +803,21 @@ def _send_consolidated_alert(symbol: str, high_signals: list[dict],
         parts.append(tier_line)
     if narrative_line:
         parts.append(narrative_line)
-    # Queue auto-suggest: options_trader will run the calculator and send CONFIRM/SKIP
+    # Queue suggestion for the what-if ledger only (Jul 18 2026 redesign:
+    # news conviction is logged and scored nightly, it no longer trades —
+    # audit showed HIGH-BULL conviction was a fade signal 65-86% of the time).
     if net_dir == 'BULLISH' and get_suggestions_today_count() < 5:
         try:
             score = conviction['score'] if conviction else 0.0
             n_sig = conviction['signal_count'] if conviction else len(high_signals)
             log_suggestion(symbol, score, n_sig)
-            parts.append(f"<i>Auto-analysis queued — you will receive a trade suggestion shortly</i>")
         except Exception:
-            parts.append(f"Reply <code>OPT BUY {symbol}</code> to see trade options")
-    else:
-        parts.append(f"Reply <code>OPT BUY {symbol}</code> to see trade options")
+            pass
 
-    send_telegram('\n'.join(parts))
+    # Telegram-noise fix (same session): per-signal HIGH alerts were the top
+    # noise source and no longer precede a trade — log-file only now.
+    print(f"[news_engine] HIGH signal {symbol} ({net_dir}) — logged, no telegram")
+    print('\n'.join(parts))
 
 
 # ── Per-symbol processor ──────────────────────────────────

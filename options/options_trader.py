@@ -213,6 +213,70 @@ def _get_current_regime() -> Optional[str]:
         return None
 
 
+# ── Book Health gate (Jul 18 2026 redesign) ──────────────────────────────────
+# Mirrors auto_trader.compute_book_health()/book_is_on() exactly (not imported —
+# auto_trader pulls in matplotlib/APScheduler at module load, too heavy here).
+# Options trades ONLY in directions whose equity book is healthy: LONG book ON →
+# bull side (debit calls, scalp), SHORT book ON → bear puts. Both OFF → flat.
+BOOK_HEALTH_WINDOW_DAYS = 10
+BOOK_HEALTH_MIN_DAYS    = 4
+BOOK_HEALTH_MIN_ROWS    = 30
+_opt_book_cache: dict = {'date': None}
+
+def _book_health_on(direction: str) -> bool:
+    """True if the equity book for this direction is healthy (or cold start)."""
+    today_str = datetime.now(ET).strftime('%Y-%m-%d')
+    if _opt_book_cache.get('date') != today_str:
+        for d in ('LONG', 'SHORT'):
+            try:
+                import sqlite3
+                from database import DB_PATH
+                conn = sqlite3.connect(DB_PATH)
+                days = [r[0] for r in conn.execute(
+                    """SELECT DISTINCT scan_date FROM scan_log
+                       WHERE grade='A+' AND direction=? AND scan_date<? AND enriched=1
+                         AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
+                       ORDER BY scan_date DESC LIMIT ?""",
+                    (d, today_str, BOOK_HEALTH_WINDOW_DAYS))]
+                health = None
+                if len(days) >= BOOK_HEALTH_MIN_DAYS:
+                    qmarks = ','.join('?' * len(days))
+                    rows = conn.execute(
+                        f"""SELECT actual_day_pct - intra_chg FROM scan_log
+                            WHERE grade='A+' AND direction=? AND enriched=1
+                              AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
+                              AND scan_date IN ({qmarks})""",
+                        (d, *days)).fetchall()
+                    if len(rows) >= BOOK_HEALTH_MIN_ROWS:
+                        drifts = [r[0] for r in rows]
+                        fav = [-x for x in drifts] if d == 'SHORT' else drifts
+                        health = sum(fav) / len(fav)
+                conn.close()
+                # cold start (health None) → ON, matching equity behavior
+                _opt_book_cache[d] = (health is None) or (health > 0)
+                _opt_book_cache[f'{d}_health'] = health
+            except Exception as e:
+                print(f"[options] book_health({d}) error: {e} — defaulting ON")
+                _opt_book_cache[d] = True
+                _opt_book_cache[f'{d}_health'] = None
+        _opt_book_cache['date'] = today_str
+        lh, sh = _opt_book_cache.get('LONG_health'), _opt_book_cache.get('SHORT_health')
+        lh_s = f"{lh:+.2f}" if lh is not None else "cold"
+        sh_s = f"{sh:+.2f}" if sh is not None else "cold"
+        status = (f"LONG {'ON' if _opt_book_cache['LONG'] else 'OFF'} ({lh_s}) | "
+                  f"SHORT {'ON' if _opt_book_cache['SHORT'] else 'OFF'} ({sh_s})")
+        print(f"[options] book health {today_str}: {status}")
+        # JOURNAL tier: one telegram per day, weekdays only
+        try:
+            if datetime.now(ET).weekday() < 5:
+                send_telegram(f"📊 *Options books* — {status}\n"
+                              f"_Options trade only directions with a healthy equity book._",
+                              os.getenv('OPTIONS_TELEGRAM_CHAT_ID', ''))
+        except Exception:
+            pass
+    return _opt_book_cache.get(direction, True)
+
+
 # ── Telegram helpers ─────────────────────────────────────────────────────────
 
 def send_telegram(message: str, chat_id: str | None = None):
@@ -1043,10 +1107,9 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     if vix_now is not None and vix_now > 25:
         return {'error': f'VIX {vix_now:.1f} > 25 — market fear elevated, no new debit spread entries'}
 
-    # ── Pro gate: equity regime alignment ────────────────────────────────
+    # ── Equity regime: logged only (Jul 18 2026 — Book Health gates direction
+    #    now; per-strategy regime walls created a CHOPPY/CAUTIOUS dead zone) ──
     current_regime = _get_current_regime()
-    if current_regime and current_regime not in ('NORMAL', 'STRONG'):
-        return {'error': f'Equity regime {current_regime} — bull call spreads require NORMAL or STRONG regime'}
 
     # ── Upcoming catalyst ─────────────────────────────────────────────────
     upcoming      = get_upcoming_catalysts(days=90)
@@ -1176,30 +1239,22 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         hv30=hv30,   # two-sigma: paths on HV30, pricing on IV
     )
 
-    # ── Pro verdict filters (applied after 5-gate scoring) ───────────────
+    # ── Verdict policy (Jul 18 2026 redesign) ────────────────────────────
+    # Audit: the 5-gate score and MC model are anti-predictive/uncalibrated.
+    # Deciders are now: direction (Book Health, upstream) + liquidity (cost
+    # control) only. The legacy 5-gate verdict and MC outputs keep logging to
+    # opt_calc_log for the nightly what-if scoring — they no longer block.
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
-
-    # Rule 1: require 5/5 gates — ENTER_REDUCED is informational only, never executable
-    if entry_gates.get('verdict') == 'ENTER_REDUCED':
-        entry_gates = dict(entry_gates)
+    entry_gates = dict(entry_gates)
+    entry_gates['legacy_verdict'] = entry_gates.get('verdict')
+    if liquidity_gate:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
+    else:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = f'4/5 gates (need 5/5 for debit spread)'
-
-    # Rule 2: MC model must predict ≥50% win rate (model says we lose more than we win → skip)
-    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 50:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']  = 'SKIP'
-        entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 50%'
-
-    # Rule 3: MC EV must be ≥ $50 (covers commission + slippage with margin)
-    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']  = 'SKIP'
-        entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
+        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
 
     # ── Trade dict for execution (consumed by _execute_spread_bg) ─────────
     verdict     = entry_gates['verdict']
@@ -1319,10 +1374,8 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     if vix_now is not None and vix_now > 25:
         return {'error': f'VIX {vix_now:.1f} > 25 — market fear elevated, no new debit spread entries'}
 
-    # Pro gate: equity regime — bear put spread needs WEAK regime
+    # Equity regime: logged only (Jul 18 2026 — Book Health gates direction now)
     current_regime = _get_current_regime()
-    if current_regime and current_regime not in ('WEAK',):
-        return {'error': f'Equity regime {current_regime} — bear put spreads require WEAK regime'}
 
     upcoming      = get_upcoming_catalysts(days=90)
     sym_cats      = [c for c in upcoming if c['symbol'] == sym]
@@ -1434,27 +1487,20 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
         bearish=True,
     )
 
-    # ── Pro verdict filters (same rules as bull spread) ───────────────────
+    # ── Verdict policy (Jul 18 2026 redesign — same as bull spread) ───────
+    # Deciders: Book Health direction (upstream) + liquidity only. Legacy
+    # 5-gate verdict + MC keep logging for nightly what-if scoring.
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
-
-    if entry_gates.get('verdict') == 'ENTER_REDUCED':
-        entry_gates = dict(entry_gates)
+    entry_gates = dict(entry_gates)
+    entry_gates['legacy_verdict'] = entry_gates.get('verdict')
+    if liquidity_gate:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
+    else:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = '4/5 gates (need 5/5 for debit spread)'
-
-    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 50:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']  = 'SKIP'
-        entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 50%'
-
-    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']  = 'SKIP'
-        entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
+        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
 
     verdict     = entry_gates['verdict']
     grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
@@ -1549,9 +1595,8 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
     if vix_now is not None and vix_now > 25:
         return {'error': f'VIX {vix_now:.1f} > 25 — elevated fear, skip new credit positions'}
 
+    # Regime logged only (Jul 18 2026 — Book Health gates direction now)
     current_regime = _get_current_regime()
-    if current_regime and current_regime not in ('NORMAL', 'STRONG'):
-        return {'error': f'Regime {current_regime} — bull put credit needs NORMAL/STRONG regime'}
 
     underlying = get_underlying_price(sym)
     if not underlying:
@@ -1673,27 +1718,19 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
         hv30=hv30, bearish=True, credit=True,
     )
 
-    # ── Pro verdict filters ───────────────────────────────────────────────────
+    # ── Verdict policy (Jul 18 2026 redesign) — liquidity decides; legacy
+    #    5-gate verdict + MC keep logging for nightly what-if scoring ─────────
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
-
-    if entry_gates.get('verdict') == 'ENTER_REDUCED':
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']    = 'SKIP'
-        entry_gates['size_adj']   = 0.0
-        entry_gates['skip_reason'] = '4/5 gates (need 5/5 for credit spread)'
-
-    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 60:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']    = 'SKIP'
-        entry_gates['size_adj']   = 0.0
-        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 60% (credit floor)'
-
-    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']    = 'SKIP'
-        entry_gates['size_adj']   = 0.0
-        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
+    entry_gates = dict(entry_gates)
+    entry_gates['legacy_verdict'] = entry_gates.get('verdict')
+    if liquidity_gate:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
+    else:
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
 
     # ── Build calc log entry ──────────────────────────────────────────────────
     result = {
@@ -1765,9 +1802,8 @@ def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
     if vix_now is not None and vix_now > 25:
         return {'error': f'VIX {vix_now:.1f} > 25 — elevated fear, skip new credit positions'}
 
+    # Regime logged only (Jul 18 2026 — Book Health gates direction now)
     current_regime = _get_current_regime()
-    if current_regime and current_regime not in ('WEAK',):
-        return {'error': f'Regime {current_regime} — bear call credit needs WEAK regime'}
 
     underlying = get_underlying_price(sym)
     if not underlying:
@@ -1883,26 +1919,18 @@ def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
         hv30=hv30, bearish=False, credit=True,
     )
 
+    # Verdict policy (Jul 18 2026 redesign) — liquidity decides; legacy logged
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
-
-    if entry_gates.get('verdict') == 'ENTER_REDUCED':
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']    = 'SKIP'
-        entry_gates['size_adj']   = 0.0
-        entry_gates['skip_reason'] = '4/5 gates (need 5/5 for credit spread)'
-
-    if entry_gates.get('verdict') == 'ENTER' and mc_wr < 60:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']    = 'SKIP'
-        entry_gates['size_adj']   = 0.0
-        entry_gates['skip_reason'] = f'MC WR {mc_wr:.0f}% < 60% (credit floor)'
-
-    if entry_gates.get('verdict') == 'ENTER' and mc_ev_dollar < 50:
-        entry_gates = dict(entry_gates)
-        entry_gates['verdict']    = 'SKIP'
-        entry_gates['size_adj']   = 0.0
-        entry_gates['skip_reason'] = f'MC EV ${mc_ev_dollar:+.0f} < $50'
+    entry_gates = dict(entry_gates)
+    entry_gates['legacy_verdict'] = entry_gates.get('verdict')
+    if liquidity_gate:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
+    else:
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
 
     result = {
         'strategy':     'BEAR_CALL_CREDIT',
@@ -3373,6 +3401,11 @@ def scalp_scan_loop():
     if _paused:
         return
 
+    # Book Health gate (Jul 18 2026): scalps are bullish ATM calls — only trade
+    # them when the equity LONG book is healthy. Silent (checked every cycle).
+    if not _book_health_on('LONG'):
+        return
+
     OPT_CHAT = os.getenv('OPTIONS_TELEGRAM_CHAT_ID', '')
     if not OPT_CHAT:
         return
@@ -4283,27 +4316,40 @@ def _process_pending_suggestions():
     except Exception:
         pass
 
-    # ── Step 1: news_engine suggestion queue ─────────────────────────────────
+    # ── Step 1 (Jul 18 2026 redesign): news_engine queue is LOG-ONLY ─────────
+    # Audit verdict: news HIGH-BULL conviction is a fade signal (65-86% short-
+    # right by month) — it no longer triggers trades. We still run the
+    # calculator (one per cycle) so strikes/debit land in opt_suggestions and
+    # opt_calc_log for the nightly what-if scoring, then mark NO_TRADE.
     suggestions = get_pending_suggestions()
     if suggestions:
         sug = suggestions[0]
         try:
-            _handle_queued_suggestion(sug, OPT_CHAT)
+            update_suggestion_status(sug['id'], 'PROCESSING')
+            calc = run_strategy_comparison(sug['symbol'], 1)
+            if 'error' not in calc:
+                calc = _auto_qty_calc(calc)
+                try:
+                    update_suggestion_calc(sug['id'], calc, calc.get('calc_log_id'))
+                except Exception:
+                    pass
+            update_suggestion_status(sug['id'], 'NO_TRADE')
+            print(f"[options_trader] {sug['symbol']} news suggestion → what-if ledger only "
+                  f"({'calc ok' if 'error' not in calc else calc['error']})")
         except Exception as _e:
-            # Unexpected crash — reset to PENDING so it retries next cycle
-            print(f"[options_trader] suggestion handler crash ({sug['symbol']}): {_e}")
+            print(f"[options_trader] suggestion logger crash ({sug['symbol']}): {_e}")
             try:
-                update_suggestion_status(sug['id'], 'PENDING')
+                update_suggestion_status(sug['id'], 'NO_TRADE')
             except Exception:
                 pass
         return
 
-    # ── Step 2: equity A+ scan trigger (higher quality than conviction recycle) ─
-    triggered = _check_equity_scan_triggers(OPT_CHAT)
+    # ── Step 2: equity A+ scan trigger — the ONLY trade source, gated by
+    #            Book Health per direction inside _check_equity_scan_triggers.
+    _check_equity_scan_triggers(OPT_CHAT)
 
-    # ── Step 3: proactive recycling (fallback when no A+ trigger fires) ───────
-    if not triggered:
-        _proactive_recycle(OPT_CHAT)
+    # ── Step 3: proactive conviction recycling REMOVED as a trade source
+    #            (Jul 18 2026 audit: anti-predictive candidate stream).
 
 def _handle_queued_suggestion(sug: dict, OPT_CHAT: str):
     """Process one news_engine suggestion — the original auto-suggest path."""
@@ -4641,6 +4687,11 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
 
     for sym, direction, score, is_catalyst, intra_chg in rows:
         if sym in exclude:
+            continue
+
+        # Book Health gate (Jul 18 2026): only trade directions whose equity
+        # book is currently healthy. Both books OFF → options stays flat.
+        if not _book_health_on(direction if direction in ('LONG', 'SHORT') else 'LONG'):
             continue
 
         # scan_log backtest finding (Jun 20): for BULL call spreads, skip when:

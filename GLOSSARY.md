@@ -75,7 +75,9 @@ for all six types interchangeably. When speaking, pick the type word above.
 |---|---|---|
 | **Options Night School** | `options/learner_options.py`, launchd `options_learner` 22:15 ET | Learner |
 | **Watchman** | `options/watchman.py` | Auditor + Exit rules (already well-named — keep) |
-| **Scalp Engine** | OPT_SCALP | Entry module |
+| **Scalp Engine** | OPT_SCALP | Entry module (gated by LONG-book Book Health since Jul 19 2026) |
+| **Options Book Gate** | `_book_health_on()` in options_trader.py | Gate — options-side mirror of the equity Book Health Selector; each direction trades only while that equity book is healthy. Both OFF → options flat. Added Jul 19 2026. |
+| **Ghost Ledger** | `opt_suggestions.whatif_pnl/whatif_return_pct`, filled nightly by `fill_whatif_prices()` | Auditor — scores every suggestion we did NOT take (news queue is log-only since Jul 19 2026). The options what-if learning loop. |
 
 ---
 

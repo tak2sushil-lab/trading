@@ -440,7 +440,7 @@ def get_today_summary():
             opt['delta'] = round(sum(r['delta_entry'] or 0 for r in opt_open), 3)
 
             opt_closed = c.execute(
-                "SELECT exit_value - net_debit as pnl FROM options_trades "
+                "SELECT exit_value - premium_paid as pnl FROM options_trades "
                 "WHERE exit_date=? AND exit_value IS NOT NULL", (today,)
             ).fetchall()
             opt['pnl']    = round(sum(r['pnl'] or 0 for r in opt_closed), 2)
@@ -483,7 +483,7 @@ def get_pnl_by_book(sessions=15):
                 "WHERE exit_date>=? AND setup_type!='RECONCILED' GROUP BY exit_date",
                 (cutoff,)).fetchall(), 'equity')
             add(c.execute(
-                "SELECT exit_date, SUM(exit_value - net_debit) FROM options_trades "
+                "SELECT exit_date, SUM(exit_value - premium_paid) FROM options_trades "
                 "WHERE exit_date>=? AND exit_value IS NOT NULL GROUP BY exit_date",
                 (cutoff,)).fetchall(), 'options')
             add(c.execute(
@@ -516,7 +516,7 @@ def get_scorecard(since_date=None, days=21):
     books = [
         ('Equity',     "SELECT exit_date, pnl FROM trades "
                        "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL"),
-        ('Options',    "SELECT exit_date, exit_value - net_debit FROM options_trades "
+        ('Options',    "SELECT exit_date, exit_value - premium_paid FROM options_trades "
                        "WHERE exit_date>=? AND exit_value IS NOT NULL"),
         ('Futures NY', "SELECT exit_date, pnl FROM futures_trades "
                        "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
@@ -638,7 +638,7 @@ def get_activity(sessions=5):
                 UNION ALL
                 SELECT 'EXIT', 'OPTIONS', symbol, exit_date, NULL, exit_value,
                        strategy, NULL, 'LONG', contracts,
-                       exit_value - net_debit, exit_reason
+                       exit_value - premium_paid, exit_reason
                 FROM options_trades WHERE exit_date >= ? AND exit_date IS NOT NULL
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
@@ -822,6 +822,34 @@ def get_system_health():
                    FROM shadow_fishnet""").fetchone()
             out['shadow'] = {'n': row[0] or 0, 'pts_total': row[1] or 0,
                              'pts_14d': row[2] or 0}
+            # Options (Jul 18 2026 redesign) — book-gated funnel + what-if ledger
+            opt = {}
+            opt['open'] = [
+                {'symbol': r[0], 'strategy': r[1], 'premium': r[2],
+                 'entry_date': r[3]}
+                for r in c.execute(
+                    """SELECT symbol, strategy, premium_paid, entry_date
+                       FROM options_trades WHERE status='OPEN'""").fetchall()]
+            r = c.execute(
+                """SELECT COUNT(*), SUM(verdict='ENTER'), SUM(verdict='SKIP')
+                   FROM opt_calc_log WHERE substr(run_at,1,10)=?""",
+                (today,)).fetchone()
+            opt['calcs_today'] = {'total': r[0] or 0, 'enter': r[1] or 0,
+                                  'skip': r[2] or 0}
+            # What the skipped/logged suggestions would have done (last 14d)
+            r = c.execute(
+                """SELECT COUNT(*), ROUND(SUM(whatif_pnl),0), SUM(whatif_pnl > 0)
+                   FROM opt_suggestions
+                   WHERE whatif_pnl IS NOT NULL
+                     AND date(suggested_at) >= date('now','-14 day')""").fetchone()
+            opt['whatif_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0,
+                                 'wins': r[2] or 0}
+            r = c.execute(
+                """SELECT COUNT(*), ROUND(SUM(exit_value - premium_paid),0)
+                   FROM options_trades WHERE status='CLOSED'
+                     AND exit_date >= date('now','-14 day')""").fetchone()
+            opt['closed_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0}
+            out['options'] = opt
     except Exception:
         pass
     # Trade Cop — last parity verdict, decoded into a readable sentence
