@@ -166,6 +166,21 @@ def _sell_limit_price(bid: float, ask: float) -> float:
     return round(mid - discount, 2)
 
 
+def _leg_qty(sym: str, expiry: str, strike: float) -> float:
+    """Live IBKR position qty for one option leg (0.0 if not held). Used to
+    detect real fills by comparing before/after, not just 'is it nonzero'
+    (Jul 21 2026 fix — 'nonzero' can't tell long from short)."""
+    try:
+        r = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
+        for p in (r.json() if r.ok else []):
+            if (p.get('symbol') == sym and p.get('expiry') == expiry
+                    and abs(float(p.get('strike', 0)) - float(strike)) < 0.01):
+                return float(p.get('qty', 0))
+    except Exception:
+        pass
+    return 0.0
+
+
 def _auto_close_position(trade: dict, current_value: float, exit_reason: str = 'AUTO_STOP') -> bool:
     """
     Place a market-limit sell order to close the position when stop is hit.
@@ -175,6 +190,13 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
     strat = trade['strategy']
     tid   = trade['id']
     qty   = trade.get('contracts', 1)
+
+    # Baseline qty on the primary leg, captured BEFORE any order goes out —
+    # used below to detect a real fill by comparing before/after instead of
+    # trusting "is it nonzero" (Jul 21 2026 fix, see _leg_qty).
+    _primary_strike = trade.get('long_strike') or trade.get('strike')
+    _baseline_qty = (_leg_qty(sym, trade['expiry'], _primary_strike)
+                     if _primary_strike is not None else None)
 
     if strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
         # Close credit spread: BUY BACK the spread.
@@ -321,6 +343,10 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
         # Fix: check every leg this trade has (long_strike, short_strike, strike
         # for single-leg), and treat any nonzero qty — short legs are negative —
         # as still open.
+        # Jul 21 2026: "any nonzero" alone can't tell a genuine still-open long
+        # from a position that flipped sign and is now short (both are nonzero)
+        # — compare against the pre-order baseline instead, so a qty that moved
+        # at all is caught as evidence of a real fill.
         if not filled and st in ('Submitted', 'PreSubmitted', 'Cancelled', 'Unknown'):
             try:
                 r    = requests.get(f"{BRIDGE_URL}/portfolio/options", timeout=10)
@@ -337,6 +363,13 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
                 )
                 if not any_leg_open:
                     filled = True
+                elif _primary_strike is not None and _baseline_qty is not None:
+                    _current_qty = _leg_qty(sym, exp, _primary_strike)
+                    if _current_qty != _baseline_qty:
+                        filled = True
+                        print(f"[watchman] {sym} trade #{tid} — primary leg qty moved "
+                              f"{_baseline_qty} -> {_current_qty} despite status={st}; "
+                              f"treating as a real fill, not still-open")
             except Exception:
                 pass
 
@@ -348,9 +381,40 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
                 exit_dollar_final = round(avg_fp * 100 * qty, 2)
             break
 
-        # Cancel this specific order before retry
+        # Cancel this specific order before retry — but VERIFY the cancel
+        # actually took effect. IBKR can reject a cancel with "already Filled"
+        # (Error 10148) if the fill lands between our status check above and
+        # this cancel call; the bridge's /cancel endpoint returns "cancelled"
+        # unconditionally regardless of what IBKR actually does with it, so we
+        # must re-check status/portfolio afterward rather than trust that
+        # response. (Jul 21 2026 fix — this exact gap let USAR's cancel-after-
+        # fill race silently oversell it from long 1 to short 15: 10+ orders
+        # filled, every one of them treated as a failed attempt, so watchman
+        # just kept selling the same position again next cycle.)
         if order_id:
             _bridge_post(f'/order/{order_id}/cancel', {})
+            time.sleep(3)  # let the cancel — or its rejection — actually land
+            post_cancel = _bridge_get(f'/order/{order_id}/status')
+            post_cancel_st = (post_cancel or {}).get('status', 'Unknown')
+            post_cancel_filled = bool(
+                post_cancel and post_cancel.get('filled', 0) >= qty
+                or post_cancel_st == 'Filled'
+            )
+            if not post_cancel_filled and _primary_strike is not None and _baseline_qty is not None:
+                _current_qty = _leg_qty(sym, trade.get('expiry', ''), _primary_strike)
+                post_cancel_filled = _current_qty != _baseline_qty
+            if post_cancel_filled:
+                print(f"[watchman] {sym} trade #{tid} order {order_id} actually "
+                      f"FILLED despite cancel attempt (status={post_cancel_st}) — "
+                      f"treating as a real close, not a failed attempt")
+                filled = True
+                status = post_cancel
+                st = post_cancel_st
+                avg_fp = float((post_cancel or {}).get('avgFillPrice') or 0)
+                if avg_fp > 0 and strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD',
+                                                  'BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+                    exit_dollar_final = round(avg_fp * 100 * qty, 2)
+                break
 
     if not filled:
         # Jul 20 2026: no Telegram here — _check_trade's T3b_FAIL/T4_FAIL already

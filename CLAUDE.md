@@ -913,6 +913,25 @@ manually flattening or leaving it running):**
   the cancel-result is actually checked and reconciled against a live IBKR fill before the
   next attempt fires.
 
+**Follow-up same evening — race condition fixed + buyback placed (user directed):**
+- `watchman.py` `_auto_close_position`: after the cancel-and-retry call, now re-checks
+  order status (+ a `_leg_qty` portfolio comparison against a baseline captured before the
+  order went out) instead of trusting the bridge's fire-and-forget `/cancel` response. If
+  IBKR rejects the cancel because the order already filled (`Error 10148`), that's now
+  correctly recorded as a real close instead of a failed attempt. Also hardened the
+  existing portfolio-fallback check the same way — "any nonzero qty" couldn't tell long
+  from short; now compares against the pre-order baseline. Compiles clean, watchman
+  restarted. **Still needs a live test** — the exact race (fill landing between status
+  check and cancel call) hasn't recurred yet to confirm the fix catches it.
+- Placed a BUY 15 USAR 20280121 $22C @ $6.50 limit (orderId 505355) to flatten the short
+  back to 0. No live quotes available after-hours (delayed last=$5.70); priced with a
+  buffer above both that and yesterday's real ask ($5.95) since the order won't actually
+  hit the exchange until tomorrow's 9:30am ET open regardless. Placed as a single one-shot
+  order, deliberately NOT routed through the automated retry/cancel loop — left resting,
+  not auto-cancelled. **Verify fill after tomorrow's open** (`/portfolio/options`, not
+  `/order/{id}/status` — a bridge/gateway restart between now and then would drop local
+  order tracking but not the broker-side order or position).
+
 **Also found same session, real but separate:**
 - **Equity book-health selector structurally cannot self-correct.** Read `_scan_and_enter`
   line-by-line: `book_is_on('LONG')` gates the function *before* the 241-symbol scan loop,
