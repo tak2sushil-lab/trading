@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jul 20 2026
+Last updated: Jul 21 2026
 
 ---
 
@@ -866,6 +866,71 @@ USAR itself is still OPEN as of this fix — market was closed (after-hours, no 
 by the time the fix landed; first real test is tomorrow's open. Given the daily cap and
 the ~150-attempt history today, watch the first attempt closely rather than assuming it's
 fully solved — the IBKR-throttle theory is the best available explanation but unconfirmed.
+
+---
+
+## Jul 21 2026 — USAR discovered actually SHORT 15 contracts (Jul 20 fix exposed a worse bug)
+
+Deep-read follow-up the next evening found the Jul 20 fix did NOT close USAR — it made
+things worse in a way the DB never showed. **Live IBKR portfolio: SHORT 15 USAR
+20280121 $22 calls** (qty=-15, avgCost=$532.75, marketValue=-$8,900.16, unrealizedPnL=
+-$908.94), not the DB's `OPEN / LONG 1 contract`. Paper money — no real dollar loss —
+but the DB was completely blind to the real position.
+
+**Root cause:** `_auto_close_position`'s retry loop places an order, sleeps 30s, checks
+status, and cancels if not filled — but never reads the *result* of that cancel call. If
+a fill lands at IBKR just after the 30s check (common, since it's a fixed timer not an
+event), the cancel arrives too late, IBKR rejects it (`Error 10148: cannot be cancelled,
+state: Filled`), and the code silently treats the attempt as failed anyway — so it sells
+the same (already-sold) contract again next cycle. Confirmed **10 silent real fills**
+since Jul 20 via the 10148-rejection log pattern (order IDs 472371, 475414, 492576,
+492586, 492602, 493020, 493112, 493174, 493339, 493356); the position's actual 16-contract
+swing implies more that didn't hit this exact log signature. The portfolio-fallback safety
+check (`any_leg_open`, checks `abs(qty) > 0`) is also blind to this — it can't tell "long"
+from "short," so it never flags the position as wrong either.
+
+**This was exposed, not caused, by the Jul 20 fix.** Making the close price marketable
+(`_sell_limit_price`, scales to the bid on wide spreads) was correct and necessary — but
+it turned a latent race condition that almost never fired (orders essentially never filled
+before) into one that fires constantly (orders now fill routinely). The Jul 20 daily-cap
+fix (`MAX_DAILY_CLOSE_ATTEMPTS=5`) DID work as designed — today's activity was ~6
+order-bursts vs. ~150 before — it just capped a bug nobody knew was there yet.
+
+**Actions taken same session (user chose "reconcile DB, no new orders tonight" over
+manually flattening or leaving it running):**
+- `options_trades` id=19: `contracts` corrected 1→15 (true absolute size), `lesson` field
+  carries the full incident note and an explicit "do not trust contracts/premium_paid/
+  status for P&L" warning. `status` left OPEN (still technically true) and `premium_paid`
+  left at the original $970 (real historical entry cost) — deliberately did **not**
+  fabricate a P&L number from incomplete fill data.
+- `watchman.py`: added `_AUTO_CLOSE_DISABLED_TRADE_IDS = {19}`, checked at the top of
+  `_check_trade()` before ANY per-trade logic runs (not just the close attempt) — every
+  calc in that function assumes a normal long position and can't be trusted once the sign
+  flipped. Restarted and verified (compiles, logs "monitoring disabled" for #19 on the
+  next scan cycle).
+- The underlying fill-detection race condition is **NOT fixed** — only contained. Do not
+  re-enable auto-close on trade #19 (or trust the retry loop on any other position) until
+  the cancel-result is actually checked and reconciled against a live IBKR fill before the
+  next attempt fires.
+
+**Also found same session, real but separate:**
+- **Equity book-health selector structurally cannot self-correct.** Read `_scan_and_enter`
+  line-by-line: `book_is_on('LONG')` gates the function *before* the 241-symbol scan loop,
+  so while a book is OFF, no new `scan_log` rows are ever written — including on
+  STRONG-regime days. The trailing-10-day health calculation only reads *already-enriched*
+  rows, so once a book goes OFF it is frozen on whatever window existed the moment it went
+  off (currently LONG on Jul 16-and-earlier, SHORT on Jul 17-and-earlier) — confirmed by
+  identical -0.51%/-0.62% readings two days running with zero new data. It will not turn
+  back ON because the tape improved; it can only turn back ON via manual intervention or by
+  eventually running out of enriched rows and hitting the cold-start default (recovery by
+  data starvation, not by evidence). Options cascades from the same cause (its trigger
+  source is equity's A+ signals, which don't exist while equity is silent). **Not fixed —
+  flagging for a deliberate design decision** (e.g. a small always-on canary slice of the
+  universe purely to keep the health measurement current).
+- **Futures Trade Cop caught a real unresolved parity divergence on Jul 20:** live took two
+  `VWAP_LONG` entries (10:37, 10:38) that `sim_replay` never reproduces. Yesterday's futures
+  profit included those two trades — profitable this time, but currently untested against
+  the validated logic. Not root-caused yet.
 
 ---
 

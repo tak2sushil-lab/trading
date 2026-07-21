@@ -689,6 +689,15 @@ _alerted_thresholds: dict[int, set] = {}
 MAX_DAILY_CLOSE_ATTEMPTS = 5
 _close_attempts_today: dict[int, int] = {}
 
+# Jul 21 2026: trade #19 (USAR LEAP) discovered actually SHORT 15 contracts at
+# IBKR, not the DB's OPEN/LONG 1 — a race condition in _auto_close_position's
+# 30s-check-then-cancel logic let >=10 SELL fills land unrecorded, so it kept
+# re-selling a position it thought was still open. DB reconciled (contracts=15,
+# see options_trades.lesson for the full note) but the underlying fill-detection
+# bug is NOT fixed yet — auto-close on these trade IDs is hard-disabled until it
+# is, so the same mechanism can't deepen the short further on the next scan.
+_AUTO_CLOSE_DISABLED_TRADE_IDS = {19}
+
 
 def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     """
@@ -703,6 +712,15 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     stage  = trade['stop_stage'] or 1
     stop   = trade['stop_value']
     fired  = _alerted_thresholds.setdefault(tid, set())
+
+    # ── Jul 21 2026: hard-disabled trades (known-broken position, see
+    # _AUTO_CLOSE_DISABLED_TRADE_IDS) skip ALL monitoring, not just auto-close —
+    # every calc below (contract value, trailing stop) assumes a normal long
+    # position and can't be trusted once the real position has flipped sign.
+    if tid in _AUTO_CLOSE_DISABLED_TRADE_IDS:
+        print(f"[watchman] {sym} trade #{tid} — monitoring disabled (known-broken "
+              f"position, see options_trades.lesson) — skipping entirely")
+        return alerts
 
     # ── Fetch current market data ──
     current_value = get_contract_value(trade)
