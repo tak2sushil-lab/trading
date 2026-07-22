@@ -953,6 +953,44 @@ manually flattening or leaving it running):**
 
 ---
 
+## Jul 21 2026 (evening) — equity book-health confirmed frozen FOREVER (traced all 6 write sites); options auto-close blocks made durable
+
+**Equity, precise answer to "will the book ever turn back on":** traced every one of the
+exactly 6 `log_scan_candidate()` call sites in the entire codebase (grep-verified, not
+inferred) — all 6 sit inside `_scan_and_enter` / `_scan_and_enter_bear`, both gated by
+`book_is_on()` before reaching them. `_scan_premarket_catalyst` and `_scan_catalyst_override`
+call `log_scan_candidate()` zero times each, and no shadow/canary equity mechanism exists
+(unlike futures' Mirror Book). Correction to the earlier note above: the "cold-start
+default" is **not** a real escape hatch either — since `compute_book_health`'s query is
+`scan_date < today ORDER BY scan_date DESC LIMIT 10` against a pool that can never grow,
+the "10 most recent enriched days" is a **permanently fixed set** (not shrinking, not
+growing), currently sitting at 10 days / 374-514 rows — nowhere near the 4-day/30-row
+cold-start floor, and it never will be. **Under current code the book cannot turn back on
+by itself, period, with zero exceptions** — not "rarely," not "eventually," never. It isn't
+evaluating "is today bad" — it evaluated Jul 16/17 once and has silently repeated that exact
+verdict every day since, with zero awareness of anything that happened after. Also confirmed:
+book_is_on isn't the *only* pre-loop gate (daily loss brake, afternoon gate, recycled-slot
+gate also sit ahead of it) — but those reset every morning, so only book_is_on causes the
+multi-day freeze. Not fixed — user wants to debate the design before acting (data-freshness
+vs. contamination-risk tradeoff of scanning while a book is nominally off).
+
+**Options — auto-close blocks made durable (commit `0f596b6`), per explicit "no time
+pressure, fix it properly" direction.** The Jul 21 fixes above stored trade #19's block (and
+any future partial-fill flag) in an in-memory Python set — exactly the kind of gap that
+caused this whole incident class: a watchman restart would have silently un-blocked a
+known-broken position. New `options_auto_close_blocks` DB table (`trade_id`, `reason`,
+`flagged_at`) + `block_auto_close`/`unblock_auto_close`/`is_auto_close_blocked`/
+`get_auto_close_blocks` in `database.py`. `watchman.py` now calls `init_db()` at startup
+(matches `options_trader.py`'s existing pattern) and checks `is_auto_close_blocked()` from
+the DB instead of the two removed constructs (`_AUTO_CLOSE_DISABLED_TRADE_IDS`,
+`_PARTIAL_FILL_FLAGGED` — both deleted, single source of truth now). Migrated trade #19's
+block into the new table. **Verified live**: restarted watchman, confirmed via
+`logs/watchman.log` it read the block from the DB (not a reset in-memory set) and correctly
+skipped trade #19 on the next EOD run. Re-read the full modified `_auto_close_position`
+end to end once more per request — no further issues found on this pass.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |
