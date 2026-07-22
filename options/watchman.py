@@ -181,6 +181,25 @@ def _leg_qty(sym: str, expiry: str, strike: float) -> float:
     return 0.0
 
 
+def _flag_partial_fill(tid: int, sym: str, baseline_qty: float,
+                       current_qty: float, order_qty: int) -> None:
+    """A close order only partially filled — never mark the whole trade CLOSED
+    on a partial move (Jul 21 2026). Alerts once, flags the trade so no further
+    auto-close attempts run against a now-stale contracts count."""
+    _PARTIAL_FILL_FLAGGED.add(tid)
+    moved = abs(current_qty - baseline_qty)
+    send_telegram(
+        f"⚠️ *{sym} trade #{tid} — PARTIAL FILL during auto-close*\n"
+        f"Order was for {order_qty}, only {moved:.0f} contract(s) moved "
+        f"({baseline_qty:.0f} → {current_qty:.0f} at IBKR). DB NOT updated — "
+        f"auto-close disabled on this trade until manually reconciled. "
+        f"Check `OPT POSITIONS` against IBKR before doing anything else with it."
+    )
+    print(f"[watchman] {sym} trade #{tid} — PARTIAL FILL detected "
+          f"({baseline_qty} -> {current_qty}, order was {order_qty}) — flagged "
+          f"for manual review, auto-close disabled on this trade")
+
+
 def _auto_close_position(trade: dict, current_value: float, exit_reason: str = 'AUTO_STOP') -> bool:
     """
     Place a market-limit sell order to close the position when stop is hit.
@@ -365,11 +384,19 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
                     filled = True
                 elif _primary_strike is not None and _baseline_qty is not None:
                     _current_qty = _leg_qty(sym, exp, _primary_strike)
-                    if _current_qty != _baseline_qty:
+                    _moved = abs(_current_qty - _baseline_qty)
+                    if _moved >= qty:
                         filled = True
                         print(f"[watchman] {sym} trade #{tid} — primary leg qty moved "
                               f"{_baseline_qty} -> {_current_qty} despite status={st}; "
                               f"treating as a real fill, not still-open")
+                    elif _moved > 0:
+                        # PARTIAL fill — do NOT close the whole trade record on a
+                        # partial move (Jul 21 2026 fix, found while fixing the
+                        # full-fill race: closing here would mark the trade CLOSED
+                        # while real exposure remained open at IBKR).
+                        _flag_partial_fill(tid, sym, _baseline_qty, _current_qty, qty)
+                        return False
             except Exception:
                 pass
 
@@ -402,7 +429,14 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
             )
             if not post_cancel_filled and _primary_strike is not None and _baseline_qty is not None:
                 _current_qty = _leg_qty(sym, trade.get('expiry', ''), _primary_strike)
-                post_cancel_filled = _current_qty != _baseline_qty
+                _moved = abs(_current_qty - _baseline_qty)
+                if _moved >= qty:
+                    post_cancel_filled = True
+                elif _moved > 0:
+                    # PARTIAL fill despite the cancel attempt — same handling as
+                    # the main fallback above: do not close the whole trade.
+                    _flag_partial_fill(tid, sym, _baseline_qty, _current_qty, qty)
+                    return False
             if post_cancel_filled:
                 print(f"[watchman] {sym} trade #{tid} order {order_id} actually "
                       f"FILLED despite cancel attempt (status={post_cancel_st}) — "
@@ -762,6 +796,17 @@ _close_attempts_today: dict[int, int] = {}
 # is, so the same mechanism can't deepen the short further on the next scan.
 _AUTO_CLOSE_DISABLED_TRADE_IDS = {19}
 
+# Jul 21 2026: any trade where _auto_close_position detected a PARTIAL fill
+# (some but not all contracts moved) — never touched by the close-position bug
+# directly, but discovered while fixing it: a partial fill was being treated
+# the same as a full one, closing the WHOLE trade record in the DB while real
+# exposure remained open at IBKR. BULL_SPREAD/BEAR_PUT_SPREAD have run up to
+# 10 contracts historically, so this is a live risk, not theoretical. Flagged
+# trades are hard-disabled the same way as _AUTO_CLOSE_DISABLED_TRADE_IDS
+# (checked together below) until someone manually reconciles the real
+# remaining size against IBKR.
+_PARTIAL_FILL_FLAGGED: set[int] = set()
+
 
 def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     """
@@ -781,7 +826,7 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     # _AUTO_CLOSE_DISABLED_TRADE_IDS) skip ALL monitoring, not just auto-close —
     # every calc below (contract value, trailing stop) assumes a normal long
     # position and can't be trusted once the real position has flipped sign.
-    if tid in _AUTO_CLOSE_DISABLED_TRADE_IDS:
+    if tid in _AUTO_CLOSE_DISABLED_TRADE_IDS or tid in _PARTIAL_FILL_FLAGGED:
         print(f"[watchman] {sym} trade #{tid} — monitoring disabled (known-broken "
               f"position, see options_trades.lesson) — skipping entirely")
         return alerts
