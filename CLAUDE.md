@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jul 21 2026
+Last updated: Jul 21 2026 (night)
 
 ---
 
@@ -988,6 +988,65 @@ block into the new table. **Verified live**: restarted watchman, confirmed via
 `logs/watchman.log` it read the block from the DB (not a reset in-memory set) and correctly
 skipped trade #19 on the next EOD run. Re-read the full modified `_auto_close_position`
 end to end once more per request — no further issues found on this pass.
+
+---
+
+## Jul 21 2026 (night) — Book Health Selector SHIPPED FIX: gate moved to entry-only + reset date
+
+After several rounds of debate (documented in the session, not re-derived here), user approved
+and directed implementation of both agreed pieces. Deep-read both `_scan_and_enter` and
+`_scan_and_enter_bear` end to end before touching anything, to identify the exact boundary
+between "safe to always run" and "must stay gated."
+
+**Finding that made the fix low-risk:** both functions already had a clean, pre-existing
+seam — a full candidate-grading-and-logging block (every symbol graded, every grade logged to
+`scan_log` including `entered=False` for non-entries) runs completely separately from, and
+*before*, the actual entry-placement loop that calls `place_trade()`. No new logic had to be
+written; the fix only had to change *where* one `if` check sits, not what anything computes.
+
+**Change 1 — gate moved (`auto_trader.py`):** `book_is_on('LONG'/'SHORT')` no longer sits at
+the top of `_scan_and_enter`/`_scan_and_enter_bear` (which made it exit before grading ever
+ran). Now checked immediately before the entry loop only — grading and `scan_log` logging run
+on every single scan regardless of book status; the book only ever blocks the step that commits
+real capital (`place_trade`). Implementation is minimal-diff by design: `for pick in candidates:`
+became `for pick in (candidates if book_is_on('LONG') else []):` — no re-indentation of the
+100+ line entry-loop body, reducing risk of a transcription bug in a large edit.
+
+**Change 2 — reset date (`auto_trader.py` + `options/options_trader.py`):** added
+`BOOK_HEALTH_RESET_DATE = '2026-07-22'` and an `AND scan_date>=?` filter to both
+`compute_book_health()`'s query in `auto_trader.py` *and* the separately-duplicated
+`_book_health_on()` in `options_trader.py` (comment there literally says "mirrors
+auto_trader.py exactly," but it had drifted — was still reading the un-reset window). Both
+were frozen by the identical root cause since they read the same `scan_log` table; found this
+by tracing options' trigger requirements and confirming the user's "options starts trading
+tomorrow too" expectation actually held up under the code, not just assumed.
+
+**Why reset, not just let the window roll (debated at length, decided against blending):** the
+existing 10-day window was confirmed 57% dominated by a single Jul 1 burst day (214 of 374
+LONG signals) — blending it into a fresh reading would import a known distortion rather than
+preserve useful information. Reset discards it cleanly instead.
+
+**What actually happens starting Jul 22:** cold-start default (`< 4 days / < 30 rows → ON`,
+pre-existing behavior, same posture as any new deployment) governs for roughly the first 4
+trading days while fresh data accumulates from scratch. By ~day 10 (~2 calendar weeks), the
+window is fully fresh with zero pre-reset influence. The book can go OFF again during this
+period if fresh data genuinely warrants it — the fix restores the ability to find out either
+way, it does not predetermine the outcome.
+
+**Side-effect audit (done as part of the "dig properly" request, not skipped):** read every
+line between the top of each function and the entry loop. Only one non-trivial side effect
+found — `catalyst_priority.append(symbol)` on a strong intraday mover — judged safe to run
+unconditionally (pure watchlist-priority bookkeeping, no capital or order implications, and
+was already running whenever the book happened to be on before this fix). `_scan_catalyst_override`
+(a separate, smaller function with no grading/logging phase to protect) intentionally left
+untouched — its `book_is_on('LONG')` gate still blocks its entire body, which is correct since
+there's nothing to separate there.
+
+**Verified:** both files `py_compile` clean, `autotrader` and `options_trader` restarted,
+bridge healthy, no new errors post-restart. **Not live-tested yet** — market was closed at
+ship time; the real test is tomorrow's open. Watch the first few scans of Jul 22 for the new
+book-health log line and confirm `scan_log` starts accumulating rows again regardless of ON/OFF
+status.
 
 ---
 

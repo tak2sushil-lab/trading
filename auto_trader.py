@@ -3545,6 +3545,15 @@ BOOK_HEALTH_WINDOW_DAYS = 10
 BOOK_HEALTH_MIN_DAYS    = 4
 BOOK_HEALTH_MIN_ROWS    = 30
 BOOK_HEALTH_THRESHOLD   = 0.0
+# Jul 21 2026 fix: book_is_on() used to gate the ENTIRE scan (grading included), so once a
+# book went OFF, no new scan_log data could ever be generated to re-evaluate it — the window
+# was frozen forever on whatever existed the moment it went off. Traced: LONG's frozen window
+# was 57% dominated by a single Jul 1 burst day. Fixed by (a) moving the gate to only block
+# entry (see _scan_and_enter/_scan_and_enter_bear — grading/logging now run unconditionally),
+# and (b) this reset date, so the stale pre-fix window is never blended into the fresh one.
+# Cold-start default (ON) governs Jul 22 onward until 4 fresh days/30 rows accumulate — same
+# bootstrap posture as any new deployment. Sunset: none needed, this is permanent behavior now.
+BOOK_HEALTH_RESET_DATE  = '2026-07-22'
 _book_health_cache = {'date': None, 'LONG': None, 'SHORT': None}
 
 def compute_book_health(direction):
@@ -3556,10 +3565,11 @@ def compute_book_health(direction):
         today_str = datetime.now(ET).strftime('%Y-%m-%d')
         days = [r[0] for r in conn.execute(
             """SELECT DISTINCT scan_date FROM scan_log
-               WHERE grade='A+' AND direction=? AND scan_date<? AND enriched=1
+               WHERE grade='A+' AND direction=? AND scan_date<? AND scan_date>=?
+                 AND enriched=1
                  AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
                ORDER BY scan_date DESC LIMIT ?""",
-            (direction, today_str, BOOK_HEALTH_WINDOW_DAYS))]
+            (direction, today_str, BOOK_HEALTH_RESET_DATE, BOOK_HEALTH_WINDOW_DAYS))]
         if len(days) < BOOK_HEALTH_MIN_DAYS:
             return None, len(days), 0
         qmarks = ','.join('?' * len(days))
@@ -3608,10 +3618,10 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
         log("LONGS PAUSED (manual override) — monitoring only. Send RESUME to re-enable.")
         return monitor_open_trades(regime, confirmed_scans)
 
-    # ── Book health selector: LONG book OFF when our own A+ signals aren't working ──
-    if not book_is_on('LONG'):
-        log("📖 LONG book OFF (trailing signal drift ≤ 0) — monitoring only")
-        return monitor_open_trades(regime, confirmed_scans)
+    # Jul 21 2026: book_is_on('LONG') no longer gates here — moved to just before the
+    # entry loop below. Grading/logging now run every scan regardless of book status, so
+    # the book health measurement always has fresh data to judge itself against instead
+    # of freezing the moment it goes off. See BOOK_HEALTH_RESET_DATE for the full story.
 
     # ── Daily max loss brake ───────────────────────────────────
     try:
@@ -3817,7 +3827,15 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     open_count    = len(open_trades)
     sector_counts = get_open_sector_counts()
 
-    for pick in candidates:
+    # ── Book health selector: LONG book OFF when our own A+ signals aren't working ──
+    # Jul 21 2026: moved here from the top of the function — grading/logging above this
+    # point now always runs, so the health measurement never goes blind. This is the ONLY
+    # gate that blocks committing real capital; nothing above it places an order.
+    _long_book_on = book_is_on('LONG')
+    if not _long_book_on:
+        log("📖 LONG book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
+
+    for pick in (candidates if _long_book_on else []):
         if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
@@ -3952,10 +3970,10 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
 def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     global daily_bear_count, traded_today
 
-    # ── Book health selector: SHORT book OFF when our own A+ signals aren't working ──
-    if not book_is_on('SHORT'):
-        log("📖 SHORT book OFF (trailing signal drift ≤ 0) — monitoring only")
-        return monitor_open_trades(regime, confirmed_scans)
+    # Jul 21 2026: book_is_on('SHORT') no longer gates here — moved to just before the
+    # entry loop below. Grading/logging now run every scan regardless of book status, so
+    # the book health measurement always has fresh data to judge itself against instead
+    # of freezing the moment it goes off. See BOOK_HEALTH_RESET_DATE for the full story.
 
     # ── Daily max loss brake ───────────────────────────────────
     try:
@@ -4114,7 +4132,15 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     open_count    = len(open_trades)
     sector_counts = get_open_sector_counts()
 
-    for pick in candidates:
+    # ── Book health selector: SHORT book OFF when our own A+ signals aren't working ──
+    # Jul 21 2026: moved here from the top of the function — grading/logging above this
+    # point now always runs, so the health measurement never goes blind. This is the ONLY
+    # gate that blocks committing real capital; nothing above it places an order.
+    _short_book_on = book_is_on('SHORT')
+    if not _short_book_on:
+        log("📖 SHORT book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
+
+    for pick in (candidates if _short_book_on else []):
         if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
         if daily_bear_count >= MAX_DAILY_BEAR_TRADES:

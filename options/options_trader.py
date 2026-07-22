@@ -221,6 +221,13 @@ def _get_current_regime() -> Optional[str]:
 BOOK_HEALTH_WINDOW_DAYS = 10
 BOOK_HEALTH_MIN_DAYS    = 4
 BOOK_HEALTH_MIN_ROWS    = 30
+# Jul 21 2026: mirrors auto_trader.py's BOOK_HEALTH_RESET_DATE fix exactly. This function
+# reads the same scan_log table equity's book_is_on() reads, and was frozen by the identical
+# root cause (equity's book_is_on used to gate grading itself, so scan_log stopped getting
+# new A+ rows the moment either book went off — this copy inherited the same stale, Jul-1-
+# burst-dominated window). Without this reset here too, options would keep averaging in that
+# poisoned data for ~10 more days even after equity's own calculation goes clean.
+BOOK_HEALTH_RESET_DATE  = '2026-07-22'
 _opt_book_cache: dict = {'date': None}
 
 def _book_health_on(direction: str) -> bool:
@@ -234,10 +241,11 @@ def _book_health_on(direction: str) -> bool:
                 conn = sqlite3.connect(DB_PATH)
                 days = [r[0] for r in conn.execute(
                     """SELECT DISTINCT scan_date FROM scan_log
-                       WHERE grade='A+' AND direction=? AND scan_date<? AND enriched=1
+                       WHERE grade='A+' AND direction=? AND scan_date<? AND scan_date>=?
+                         AND enriched=1
                          AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
                        ORDER BY scan_date DESC LIMIT ?""",
-                    (d, today_str, BOOK_HEALTH_WINDOW_DAYS))]
+                    (d, today_str, BOOK_HEALTH_RESET_DATE, BOOK_HEALTH_WINDOW_DAYS))]
                 health = None
                 if len(days) >= BOOK_HEALTH_MIN_DAYS:
                     qmarks = ','.join('?' * len(days))
