@@ -762,15 +762,23 @@ def get_system_health():
     Mirror Book. The 'is the machine healthy and what is it seeing' view."""
     out = {'books': {}, 'funnel': {}, 'parity': {}, 'shadow': {}, 'universe': None}
     today = datetime.now(tz=ET).strftime('%Y-%m-%d')
+    # Jul 22 2026: must mirror auto_trader.py's BOOK_HEALTH_RESET_DATE exactly, or this
+    # panel keeps averaging the pre-reset (poisoned) window forever — see auto_trader.py
+    # comment near BOOK_HEALTH_RESET_DATE for the full story. Found drifted same day the
+    # options_trader.py twin was found drifted; same root cause (duplicated query, no
+    # shared source of truth).
+    BOOK_HEALTH_RESET_DATE = '2026-07-22'
     try:
         with _db() as c:
             # Book Health — same trailing-10-day drift formula as auto_trader
             for d in ('LONG', 'SHORT'):
                 days = [r[0] for r in c.execute(
                     """SELECT DISTINCT scan_date FROM scan_log
-                       WHERE grade='A+' AND direction=? AND scan_date<? AND enriched=1
+                       WHERE grade='A+' AND direction=? AND scan_date<? AND scan_date>=?
+                         AND enriched=1
                          AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL
-                       ORDER BY scan_date DESC LIMIT 10""", (d, today)).fetchall()]
+                       ORDER BY scan_date DESC LIMIT 10""",
+                    (d, today, BOOK_HEALTH_RESET_DATE)).fetchall()]
                 if len(days) < 4:
                     out['books'][d] = {'state': 'COLD START', 'drift': None}
                     continue
