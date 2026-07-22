@@ -157,6 +157,17 @@ def init_db():
         status              TEXT DEFAULT 'OPEN'
     )''')
 
+    # ── Auto-close blocklist — durable, survives watchman restarts (Jul 22 2026).
+    # Replaces an in-memory set that reset on every restart, which is exactly
+    # the kind of gap that let USAR's fill-detection race go unnoticed for two
+    # days. Any trade_id in here is skipped entirely by watchman's per-trade
+    # monitoring (not just auto-close) until a human deletes the row.
+    c.execute('''CREATE TABLE IF NOT EXISTS options_auto_close_blocks (
+        trade_id            INTEGER PRIMARY KEY REFERENCES options_trades(id),
+        reason               TEXT,
+        flagged_at           TEXT
+    )''')
+
     # ── Options snapshots — 15-min + EOD watchman writes ─────
     c.execute('''CREATE TABLE IF NOT EXISTS options_snapshots (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -858,6 +869,46 @@ def close_options_trade(trade_id, exit_value, exit_reason,
     conn.commit()
     conn.close()
     return return_pct
+
+def block_auto_close(trade_id, reason):
+    """Durably block watchman's per-trade monitoring for one options trade —
+    survives restarts, unlike an in-memory set (Jul 22 2026). Idempotent:
+    calling again just refreshes the reason/timestamp."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''INSERT INTO options_auto_close_blocks (trade_id, reason, flagged_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(trade_id) DO UPDATE SET reason=excluded.reason,
+                     flagged_at=excluded.flagged_at''',
+              (trade_id, reason, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def unblock_auto_close(trade_id):
+    """Manually lift a block once a trade has been reconciled by hand."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('DELETE FROM options_auto_close_blocks WHERE trade_id=?', (trade_id,))
+    conn.commit()
+    conn.close()
+
+def is_auto_close_blocked(trade_id):
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('SELECT 1 FROM options_auto_close_blocks WHERE trade_id=?', (trade_id,))
+    row  = c.fetchone()
+    conn.close()
+    return row is not None
+
+def get_auto_close_blocks():
+    """All currently-blocked trades, for inspection (e.g. from a Telegram command)."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('SELECT trade_id, reason, flagged_at FROM options_auto_close_blocks '
+              'ORDER BY flagged_at DESC')
+    rows = c.fetchall()
+    conn.close()
+    return [{'trade_id': r[0], 'reason': r[1], 'flagged_at': r[2]} for r in rows]
 
 def log_options_snapshot(trade_id, underlying_price, contract_value,
                          delta=None, iv_rank=None, iv_pct=None,

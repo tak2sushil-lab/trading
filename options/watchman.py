@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 # ── Path setup ──────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import (
+    init_db,
     get_open_options_trades,
     update_options_stop,
     close_options_trade,
@@ -52,6 +53,8 @@ from database import (
     get_closed_options_count,
     get_options_learning_data,
     purge_old_news,
+    block_auto_close,
+    is_auto_close_blocked,
 )
 
 load_dotenv()
@@ -185,9 +188,15 @@ def _flag_partial_fill(tid: int, sym: str, baseline_qty: float,
                        current_qty: float, order_qty: int) -> None:
     """A close order only partially filled — never mark the whole trade CLOSED
     on a partial move (Jul 21 2026). Alerts once, flags the trade so no further
-    auto-close attempts run against a now-stale contracts count."""
-    _PARTIAL_FILL_FLAGGED.add(tid)
+    auto-close attempts run against a now-stale contracts count. Durable
+    (Jul 22 fix) — persisted to options_auto_close_blocks, survives restarts."""
     moved = abs(current_qty - baseline_qty)
+    block_auto_close(
+        tid,
+        f"PARTIAL FILL during auto-close: order for {order_qty}, only "
+        f"{moved:.0f} contract(s) moved ({baseline_qty:.0f} -> {current_qty:.0f} "
+        f"at IBKR). DB not updated at time of flag."
+    )
     send_telegram(
         f"⚠️ *{sym} trade #{tid} — PARTIAL FILL during auto-close*\n"
         f"Order was for {order_qty}, only {moved:.0f} contract(s) moved "
@@ -787,25 +796,13 @@ _alerted_thresholds: dict[int, set] = {}
 MAX_DAILY_CLOSE_ATTEMPTS = 5
 _close_attempts_today: dict[int, int] = {}
 
-# Jul 21 2026: trade #19 (USAR LEAP) discovered actually SHORT 15 contracts at
-# IBKR, not the DB's OPEN/LONG 1 — a race condition in _auto_close_position's
-# 30s-check-then-cancel logic let >=10 SELL fills land unrecorded, so it kept
-# re-selling a position it thought was still open. DB reconciled (contracts=15,
-# see options_trades.lesson for the full note) but the underlying fill-detection
-# bug is NOT fixed yet — auto-close on these trade IDs is hard-disabled until it
-# is, so the same mechanism can't deepen the short further on the next scan.
-_AUTO_CLOSE_DISABLED_TRADE_IDS = {19}
-
-# Jul 21 2026: any trade where _auto_close_position detected a PARTIAL fill
-# (some but not all contracts moved) — never touched by the close-position bug
-# directly, but discovered while fixing it: a partial fill was being treated
-# the same as a full one, closing the WHOLE trade record in the DB while real
-# exposure remained open at IBKR. BULL_SPREAD/BEAR_PUT_SPREAD have run up to
-# 10 contracts historically, so this is a live risk, not theoretical. Flagged
-# trades are hard-disabled the same way as _AUTO_CLOSE_DISABLED_TRADE_IDS
-# (checked together below) until someone manually reconciles the real
-# remaining size against IBKR.
-_PARTIAL_FILL_FLAGGED: set[int] = set()
+# Jul 22 2026: auto-close blocks (known-broken positions, e.g. Jul 20-21's USAR
+# race-condition incident, or a partial fill caught by _flag_partial_fill) now
+# live in the options_auto_close_blocks DB table, not an in-memory set — a set
+# resets on every watchman restart, which defeats the entire point of a block
+# meant to last "until a human reconciles this." See database.py
+# block_auto_close/is_auto_close_blocked. To lift a block once resolved:
+# database.unblock_auto_close(trade_id).
 
 
 def _check_trade(trade: dict, is_eod: bool) -> list[str]:
@@ -822,13 +819,17 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
     stop   = trade['stop_value']
     fired  = _alerted_thresholds.setdefault(tid, set())
 
-    # ── Jul 21 2026: hard-disabled trades (known-broken position, see
-    # _AUTO_CLOSE_DISABLED_TRADE_IDS) skip ALL monitoring, not just auto-close —
-    # every calc below (contract value, trailing stop) assumes a normal long
-    # position and can't be trusted once the real position has flipped sign.
-    if tid in _AUTO_CLOSE_DISABLED_TRADE_IDS or tid in _PARTIAL_FILL_FLAGGED:
+    # ── Jul 21/22 2026: blocked trades (known-broken position — see
+    # options_auto_close_blocks in the DB) skip ALL monitoring, not just
+    # auto-close — every calc below (contract value, trailing stop) assumes a
+    # normal long position and can't be trusted once the real position has
+    # flipped sign. Durable across restarts (Jul 22 fix) — was an in-memory
+    # set before, which would have silently un-blocked USAR on the next
+    # watchman restart.
+    if is_auto_close_blocked(tid):
         print(f"[watchman] {sym} trade #{tid} — monitoring disabled (known-broken "
-              f"position, see options_trades.lesson) — skipping entirely")
+              f"position, see options_auto_close_blocks / options_trades.lesson) "
+              f"— skipping entirely")
         return alerts
 
     # ── Fetch current market data ──
@@ -1180,6 +1181,7 @@ def run_eod():
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
+    init_db()  # idempotent — ensures options_auto_close_blocks etc. exist (Jul 22 2026)
     print("[watchman] started")
     # Note: _session_highs is empty on startup — seeds from current price on first
     # check per trade. Trailing stops are seeded from current price (not true intraday
