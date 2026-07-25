@@ -1050,6 +1050,62 @@ status.
 
 ---
 
+## Jul 25 2026 — Give-back fix SHIPPED (Reversal Exit + Partial Scale-Out) + full TC alignment
+
+**Diagnosis (user-driven, confirmed by 1-min bar forensics):** since Jul 8, trades peaking
+≥$150 kept only 40% of peak ($2,312 of $6,800); total give-back $8,470 vs net +$466. Root
+cause: Weather-Aware Profit Locks activation cliffs (TRENDING wide trail needs +300pts —
+Jul 15 trades peaked +296 and kept 59pts; Jul 24 peaked +96 on a TRENDING day = ZERO
+protection → rode to the -$1,279 DLL breaker, which then correctly blocked fully-qualified
+13:11 A+ SHORTs worth ~+$400-800 in the afternoon trend).
+
+**Timing study (70 trades, peak ≥75pts, 1-min bars):** entry→real peak median 176min;
+peak→30%-retrace median 7min (21/70 never retrace 30% — the runners). Both user intuitions
+partially right: reversals ARE violent, but real peaks come ~3hrs in, so any exit fast
+enough to catch the 7-min reversal amputates the 3-hr runners that are ALL the profit.
+**Exit-lab (1-min replay, same entries, exits only):** every faster-exit variant LOSES at
+trade level — "exit the minute it reverses" (20% retrace) turns +$4,340 into -$264 while
+capture% RISES 55→77 (capture% and P&L anti-correlate; give-back is the premium for the
+right tail). Dynamic IB-scaled "enough" thresholds: worst tested (-$1,192). What wins is
+**exit-plus-re-entry**: cut a CONFIRMED reversal, let the entry engine re-enter.
+
+**SHIPPED (both futures traders):**
+- **Reversal Exit**: peak ≥120pts + 2 consecutive adverse CLOSED 5-min bars + ≥30% of peak
+  gone → market exit. sim_replay `--rev-exit 2,0.30,120`. Validated: 2026 YTD $6,072→$7,449
+  (+23%), 2025 OOS $2,277→$2,731 (+20%), MaxDD flat, WR flat/up, best trade GREW (+$1,042→
+  +$1,512 via re-entry), fired only 10×/7mo. Param plateau wide (0.30-0.35 × 120-150).
+  Rejected: 1-min confirmation (fires on noise), retrace-only ratchets, graduated lock-frac,
+  IB-scaled floors, TRENDING be_pts 90 (costs ~$700/yr; 90-120pt peaks stay a LOGGED
+  watch-item — Jul 24's exact case, unprotected by design per two-year aggregate).
+- **Partial Scale-Out**: 2-contract trades bank 1 at +150pts (limit-fill semantics live via
+  market order at touch), runner stop→BE. rev+partial: $7,538 YTD26 / $2,818 2025 — beats
+  rev-alone both years. Partial logged as its own CLOSED row (`notes='partial of #id'`).
+- **TC full alignment (tc_trader.py)** — was still the pre-Jul-7 system end to end. Ported:
+  A+-only entries, Trend Jury (hero gate), RVOL 0.85 gate + graduated 0.70 floor w/ Hero-GOLD
+  compensation (completed-bar calc), 30-min HTF agreement, F1 consecutive-bar regime
+  confirmation, rebuilt get_regime (RVOL≥0.65 + hybrid session/day reference + 5-bar trend),
+  Jul 7 signal redefinitions (ORB w/o session restriction, 3-bar VWAP streaks, 3-of-4
+  momentum), PM_SHORT disabled, 10:30 IB classification (_day_regime/_ib_kind incl.
+  BEAR_DIRECTIONAL short unlock), 200/1500pt stop/target, regime-aware locks, Reversal Exit,
+  Partial Scale-Out (dormant at TC's 1-contract sizing). Prop rules UNTOUCHED (DLL $700 soft,
+  2 trades/day, TC_DAILY_CAP). Validated under TC caps: $6,017→$7,395 YTD26.
+- **Bug sweep during build:** (1) partial rows would have consumed MAX_DAILY_TRADES slots —
+  all 3 daily-count queries now exclude `notes LIKE 'partial of %'`; (2) same exclusion added
+  to Trade Cop live query + SIM_FLAGS updated (`--rev-exit 2,0.30,120 --partial 150`);
+  (3) rev-exit uses forming-bar age check (same class as RVOL/HTF fixes); (4) residual risk
+  NOTED: if a partial MARKET order submits but never fills (near-impossible on MNQ RTH),
+  DB/IBKR qty drift 1 contract until next reconcile.
+- **London: rev-exit tested and REJECTED** (london_v2_sim, 5 variants, 18mo 1-min): baseline
+  $3,177 vs $2,826-2,981 — London's edge is riding rare runners behind BE=0.10 armor; keep as is.
+- **Equity same session:** Jul 21 book-health fix VERIFIED live (scan_log 1,620/2,401/2,381
+  rows Jul 22-24, trades resumed, books cold-start ON, first real verdict ~Jul 28-29). Week
+  -$124/15t. Jul 24 zero trades = genuinely thin (3 A+ LONG, 0 A+ SHORT all day), not a bug.
+  **FIXED: enrich_scan_log LIMIT 2000→6000** — at 241 symbols (~2,400 rows/day) newest-first
+  ordering left ~400 rows/day permanently unenriched, silently biasing the Book Health sample.
+- Services restarted + verified; sunset review for both new exit rules Aug 24 2026.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

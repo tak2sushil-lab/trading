@@ -191,6 +191,31 @@ EXIT_PARAMS_BY_REGIME: dict[str, dict[str, float]] = {
     'TRENDING': {'be_pts': 110.0, 'be_frac': 0.20, 'wide_pts': 300.0, 'wide_gap': 180.0, 'tight_pts': 550.0, 'tight_gap': 110.0},
 }
 
+# ── Reversal-detection exit + partial scale-out (Jul 24 2026) ───────────────
+# Give-back reduction session. Diagnosis: trades peaking ≥$150 since Jul 8
+# kept only 40% of peak ($2,312 of $6,800); trail-tier activation cliffs
+# (TRENDING wide at +300) left peaks of +96..296pts nearly unprotected.
+# 1-min timing study (70 trades, peak≥75pts): real peaks come at median
+# +176min but a real reversal takes 30% of the peak back in median 7min —
+# too fast for the tiers, too slow-building for a same-minute exit (every
+# faster variant tested LOSES: exit-lab retrace f=0.20 turns +$4,340 into
+# -$264 because it amputates the 3-hour runners that are the whole profit).
+# What wins is exit-plus-re-entry: cut a CONFIRMED reversal (2 closed 5-min
+# bars against + 30% of peak gone) and let the entry engine re-enter if the
+# trend resumes. Pure price-path — deliberately NOT the reverted Jul 7
+# signal-vote thesis-invalidation.
+# Validated via sim_replay (production flags, both years):
+#   2026 YTD  base $6,072 → rev $7,449 → rev+partial $7,538  (MaxDD flat)
+#   2025 OOS  base $2,277 → rev $2,731 → rev+partial $2,818
+#   Right tail INTACT (best trade grew +$1,042 → +$1,512 via re-entry).
+# Partial scale-out: on 2-contract trades bank 1 at +150pts, runner's stop
+# to breakeven — heartbreak insurance, banked cash can't be given back.
+# Sunset review: Aug 24 2026 (scored via exit_reason in futures_trades).
+REV_EXIT_CONFIRM_BARS  = 2      # consecutive adverse CLOSED 5-min bars
+REV_EXIT_RETRACE_FRAC  = 0.30   # fraction of peak given back
+REV_EXIT_PEAK_MIN_PTS  = 120.0  # only after the trade proved a real peak
+PARTIAL_TAKE_PTS       = 150.0  # bank 1 contract here (2-contract trades)
+
 # ── Thesis invalidation exit — REVERTED Jul 7 2026 ──────────────────────────
 # Tried: cut a trade on evidence the setup failed (regime/HTF/momentum/VWAP
 # turning against it, 2-of-4 votes sustained 2 bars) instead of waiting for
@@ -270,6 +295,7 @@ _session_high         = {}   # trade_id → session high
 _session_low          = {}   # trade_id → session low
 _price_history        = {}   # trade_id → [prices]
 _partial_done         = {}   # trade_id → locked_pnl
+_rev_state            = {}   # trade_id → {'last_ts', 'adv_streak', 'prev_close'} (reversal exit)
 _orb_high             = None # opening range high (first 15 min)
 _orb_low              = None # opening range low
 _orb_set              = False
@@ -424,6 +450,17 @@ def _bridge_post(path: str, payload: dict, timeout: int = 10) -> dict:
     except Exception as e:
         log(f"Bridge POST {path} error: {e}")
         return {}
+
+
+def _get_ibkr_qty() -> float | None:
+    """Current net MNQ position size at the broker (signed). None if bridge unavailable."""
+    pos = _bridge_get('/futures/position')
+    if not isinstance(pos, list):
+        return None
+    for p in pos:
+        if p.get('symbol') == SYMBOL:
+            return float(p.get('qty', 0))
+    return 0.0
 
 
 def get_live_price() -> float | None:
@@ -1292,6 +1329,35 @@ def log_futures_exit(trade_id, exit_price, exit_reason, pnl, pnl_ticks):
     conn.close()
 
 
+def _log_partial_close(trade: dict, exit_price: float, pnl: float, pnl_ticks: float):
+    """Record a partial scale-out as its own CLOSED row (1 contract) and
+    decrement the open trade's contract count. Keeping the realized leg as a
+    normal CLOSED row means get_futures_daily_pnl / dashboard / learner all
+    account for it with zero special-casing."""
+    now  = datetime.now(ET)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+        INSERT INTO futures_trades
+            (symbol, contract, entry_date, entry_time, entry_price,
+             exit_date, exit_time, exit_price, contracts, side,
+             target_price, stop_price, pnl, pnl_ticks, status,
+             exit_reason, setup_type, session, instrument, account_mode, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ''', (trade.get('symbol', SYMBOL), trade.get('contract', ''),
+          trade['entry_date'], trade['entry_time'], trade['entry_price'],
+          str(now.date()), now.strftime('%H:%M:%S'), exit_price, 1,
+          trade.get('side', 'LONG'), trade.get('target_price'),
+          trade.get('stop_price'), pnl, pnl_ticks, 'CLOSED',
+          f'Partial scale-out +{PARTIAL_TAKE_PTS:.0f}pts (1 of {trade.get("contracts", 2)})',
+          trade.get('setup_type', ''), trade.get('session', ''),
+          trade.get('instrument', 'MNQ'), ACCOUNT_MODE,
+          f'partial of trade #{trade["id"]}'))
+    conn.execute('UPDATE futures_trades SET contracts=? WHERE id=?',
+                 (max(1, trade.get('contracts', 2) - 1), trade['id']))
+    conn.commit()
+    conn.close()
+
+
 def update_futures_stop(trade_id, new_stop):
     conn = sqlite3.connect(DB_PATH)
     conn.execute('UPDATE futures_trades SET stop_price=? WHERE id=?',
@@ -1400,7 +1466,7 @@ def place_trade(side: str, sig: dict, regime: str,
     # 5. Max daily trades (total entries today — open + closed)
     _conn = sqlite3.connect(DB_PATH)
     _daily_count = _conn.execute(
-        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED'",
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED' AND COALESCE(notes,'') NOT LIKE 'partial of %'",   # partial scale-out rows are not new entries
         (str(datetime.now(ET).date()), ACCOUNT_MODE)
     ).fetchone()[0]
     _conn.close()
@@ -1478,6 +1544,7 @@ def place_trade(side: str, sig: dict, regime: str,
 
     # ── Submit order ──────────────────────────────────────
     order_side = 'BUY' if side == 'LONG' else 'SELL'
+    _pre_qty = _get_ibkr_qty()   # snapshot before the order — verify the real fill below
     result = _bridge_post('/futures/order', {
         'symbol':     SYMBOL,
         'qty':        contracts,
@@ -1490,6 +1557,26 @@ def place_trade(side: str, sig: dict, regime: str,
         return False
 
     order_id = result.get('order_id', '')          # bridge returns 'order_id' not 'orderId'
+
+    # Verify the actual filled quantity against the broker rather than trusting
+    # the requested size (Jul 23 2026 incident: an unverified `contracts` value
+    # written straight to the DB caused a stop-close to over-buy and open a
+    # phantom position once the real fill and the DB disagreed — same bug class
+    # as the May/USAR incidents, just on the futures entry path instead of a close).
+    time.sleep(3)
+    _post_qty = _get_ibkr_qty()
+    if _pre_qty is None or _post_qty is None:
+        log(f"  WARNING: could not verify fill (bridge unavailable) — trusting requested size {contracts}")
+    else:
+        _actual_filled = round(abs(_post_qty - _pre_qty))
+        if _actual_filled == 0:
+            log(f"  Order submitted but position unchanged after {3}s — entry not confirmed, aborting")
+            send_telegram(f"⚠️ FUTURES entry order submitted but no fill detected (order {order_id}) — no DB entry written")
+            return False
+        if _actual_filled != contracts:
+            log(f"  WARNING: requested {contracts} contracts, broker shows {_actual_filled} filled — using real fill size")
+            send_telegram(f"⚠️ FUTURES entry partial/over fill: requested {contracts}, got {_actual_filled} (order {order_id})")
+            contracts = _actual_filled
     session  = get_session()
     # Setup label: priority order matches grade_entry bonus hierarchy
     if side == 'LONG':
@@ -1645,6 +1732,54 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 _update_backup_stop(trade, sl)   # moves IBKR hardware stop to tight trail level
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail({_tight_gap:.0f}, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
+        # ── Partial scale-out (Jul 24 2026 — see constants comment) ──────
+        # On 2-contract trades: bank 1 contract the moment profit touches
+        # +PARTIAL_TAKE_PTS, move the runner's stop to breakeven. The banked
+        # half can never be given back. Restart-safe: DB contracts drops to 1
+        # so the `contracts >= 2` guard can't re-fire after a restart.
+        if (contracts >= 2 and not _partial_done.get(tid)
+                and pnl_pts >= PARTIAL_TAKE_PTS):
+            _pp = _bridge_get('/futures/position')
+            if isinstance(_pp, list):
+                _pq = 0.0
+                for _p in _pp:
+                    if _p.get('symbol') == SYMBOL:
+                        _pq = float(_p.get('qty', 0))
+                        break
+                _held = (_pq <= -contracts) if is_short else (_pq >= contracts)
+                if _held:
+                    _pside = 'BUY' if is_short else 'SELL'
+                    _pr = _bridge_post('/futures/order', {
+                        'symbol': SYMBOL, 'qty': 1, 'side': _pside,
+                        'order_type': 'MARKET',
+                    })
+                    if _pr.get('status') == 'submitted':
+                        _partial_done[tid] = True
+                        _ppts  = pnl_pts
+                        _pusd  = _ppts / TICK_SIZE * TICK_VALUE * 1
+                        _log_partial_close(trade, price, round(_pusd, 2),
+                                           round(_ppts / TICK_SIZE, 1))
+                        record_trade_pnl(_pusd)
+                        contracts -= 1
+                        trade['contracts'] = contracts
+                        pnl_usd = pnl_ticks * TICK_VALUE * contracts
+                        # runner: stop to breakeven (only-tightens), hardware
+                        # stop re-placed for the remaining 1 contract
+                        _be_px = round(entry + (TICK_SIZE if not is_short else -TICK_SIZE), 2)
+                        if (not is_short and _be_px > sl) or (is_short and _be_px < sl):
+                            sl = _be_px
+                        _update_backup_stop(trade, sl)
+                        msg = (
+                            f"🟡 PARTIAL SCALE-OUT\n"
+                            f"{SYMBOL} {side}: banked 1 of {contracts + 1} @ {price} "
+                            f"(+{_ppts:.0f}pts / ${_pusd:+.0f})\n"
+                            f"Runner: 1 contract, stop → breakeven ({sl})"
+                        )
+                        log(msg)
+                        send_telegram(msg)
+                    else:
+                        log(f"  partial scale-out order failed ({_pr}) — retry next cycle")
+
         # VWAP for exit decisions
         vwap = vwap_now   # pre-fetched once above the loop
 
@@ -1685,6 +1820,37 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 exit_reason = f'VWAP cross exit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
             elif is_short and price > vwap:
                 exit_reason = f'VWAP cross exit (short) ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+
+        # 4b. Reversal-detection exit (Jul 24 2026 — see constants comment).
+        # After the trade proved a real peak (≥REV_EXIT_PEAK_MIN_PTS), exit at
+        # market when REV_EXIT_CONFIRM_BARS consecutive CLOSED 5-min bars go
+        # against the position AND ≥REV_EXIT_RETRACE_FRAC of the peak is gone.
+        # Completed bars only (same partial-bar discipline as the Jul 17 RVOL
+        # and Jul 18 HTF fixes) — the forming bar never votes.
+        if not exit_reason and df5 is not None and not df5.empty and len(df5) >= 3:
+            try:
+                _completed = df5
+                if (datetime.now(ET) - df5.index[-1]).total_seconds() < 300:
+                    _completed = df5.iloc[:-1]      # drop the forming bar only
+                _last_ts   = _completed.index[-1]
+                _st = _rev_state.setdefault(tid, {'last_ts': None, 'adv_streak': 0, 'prev_close': None})
+                if _st['last_ts'] is None or _last_ts > _st['last_ts']:
+                    _c = float(_completed['close'].iloc[-1])
+                    if _st['prev_close'] is not None:
+                        _adverse = (_c < _st['prev_close']) if not is_short else (_c > _st['prev_close'])
+                        _st['adv_streak'] = _st['adv_streak'] + 1 if _adverse else 0
+                    _st['prev_close'] = _c
+                    _st['last_ts']    = _last_ts
+                if (peak_pts >= REV_EXIT_PEAK_MIN_PTS
+                        and _st['adv_streak'] >= REV_EXIT_CONFIRM_BARS
+                        and (peak_pts - pnl_pts) >= REV_EXIT_RETRACE_FRAC * peak_pts):
+                    exit_reason = (
+                        f'Reversal exit: peak +{peak_pts:.0f}pts, gave back '
+                        f'{peak_pts - pnl_pts:.0f} over {_st["adv_streak"]} closed bars '
+                        f'({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+                    )
+            except Exception as _e:
+                log(f"  rev-exit check error (trade {tid}): {_e}")
 
         # 5a. Elephant volume early exit — adverse zone with confirmed institutional selling
         # Logic mirrors _simulate_outcome() in elephant_backtest.py (live ↔ backtest parity):
@@ -1815,7 +1981,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 global _last_exit_time
                 _last_exit_time = datetime.now(ET)
                 exits.append({'tid': tid, 'pnl': pnl_usd})
-                for d in (_session_high, _session_low, _price_history, _partial_done):
+                for d in (_session_high, _session_low, _price_history, _partial_done, _rev_state):
                     d.pop(tid, None)
                 continue
 
@@ -1860,7 +2026,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             exits.append({'tid': tid, 'pnl': pnl_usd})
 
             # Cleanup state
-            for d in (_session_high, _session_low, _price_history, _partial_done):
+            for d in (_session_high, _session_low, _price_history, _partial_done, _rev_state):
                 d.pop(tid, None)
 
     return exits
@@ -2028,7 +2194,7 @@ def _enter_elephant(signal: dict) -> bool:
 
     _econn = sqlite3.connect(DB_PATH)
     _edaily = _econn.execute(
-        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED'",
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED' AND COALESCE(notes,'') NOT LIKE 'partial of %'",   # partial scale-out rows are not new entries
         (str(datetime.now(ET).date()), ACCOUNT_MODE)
     ).fetchone()[0]
     _econn.close()
@@ -2494,6 +2660,8 @@ def reset_daily_state():
     _session_low  = {}
     _price_history = {}
     _partial_done  = {}
+    global _rev_state
+    _rev_state     = {}
     _daily_pnl     = 0.0
     _peak_daily_pnl = 0.0
     _elephant_day_type     = 'NONE'
@@ -2624,25 +2792,64 @@ def poll_telegram_commands():
 
 
 def _force_close_all():
-    """Emergency: close all open futures positions."""
+    """Emergency: close all open futures positions.
+
+    Sizes the closing order off the REAL broker position, not the sum of each
+    DB row's (possibly stale) `contracts` field. Jul 23 2026 incident: looping
+    per-trade and sending each row's own contracts caused a stop-close to
+    over-buy and open a phantom position once the DB and broker disagreed on
+    size. This sends exactly one order, sized to what the broker actually
+    holds and verified afterward, then distributes P&L across the DB rows —
+    so a stale DB can no longer cause an over/under-close.
+    """
     trades = get_open_futures_trades()
     if not trades:
         send_telegram("No open futures positions.")
         return
+
     for t in trades:
-        _cancel_backup_stop(t)   # cancel backup stop before closing
-        side = 'BUY' if t.get('side') == 'SHORT' else 'SELL'
-        _bridge_post('/futures/order', {
-            'symbol': SYMBOL, 'qty': t.get('contracts', 1),
-            'side': side, 'order_type': 'MARKET',
-        })
-        price = get_live_price() or t['entry_price']
-        pnl_pts  = (t['entry_price'] - price) if t.get('side') == 'SHORT' else (price - t['entry_price'])
+        _cancel_backup_stop(t)   # cancel backup stops before closing
+
+    real_qty = _get_ibkr_qty()
+    if real_qty is None:
+        send_telegram("⚠️ FUT CLOSE: bridge unavailable — could not verify real position, no order sent. Check IBKR manually.")
+        return
+
+    db_total = sum(t.get('contracts', 1) for t in trades)
+    if round(real_qty) != 0 and abs(round(real_qty)) != db_total:
+        log(f"  NOTE: DB rows imply {db_total} contracts total, broker shows {real_qty} — closing off the real figure")
+
+    if round(real_qty) == 0:
+        # Broker already flat — DB rows are orphans (e.g. backup stop already
+        # closed them). Mark closed at $0, no order sent, nothing to flatten.
+        for t in trades:
+            log_futures_exit(t['id'], t['entry_price'],
+                              'FUT CLOSE — broker already flat (orphan DB row)', 0.0, 0.0)
+        send_telegram(f"🔴 FUTURES: {len(trades)} DB row(s) marked closed — broker already flat, no order sent.")
+        return
+
+    close_side = 'BUY' if real_qty < 0 else 'SELL'
+    close_qty  = abs(int(round(real_qty)))
+    _bridge_post('/futures/order', {
+        'symbol': SYMBOL, 'qty': close_qty,
+        'side': close_side, 'order_type': 'MARKET',
+    })
+    time.sleep(3)
+    post_qty = _get_ibkr_qty()
+    if post_qty is None or round(post_qty) != 0:
+        send_telegram(f"⚠️ FUT CLOSE: sent {close_side} {close_qty} but broker still shows qty={post_qty} — check IBKR manually, DB NOT updated.")
+        return
+
+    price = get_live_price() or trades[0]['entry_price']
+    total_pnl = 0.0
+    for t in trades:
+        pnl_pts   = (t['entry_price'] - price) if t.get('side') == 'SHORT' else (price - t['entry_price'])
         pnl_ticks = pnl_pts / TICK_SIZE
         pnl_usd   = pnl_ticks * TICK_VALUE * t.get('contracts', 1)
         log_futures_exit(t['id'], price, 'FUT CLOSE command', pnl_usd, pnl_ticks)
-        record_trade_pnl(pnl_usd)
-    send_telegram(f"🔴 FUTURES: force-closed {len(trades)} position(s).")
+        total_pnl += pnl_usd
+    record_trade_pnl(total_pnl)
+    send_telegram(f"🔴 FUTURES: force-closed real position ({close_side} {close_qty}) covering {len(trades)} DB trade(s). Est P&L ${total_pnl:+.0f}.")
 
 
 # ── Scheduler + entry point ───────────────────────────────

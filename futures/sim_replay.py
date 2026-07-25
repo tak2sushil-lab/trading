@@ -148,6 +148,18 @@ REGIME_AWARE_EXITS = False
 # rationale comment at the point of use in simulate_day().
 TRENDING_REQUIRES_DIRECTIONAL = False
 
+# Candidate ideas (Jul 24 2026, give-back reduction session) — all opt-in:
+#   RATCHET  = (f0, f1, p0, p1) via --ratchet: continuous peak-ratchet stop lift
+#   REV_EXIT = (n_bars, retrace_frac, peak_min) via --rev-exit: reversal exit
+#   --grad-lock near,far[,ceiling]: wires the existing be_frac_near/far hook
+#   into TRENDING's EXIT_PARAMS_BY_REGIME entry (hook shipped Jul 9, never
+#   CLI-reachable until now). See point-of-use comments in simulate_day().
+RATCHET  = None
+REV_EXIT = None
+# --partial N: on 2-contract trades, close 1 contract at +N pts (limit-style
+# fill when the bar traverses it) and move the runner's stop to breakeven.
+PARTIAL_TAKE_PTS = None
+
 # Candidate idea (Jul 9 2026) — opt-in via --long-allows-a-grade. See rationale
 # comment at point of use (grade gate, just before Hero gate).
 LONG_ALLOWS_A_GRADE = False
@@ -885,7 +897,7 @@ def simulate_day(
             # 2. Daily circuit breaker (realized + unrealized, checked before target)
             if not exit_reason:
                 cur_pnl_pts = (entry - float(bar['close'])) if is_short else (float(bar['close']) - entry)
-                cur_usd = cur_pnl_pts * POINT_VALUE * contracts - COMMISSION_RT
+                cur_usd = cur_pnl_pts * POINT_VALUE * contracts - COMMISSION_RT + position.get('partial_pnl', 0.0)
                 if daily_pnl + cur_usd <= -MAX_DAILY_LOSS:
                     exit_price, exit_reason = float(bar['close']), 'dll_circuit'
 
@@ -922,6 +934,27 @@ def simulate_day(
                 if fail_votes >= THESIS_FAIL_MIN_VOTES and position['fail_streak'] >= THESIS_FAIL_CONFIRM_BARS:
                     exit_price, exit_reason = float(bar['close']), 'thesis_fail'
 
+            # 4c. Reversal-detection exit (opt-in --rev-exit, Jul 24 2026
+            # candidate): after the trade has proven a real peak, N consecutive
+            # adverse closes AND a retrace ≥ frac of that peak → exit at close
+            # instead of waiting for the trail level. Pure price-path (no
+            # signal votes — deliberately NOT the reverted thesis-invalidation
+            # design). Targets the give-back pattern: peak hit in 15-30 min,
+            # then a reversal hands most of it back before any tier engages.
+            if not exit_reason and REV_EXIT:
+                _n_req, _retr_frac, _peak_min = REV_EXIT
+                _pk     = position['peak']   # peak as of previous bar — no same-bar race
+                _pk_pts = (entry - _pk) if is_short else (_pk - entry)
+                _cur    = (entry - float(bar['close'])) if is_short else (float(bar['close']) - entry)
+                _prev_c = position.get('prev_close')
+                _adv    = _prev_c is not None and ((float(bar['close']) < _prev_c) if not is_short else (float(bar['close']) > _prev_c))
+                position['adv_streak'] = position.get('adv_streak', 0) + 1 if _adv else 0
+                if (_pk_pts >= _peak_min and position['adv_streak'] >= _n_req
+                        and (_pk_pts - _cur) >= _retr_frac * _pk_pts):
+                    exit_price, exit_reason = float(bar['close']), 'rev_exit'
+            if REV_EXIT:
+                position['prev_close'] = float(bar['close'])
+
             # 5. No-move exit (90 min stuck in dead zone)
             if not exit_reason:
                 mins_open   = (i - entry_idx) * 5
@@ -941,6 +974,23 @@ def simulate_day(
                 else:
                     peak = max(peak, float(bar['high']))
                 position['peak'] = peak
+
+                # Partial scale-out (opt-in --partial, Jul 24 2026): on
+                # 2-contract trades, bank 1 contract at +PARTIAL_TAKE_PTS
+                # (limit fill — bar traversed the level) and move the runner's
+                # stop to breakeven ("never let the banked winner turn loser").
+                if (PARTIAL_TAKE_PTS and contracts >= 2
+                        and not position.get('partial_done')):
+                    _pk_pts = (entry - peak) if is_short else (peak - entry)
+                    if _pk_pts >= PARTIAL_TAKE_PTS:
+                        _fill = entry - PARTIAL_TAKE_PTS if is_short else entry + PARTIAL_TAKE_PTS
+                        position['partial_pnl'] = pnl_dollars(entry, _fill, side, 1)
+                        contracts -= 1
+                        position['contracts'] = contracts
+                        position['partial_done'] = True
+                        _be = round(entry + (TICK_SIZE if not is_short else -TICK_SIZE), 2)
+                        if (not is_short and _be > sl) or (is_short and _be < sl):
+                            sl = _be
 
                 # Trail thresholds use PEAK P&L (live uses current pnl but tracks s_peak)
                 pnl_pts_peak = (entry - peak) if is_short else (peak - entry)
@@ -1010,10 +1060,27 @@ def simulate_day(
                     if (not is_short and t_sl > sl) or (is_short and t_sl < sl):
                         sl = t_sl
 
+                # Candidate (Jul 24 2026, opt-in --ratchet f0,f1,p0,p1):
+                # continuous peak-ratchet — the protected FRACTION of the peak
+                # grows smoothly with peak size (f0 at p0 pts → f1 at p1 pts),
+                # applied every bar as an extra only-tightens stop lift on top
+                # of the tier system. Removes the tier-activation cliffs (e.g.
+                # TRENDING wide trail needing +300pts — a 296pt peak got only
+                # the 20% BE lock, kept 59pts of 296 on Jul 15).
+                if RATCHET and pnl_pts_peak >= RATCHET[2]:
+                    _f0, _f1, _p0, _p1 = RATCHET
+                    if pnl_pts_peak >= _p1:
+                        _rf = _f1
+                    else:
+                        _rf = _f0 + (pnl_pts_peak - _p0) / (_p1 - _p0) * (_f1 - _f0)
+                    r_sl = round(entry + _rf * pnl_pts_peak, 2) if not is_short else round(entry - _rf * pnl_pts_peak, 2)
+                    if (not is_short and r_sl > sl) or (is_short and r_sl < sl):
+                        sl = r_sl
+
                 position['sl'] = sl
 
             if exit_price is not None:
-                net = pnl_dollars(entry, exit_price, side, contracts)
+                net = pnl_dollars(entry, exit_price, side, contracts) + position.get('partial_pnl', 0.0)
                 daily_pnl += net
                 trades.append({
                     'date':        date_str,
@@ -1402,6 +1469,26 @@ def main():
                          'day trades as BOTH. Mirrors the validated London veto removal (Jul 18 2026).')
     ap.add_argument('--entry-start', type=str, default=None, dest='entry_start',
                     help='Override the 10:30 IB-ready entry start, e.g. --entry-start 09:30')
+    ap.add_argument('--ratchet', type=str, default=None,
+                    help='Candidate (Jul 24 2026): continuous peak-ratchet "f0,f1,p0,p1" — '
+                         'protected fraction of peak interpolates f0→f1 as peak grows p0→p1 pts, '
+                         'applied every bar on top of the tier system (only tightens). '
+                         'e.g. --ratchet 0.40,0.75,90,450')
+    ap.add_argument('--rev-exit', type=str, default=None, dest='rev_exit',
+                    help='Candidate (Jul 24 2026): reversal exit "n_bars,retrace_frac,peak_min" — '
+                         'after peak ≥ peak_min pts, exit at close on n_bars consecutive adverse '
+                         'closes AND retrace ≥ retrace_frac of peak. e.g. --rev-exit 2,0.35,120')
+    ap.add_argument('--partial', type=float, default=None, dest='partial',
+                    help='Candidate (Jul 24 2026): on 2-contract trades, bank 1 contract '
+                         'at +N pts and move runner stop to breakeven. e.g. --partial 150')
+    ap.add_argument('--trending-be-pts', type=float, default=None, dest='trending_be_pts',
+                    help='Candidate (Jul 24 2026): override TRENDING be_pts activation floor '
+                         '(default 110) — Jul 24 live: peak +96pts on a TRENDING day engaged '
+                         'ZERO protection before a full reversal to the daily circuit breaker')
+    ap.add_argument('--grad-lock', type=str, default=None, dest='grad_lock',
+                    help='Candidate (Jul 9 2026 hook, CLI-wired Jul 24): graduated TRENDING '
+                         'lock-fraction "near,far[,ceiling]" — be_frac interpolates near→far '
+                         'as peak grows be_pts→ceiling. e.g. --grad-lock 0.45,0.20,550')
     ap.add_argument('--rsi-trend-exempt', action='store_true', dest='rsi_trend_exempt',
                     help='Candidate idea: waive the RSI>70(LONG)/RSI<30(SHORT) overbought/'
                          'oversold penalty when vwap_reclaim+momentum already confirm the '
@@ -1415,7 +1502,26 @@ def main():
 
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
-    global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS
+    global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS
+    if args.partial is not None:
+        PARTIAL_TAKE_PTS = args.partial
+    if args.ratchet:
+        _r = [float(x) for x in args.ratchet.split(',')]
+        assert len(_r) == 4, '--ratchet needs f0,f1,p0,p1'
+        RATCHET = tuple(_r)
+    if args.rev_exit:
+        _r = [float(x) for x in args.rev_exit.split(',')]
+        assert len(_r) == 3, '--rev-exit needs n_bars,retrace_frac,peak_min'
+        REV_EXIT = (int(_r[0]), _r[1], _r[2])
+    if args.trending_be_pts is not None:
+        EXIT_PARAMS_BY_REGIME['TRENDING']['be_pts'] = args.trending_be_pts
+    if args.grad_lock:
+        _g = [float(x) for x in args.grad_lock.split(',')]
+        assert len(_g) in (2, 3), '--grad-lock needs near,far[,ceiling]'
+        EXIT_PARAMS_BY_REGIME['TRENDING']['be_frac_near'] = _g[0]
+        EXIT_PARAMS_BY_REGIME['TRENDING']['be_frac_far']  = _g[1]
+        if len(_g) == 3:
+            EXIT_PARAMS_BY_REGIME['TRENDING']['be_frac_ceiling'] = _g[2]
     if args.no_ovn_skip:             NO_OVN_SKIP = True
     if args.flip_cooldown is not None: FLIP_COOLDOWN_BARS = args.flip_cooldown
     if args.entry_start is not None:

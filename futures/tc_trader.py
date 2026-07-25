@@ -50,6 +50,9 @@ BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
 from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: E402
+from futures.hero_score import (  # noqa: E402  — Trend Jury (Jul 25 2026 alignment)
+    score_entry_regime, contracts_from_regime_score, detect_regime, is_gold_score,
+)
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
@@ -61,22 +64,40 @@ MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champio
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
 MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and live price at order time
 
-# ── Profit protection (point-based — MNQ-calibrated) ─────
-# PCT-based thresholds (e.g. 1.5%) translate to 450pts on MNQ ≈ never fires.
-# Use absolute points instead. Typical trade: entry ~30,000, target ~99pts.
-BE_ACTIVATE_PTS  = 30.0   # +30pts → move stop to entry (scratch worst case)
-TRAIL_WIDE_PTS   = 60.0   # +60pts → trail 20pts behind session peak
-TRAIL_TIGHT_PTS  = 85.0   # +85pts → tighten trail to 10pts (near 99pt target)
-TRAIL_WIDE_GAP   = 20.0   # trail distance in wide mode
-TRAIL_TIGHT_GAP  = 10.0   # trail distance in tight mode
+# ── Exit stack — ALIGNED WITH futures_trader.py Jul 25 2026 ─────────────────
+# User-directed alignment: TC was still running the pre-Jul-7 NY system
+# (ATR 1.5x stops, BE+30/trail 20/10pt tiers tuned for a 99pt target that no
+# longer exists). Now mirrors the NY IBKR stack: 200pt backstop stop, 1500pt
+# backstop target (trail tiers do the real exit work), regime-aware profit
+# locks, reversal-detection exit, partial scale-out. Validated via sim_replay
+# under TC's own caps (--dll 700 --max-trades 2): baseline $6,017 → rev-exit
+# $7,395 (2026 YTD). Prop rules (DLL_SOFT/TC_DAILY_CAP/sizing) UNCHANGED.
+BASE_STOP_PTS     = 200.0   # catastrophic backstop — trail tiers cut losses first
+BASE_TARGET_PTS   = 1500.0  # backstop only — essentially never fires
+
+EXIT_PARAMS_BY_REGIME: dict[str, dict[str, float]] = {
+    'CHOPPY':   {'be_pts': 90.0,  'be_frac': 0.45, 'wide_pts': 130.0, 'wide_gap': 60.0,  'tight_pts': 200.0, 'tight_gap': 35.0},
+    'QUIET':    {'be_pts': 90.0,  'be_frac': 0.45, 'wide_pts': 130.0, 'wide_gap': 60.0,  'tight_pts': 200.0, 'tight_gap': 35.0},
+    'TRENDING': {'be_pts': 110.0, 'be_frac': 0.20, 'wide_pts': 300.0, 'wide_gap': 180.0, 'tight_pts': 550.0, 'tight_gap': 110.0},
+}
+
+# Reversal-detection exit + partial scale-out (see futures_trader.py constants
+# comment for the full validation trail — 2026 YTD + 2025 OOS, both positive).
+REV_EXIT_CONFIRM_BARS  = 2      # consecutive adverse CLOSED 5-min bars
+REV_EXIT_RETRACE_FRAC  = 0.30   # fraction of peak given back
+REV_EXIT_PEAK_MIN_PTS  = 120.0  # only after the trade proved a real peak
+PARTIAL_TAKE_PTS       = 150.0  # bank 1 contract here (2-contract trades)
+
+# Entry-quality gates (aligned with NY Jul 25 2026)
+ENTRY_MIN_RVOL    = 0.85    # session RVOL floor at entry (completed bars only)
+RVOL_GRAD_FLOOR   = 0.70    # graduated band: allowed if Hero score clears GOLD
+HTF_TREND_BARS    = 3       # 30-min bars for higher-timeframe agreement
 
 # ── No-move exit (time-based — frees dead trade slots) ───
-# 14% of backtest exits. Live system must match or it over-holds dead positions.
-# Fires when a trade has been open NO_MOVE_MINUTES and is stuck in the dead zone:
-#   pnl ≤ +25pts (not moving toward target) AND pnl ≥ -10pts (stop not triggered).
+# Aligned with NY (was 25/-10 from the old 99pt-target era).
 NO_MOVE_MINUTES = 90      # minutes open before checking
-NO_MOVE_MAX_PTS = 25.0    # above this → trade IS progressing, let it run
-NO_MOVE_MIN_PTS = -10.0   # below this → hard stop will manage it
+NO_MOVE_MAX_PTS = 60.0    # above this → trade IS progressing, let it run
+NO_MOVE_MIN_PTS = -40.0   # below this → hard stop will manage it
 
 # ── Session constants (ET) ────────────────────────────────
 ET = pytz.timezone('America/New_York')
@@ -105,6 +126,12 @@ _session_high         = {}   # trade_id → session high
 _session_low          = {}   # trade_id → session low
 _price_history        = {}   # trade_id → [prices]
 _partial_done         = {}   # trade_id → locked_pnl
+_rev_state            = {}   # trade_id → {'last_ts', 'adv_streak', 'prev_close'} (reversal exit)
+_streak_regime        = None # F1: regime of the current consecutive-bar streak
+_streak_bar_ts        = None # F1: last completed 5-min bar that advanced the streak
+_day_regime           = None # 'TRENDING' | 'CHOPPY' | 'QUIET' — set at 10:30 IB formation
+_ib_kind              = None # 'BEAR_DIRECTIONAL' | 'BULL_DIRECTIONAL' | 'ROTATIONAL'
+_ib_kind_set          = False
 _orb_high             = None # opening range high (first 15 min)
 _orb_low              = None # opening range low
 _orb_set              = False
@@ -232,6 +259,17 @@ def _bridge_post(path: str, payload: dict, timeout: int = 10) -> dict:
     except Exception as e:
         log(f"Bridge POST {path} error: {e}")
         return {}
+
+
+def _get_ibkr_qty() -> float | None:
+    """Current net MNQ position size at the broker (signed). None if bridge unavailable."""
+    pos = _bridge_get('/futures/position')
+    if not isinstance(pos, list):
+        return None
+    for p in pos:
+        if p.get('symbol') == SYMBOL:
+            return float(p.get('qty', 0))
+    return 0.0
 
 
 def get_live_price() -> float | None:
@@ -383,6 +421,62 @@ def calc_rsi(series: pd.Series, period: int = 14) -> float:
     return round(float(100 - (100 / (1 + rs.iloc[-1]))), 1)
 
 
+# ── Entry-gate helpers (ported from futures_trader.py, Jul 25 2026 alignment) ──
+
+def calc_session_rvol(df5: pd.DataFrame) -> float:
+    """Last COMPLETED RTH bar volume / avg of today's RTH bars. Mirrors
+    futures_trader.py exactly (incl. the Jul 17 partial-bar fix — the forming
+    bar's partial volume made the gate ~2x stricter than calibrated)."""
+    if df5.empty:
+        return 1.0
+    now     = datetime.now(ET)
+    today   = now.date()
+    rth_start = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    today_bars = df5[df5.index >= rth_start]
+    if len(today_bars) and (now - today_bars.index[-1]).total_seconds() < 300:
+        today_bars = today_bars.iloc[:-1]
+    if len(today_bars) < 2:
+        return 1.0
+    avg_v = today_bars['volume'].mean()
+    if not avg_v:
+        return 1.0
+    return float(today_bars['volume'].iloc[-1]) / float(avg_v)
+
+
+def calc_htf_trend(df5: pd.DataFrame) -> int:
+    """30-min trend direction over last HTF_TREND_BARS completed bars.
+    1 up / -1 down / 0 flat. Mirrors futures_trader.py (incl. F2 forming-bar
+    drop, Jul 18)."""
+    if df5.empty:
+        return 0
+    bars = df5
+    if len(bars) and (datetime.now(ET) - bars.index[-1]).total_seconds() < 300:
+        bars = bars.iloc[:-1]
+    if bars.empty:
+        return 0
+    htf = bars['close'].resample('30min').last().dropna()
+    if len(htf) < HTF_TREND_BARS:
+        return 0
+    last_n = htf.iloc[-HTF_TREND_BARS:]
+    if last_n.iloc[-1] > last_n.iloc[0]:
+        return 1
+    if last_n.iloc[-1] < last_n.iloc[0]:
+        return -1
+    return 0
+
+
+def calc_ib_range_today(df5: pd.DataFrame) -> float:
+    """Today's H-L range from 9:30am to now. Mirrors futures_trader.py."""
+    if df5.empty:
+        return 0.0
+    today    = datetime.now(ET).date()
+    ib_start = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+    bars     = df5[df5.index >= ib_start]
+    if len(bars) < 2:
+        return 0.0
+    return float(bars['high'].max() - bars['low'].min())
+
+
 # ── Regime detection (NQ-native) ─────────────────────────
 
 def get_regime(df5: pd.DataFrame | None = None) -> str:
@@ -391,6 +485,34 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
     No SPY proxy needed — NQ IS the market for this instrument.
     Returns: STRONG | NORMAL | WEAK
     Accepts pre-fetched df5 from run_scan() to avoid a redundant bridge call.
+
+    PORTED from futures_trader.py Jul 25 2026 (TC alignment).
+    Rebuilt Jul 7 2026 after backtesting the original formula against 3 months
+    of real bars (3,721 scans) and finding STRONG and NORMAL were statistically
+    indistinguishable (both ~+2.8pt mean 30-min forward move) — the STRONG
+    label wasn't adding real signal, and WEAK's median forward move was ~0.
+    Root causes found and fixed:
+      1. No volume/participation filter — added an RVOL>=0.65 gate (matches
+         the decoder's independently-derived "high" tercile boundary). Alone,
+         this roughly tripled STRONG/WEAK separation from NORMAL.
+      2. day_chg_pct (vs YESTERDAY's close) can't detect a strong intraday
+         reversal on a gap day — if today opened down and is recovering hard,
+         day_chg vs yesterday can stay negative the whole session even during
+         a genuine intraday uptrend, so STRONG could structurally never fire.
+         Fixed with a hybrid: STRONG uses change vs TODAY's own open
+         (session_chg) which captures the reversal; WEAK keeps day_chg vs
+         yesterday's close, which tested better there (session-relative
+         WEAK's median forward move flipped positive — false negatives).
+      3. 3-bar trend was too noise-sensitive — a single reversal bar broke a
+         real multi-bar trend and reset the 3-scan confirmation counter.
+         Widened to 5 bars.
+    Backtested result (RVOL gate + hybrid + 5-bar trend): STRONG n=253
+    mean +11.14/median +12.75 (vs old +2.62/+6.62); WEAK n=205 mean -14.46/
+    median -11.25 (vs old -4.75/-0.25, which barely cleared zero). Replayed
+    against Jul 7 2026 itself: old formula produced only 2 total WEAK scans
+    all session (never confirmed); new formula confirms WEAK at 10:00am
+    (3 consecutive scans from 9:50), ~45min earlier than the actual 10:46
+    entry and at a meaningfully better SHORT price (29,443 vs 29,270-29,280).
     """
     global _last_regime
     try:
@@ -401,8 +523,8 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
 
         price      = float(df5['close'].iloc[-1])
         vwap       = calc_vwap(df5)
-        atr        = calc_atr(df5)
         rsi        = calc_rsi(df5['close'])
+        rvol       = calc_session_rvol(df5)
 
         # Today's bars only
         today      = datetime.now(ET).date()
@@ -411,40 +533,65 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
         # Price vs VWAP
         above_vwap = price > vwap if vwap else True
 
-        # Short-term trend: last 3 bars
-        if len(df_today) >= 3:
-            trend = df_today['close'].iloc[-3:]
+        # Short-term trend: last 5 bars (was 3 — too noise-sensitive)
+        if len(df_today) >= 5:
+            trend = df_today['close'].iloc[-5:]
             trending_up   = trend.iloc[-1] > trend.iloc[0]
             trending_down = trend.iloc[-1] < trend.iloc[0]
         else:
             trending_up = trending_down = False
 
-        # Day change vs prev close
+        # Day change vs prev close (used for WEAK — tested better there)
         if len(df5) >= 2:
             prev_close = float(df5['close'].iloc[-2]) if len(df_today) < 2 else float(df5[df5.index.date < today]['close'].iloc[-1]) if len(df5[df5.index.date < today]) > 0 else float(df5['close'].iloc[-2])
             day_chg_pct = (price - prev_close) / prev_close * 100 if prev_close else 0
         else:
             day_chg_pct = 0
 
-        # Choppiness: >40% bar reversals
+        # Change vs TODAY's own open (used for STRONG — catches intraday
+        # reversals that day_chg vs yesterday's close would miss on gap days)
+        if len(df_today) >= 1:
+            session_open = float(df_today['open'].iloc[0])
+            session_chg_pct = (price - session_open) / session_open * 100 if session_open else 0
+        else:
+            session_chg_pct = 0
+
+        # Choppiness: >40% bar reversals, measured against session_chg (today's
+        # own range) rather than day_chg — a big gap can make day_chg large
+        # even on a genuinely flat/choppy today.
         if len(df_today) >= 6:
             diffs  = df_today['close'].diff().dropna()
             flips  = sum(1 for i in range(1, len(diffs)) if diffs.iloc[i] * diffs.iloc[i-1] < 0)
-            choppy = (flips / max(len(diffs), 1)) > 0.4 and abs(day_chg_pct) < 0.2
+            choppy = (flips / max(len(diffs), 1)) > 0.4 and abs(session_chg_pct) < 0.15
         else:
             choppy = False
 
         # ── Classify regime ───────────────────────────────
         if choppy:
             regime = 'NORMAL'
-        elif (above_vwap and trending_up and day_chg_pct > 0.3
-              and rsi < 80 and not choppy):
+        elif rvol < 0.65:
+            regime = 'NORMAL'   # not enough participation to trust the direction
+        elif (above_vwap and trending_up and session_chg_pct > 0.15
+              and rsi < 80):
             regime = 'STRONG'
         elif (not above_vwap and trending_down and day_chg_pct < -0.3
               and rsi > 20):
             regime = 'WEAK'
         else:
             regime = 'NORMAL'
+
+        # Diagnostic detail — added Jul 7 2026. Without this, a misclassification
+        # is unprovable after the fact: on Jul 7, hand-replaying this exact
+        # formula against (later-settled) bars showed WEAK continuously from
+        # 9:45-10:15am while the live log said STRONG/NORMAL almost the whole
+        # window, blocking a SHORT entry during the session's real move. Could
+        # not pin down whether that was a genuine bug or live/streaming bars
+        # not yet settled vs. the final historical values, because the inputs
+        # were never logged. Log them every scan so next time it's provable.
+        vwap_str = f"{vwap:.2f}" if vwap is not None else "None"
+        log(f"  regime_detail: day_chg%={day_chg_pct:+.2f} sess_chg%={session_chg_pct:+.2f} "
+            f"vwap={vwap_str} above_vwap={above_vwap} trend_up={trending_up} trend_dn={trending_down} "
+            f"rsi={rsi:.1f} rvol={rvol:.2f} choppy={choppy} contract={_active_contract_month or 'unset'}")
 
         _last_regime = regime
         return regime
@@ -481,28 +628,34 @@ def get_signals(df5: pd.DataFrame) -> dict:
     if not vwap:
         return sig
 
-    # ── Bull signals ──────────────────────────────────────
+    # ── Bull/bear signal patterns — ALIGNED with futures_trader.py (Jul 25
+    # 2026, originally redesigned there Jul 7). Old TC definitions had the
+    # same two flaws NY fixed: orb signals required session=='NY_OPEN' (so
+    # orb_bear could never qualify a SHORT after 10:30), and vwap/momentum
+    # were single-bar-sensitive. See futures_trader.py get_signals comment
+    # for the empirical validation trail.
 
-    # ORB break (above opening range high)
-    sig['orb_bull'] = (_orb_set and price > _orb_high
-                       and session == 'NY_OPEN')
+    # ORB break — session restriction removed (was NY_OPEN-only)
+    sig['orb_bull'] = (_orb_set and price > _orb_high)
+    sig['orb_bear'] = (_orb_set and price < _orb_low)
 
-    # VWAP reclaim (was below, now above)
+    # VWAP position — sustained 3-bar streak instead of single-bar crossing
     if len(df5) >= 3:
-        prev_close = float(df5['close'].iloc[-2])
-        sig['vwap_reclaim'] = (prev_close < vwap and price > vwap)
+        vwap3 = df5.index[-3:]
+        sig['vwap_reclaim']   = bool((df5.loc[vwap3, 'close'] > vwap).all())
+        sig['vwap_rejection'] = bool((df5.loc[vwap3, 'close'] < vwap).all())
     else:
-        sig['vwap_reclaim'] = False
+        sig['vwap_reclaim'] = sig['vwap_rejection'] = False
 
-    # Momentum: 3 consecutive up bars + above VWAP
-    if len(df5) >= 4:
-        last3 = df5['close'].iloc[-4:-1]
-        sig['momentum_bull'] = (
-            all(last3.iloc[i] < last3.iloc[i+1] for i in range(len(last3)-1))
-            and price > vwap
-        )
+    # Momentum: majority (3-of-4) same-direction transitions over last 5 bars
+    if len(df5) >= 5:
+        last5 = df5['close'].iloc[-5:]
+        up_count   = sum(1 for i in range(len(last5)-1) if last5.iloc[i] < last5.iloc[i+1])
+        down_count = sum(1 for i in range(len(last5)-1) if last5.iloc[i] > last5.iloc[i+1])
+        sig['momentum_bull'] = (up_count >= 3) and price > vwap
+        sig['momentum_bear'] = (down_count >= 3) and price < vwap
     else:
-        sig['momentum_bull'] = False
+        sig['momentum_bull'] = sig['momentum_bear'] = False
 
     # Session open play (first bar direction after 9:30)
     today      = datetime.now(ET).date()
@@ -514,26 +667,14 @@ def get_signals(df5: pd.DataFrame) -> dict:
     else:
         sig['open_play_bull'] = sig['open_play_bear'] = False
 
-    # ── Bear signals ──────────────────────────────────────
-    sig['orb_bear']       = (_orb_set and price < _orb_low
-                              and session == 'NY_OPEN')
-    sig['vwap_rejection'] = (len(df5) >= 3
-                              and float(df5['close'].iloc[-2]) > vwap
-                              and price < vwap)
-    if len(df5) >= 4:
-        last3 = df5['close'].iloc[-4:-1]
-        sig['momentum_bear'] = (
-            all(last3.iloc[i] > last3.iloc[i+1] for i in range(len(last3)-1))
-            and price < vwap
-        )
-    else:
-        sig['momentum_bear'] = False
-
     # ── Pre-market IB break (Cylinder 4) — macro event capture ───────────
     # On NFP/CPI/FOMC days: the 8:30am release creates a structural range.
     # Breaking pm_high/pm_low during RTH = continuation of macro move.
     sig['pm_bull'] = (_pm_ib_set and _pm_high is not None and price > _pm_high)
-    sig['pm_bear'] = (_pm_ib_set and _pm_low  is not None and price < _pm_low)
+    # PM_SHORT disabled (aligned with futures_trader.py Jul 25 2026): 0-for-7
+    # lifetime / -$1,544 on the IBKR side — it shorts the exhaustion LOW of a
+    # decline (stop-hunt through the pre-market low), not a real breakdown.
+    sig['pm_bear'] = False
     sig['pm_high'] = _pm_high
     sig['pm_low']  = _pm_low
 
@@ -632,14 +773,16 @@ def grade_entry(sig: dict, regime: str, side: str) -> tuple[int, str]:
 def calc_sl_target(price: float, atr: float, side: str) -> tuple[float, float]:
     """
     Calculate stop-loss and target in price terms.
-    Uses ATR-based stops rounded to tick size.
+    Point-based (aligned with futures_trader.py Jul 25 2026) — MNQ's real
+    daily range (~447pt avg) is an order of magnitude bigger than its 5-min
+    ATR (~39pt), so ATR-multiple stops chase the wrong scale. The 200pt stop
+    is a catastrophic backstop; the regime-aware trail tiers + reversal exit
+    in monitor_open_trades() do the real exit work. `atr` param kept for
+    signature compat.
     """
     tick = TICK_SIZE
-    stop_atr_mult   = 1.5
-    target_atr_mult = 3.0   # 2:1 R:R minimum
-
-    raw_stop   = atr * stop_atr_mult
-    raw_target = atr * target_atr_mult
+    raw_stop   = BASE_STOP_PTS
+    raw_target = BASE_TARGET_PTS
 
     # Round to nearest tick
     def round_tick(v):
@@ -727,6 +870,33 @@ def log_futures_exit(trade_id, exit_price, exit_reason, pnl, pnl_ticks):
         WHERE id=?
     ''', (str(now.date()), now.strftime('%H:%M:%S'),
           exit_price, pnl, pnl_ticks, exit_reason, trade_id))
+    conn.commit()
+    conn.close()
+
+
+def _log_partial_close(trade: dict, exit_price: float, pnl: float, pnl_ticks: float):
+    """Record a partial scale-out as its own CLOSED row (1 contract) and
+    decrement the open trade's contract count. Mirrors futures_trader.py."""
+    now  = datetime.now(ET)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+        INSERT INTO futures_trades
+            (symbol, contract, entry_date, entry_time, entry_price,
+             exit_date, exit_time, exit_price, contracts, side,
+             target_price, stop_price, pnl, pnl_ticks, status,
+             exit_reason, setup_type, session, instrument, account_mode, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ''', (trade.get('symbol', SYMBOL), trade.get('contract', ''),
+          trade['entry_date'], trade['entry_time'], trade['entry_price'],
+          str(now.date()), now.strftime('%H:%M:%S'), exit_price, 1,
+          trade.get('side', 'LONG'), trade.get('target_price'),
+          trade.get('stop_price'), pnl, pnl_ticks, 'CLOSED',
+          f'Partial scale-out +{PARTIAL_TAKE_PTS:.0f}pts (1 of {trade.get("contracts", 2)})',
+          trade.get('setup_type', ''), trade.get('session', ''),
+          SYMBOL, ACCOUNT_MODE,
+          f'partial of trade #{trade["id"]}'))
+    conn.execute('UPDATE futures_trades SET contracts=? WHERE id=?',
+                 (max(1, trade.get('contracts', 2) - 1), trade['id']))
     conn.commit()
     conn.close()
 
@@ -829,7 +999,7 @@ def place_trade(side: str, sig: dict, regime: str,
     # 5. Max daily trades (total entries today — open + closed)
     _conn = sqlite3.connect(DB_PATH)
     _daily_count = _conn.execute(
-        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED'",
+        "SELECT COUNT(*) FROM futures_trades WHERE entry_date=? AND account_mode=? AND status != 'CANCELLED' AND COALESCE(notes,'') NOT LIKE 'partial of %'",   # partial scale-out rows are not new entries
         (str(datetime.now(ET).date()), ACCOUNT_MODE)
     ).fetchone()[0]
     _conn.close()
@@ -887,6 +1057,7 @@ def place_trade(side: str, sig: dict, regime: str,
 
     # ── Submit order ──────────────────────────────────────
     order_side = 'BUY' if side == 'LONG' else 'SELL'
+    _pre_qty = _get_ibkr_qty()   # snapshot before the order — verify the real fill below
     result = _bridge_post('/futures/order', {
         'symbol':     SYMBOL,
         'qty':        contracts,
@@ -899,6 +1070,26 @@ def place_trade(side: str, sig: dict, regime: str,
         return False
 
     order_id = result.get('order_id', '')          # bridge returns 'order_id' not 'orderId'
+
+    # Verify the actual filled quantity against the broker rather than trusting
+    # the requested size (ported from the futures_trader.py/IBKR fix, Jul 23 2026
+    # incident: an unverified `contracts` value caused a stop-close to over-buy
+    # and open a phantom position once the real fill and the DB disagreed).
+    time.sleep(3)
+    _post_qty = _get_ibkr_qty()
+    if _pre_qty is None or _post_qty is None:
+        log(f"  WARNING: could not verify fill (bridge unavailable) — trusting requested size {contracts}")
+    else:
+        _actual_filled = round(abs(_post_qty - _pre_qty))
+        if _actual_filled == 0:
+            log(f"  Order submitted but position unchanged after 3s — entry not confirmed, aborting")
+            send_telegram(f"⚠️ FUTURES(TC) entry order submitted but no fill detected (order {order_id}) — no DB entry written")
+            return False
+        if _actual_filled != contracts:
+            log(f"  WARNING: requested {contracts} contracts, broker shows {_actual_filled} filled — using real fill size")
+            send_telegram(f"⚠️ FUTURES(TC) entry partial/over fill: requested {contracts}, got {_actual_filled} (order {order_id})")
+            contracts = _actual_filled
+
     session  = get_session()
     setup    = f"ORB_{side}" if sig.get(f'orb_{"bull" if side=="LONG" else "bear"}') else f"VWAP_{side}"
 
@@ -997,34 +1188,84 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         pnl_usd   = pnl_ticks * TICK_VALUE * contracts
         pnl_pct   = pnl_pts / entry * 100
 
-        # ── Point-based profit protection ─────────────────
-        # MNQ target ~99pts. PCT-based thresholds (1.5% = 450pts) never fire.
-        # Three tiers, each only tightens — never loosens the stop.
-        s_peak  = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
+        # ── Regime-aware profit locks (aligned with futures_trader.py Jul 25 2026) ──
+        # Three tiers, each only tightens — never loosens the stop. Params vary
+        # by day type (set at 10:30 IB formation; CHOPPY default before that).
+        s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
+        peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)
 
-        # Tier 1 (+30pts): break-even — stop moves to entry, trade cannot lose
-        if pnl_pts >= BE_ACTIVATE_PTS:
-            be = round(entry + TICK_SIZE, 2) if not is_short else round(entry - TICK_SIZE, 2)
+        _rp = EXIT_PARAMS_BY_REGIME.get(_day_regime or 'CHOPPY', EXIT_PARAMS_BY_REGIME['CHOPPY'])
+        _be_pts, _be_frac      = _rp['be_pts'], _rp['be_frac']
+        _wide_pts, _wide_gap   = _rp['wide_pts'], _rp['wide_gap']
+        _tight_pts, _tight_gap = _rp['tight_pts'], _rp['tight_gap']
+
+        # Tier 1: proportional lock-in — protect _be_frac of the peak move
+        if pnl_pts >= _be_pts:
+            locked = round(peak_pts * _be_frac, 2)
+            be = round(entry + max(locked, TICK_SIZE), 2) if not is_short else round(entry - max(locked, TICK_SIZE), 2)
             if (not is_short and be > sl) or (is_short and be < sl):
                 sl = be
-                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to BE level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE stop → {sl} (+{pnl_pts:.0f}pts)")
+                _update_backup_stop(trade, sl)
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: BE lock({_be_frac:.0%} of {peak_pts:.0f}pk, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 2 (+60pts): trail 20pts behind session peak
-        if pnl_pts >= TRAIL_WIDE_PTS:
-            trail = round(s_peak - TRAIL_WIDE_GAP, 2) if not is_short else round(s_peak + TRAIL_WIDE_GAP, 2)
+        # Tier 2: trail _wide_gap behind session peak — let it run
+        if pnl_pts >= _wide_pts:
+            trail = round(s_peak - _wide_gap, 2) if not is_short else round(s_peak + _wide_gap, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
-                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to trail level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(20) → {sl} (+{pnl_pts:.0f}pts)")
+                _update_backup_stop(trade, sl)
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail({_wide_gap:.0f}, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # Tier 3 (+85pts, near target): tighten to 10pts — lock in most of the gain
-        if pnl_pts >= TRAIL_TIGHT_PTS:
-            trail = round(s_peak - TRAIL_TIGHT_GAP, 2) if not is_short else round(s_peak + TRAIL_TIGHT_GAP, 2)
+        # Tier 3: tighten to _tight_gap behind peak — lock in most of the gain
+        if pnl_pts >= _tight_pts:
+            trail = round(s_peak - _tight_gap, 2) if not is_short else round(s_peak + _tight_gap, 2)
             if (not is_short and trail > sl) or (is_short and trail < sl):
                 sl = trail
-                _update_backup_stop(trade, sl)   # moves IBKR hardware stop to tight trail level
-                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail(10) → {sl} (+{pnl_pts:.0f}pts)")
+                _update_backup_stop(trade, sl)
+                log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail({_tight_gap:.0f}, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
+
+        # ── Partial scale-out (aligned Jul 25 2026 — dormant while TC sizing
+        # yields 1 contract; fires only on 2-contract trades) ──
+        if (contracts >= 2 and not _partial_done.get(tid)
+                and pnl_pts >= PARTIAL_TAKE_PTS):
+            _pp = _bridge_get('/futures/position')
+            if isinstance(_pp, list):
+                _pq = 0.0
+                for _p in _pp:
+                    if _p.get('symbol') == SYMBOL:
+                        _pq = float(_p.get('qty', 0))
+                        break
+                _held = (_pq <= -contracts) if is_short else (_pq >= contracts)
+                if _held:
+                    _pside = 'BUY' if is_short else 'SELL'
+                    _pr = _bridge_post('/futures/order', {
+                        'symbol': SYMBOL, 'qty': 1, 'side': _pside,
+                        'order_type': 'MARKET',
+                    })
+                    if _pr.get('status') == 'submitted':
+                        _partial_done[tid] = True
+                        _ppts = pnl_pts
+                        _pusd = _ppts / TICK_SIZE * TICK_VALUE * 1
+                        _log_partial_close(trade, price, round(_pusd, 2),
+                                           round(_ppts / TICK_SIZE, 1))
+                        record_trade_pnl(_pusd)
+                        contracts -= 1
+                        trade['contracts'] = contracts
+                        pnl_usd = pnl_ticks * TICK_VALUE * contracts
+                        _be_px = round(entry + (TICK_SIZE if not is_short else -TICK_SIZE), 2)
+                        if (not is_short and _be_px > sl) or (is_short and _be_px < sl):
+                            sl = _be_px
+                        _update_backup_stop(trade, sl)
+                        msg = (
+                            f"🟡 PARTIAL SCALE-OUT (TC)\n"
+                            f"{SYMBOL} {side}: banked 1 of {contracts + 1} @ {price} "
+                            f"(+{_ppts:.0f}pts / ${_pusd:+.0f})\n"
+                            f"Runner: 1 contract, stop → breakeven ({sl})"
+                        )
+                        log(msg)
+                        send_telegram(msg)
+                    else:
+                        log(f"  partial scale-out order failed ({_pr}) — retry next cycle")
 
         # VWAP for exit decisions
         vwap = vwap_now   # pre-fetched once above the loop
@@ -1066,6 +1307,35 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 exit_reason = f'VWAP cross exit ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
             elif is_short and price > vwap:
                 exit_reason = f'VWAP cross exit (short) ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+
+        # 4b. Reversal-detection exit (aligned with futures_trader.py Jul 25 2026).
+        # After the trade proved a real peak (≥REV_EXIT_PEAK_MIN_PTS), exit at
+        # market when REV_EXIT_CONFIRM_BARS consecutive CLOSED 5-min bars go
+        # against the position AND ≥REV_EXIT_RETRACE_FRAC of the peak is gone.
+        if not exit_reason and df5 is not None and not df5.empty and len(df5) >= 3:
+            try:
+                _completed = df5
+                if (datetime.now(ET) - df5.index[-1]).total_seconds() < 300:
+                    _completed = df5.iloc[:-1]      # drop the forming bar only
+                _last_ts   = _completed.index[-1]
+                _st = _rev_state.setdefault(tid, {'last_ts': None, 'adv_streak': 0, 'prev_close': None})
+                if _st['last_ts'] is None or _last_ts > _st['last_ts']:
+                    _c = float(_completed['close'].iloc[-1])
+                    if _st['prev_close'] is not None:
+                        _adverse = (_c < _st['prev_close']) if not is_short else (_c > _st['prev_close'])
+                        _st['adv_streak'] = _st['adv_streak'] + 1 if _adverse else 0
+                    _st['prev_close'] = _c
+                    _st['last_ts']    = _last_ts
+                if (peak_pts >= REV_EXIT_PEAK_MIN_PTS
+                        and _st['adv_streak'] >= REV_EXIT_CONFIRM_BARS
+                        and (peak_pts - pnl_pts) >= REV_EXIT_RETRACE_FRAC * peak_pts):
+                    exit_reason = (
+                        f'Reversal exit: peak +{peak_pts:.0f}pts, gave back '
+                        f'{peak_pts - pnl_pts:.0f} over {_st["adv_streak"]} closed bars '
+                        f'({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
+                    )
+            except Exception as _e:
+                log(f"  rev-exit check error (trade {tid}): {_e}")
 
         # 5. No-move exit (time-based — dead trade, free the slot)
         # Only during active session; EOD close handles anything still open at 4pm.
@@ -1160,7 +1430,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 log(msg)
                 send_telegram(msg)
                 exits.append({'tid': tid, 'pnl': pnl_usd})
-                for d in (_session_high, _session_low, _price_history, _partial_done):
+                for d in (_session_high, _session_low, _price_history, _partial_done, _rev_state):
                     d.pop(tid, None)
                 continue
 
@@ -1191,7 +1461,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             exits.append({'tid': tid, 'pnl': pnl_usd})
 
             # Cleanup state
-            for d in (_session_high, _session_low, _price_history, _partial_done):
+            for d in (_session_high, _session_low, _price_history, _partial_done, _rev_state):
                 d.pop(tid, None)
 
     return exits
@@ -1242,13 +1512,58 @@ def run_scan():
 
     # Regime — pass pre-fetched bars to avoid a second bridge call
     regime = get_regime(df5)
-    _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1
-    _confirmed_scans = _regime_scan_counts.get(regime, 0)
-    log(f"Regime: {regime} (×{_confirmed_scans}) | Daily P&L: ${get_futures_daily_pnl():+.0f}")
+    _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1   # daily tally (logging only)
+    # F1 fix (ported from futures_trader.py Jul 25 2026): _confirmed_scans must
+    # be CONSECUTIVE same-regime reads, advanced at most once per completed
+    # 5-min bar — the old cumulative per-day tally at 60s cadence could unlock
+    # SHORT from 3 scattered WEAK minutes.
+    global _streak_regime, _streak_bar_ts
+    _streak_bar = None
+    if not df5.empty:
+        _bar_age = (datetime.now(ET) - df5.index[-1]).total_seconds()
+        if _bar_age >= 300:
+            _streak_bar = df5.index[-1]
+        elif len(df5) >= 2:
+            _streak_bar = df5.index[-2]
+    if regime != _streak_regime:
+        _streak_regime  = regime
+        _streak_bar_ts  = _streak_bar
+        _confirmed_scans = 1
+    elif _streak_bar is not None and _streak_bar != _streak_bar_ts:
+        _streak_bar_ts   = _streak_bar
+        _confirmed_scans += 1
+    log(f"Regime: {regime} (×{_confirmed_scans} consec bars) | Daily P&L: ${get_futures_daily_pnl():+.0f}")
 
     if not is_entry_allowed():
         log(f"Session {session} — no new entries")
         return
+
+    # ── IB classification (computed once at 10:30, sticky all day) ───────────
+    # Ported from futures_trader.py Jul 25 2026 — sets _day_regime (exit-stack
+    # weather) + _ib_kind (Day Shape, SHORT-gate bypass) + hero_regime input.
+    global _ib_kind, _ib_kind_set, _day_regime
+    if not _ib_kind_set and not df5.empty:
+        _ibr = calc_ib_range_today(df5)
+        _now_c = datetime.now(ET)
+        if _ibr >= 50.0 and (_now_c.hour > 10 or (_now_c.hour == 10 and _now_c.minute >= 30)):
+            _df_today = df5[df5.index.date == _now_c.date()]
+            if not _df_today.empty:
+                _ib_hi  = float(_df_today['high'].max())
+                _ib_lo  = float(_df_today['low'].min())
+                _ib_cl  = float(_df_today['close'].iloc[-1])
+                _ib_rng = _ib_hi - _ib_lo
+                _ib_mid = 0.5
+                if _ib_rng > 0:
+                    _ib_mid = (_ib_cl - _ib_lo) / _ib_rng
+                    if _ib_mid < 0.25:
+                        _ib_kind = 'BEAR_DIRECTIONAL'
+                    elif _ib_mid > 0.75:
+                        _ib_kind = 'BULL_DIRECTIONAL'
+                    else:
+                        _ib_kind = 'ROTATIONAL'
+                _day_regime  = detect_regime(_ibr)
+                _ib_kind_set = True
+                log(f"IB classified: {_ib_kind} | regime={_day_regime} | range={_ibr:.0f}pts | mid={_ib_mid:.2f}")
 
     # Get signals
     sig = get_signals(df5)
@@ -1300,36 +1615,111 @@ def run_scan():
             log(f"pm_ib hold — {remaining}s remaining. Send FUT BIAS LONG/SHORT if needed.")
             return
 
+    # ── Entry gates ALIGNED with futures_trader.py (Jul 25 2026) ─────────────
+    # A+-only + Trend Jury (hero gate) + Volume Pulse (RVOL, graduated floor
+    # with Hero-GOLD compensation) + 30-min HTF agreement. Prop rules
+    # (DLL/consistency/sizing) unchanged — this only upgrades signal quality.
+    hero_regime = _day_regime if _day_regime else 'CHOPPY'
+    try:
+        bars_hist = get_bars(bar_size_min=5, days=2)
+        prev_rth  = bars_hist[bars_hist.index.date < datetime.now(ET).date()] if not bars_hist.empty else pd.DataFrame()
+        atr_now   = calc_atr(df5)
+        price_now = sig.get('price', 0)
+    except Exception:
+        bars_hist = pd.DataFrame()
+        prev_rth  = pd.DataFrame()
+        atr_now   = 10.0
+        price_now = sig.get('price', 0)
+
     # ── Try LONG entry ─────────────────────────────────────
     if regime in ('STRONG', 'NORMAL'):
         score, grade = grade_entry(sig, regime, 'LONG')
-        if grade not in ('A+', 'A'):
+        if grade != 'A+':   # A+-only (aligned Jul 25 2026 — A-grade diluted WR 56%→41%)
             try: log_block('TC', 'MNQ', 'LONG', 'GRADE', f'{grade}({score})', price, session)
             except Exception: pass
         else:
-            log(f"LONG signal: {grade} ({score}pts) — entering")
-            if place_trade('LONG', sig, regime, score, grade):
-                try: log_enter('TC', 'MNQ', 'LONG', f'{grade}({score})', price, session)
+            h_score, h_flags = score_entry_regime(price_now, atr_now, 'LONG',
+                                                   bars_hist, prev_rth, hero_regime)
+            contracts_hero = contracts_from_regime_score(h_score, hero_regime, 2)
+            if contracts_hero == 0:
+                log(f"LONG signal: {grade} ({score}pts) — HERO SKIP "
+                    f"(weighted={h_score}, regime={hero_regime}, flags={h_flags})")
+                try: log_block('TC', 'MNQ', 'LONG', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
+            else:
+                entry_rvol = calc_session_rvol(df5)
+                rvol_ok = entry_rvol >= ENTRY_MIN_RVOL
+                rvol_compensated = (
+                    not rvol_ok and entry_rvol >= RVOL_GRAD_FLOOR
+                    and is_gold_score(h_score, hero_regime)
+                )
+                if not rvol_ok and not rvol_compensated:
+                    log(f"LONG signal: {grade} ({score}pts) — RVOL SKIP "
+                        f"({entry_rvol:.2f} < {ENTRY_MIN_RVOL})")
+                    try: log_block('TC', 'MNQ', 'LONG', 'RVOL_ENTRY', f'{entry_rvol:.2f}', price_now, session)
+                    except Exception: pass
+                elif calc_htf_trend(df5) != 1:
+                    log(f"LONG signal: {grade} ({score}pts) — HTF SKIP (30min trend not up)")
+                    try: log_block('TC', 'MNQ', 'LONG', 'HTF', 'not_up', price_now, session)
+                    except Exception: pass
+                else:
+                    _rvol_note = ' (RVOL-compensated by Hero GOLD)' if rvol_compensated else ''
+                    log(f"LONG signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                        f"rvol={entry_rvol:.2f} htf=up — entering{_rvol_note}")
+                    if place_trade('LONG', sig, regime, score, grade):
+                        try: log_enter('TC', 'MNQ', 'LONG', f'{grade}({score})', price_now, session)
+                        except Exception: pass
     else:
         try: log_block('TC', 'MNQ', 'LONG', 'REGIME', regime, price, session)
         except Exception: pass
 
     # ── Try SHORT entry ────────────────────────────────────
-    # Normal: WEAK regime required. Macro bias SHORT: allowed in any regime
-    # (NFP miss / CPI hot = directional macro trade, regime not yet confirmed).
-    short_allowed = (regime == 'WEAK' and _confirmed_scans >= 3) or \
-                    (_daily_macro_bias == 'SHORT')
+    # short_allowed (aligned Jul 25 2026):
+    #   1. WEAK regime confirmed ≥3 consecutive 5-min bars
+    #   2. Overnight macro bias is SHORT (NFP/CPI directional day)
+    #   3. BEAR_DIRECTIONAL IB (day closed near IB low — already showed its hand)
+    short_allowed = (
+        (regime == 'WEAK' and _confirmed_scans >= 3) or
+        (_daily_macro_bias == 'SHORT') or
+        (_ib_kind == 'BEAR_DIRECTIONAL')
+    )
     if short_allowed:
         score, grade = grade_entry(sig, regime, 'SHORT')
-        if grade not in ('A+', 'A'):
+        if grade != 'A+':   # A+-only — see LONG side comment
             try: log_block('TC', 'MNQ', 'SHORT', 'GRADE', f'{grade}({score})', price, session)
             except Exception: pass
         else:
-            log(f"SHORT signal: {grade} ({score}pts) — entering")
-            if place_trade('SHORT', sig, regime, score, grade):
-                try: log_enter('TC', 'MNQ', 'SHORT', f'{grade}({score})', price, session)
+            h_score, h_flags = score_entry_regime(price_now, atr_now, 'SHORT',
+                                                   bars_hist, prev_rth, hero_regime)
+            contracts_hero = contracts_from_regime_score(h_score, hero_regime, 2)
+            if contracts_hero == 0:
+                log(f"SHORT signal: {grade} ({score}pts) — HERO SKIP "
+                    f"(weighted={h_score}, regime={hero_regime}, flags={h_flags})")
+                try: log_block('TC', 'MNQ', 'SHORT', 'HERO', f'score={h_score}/{hero_regime}', price_now, session)
                 except Exception: pass
+            else:
+                entry_rvol = calc_session_rvol(df5)
+                rvol_ok = entry_rvol >= ENTRY_MIN_RVOL
+                rvol_compensated = (
+                    not rvol_ok and entry_rvol >= RVOL_GRAD_FLOOR
+                    and is_gold_score(h_score, hero_regime)
+                )
+                if not rvol_ok and not rvol_compensated:
+                    log(f"SHORT signal: {grade} ({score}pts) — RVOL SKIP "
+                        f"({entry_rvol:.2f} < {ENTRY_MIN_RVOL})")
+                    try: log_block('TC', 'MNQ', 'SHORT', 'RVOL_ENTRY', f'{entry_rvol:.2f}', price_now, session)
+                    except Exception: pass
+                elif calc_htf_trend(df5) != -1:
+                    log(f"SHORT signal: {grade} ({score}pts) — HTF SKIP (30min trend not down)")
+                    try: log_block('TC', 'MNQ', 'SHORT', 'HTF', 'not_down', price_now, session)
+                    except Exception: pass
+                else:
+                    _rvol_note = ' (RVOL-compensated by Hero GOLD)' if rvol_compensated else ''
+                    log(f"SHORT signal: {grade} ({score}pts) | heroes={h_score}/{hero_regime} "
+                        f"ib={_ib_kind} rvol={entry_rvol:.2f} htf=down — entering{_rvol_note}")
+                    if place_trade('SHORT', sig, regime, score, grade):
+                        try: log_enter('TC', 'MNQ', 'SHORT', f'{grade}({score})', price_now, session)
+                        except Exception: pass
     else:
         try: log_block('TC', 'MNQ', 'SHORT', 'REGIME', regime, price, session)
         except Exception: pass
@@ -1369,6 +1759,13 @@ def reset_daily_state():
     _session_low  = {}
     _price_history = {}
     _partial_done  = {}
+    global _rev_state, _streak_regime, _streak_bar_ts, _ib_kind, _ib_kind_set, _day_regime
+    _rev_state     = {}
+    _streak_regime = None
+    _streak_bar_ts = None
+    _ib_kind       = None
+    _ib_kind_set   = False
+    _day_regime    = None
     _daily_pnl     = 0.0
     _peak_daily_pnl = 0.0
 
@@ -1510,25 +1907,61 @@ def poll_telegram_commands():
 
 
 def _force_close_all():
-    """Emergency: close all open futures positions."""
+    """Emergency: close all open futures positions.
+
+    Sizes the closing order off the REAL broker position, not the sum of each
+    DB row's (possibly stale) `contracts` field — ported from the IBKR side fix
+    (Jul 23 2026 incident: looping per-trade with each row's own contracts
+    caused a stop-close to over-buy and open a phantom position once the DB
+    and broker disagreed on size). Sends exactly one order, sized to what the
+    broker actually holds and verified afterward, then distributes P&L.
+    """
     trades = get_open_futures_trades()
     if not trades:
         send_telegram("No open futures positions.")
         return
+
     for t in trades:
-        _cancel_backup_stop(t)   # cancel backup stop before closing
-        side = 'BUY' if t.get('side') == 'SHORT' else 'SELL'
-        _bridge_post('/futures/order', {
-            'symbol': SYMBOL, 'qty': t.get('contracts', 1),
-            'side': side, 'order_type': 'MARKET',
-        })
-        price = get_live_price() or t['entry_price']
-        pnl_pts  = (t['entry_price'] - price) if t.get('side') == 'SHORT' else (price - t['entry_price'])
+        _cancel_backup_stop(t)   # cancel backup stops before closing
+
+    real_qty = _get_ibkr_qty()
+    if real_qty is None:
+        send_telegram("⚠️ FUT CLOSE: bridge unavailable — could not verify real position, no order sent. Check TC manually.")
+        return
+
+    db_total = sum(t.get('contracts', 1) for t in trades)
+    if round(real_qty) != 0 and abs(round(real_qty)) != db_total:
+        log(f"  NOTE: DB rows imply {db_total} contracts total, broker shows {real_qty} — closing off the real figure")
+
+    if round(real_qty) == 0:
+        for t in trades:
+            log_futures_exit(t['id'], t['entry_price'],
+                              'FUT CLOSE — broker already flat (orphan DB row)', 0.0, 0.0)
+        send_telegram(f"🔴 FUTURES(TC): {len(trades)} DB row(s) marked closed — broker already flat, no order sent.")
+        return
+
+    close_side = 'BUY' if real_qty < 0 else 'SELL'
+    close_qty  = abs(int(round(real_qty)))
+    _bridge_post('/futures/order', {
+        'symbol': SYMBOL, 'qty': close_qty,
+        'side': close_side, 'order_type': 'MARKET',
+    })
+    time.sleep(3)
+    post_qty = _get_ibkr_qty()
+    if post_qty is None or round(post_qty) != 0:
+        send_telegram(f"⚠️ FUT CLOSE: sent {close_side} {close_qty} but broker still shows qty={post_qty} — check TC manually, DB NOT updated.")
+        return
+
+    price = get_live_price() or trades[0]['entry_price']
+    total_pnl = 0.0
+    for t in trades:
+        pnl_pts   = (t['entry_price'] - price) if t.get('side') == 'SHORT' else (price - t['entry_price'])
         pnl_ticks = pnl_pts / TICK_SIZE
         pnl_usd   = pnl_ticks * TICK_VALUE * t.get('contracts', 1)
         log_futures_exit(t['id'], price, 'FUT CLOSE command', pnl_usd, pnl_ticks)
-        record_trade_pnl(pnl_usd)
-    send_telegram(f"🔴 FUTURES: force-closed {len(trades)} position(s).")
+        total_pnl += pnl_usd
+    record_trade_pnl(total_pnl)
+    send_telegram(f"🔴 FUTURES(TC): force-closed real position ({close_side} {close_qty}) covering {len(trades)} DB trade(s). Est P&L ${total_pnl:+.0f}.")
 
 
 # ── Scheduler + entry point ───────────────────────────────

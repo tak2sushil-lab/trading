@@ -36,7 +36,9 @@ LOG = os.path.join(ROOT, 'logs', 'parity.log')
 SIM_FLAGS = ['--graduated-rvol', '--rvol-floor', '0.70',
              '--regime-aware-exits', '--stop-pts', '200',
              '--no-ovn-skip',   # OVN whole-day veto removed live Jul 18 2026
-             '--dll', '1250']   # $5K futures allocation risk model (Jul 18 2026)
+             '--dll', '1250',   # $5K futures allocation risk model (Jul 18 2026)
+             '--rev-exit', '2,0.30,120',  # reversal-detection exit live Jul 25 2026
+             '--partial', '150']          # partial scale-out live Jul 25 2026
 
 TRADE_RE = re.compile(
     r'^\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(LONG|SHORT)\s+(\S+)\s+\S+\s+([\d.]+)')
@@ -83,7 +85,8 @@ def live_trades(day):
     con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
     rows = con.execute(
         """select entry_time, side, setup_type, entry_price from futures_trades
-           where entry_date=? and account_mode='IBKR' and setup_type!='RECONCILED'""",
+           where entry_date=? and account_mode='IBKR' and setup_type!='RECONCILED'
+           and coalesce(notes,'') not like 'partial of %'""",
         (day,)).fetchall()
     con.close()
     return [{'time': r[0][:5], 'side': r[1], 'setup': r[2], 'entry': r[3]}

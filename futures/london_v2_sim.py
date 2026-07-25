@@ -129,6 +129,8 @@ def run_day(sess, cfg):
         tgt  = e + sign * TGT_ATR * atr
         be_armed = False
         exit_p, reason = None, 'eod'
+        # rev-exit state (Jul 24 2026 candidate — see cfg['rev_exit'])
+        peak_prof, adv_streak, prev_c = 0.0, 0, None
         for ts_, bar in fut1.iterrows():
             lo_, hi_ = bar['low'], bar['high']
             fav = (hi_ - e) if side == 'LONG' else (e - lo_)
@@ -153,6 +155,20 @@ def run_day(sess, cfg):
                 ns = None
             if ns is not None and sign * (ns - stop) > 0:
                 stop = ns
+            # Reversal-detection exit (Jul 24 2026 candidate, mirrors NY
+            # sim_replay --rev-exit but ATR-scaled): after peak profit ≥
+            # peak_atr_min × ATR, exit at close on n consecutive adverse
+            # 1m closes AND retrace ≥ retr_frac of peak.
+            if cfg.get('rev_exit'):
+                n_req, retr_frac, peak_atr_min = cfg['rev_exit']
+                peak_prof = max(peak_prof, fav)
+                adverse = prev_c is not None and sign * (c - prev_c) < 0
+                adv_streak = adv_streak + 1 if adverse else 0
+                prev_c = c
+                if (peak_prof >= peak_atr_min * atr and adv_streak >= n_req
+                        and (peak_prof - prof) >= retr_frac * peak_prof):
+                    exit_p, reason = c, 'rev_exit'
+                    break
         if exit_p is None:
             exit_p = float(fut1.iloc[-1]['close'])
         pnl = sign * (exit_p - e) * DOLLARS_PER_PT
@@ -203,7 +219,16 @@ def main():
     ap.add_argument('--be-mult', type=float, default=None,
                     help='BE arm profit in ATR (omit for no BE stop)')
     ap.add_argument('--grid', action='store_true')
+    ap.add_argument('--rev-exit', type=str, default=None, dest='rev_exit',
+                    help='Candidate (Jul 24 2026): "n_bars,retrace_frac,peak_atr_min" — '
+                         'after peak ≥ peak_atr_min×ATR, exit on n adverse 1m closes '
+                         'AND retrace ≥ retrace_frac of peak. e.g. --rev-exit 3,0.35,1.0')
     a = ap.parse_args()
+    rev_cfg = None
+    if a.rev_exit:
+        _r = [float(x) for x in a.rev_exit.split(',')]
+        assert len(_r) == 3, '--rev-exit needs n_bars,retrace_frac,peak_atr_min'
+        rev_cfg = (int(_r[0]), _r[1], _r[2])
 
     print(f"Loading 1m bars {a.start} → {a.end} ...")
     bars = load_days(a.start, a.end)
@@ -211,7 +236,8 @@ def main():
 
     if not a.grid:
         cfg = {'vol_confirm': a.vol_confirm, 'acceptance': a.acceptance,
-               'skip_day': a.skip_day, 'be_mult': a.be_mult}
+               'skip_day': a.skip_day, 'be_mult': a.be_mult,
+               'rev_exit': rev_cfg}
         tr = simulate(bars, cfg, a.start)
         report(str(cfg), tr)
         if not tr.empty:

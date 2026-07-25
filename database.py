@@ -1728,9 +1728,13 @@ def enrich_scan_log():
 
     conn = get_connection()
     c    = conn.cursor()
+    # LIMIT raised 2000→6000 Jul 25 2026: at the 241-symbol universe a single
+    # day generates ~2,400 rows; with newest-first ordering the old cap left
+    # ~400 rows/day permanently unenriched (new days always outranked the
+    # backlog), silently biasing the Book Health Selector's sample.
     c.execute('''SELECT id, symbol, scan_date, scan_time FROM scan_log
                  WHERE enriched = 0
-                 ORDER BY scan_date DESC LIMIT 2000''')
+                 ORDER BY scan_date DESC LIMIT 6000''')
     rows = c.fetchall()
     conn.close()
 
