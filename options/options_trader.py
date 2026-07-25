@@ -2745,39 +2745,29 @@ def _execute_close_bg(trade: dict, chat_id: str):
 
     # Fetch current value to set initial limit
     if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
-        lq = get_quote(sym, trade['expiry'], trade['long_strike'],  trade['right'])
-        sq = get_quote(sym, trade['expiry'], trade['short_strike'], trade['right'])
-        if not lq or not sq:
-            send_telegram(f"❌ Cannot fetch quotes for {sym} to close", chat_id)
+        # Jul 23 2026: combo/BAG closes on a profitable debit spread are
+        # blocked by IBKR (Error 201, riskless-combination throttle — not
+        # bypassable via TWS "Bypass Order Precautions for API Orders", which
+        # was already checked on both gateways when this hit). Delegate to
+        # watchman's two-leg closer (single source of truth — same fix
+        # applies to both the manual OPT CLOSE path and watchman's own
+        # AUTO_TARGET/AUTO_STOP) instead of building a combo payload here.
+        from watchman import _close_debit_spread_legs
+        ok = _close_debit_spread_legs(trade, exit_reason='MANUAL')
+        if not ok:
+            send_telegram(f"❌ {sym} two-leg close did not complete — check `OPT POSITIONS` / IBKR manually.", chat_id)
             return
-        long_bid  = lq.get('bid') or 0
-        long_ask  = lq.get('ask') or 0
-        short_bid = sq.get('bid') or 0
-        short_ask = sq.get('ask') or 0
-        if not (long_bid or long_ask) or not (short_bid or short_ask):
-            send_telegram(f"❌ {sym} spread close: no valid bid/ask from broker — try again", chat_id)
-            return
-        long_mid  = (long_bid + long_ask) / 2
-        short_mid = (short_bid + short_ask) / 2
-        spread_mid = round(long_mid - short_mid, 2)
-        # Close a bull spread = sell it back. Natural credit (sell long at bid,
-        # buy back short at ask) is fully marketable — not just a nickel off
-        # mid, which can sit unfilled on a wide spread (Jul 20 2026 fix).
-        natural_credit = round(long_bid - short_ask, 2)
-        limit_credit = max(0.01, natural_credit)
-        payload = {
-            'symbol':       sym,
-            'expiry':       trade['expiry'],
-            'strike':       trade['long_strike'],
-            'right':        trade['right'],
-            'qty':          qty,
-            'action':       'SELL',
-            'order_type':   'LIMIT',
-            'limit_price':  limit_credit,
-            'short_strike': trade['short_strike'],
-            'net_debit':    round(-limit_credit, 2),  # negative = credit
-        }
-        exit_value = round(spread_mid * 100 * qty, 2)
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT exit_value, return_pct FROM options_trades WHERE id=?", (tid,)).fetchone()
+        conn.close()
+        exit_value, return_pct = row
+        sign = '+' if return_pct >= 0 else ''
+        send_telegram(
+            f"✅ *{sym} {strat} closed* [trade #{tid}]\n"
+            f"Exit value: ${exit_value:.0f} | Return: {sign}{return_pct:.1f}%",
+            chat_id,
+        )
+        return
     elif strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
         right_cc = 'P' if strat == 'BULL_PUT_CREDIT' else 'C'
         lq = get_quote(sym, trade['expiry'], trade['long_strike'],  right_cc)

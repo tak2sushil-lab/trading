@@ -169,6 +169,14 @@ def _sell_limit_price(bid: float, ask: float) -> float:
     return round(mid - discount, 2)
 
 
+def _buy_limit_price(bid: float, ask: float) -> float:
+    """Mirror of _sell_limit_price for a BUY-to-close leg: nickel above mid
+    for tight spreads, scales toward the ask as the spread widens."""
+    mid = (bid + ask) / 2
+    premium = max(0.05, round((ask - bid) * 0.5, 2))
+    return round(mid + premium, 2)
+
+
 def _leg_qty(sym: str, expiry: str, strike: float) -> float:
     """Live IBKR position qty for one option leg (0.0 if not held). Used to
     detect real fills by comparing before/after, not just 'is it nonzero'
@@ -209,6 +217,154 @@ def _flag_partial_fill(tid: int, sym: str, baseline_qty: float,
           f"for manual review, auto-close disabled on this trade")
 
 
+def _close_one_leg(sym: str, expiry: str, strike: float, right: str, action: str,
+                    qty: int, price: float, baseline_qty: float) -> tuple:
+    """Place one single-leg LIMIT order to close a leg, verify the real fill
+    against the broker position (not the order-status endpoint, which can
+    stay stale on 'Cancelled'/'PendingSubmit' regardless of the true fill —
+    Jul 23 2026), cancel-with-verification on non-fill (same race-condition
+    guard as the combo retry loop below: a cancel can be rejected if the fill
+    landed first). Returns (filled: bool, status: str)."""
+    resp = _bridge_post('/options/order', {
+        'symbol': sym, 'expiry': expiry, 'strike': strike, 'right': right,
+        'qty': qty, 'action': action, 'order_type': 'LIMIT', 'limit_price': price,
+    })
+    if not resp or 'orderId' not in resp:
+        return False, 'submit_failed'
+
+    order_id = resp['orderId']
+    time.sleep(8)
+    moved = abs(_leg_qty(sym, expiry, strike) - baseline_qty)
+    if moved >= qty:
+        return True, 'filled'
+    if moved > 0:
+        return False, 'partial'
+
+    _bridge_post(f'/order/{order_id}/cancel', {})
+    time.sleep(3)
+    moved = abs(_leg_qty(sym, expiry, strike) - baseline_qty)
+    if moved >= qty:
+        return True, 'filled_despite_cancel'
+    if moved > 0:
+        return False, 'partial'
+    return False, 'unfilled'
+
+
+def _close_debit_spread_legs(trade: dict, exit_reason: str) -> bool:
+    """Close a BULL_SPREAD/BEAR_PUT_SPREAD as two independent single-leg
+    orders instead of one combo/BAG order.
+
+    Jul 23 2026: IBKR rejects the combo close on a profitable spread with
+    Error 201 ('Riskless combination orders are not allowed... maximum limit
+    of active riskless/guaranteed-loss combination orders') — confirmed to be
+    a hard account-level throttle, not a bypassable TWS precaution (checked
+    with 'Bypass Order Precautions for API Orders' already enabled on both
+    gateways). The combo path is structurally blocked for exactly the trades
+    we most want to close cleanly, so this legs out instead.
+
+    Legging gives up some of the spread's mid-price edge (crossing two
+    bid/asks instead of one combo mid) — each leg starts at a price that only
+    crosses about half the spread (_sell_limit_price / _buy_limit_price,
+    already proven on LEAP/SCALP closes) and only walks toward fully
+    marketable if unfilled, rather than crossing the full spread immediately.
+
+    Scope: debit spreads only (BULL_SPREAD/BEAR_PUT_SPREAD) — this is the
+    strategy type that actually hit the combo block today. Credit spreads
+    (BULL_PUT_CREDIT/BEAR_CALL_CREDIT) likely have the same problem but are
+    NOT covered here — their sign convention has caused real bugs before
+    (Jun 23 2026 credit-spread sweep) and deserves its own validation, not a
+    blind extension of this code.
+    """
+    sym, tid, qty = trade['symbol'], trade['id'], trade.get('contracts', 1)
+    right = trade['right']
+    expiry = trade['expiry']
+
+    # Debit spread close: SELL the long leg, BUY back the short leg (matches
+    # the combo payload this replaces: order_action='SELL' -> buy_leg.action
+    # becomes 'SELL', sell_leg.action becomes 'BUY').
+    legs = {
+        'long':  {'strike': trade['long_strike'],  'action': 'SELL'},
+        'short': {'strike': trade['short_strike'], 'action': 'BUY'},
+    }
+    baseline = {k: _leg_qty(sym, expiry, v['strike']) for k, v in legs.items()}
+    done      = {'long': False, 'short': False}
+    fill_price = {}
+
+    MAX_TRIES = 3
+    for attempt in range(MAX_TRIES):
+        for key, leg in legs.items():
+            if done[key]:
+                continue
+            q = get_quote(sym, expiry, leg['strike'], right)
+            if not q:
+                continue
+            bid, ask = q.get('bid') or 0, q.get('ask') or 0
+            smart      = (_sell_limit_price(bid, ask) if leg['action'] == 'SELL'
+                          else _buy_limit_price(bid, ask))
+            marketable = bid if leg['action'] == 'SELL' else ask
+            price = smart if attempt == 0 else (
+                round((smart + marketable) / 2, 2) if attempt == 1 else marketable)
+
+            filled, status = _close_one_leg(
+                sym, expiry, leg['strike'], right, leg['action'],
+                qty, price, baseline[key])
+            if filled:
+                done[key] = True
+                fill_price[key] = price
+            elif status == 'partial':
+                _flag_partial_fill(tid, sym, baseline[key],
+                                    _leg_qty(sym, expiry, leg['strike']), qty)
+                return False
+        if all(done.values()):
+            break
+
+    if done['long'] != done['short']:
+        # One leg closed, the other didn't — the position is no longer the
+        # original spread. Do not mark the trade closed; alert loudly.
+        stuck = 'short' if done['long'] else 'long'
+        send_telegram(
+            f"⚠️ *{sym} trade #{tid} — STRANDED LEG*\n"
+            f"The {'long' if stuck=='long' else 'short'} leg did not close after "
+            f"{MAX_TRIES} attempts while the other side did. Position is no "
+            f"longer the original spread — check `OPT POSITIONS` against IBKR "
+            f"and close the remaining leg manually."
+        )
+        return False
+
+    if not all(done.values()):
+        print(f"[watchman] {sym} trade #{tid} — two-leg close FAILED after {MAX_TRIES} attempts")
+        return False
+
+    exit_dollar = round((fill_price['long'] - fill_price['short']) * 100 * qty, 2)
+    return_pct = close_options_trade(tid, exit_dollar, exit_reason=exit_reason)
+
+    try:
+        import sqlite3 as _sq
+        from database import DB_PATH as _dbp
+        _conn = _sq.connect(_dbp)
+        _cur  = _conn.cursor()
+        _cur.execute('SELECT id, mc_ev_dollar, mc_win_rate FROM opt_calc_log WHERE trade_id=? LIMIT 1', (tid,))
+        _row = _cur.fetchone()
+        _cur.execute('SELECT entry_date, premium_paid FROM options_trades WHERE id=?', (tid,))
+        _erow = _cur.fetchone()
+        _conn.close()
+        if _row and _erow:
+            _days    = (now_et().date() - date.fromisoformat(_erow[0])).days if _erow[0] else 0
+            _premium = _erow[1] or 0
+            log_trade_outcome(
+                trade_id=tid, calc_log_id=_row[0],
+                predicted_ev=_row[1], predicted_wr=_row[2],
+                actual_pnl=round(exit_dollar - _premium, 2),
+                exit_reason=exit_reason,
+                days_held=_days,
+            )
+    except Exception:
+        pass
+
+    print(f"[watchman] two-leg closed {sym} trade #{tid} — exit ${exit_dollar:.0f} ({return_pct:+.1f}%)")
+    return True
+
+
 def _auto_close_position(trade: dict, current_value: float, exit_reason: str = 'AUTO_STOP') -> bool:
     """
     Place a market-limit sell order to close the position when stop is hit.
@@ -218,6 +374,14 @@ def _auto_close_position(trade: dict, current_value: float, exit_reason: str = '
     strat = trade['strategy']
     tid   = trade['id']
     qty   = trade.get('contracts', 1)
+
+    # Jul 23 2026: debit-spread combo closes are blocked by IBKR (Error 201,
+    # riskless-combination throttle — confirmed not bypassable via TWS
+    # settings). Route these through the two-leg closer instead of the
+    # combo/BAG logic below. Credit spreads are intentionally NOT routed here
+    # yet — see _close_debit_spread_legs docstring.
+    if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
+        return _close_debit_spread_legs(trade, exit_reason)
 
     # Baseline qty on the primary leg, captured BEFORE any order goes out —
     # used below to detect a real fill by comparing before/after instead of
