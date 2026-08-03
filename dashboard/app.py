@@ -18,6 +18,7 @@ from futures.strategy_core import TICK_SIZE, TICK_VALUE  # noqa: E402
 BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRADES_DB       = os.path.join(BASE_DIR, 'trades.db')
 BRIDGE_URL      = 'http://localhost:8000'
+TC_BRIDGE_URL   = 'http://localhost:8002'
 PROD_BRIDGE_URL = None   # set to 'http://localhost:8001' when prod bridge is live
 PORT            = 8080
 ET              = ZoneInfo('America/New_York')
@@ -365,7 +366,7 @@ def get_futures_positions():
             rows = c.execute("""
                 SELECT id, symbol, contract, entry_date, entry_time, entry_price,
                        contracts, side, target_price, stop_price, setup_type,
-                       session as trade_session
+                       session as trade_session, account_mode
                 FROM futures_trades
                 WHERE status = 'OPEN'
                 ORDER BY entry_time DESC
@@ -373,8 +374,12 @@ def get_futures_positions():
     except Exception:
         pass
 
-    live = _bridge('/futures/position') or []
-    price_map = {p.get('symbol'): p.get('market_price') for p in live}
+    live_ibkr = _bridge('/futures/position') or []
+    live_tc   = _bridge('/futures/position', url=TC_BRIDGE_URL) or []
+    price_maps = {
+        'IBKR': {p.get('symbol'): p.get('market_price') for p in live_ibkr},
+        'TC':   {p.get('symbol'): p.get('market_price') for p in live_tc},
+    }
 
     result = []
     for row in rows:
@@ -382,7 +387,7 @@ def get_futures_positions():
         ep     = row['entry_price'] or 0
         qty    = row['contracts'] or 1
         is_short = row['side'] == 'SHORT'
-        mp     = price_map.get(sym)
+        mp     = price_maps.get(row['account_mode'], {}).get(sym)
 
         if mp is not None and ep:
             pnl_pts = (ep - mp) if is_short else (mp - ep)
