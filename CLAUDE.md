@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Jul 21 2026 (night)
+Last updated: Aug 3 2026
 
 ---
 
@@ -1103,6 +1103,58 @@ right tail). Dynamic IB-scaled "enough" thresholds: worst tested (-$1,192). What
   **FIXED: enrich_scan_log LIMIT 2000→6000** — at 241 symbols (~2,400 rows/day) newest-first
   ordering left ~400 rows/day permanently unenriched, silently biasing the Book Health sample.
 - Services restarted + verified; sunset review for both new exit rules Aug 24 2026.
+
+---
+
+## Aug 3 2026 — Manual FUT CLOSE hit wrong account (fixed) + dashboard TC blind spot (fixed) + strategy/options ideation
+
+**Manual futures close bug, found + fixed.** User's first manual override ("exit all futures
+now") was executed by importing `futures_trader.py`/`tc_trader.py` directly, outside the env
+context only `launch_futures_personal.sh`/`launch_futures_trader.sh` set. `ACCOUNT_MODE` (from
+`prop_rules.py`) silently defaulted to `'TC'` while the bridge URL still defaulted to IBKR (port
+8000) — a mismatched combination that doesn't exist in any real launch config. Net effect: the
+real IBKR position closed for real, but the DB write and `prop_state.json` update landed on a
+live **TC** trade instead, briefly leaving a real TC position unmonitored (no more BE-lock/
+trailing) until caught via a broker-vs-DB cross-check and fixed live (reverted the DB row,
+corrected `prop_state.json`, then properly closed both accounts with the right scoping).
+**Fixed permanently: `futures/close_all_now.sh [ibkr|tc|all]`** — bakes in the exact env each
+real launch script sets per account and asserts `ACCOUNT_MODE`/`BRIDGE` match before acting.
+**This is now the only sanctioned way to manually flatten futures — never re-import the trader
+files directly.** Also learned: closing a position frees the "max open trades" slot immediately —
+if the day's regime still qualifies, the bot can re-enter within one scan cycle. Flattening
+positions and stopping new entries are two separate actions (`FUT CLOSE`/this script, vs.
+`FUT PAUSE` via Telegram). Full incident + standing rule #14 in `incidents_and_rules` memory.
+
+**Dashboard bug fixed (commit `e52bf31`):** `get_futures_positions()` in `dashboard/app.py` only
+ever queried the IBKR bridge for live price/uPL, so open **TC**-account trades always rendered
+"---" even though the TC bridge was healthy. Now prices each row off its own `account_mode`
+(IBKR → 8000, TC → 8002).
+
+**Strategy/options ideation review (ideation only — nothing built).** Reviewed two external
+videos (a systematic strategy-family backtest across 30 assets; a 4-layer options monitoring
+dashboard) and wrote a full connect-the-dots analysis:
+`docs/IDEATION_2026-08-03_strategy_and_options_dashboard_review.md` (indexed in
+`analysis_pending` memory). Headlines:
+1. **No mean-reversion entry book exists anywhere in TriVega** — every book (equity LONG/SHORT,
+   futures NY/London) is momentum/breakout-shaped. A category-level OOS Sharpe comparison (not
+   ours — external, unverified against our data) found mean reversion was the only strategy
+   family with positive mean OOS Sharpe across a diverse asset universe. **Mirror Book already
+   *is* a mean-reversion structure** (fading decoder LONG signals) — never framed that way; worth
+   revisiting at its Aug 17 30-day review.
+2. **Chop/trend separation remains twice-documented as unsolved** (Jul 7: four hand-tuned chop
+   detectors tried, none worked; Jul 8: "IB range alone can't cleanly separate real trend from
+   wide whipsaw"). An HMM-based (learned, multi-feature) regime classifier is a genuinely
+   untried technique against this exact problem — research candidate, not a fix.
+3. **Options monitoring depth is a real, independent gap from the (already-diagnosed) broken
+   trading logic** — no portfolio-level aggregate Greeks, concentration caps, strike ladder,
+   theta-decay chart, or severity-tiered alerts. Buildable regardless of when/whether the
+   liquidity-gate fix ships.
+
+**Real-money funding note (IBKR futures, live-checked, not from memory):** current IBKR margin
+~$4,374/contract intraday, ~$6,249 overnight for MNQ (moves over time — verify live before
+funding). At the system's 2-contract hard cap that's ~$8,750 minimum just to hold size with zero
+buffer — the Jul 18-decided `IBKR_FLOOR=$5,000` futures allocation is undersized for the
+system's own validated sizing. Flagged, not yet revisited.
 
 ---
 
