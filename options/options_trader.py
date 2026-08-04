@@ -696,6 +696,39 @@ def _actual_strikes(symbol: str, expiry: str) -> list[float]:
         return []
 
 
+# ── Spread Toll Gate (Aug 3 2026) ─────────────────────────────────────────
+# Replaces the per-leg ≤15%-of-mid liquidity rule, which measured "is this leg
+# near-the-money" rather than "is this spread affordable": a 0.10-delta far leg
+# quotes wide relative to its own tiny mid on ANY underlying (CAT's far call:
+# $0.20/$3.05 = 175% of mid on one of the most liquid chains in the market),
+# so the old rule failed 37/37 candidates Jul 22–Aug 3. The economic question
+# is round-trip friction vs what the spread can pay: total bid-ask across both
+# legs as a % of spread width (the max payoff). Recorded-quote calibration:
+# CAT 4.4% / COHR 8.3% / AMAT 9.2% (liquid, wrongly blocked) vs IREN 16.1%
+# (marginal small-cap). Threshold 12.0 sits mid-plateau (10–14 gives identical
+# verdicts on that data). Legacy per-leg metric still computed + logged for
+# comparison scoring. Sunset review Sep 3 2026.
+LIQ_COST_PCT_MAX = 12.0
+
+def _spread_liquidity(bid_a: float, ask_a: float,
+                      bid_b: float, ask_b: float,
+                      spread_width: float) -> dict:
+    """Two-leg spread liquidity: total bid-ask cost as % of width decides;
+    worst per-leg relative spread (the pre-Aug-3 decider) kept for logging."""
+    ba_a = max(ask_a - bid_a, 0.0)
+    ba_b = max(ask_b - bid_b, 0.0)
+    cost_pct = round((ba_a + ba_b) / spread_width * 100, 1) if spread_width > 0 else 999.0
+    mid_a = (bid_a + ask_a) / 2
+    mid_b = (bid_b + ask_b) / 2
+    legacy_max_rel = round(max(ba_a / mid_a if mid_a > 0 else 9.99,
+                               ba_b / mid_b if mid_b > 0 else 9.99), 3)
+    return {
+        'cost_pct':       cost_pct,
+        'legacy_max_rel': legacy_max_rel,
+        'ok':             cost_pct <= LIQ_COST_PCT_MAX,
+    }
+
+
 def _calc_template(symbol: str, underlying: float, expiry: str,
                    long_strike: float, short_strike: float,
                    iv_rank: float, catalyst_days: int | None,
@@ -1218,13 +1251,9 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     # ── Gate evaluation ───────────────────────────────────────────────────
     long_ba  = round(long_ask  - long_bid,  2)
     short_ba = round(short_ask - short_bid, 2)
-    # Pro liquidity gate: relative bid-ask ≤ 15% of mid per leg.
-    # Absolute $0.20 gate fails for cheap options ($0.20 on a $0.50 option = 40% round-trip cost).
-    long_mid_price  = (long_bid  + long_ask)  / 2 if (long_bid + long_ask) > 0 else 1
-    short_mid_price = (short_bid + short_ask) / 2 if (short_bid + short_ask) > 0 else 1
-    long_ba_rel  = long_ba  / long_mid_price
-    short_ba_rel = short_ba / short_mid_price
-    liquidity_gate = long_ba_rel <= 0.15 and short_ba_rel <= 0.15
+    # Spread Toll Gate: total two-leg bid-ask cost vs spread width decides.
+    liq = _spread_liquidity(long_bid, long_ask, short_bid, short_ask, spread_width)
+    liquidity_gate = liq['ok']
 
     # Momentum gate: intraday move 2–7% confirms directional energy today.
     # Catalyst trades (≤3 days) bypass intraday pct requirement.
@@ -1272,7 +1301,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     else:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
+        entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
 
     # ── Trade dict for execution (consumed by _execute_spread_bg) ─────────
     verdict     = entry_gates['verdict']
@@ -1297,6 +1326,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
 
     result = {
         'strategy':     'BULL_SPREAD',
+        'liquidity':    liq,
         'symbol':       sym,
         'underlying':   underlying,
         'expiry':       expiry,
@@ -1473,11 +1503,9 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
 
     long_ba  = round(long_ask  - long_bid,  2)
     short_ba = round(short_ask - short_bid, 2)
-    long_mid_price  = (long_bid  + long_ask)  / 2 if (long_bid + long_ask) > 0 else 1
-    short_mid_price = (short_bid + short_ask) / 2 if (short_bid + short_ask) > 0 else 1
-    long_ba_rel  = long_ba  / long_mid_price
-    short_ba_rel = short_ba / short_mid_price
-    liquidity_gate = long_ba_rel <= 0.15 and short_ba_rel <= 0.15
+    # Spread Toll Gate: total two-leg bid-ask cost vs spread width decides.
+    liq = _spread_liquidity(long_bid, long_ask, short_bid, short_ask, spread_width)
+    liquidity_gate = liq['ok']
 
     momentum_gate = (intraday_pct is not None and intraday_pct <= -2.0) or \
                     (catalyst_days is not None and catalyst_days <= 3)
@@ -1518,7 +1546,7 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     else:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
+        entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
 
     verdict     = entry_gates['verdict']
     grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
@@ -1543,6 +1571,7 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
 
     result = {
         'strategy':      'BEAR_PUT_SPREAD',
+        'liquidity':     liq,
         'symbol':        sym,
         'underlying':    underlying,
         'expiry':        expiry,
@@ -1702,10 +1731,9 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
     breakeven         = round(sell_strike - net_credit, 2)
     breakeven_pct     = round((underlying - breakeven) / underlying * 100, 1)
 
-    # Relative bid-ask gate: ≤15% per leg
-    sell_ba_rel = (sell_ask - sell_bid) / sell_mid if sell_mid > 0 else 1.0
-    buy_ba_rel  = (buy_ask  - buy_bid)  / buy_mid  if buy_mid  > 0 else 1.0
-    liquidity_gate = sell_ba_rel <= 0.15 and buy_ba_rel <= 0.15
+    # Spread Toll Gate: total two-leg bid-ask cost vs spread width decides.
+    liq = _spread_liquidity(sell_bid, sell_ask, buy_bid, buy_ask, spread_width)
+    liquidity_gate = liq['ok']
 
     # Vol gate: for credit spreads we WANT IV > HV30 (options expensive = theta works for us)
     vol_gate = (hv30 is None) or (iv_for_calc > hv30)
@@ -1748,11 +1776,12 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
     else:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
+        entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
 
     # ── Build calc log entry ──────────────────────────────────────────────────
     result = {
         'strategy':     'BULL_PUT_CREDIT',
+        'liquidity':    liq,
         'symbol':       sym,
         'underlying':   underlying,
         'iv_rank':      iv_rank,
@@ -1906,9 +1935,9 @@ def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
     breakeven         = round(sell_strike + net_credit, 2)
     breakeven_pct     = round((breakeven - underlying) / underlying * 100, 1)
 
-    sell_ba_rel = (sell_ask - sell_bid) / sell_mid if sell_mid > 0 else 1.0
-    buy_ba_rel  = (buy_ask  - buy_bid)  / buy_mid  if buy_mid  > 0 else 1.0
-    liquidity_gate = sell_ba_rel <= 0.15 and buy_ba_rel <= 0.15
+    # Spread Toll Gate: total two-leg bid-ask cost vs spread width decides.
+    liq = _spread_liquidity(sell_bid, sell_ask, buy_bid, buy_ask, spread_width)
+    liquidity_gate = liq['ok']
 
     vol_gate      = (hv30 is None) or (iv_for_calc > hv30)
     tech_gate     = not above_200   # stock in downtrend = call spread safer
@@ -1948,10 +1977,11 @@ def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
     else:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
-        entry_gates['skip_reason'] = 'liquidity: bid-ask > 15% of mid on a leg'
+        entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
 
     result = {
         'strategy':     'BEAR_CALL_CREDIT',
+        'liquidity':    liq,
         'symbol':       sym,
         'underlying':   underlying,
         'iv_rank':      iv_rank,

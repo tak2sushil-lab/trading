@@ -160,11 +160,19 @@ function renderOptionsHealth(o) {
     .map(t => `${t.symbol} ${t.strategy} ($${Math.round(t.premium)})`)
     .join(', ') || 'none';
   const wPnl = w.pnl ?? 0;
+  // Book-level Greeks (latest watchman snapshot today) + premium concentration
+  const g = o.book_greeks;
+  const greekLine = g
+    ? ` · book Δ ${g.net_delta >= 0 ? '+' : ''}${g.net_delta} / θ ${g.net_theta >= 0 ? '+' : ''}$${g.net_theta}/day / vega ${g.net_vega >= 0 ? '+' : ''}${g.net_vega} (as of ${g.ts})`
+    : '';
+  const conc = (o.concentration || [])
+    .map(x => `${x.symbol} ${x.pct}%`).join(' · ');
+  const concLine = conc ? ` · premium mix: ${conc}` : '';
   return `
     <div class="health-row">
-      <span class="health-label" title="Options trade only in directions whose equity book is healthy (same Books row above). Funnel = calculator runs today; Ghost Ledger = what the suggestions we did NOT take would have made (scored nightly)">Options</span>
+      <span class="health-label" title="Options trade only in directions whose equity book is healthy (same Books row above). Funnel = calculator runs today; Ghost Ledger = what the suggestions we did NOT take would have made (scored nightly). Book Δ/θ/vega = net share-equivalent delta, daily theta bleed in $, and vega per 1 IV pt across every open leg (watchman snapshot, every 5 min)">Options</span>
       <span>open: ${openList}</span>
-      <span class="health-detail-inline">funnel today: ${c.total ?? 0} calcs / ${c.enter ?? 0} enter · closed 14d: ${cl.n ?? 0} for ${(cl.pnl ?? 0) >= 0 ? '+' : ''}$${cl.pnl ?? 0} · ghost ledger 14d: ${w.n ?? 0} skips ${wPnl >= 0 ? '+' : ''}$${wPnl}</span>
+      <span class="health-detail-inline">funnel today: ${c.total ?? 0} calcs / ${c.enter ?? 0} enter · closed 14d: ${cl.n ?? 0} for ${(cl.pnl ?? 0) >= 0 ? '+' : ''}$${cl.pnl ?? 0} · ghost ledger 14d: ${w.n ?? 0} skips ${wPnl >= 0 ? '+' : ''}$${wPnl}${greekLine}${concLine}</span>
     </div>`;
 }
 

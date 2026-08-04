@@ -306,6 +306,28 @@ def init_db():
         user_action     TEXT DEFAULT 'NONE',
         trade_id        INTEGER REFERENCES options_trades(id)
     )''')
+    # Spread Toll Gate metrics (Aug 3 2026): new decider + legacy per-leg
+    # metric, both logged so the nightly what-if can score old vs new rule.
+    try:
+        c.execute('ALTER TABLE opt_calc_log ADD COLUMN liq_cost_pct REAL')
+    except Exception:
+        pass  # column already exists
+    try:
+        c.execute('ALTER TABLE opt_calc_log ADD COLUMN liq_legacy_max_rel REAL')
+    except Exception:
+        pass  # column already exists
+
+    # ── Book-level options Greeks snapshots (Aug 3 2026, watchman writes
+    #    every full scan; dashboard reads latest row) ───────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS options_book_greeks (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts          TEXT NOT NULL,
+        positions   INTEGER,
+        total_value REAL,
+        net_delta   REAL,
+        net_theta   REAL,
+        net_vega    REAL
+    )''')
 
     # ── KB: Outcome log — actual P&L vs predicted MC EV ──────────
     c.execute('''CREATE TABLE IF NOT EXISTS opt_trade_outcomes (
@@ -1321,6 +1343,7 @@ def log_calc_run(calc: dict) -> int:
     mc = calc.get('mc_ev',       {})
     va = calc.get('vol_analysis', {})
     cv = calc.get('conviction',   {})
+    lq = calc.get('liquidity',    {})
 
     c.execute('''INSERT INTO opt_calc_log (
         run_at, symbol, underlying, iv_pct, iv_rank, hv30,
@@ -1329,8 +1352,8 @@ def log_calc_run(calc: dict) -> int:
         momentum_5d, above_200, conviction_tier, conviction_dir, signal_count,
         vol_gate, tech_gate, conviction_gate, liquidity_gate, momentum_gate,
         gates_pass, verdict, net_delta, net_theta, net_vega,
-        velocity_ratio, mc_ev_dollar, mc_win_rate
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        velocity_ratio, mc_ev_dollar, mc_win_rate, liq_cost_pct, liq_legacy_max_rel
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
     (
         now, calc.get('symbol'), calc.get('underlying'),
         calc.get('current_iv'), calc.get('iv_rank'), calc.get('hv30'),
@@ -1350,11 +1373,26 @@ def log_calc_run(calc: dict) -> int:
         ng.get('net_delta'), ng.get('net_theta'), ng.get('net_vega'),
         vl.get('velocity_ratio'),
         mc.get('ev_dollar'), mc.get('win_rate'),
+        lq.get('cost_pct'), lq.get('legacy_max_rel'),
     ))
     row_id = c.lastrowid
     conn.commit()
     conn.close()
     return row_id
+
+
+def log_book_greeks(positions: int, total_value: float | None,
+                    net_delta: float | None, net_theta: float | None,
+                    net_vega: float | None):
+    """Persist one book-level options Greeks snapshot (watchman, each full scan)."""
+    conn = get_connection()
+    conn.execute(
+        'INSERT INTO options_book_greeks (ts, positions, total_value, net_delta, net_theta, net_vega) '
+        'VALUES (?,?,?,?,?,?)',
+        (datetime.now().isoformat(timespec='seconds'), positions, total_value,
+         net_delta, net_theta, net_vega))
+    conn.commit()
+    conn.close()
 
 
 def update_calc_action(calc_log_id: int, user_action: str, trade_id: int | None = None):

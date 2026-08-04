@@ -55,6 +55,7 @@ from database import (
     purge_old_news,
     block_auto_close,
     is_auto_close_blocked,
+    log_book_greeks,
 )
 
 load_dotenv()
@@ -1033,8 +1034,24 @@ def _check_trade(trade: dict, is_eod: bool) -> list[str]:
 
     is_credit = strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
 
-    # ── T3b: hit profit target — AUTO-CLOSE ──
+    # ── T3a_NEAR: 80% of the way to target — INFO tier, once/day (Aug 3 2026).
+    #    Awareness before the hard T3b alert; states a fact, no action advised.
     target = trade.get('target_value')
+    if target is not None and prem and 'T3_NEAR' not in fired and 'T3b' not in fired:
+        if is_credit:
+            _denom = prem - target
+            _prog  = (prem - current_value) / _denom if _denom > 0 else 0.0
+        else:
+            _denom = target - prem
+            _prog  = (current_value - prem) / _denom if _denom > 0 else 0.0
+        if 0.80 <= _prog < 1.0:
+            fired.add('T3_NEAR')
+            alerts.append(
+                f"ℹ️ *{sym} {strat}* is {int(_prog * 100)}% of the way to target "
+                f"(value ${current_value:.2f}, target ${target:.2f}) — informational, no action needed"
+            )
+
+    # ── T3b: hit profit target — AUTO-CLOSE ──
     # Credit: profit when spread VALUE FALLS below target (spread depreciated).
     # Debit: profit when spread VALUE RISES above target.
     t3b_hit = (target is not None and (
@@ -1280,6 +1297,54 @@ def _build_eod_summary(trades: list[dict]) -> str:
 
 # ── Intraday scan ─────────────────────────────────────────────────────────────
 
+def _snapshot_book_greeks(trades: list[dict]):
+    """Book-level net Greeks across all open positions (Aug 3 2026).
+
+    Sign convention: long leg adds, short leg subtracts; short PREMIUM
+    positions (credit spreads) flip the whole spread's sign. Values are
+    position-level: per-share greek x 100 x contracts. Failure of any
+    single quote fetch degrades to a partial snapshot rather than none.
+    """
+    n_pos = len(trades)
+    tot_val = 0.0
+    net_d = net_t = net_v = 0.0
+    any_greeks = False
+    for t in trades:
+        strat = t.get('strategy', '')
+        qty   = (t.get('contracts', 1) or 1) * 100
+        try:
+            val = get_contract_value(t)
+            if val:
+                tot_val += val
+            legs: list[tuple[dict | None, int]] = []
+            if strat in ('BULL_SPREAD', 'BEAR_PUT_SPREAD'):
+                legs = [(get_quote(t['symbol'], t['expiry'], t['long_strike'],  t['right']), +1),
+                        (get_quote(t['symbol'], t['expiry'], t['short_strike'], t['right']), -1)]
+            elif strat in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT'):
+                # We SOLD the higher-value leg: net position = -(sold) + (bought)
+                legs = [(get_quote(t['symbol'], t['expiry'], t['long_strike'],  t['right']), -1),
+                        (get_quote(t['symbol'], t['expiry'], t['short_strike'], t['right']), +1)]
+            else:  # LEAP / OPT_SCALP — single long leg
+                strike = t.get('strike') or t.get('long_strike')
+                legs = [(get_quote(t['symbol'], t['expiry'], strike, t.get('right', 'C')), +1)]
+            for q, sign in legs:
+                if not q:
+                    continue
+                any_greeks = True
+                net_d += sign * (q.get('delta') or 0) * qty
+                net_t += sign * (q.get('theta') or 0) * qty
+                net_v += sign * (q.get('vega')  or 0) * qty
+        except Exception as e:
+            print(f"[watchman] book-greeks skip trade {t.get('id')}: {e}")
+    try:
+        log_book_greeks(n_pos, round(tot_val, 2),
+                        round(net_d, 1) if any_greeks else None,
+                        round(net_t, 2) if any_greeks else None,
+                        round(net_v, 2) if any_greeks else None)
+    except Exception as e:
+        print(f"[watchman] book-greeks log error: {e}")
+
+
 def run_intraday_scan(scalp_only: bool = False):
     trades = get_open_options_trades()
     if not trades:
@@ -1307,12 +1372,17 @@ def run_intraday_scan(scalp_only: bool = False):
     elif not scalp_only:
         print(f"[watchman] intraday scan: {len(trades)} position(s) checked, all quiet")
 
+    if not scalp_only:
+        _snapshot_book_greeks(trades)
+
 
 # ── EOD run ───────────────────────────────────────────────────────────────────
 
 def run_eod():
     trades = get_open_options_trades()
     print(f"[watchman] EOD: {len(trades)} open position(s)")
+    if trades:
+        _snapshot_book_greeks(trades)
 
     all_alerts: list[str] = []
     for trade in trades:

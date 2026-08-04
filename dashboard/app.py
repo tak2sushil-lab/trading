@@ -862,6 +862,31 @@ def get_system_health():
                    FROM options_trades WHERE status='CLOSED'
                      AND exit_date >= date('now','-14 day')""").fetchone()
             opt['closed_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0}
+            # Book-level Greeks — latest watchman snapshot (Aug 3 2026).
+            # Only shown when fresh (today) so a stale row can't masquerade
+            # as live exposure.
+            try:
+                r = c.execute(
+                    """SELECT ts, positions, total_value, net_delta, net_theta, net_vega
+                       FROM options_book_greeks ORDER BY id DESC LIMIT 1""").fetchone()
+                if r and r[0][:10] == today:
+                    opt['book_greeks'] = {
+                        'ts': r[0][11:16], 'positions': r[1], 'total_value': r[2],
+                        'net_delta': r[3], 'net_theta': r[4], 'net_vega': r[5]}
+            except Exception:
+                pass
+            # Concentration: % of deployed options premium per symbol
+            try:
+                rows_c = c.execute(
+                    """SELECT symbol, SUM(premium_paid) FROM options_trades
+                       WHERE status='OPEN' GROUP BY symbol""").fetchall()
+                tot_prem = sum(x[1] or 0 for x in rows_c)
+                if tot_prem > 0:
+                    opt['concentration'] = [
+                        {'symbol': x[0], 'pct': round((x[1] or 0) / tot_prem * 100)}
+                        for x in sorted(rows_c, key=lambda y: -(y[1] or 0))]
+            except Exception:
+                pass
             out['options'] = opt
             # Field Report (market_context.py) — log-only pre-market brief
             try:

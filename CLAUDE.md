@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Aug 3 2026
+Last updated: Aug 3 2026 (night)
 
 ---
 
@@ -1155,6 +1155,56 @@ dashboard) and wrote a full connect-the-dots analysis:
 funding). At the system's 2-contract hard cap that's ~$8,750 minimum just to hold size with zero
 buffer — the Jul 18-decided `IBKR_FLOOR=$5,000` futures allocation is undersized for the
 system's own validated sizing. Flagged, not yet revisited.
+
+---
+
+## Aug 3 2026 (night) — Options overhaul wave 1 SHIPPED: Spread Toll Gate + Book Pulse monitoring
+
+Save point first: git tag `checkpoint-2026-08-03-pre-options-overhaul` (revert =
+`git reset --hard` to it). User directive going forward: research backtests use 2yr data, not 5.
+
+**① Spread Toll Gate (replaces the broken liquidity decider — the "options silent since
+Jul 22" fix).** Hypothesis: the per-leg ≤15%-of-mid rule measured *moneyness*, not
+*tradability* — a 0.10-delta far leg quotes wide relative to its own tiny mid on ANY
+underlying (CAT's far call: $0.20/$3.05 = 175% of mid on one of the deepest chains in the
+market), which is why it failed **37/37 candidates Jul 22–Aug 3** and starved the whole
+system of both trades and learning data. New decider: **total two-leg bid-ask cost ≤ 12% of
+spread width** (`_spread_liquidity()` + `LIQ_COST_PCT_MAX=12.0`), i.e. worst-case round-trip
+friction vs max payoff — the economically meaningful quantity. Calibrated on quotes recorded
+LIVE during the Jul 29/31 diagnosis: CAT 4.4% / COHR 8.3% / AMAT 9.2% (liquid, wrongly
+blocked → now pass) vs IREN 16.1% (marginal small-cap → stays excluded). Threshold sits
+mid-plateau (10–14% gives identical verdicts). All 4 calculators swapped (bull/bear debit,
+bull-put/bear-call credit); LEAP calculator untouched (manual-only, absolute gate).
+- **Validation honesty:** no historical chain data exists anywhere, so no 2yr backtest is
+  possible for this gate. Evidence = (a) mechanistic proof from recorded quotes, (b) pinned
+  regression test `options/test_spread_liquidity.py` (run it after any gate change),
+  (c) forward-scoring of the 37 blocked candidates: 8 right / 7 wrong on +7d direction
+  (~53%, coin flip) — which is the EXPECTED result, since liquidity-block reasons are
+  orthogonal to direction; direction quality is the Options Book Gate's job, not this gate's.
+- **Scoring wired:** both metrics now log to opt_calc_log (`liq_cost_pct`,
+  `liq_legacy_max_rel` — idempotent ALTERs in database.py init_db), so the Ghost Ledger /
+  nightly what-if can compare old-rule vs new-rule verdicts on every future candidate.
+  skip_reason now carries the actual numbers. **Sunset review Sep 3 2026:** judge on
+  (1) did trades actually flow, (2) realized entry/exit slippage vs the 12% bound,
+  (3) Ghost Ledger PnL of new-rule ENTERs vs old-rule ENTERs.
+
+**② Book Pulse (options monitoring depth — from the Aug 3 ideation doc).** watchman
+`_snapshot_book_greeks()` writes book-level **net delta / daily theta bleed $ / net vega**
+(long legs add, short legs subtract; credit spreads sign-flipped) to new `options_book_greeks`
+table every full 5-min scan + at EOD; dashboard Options row renders it (freshness-gated to
+today) plus **premium concentration per symbol**. Also new **T3a_NEAR alert tier**: INFO
+telegram at ≥80% of the way to target (once/day per trade via the existing `fired` dedup set,
+fact-only phrasing) — awareness before the hard T3b auto-close fires.
+
+**③ Deferred from the ideation list (not built tonight):** strike ladder, theta-decay
+projection chart, new-strike/new-expiry chain diffing (needs daily chain snapshots we don't
+store yet), IV-rank-from-own-snapshots. Mean-reversion category sweep + HMM regime research
+remain queued research items (2yr data when run).
+
+Services restarted + verified: options_trader, watchman, dashboard. Smoke-tested the full
+log path (calc dict → opt_calc_log round-trip). First live test of the gate = next market
+open — watch the funnel line on the dashboard: if 0 calcs still, the block is upstream
+(triggers/book health), not liquidity.
 
 ---
 

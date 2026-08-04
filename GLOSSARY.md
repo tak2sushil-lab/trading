@@ -80,6 +80,8 @@ for all six types interchangeably. When speaking, pick the type word above.
 | **Scalp Engine** | OPT_SCALP | Entry module (gated by LONG-book Book Health since Jul 19 2026) |
 | **Options Book Gate** | `_book_health_on()` in options_trader.py | Gate — options-side mirror of the equity Book Health Selector; each direction trades only while that equity book is healthy. Both OFF → options flat. Added Jul 19 2026. |
 | **Ghost Ledger** | `opt_suggestions.whatif_pnl/whatif_return_pct`, filled nightly by `fill_whatif_prices()` | Auditor — scores every suggestion we did NOT take (news queue is log-only since Jul 19 2026). The options what-if learning loop. |
+| **Spread Toll Gate** | `_spread_liquidity()` + `LIQ_COST_PCT_MAX=12.0` in options_trader.py; `liq_cost_pct` / `liq_legacy_max_rel` in opt_calc_log | Gate (live Aug 3 2026) — the liquidity decider: total two-leg bid-ask cost must be ≤12% of spread width. Replaced the per-leg ≤15%-of-mid rule, which measured moneyness not tradability and blocked 37/37 candidates Jul 22–Aug 3. Legacy metric still logged for comparison. Sunset review Sep 3 2026. |
+| **Book Pulse** | `options_book_greeks` table, written by watchman `_snapshot_book_greeks()` every full scan | Auditor (log + dashboard only) — book-level net delta / daily theta bleed / vega across all open option legs, plus premium concentration per symbol on the dashboard. Added Aug 3 2026. |
 
 ## 5b. Shared context (all three systems)
 
