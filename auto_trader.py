@@ -3587,6 +3587,34 @@ def compute_book_health(direction):
     finally:
         conn.close()
 
+def compute_reversion_shadow_health(regime_filter=None):
+    """Same drift math as compute_book_health (actual_day_pct - intra_chg,
+    favorable = positive for a LONG), scoped to the REVERSION_LONG shadow
+    rows instead of the live LONG/SHORT books. Query-only — this book places
+    no orders, so there is no ON/OFF gate to compute, just a status check.
+    regime_filter=None scores all regimes together (the current default —
+    CHOPPY-conditioning is a question for the data, not baked in); pass
+    'CHOPPY' to check that slice once enough rows exist.
+    """
+    import sqlite3 as _sq
+    conn = _sq.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trades.db'))
+    try:
+        q = """SELECT actual_day_pct - intra_chg, regime FROM scan_log
+               WHERE direction='REVERSION_LONG' AND enriched=1
+                 AND actual_day_pct IS NOT NULL AND intra_chg IS NOT NULL"""
+        params = []
+        if regime_filter:
+            q += " AND regime=?"
+            params.append(regime_filter)
+        rows = conn.execute(q, params).fetchall()
+        if not rows:
+            return None, 0
+        drifts = [r[0] for r in rows]
+        return round(sum(drifts) / len(drifts), 3), len(drifts)
+    finally:
+        conn.close()
+
+
 def book_is_on(direction):
     """Daily-cached ON/OFF for a book. ON when health > threshold or cold start."""
     today_str = datetime.now(ET).strftime('%Y-%m-%d')
@@ -3712,6 +3740,28 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
 
         _now         = datetime.now(ET)
         _sector      = get_symbol_sector(symbol)
+
+        # ── Reversion shadow book (Aug 3 2026, log-only — never places an order) ──
+        # Hypothesis: a 2yr non-fit sweep of RSI/Zscore/Keltner Revert vs
+        # RSI-Momentum/Donchian on our own universe showed Mean Reversion at
+        # 0.52 mean OOS Sharpe vs Momentum 0.37 (research_strategy_family_sweep.py,
+        # analysis_pending memory). This is the pure RSI<30 leg of that sweep,
+        # unfiltered by regime (deliberately — instrument first, gate later per
+        # CONSTITUTION.md; whether CHOPPY days do better is a question for the
+        # accumulated data, not an assumption baked in now). Reuses `sig` already
+        # computed above — zero extra data calls. Scored by the same
+        # enrich_scan_log() pipeline the LONG/SHORT books already use.
+        # Sunset review Sep 3 2026 — needs ~20 trading days to judge.
+        if sig['rsi'] < 30:
+            try:
+                log_scan_candidate(
+                    _now.strftime('%Y-%m-%d'), _now.strftime('%H:%M'),
+                    symbol, 'REVERSION_LONG', regime, price, 'SHADOW', None, None,
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
+                    is_catalyst=False, entered=False,
+                )
+            except Exception:
+                pass
 
         if grade in ('SKIP', 'C'):
             try:
