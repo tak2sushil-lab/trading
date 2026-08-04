@@ -1,0 +1,151 @@
+strategy,category,symbol,sharpe,days_in_pos
+RSI Revert,Mean Reversion,ACLS,0.302,140
+RSI Revert,Mean Reversion,APD,0.493,106
+RSI Revert,Mean Reversion,BEAM,0.53,115
+RSI Revert,Mean Reversion,CIFR,0.717,78
+RSI Revert,Mean Reversion,CRM,-0.391,144
+RSI Revert,Mean Reversion,FCX,1.73,98
+RSI Revert,Mean Reversion,HL,1.282,77
+RSI Revert,Mean Reversion,IREN,0.623,80
+RSI Revert,Mean Reversion,LLY,0.915,84
+RSI Revert,Mean Reversion,MRVL,0.08,93
+RSI Revert,Mean Reversion,NU,0.007,138
+RSI Revert,Mean Reversion,ORCL,0.269,108
+RSI Revert,Mean Reversion,RBRK,0.796,97
+RSI Revert,Mean Reversion,SAIC,0.332,128
+RSI Revert,Mean Reversion,TSLA,0.327,81
+RSI Revert,Mean Reversion,VST,0.844,63
+RSI Revert,Mean Reversion,AAL,-0.59,105
+RSI Revert,Mean Reversion,BHE,1.316,74
+RSI Revert,Mean Reversion,CDE,1.584,67
+RSI Revert,Mean Reversion,CRS,1.033,58
+RSI Revert,Mean Reversion,DELL,0.836,82
+RSI Revert,Mean Reversion,EXTR,0.526,97
+RSI Revert,Mean Reversion,GMED,0.348,103
+RSI Revert,Mean Reversion,KNX,-0.275,96
+RSI Revert,Mean Reversion,MYRG,0.367,71
+RSI Revert,Mean Reversion,PATH,0.116,111
+RSI Revert,Mean Reversion,PRIM,-0.082,60
+RSI Revert,Mean Reversion,SMPL,0.357,182
+RSI Revert,Mean Reversion,TMUS,0.523,131
+RSI Revert,Mean Reversion,VECO,0.793,105
+Zscore Revert,Mean Reversion,ACLS,0.641,115
+Zscore Revert,Mean Reversion,APD,0.722,84
+Zscore Revert,Mean Reversion,BEAM,0.908,39
+Zscore Revert,Mean Reversion,CIFR,0.856,85
+Zscore Revert,Mean Reversion,CRM,0.094,74
+Zscore Revert,Mean Reversion,FCX,1.37,90
+Zscore Revert,Mean Reversion,HL,1.561,49
+Zscore Revert,Mean Reversion,IREN,0.089,69
+Zscore Revert,Mean Reversion,LLY,0.519,68
+Zscore Revert,Mean Reversion,MRVL,0.097,67
+Zscore Revert,Mean Reversion,NU,-0.056,60
+Zscore Revert,Mean Reversion,ORCL,-0.096,97
+Zscore Revert,Mean Reversion,RBRK,0.031,62
+Zscore Revert,Mean Reversion,SAIC,-0.021,88
+Zscore Revert,Mean Reversion,TSLA,-0.171,95
+Zscore Revert,Mean Reversion,VST,1.473,91
+Zscore Revert,Mean Reversion,AAL,-0.396,72
+Zscore Revert,Mean Reversion,BHE,0.917,81
+Zscore Revert,Mean Reversion,CDE,1.518,52
+Zscore Revert,Mean Reversion,CRS,1.74,70
+Zscore Revert,Mean Reversion,DELL,0.692,64
+Zscore Revert,Mean Reversion,EXTR,-0.47,76
+Zscore Revert,Mean Reversion,GMED,0.716,94
+Zscore Revert,Mean Reversion,KNX,0.65,83
+Zscore Revert,Mean Reversion,MYRG,0.722,63
+Zscore Revert,Mean Reversion,PATH,-0.363,78
+Zscore Revert,Mean Reversion,PRIM,0.641,85
+Zscore Revert,Mean Reversion,SMPL,-0.426,123
+Zscore Revert,Mean Reversion,TMUS,1.074,123
+Zscore Revert,Mean Reversion,VECO,0.856,96
+Keltner Revert,Mean Reversion,ACLS,0.379,91
+Keltner Revert,Mean Reversion,APD,0.496,89
+Keltner Revert,Mean Reversion,BEAM,0.668,47
+Keltner Revert,Mean Reversion,CIFR,-0.304,44
+Keltner Revert,Mean Reversion,CRM,0.102,107
+Keltner Revert,Mean Reversion,FCX,2.288,88
+Keltner Revert,Mean Reversion,HL,1.426,52
+Keltner Revert,Mean Reversion,IREN,0.019,73
+Keltner Revert,Mean Reversion,LLY,1.157,75
+Keltner Revert,Mean Reversion,MRVL,-0.394,62
+Keltner Revert,Mean Reversion,NU,0.818,97
+Keltner Revert,Mean Reversion,ORCL,-0.413,130
+Keltner Revert,Mean Reversion,RBRK,0.664,54
+Keltner Revert,Mean Reversion,SAIC,0.429,108
+Keltner Revert,Mean Reversion,TSLA,0.254,58
+Keltner Revert,Mean Reversion,VST,0.962,43
+Keltner Revert,Mean Reversion,AAL,-0.461,82
+Keltner Revert,Mean Reversion,BHE,0.896,46
+Keltner Revert,Mean Reversion,CDE,0.944,41
+Keltner Revert,Mean Reversion,CRS,0.689,32
+Keltner Revert,Mean Reversion,DELL,1.018,81
+Keltner Revert,Mean Reversion,EXTR,-0.028,71
+Keltner Revert,Mean Reversion,GMED,0.195,90
+Keltner Revert,Mean Reversion,KNX,-0.195,60
+Keltner Revert,Mean Reversion,MYRG,0.647,33
+Keltner Revert,Mean Reversion,PATH,0.185,57
+Keltner Revert,Mean Reversion,PRIM,0.725,87
+Keltner Revert,Mean Reversion,SMPL,0.425,122
+Keltner Revert,Mean Reversion,TMUS,1.13,111
+Keltner Revert,Mean Reversion,VECO,0.392,63
+RSI Momentum,Momentum,ACLS,0.692,92
+RSI Momentum,Momentum,APD,-0.018,134
+RSI Momentum,Momentum,BEAM,0.099,102
+RSI Momentum,Momentum,CIFR,0.665,125
+RSI Momentum,Momentum,CRM,-1.528,111
+RSI Momentum,Momentum,FCX,-0.449,154
+RSI Momentum,Momentum,HL,-0.336,138
+RSI Momentum,Momentum,IREN,0.929,144
+RSI Momentum,Momentum,LLY,-0.71,141
+RSI Momentum,Momentum,MRVL,1.038,147
+RSI Momentum,Momentum,NU,0.201,150
+RSI Momentum,Momentum,ORCL,0.365,158
+RSI Momentum,Momentum,RBRK,0.97,180
+RSI Momentum,Momentum,SAIC,-0.625,163
+RSI Momentum,Momentum,TSLA,1.432,125
+RSI Momentum,Momentum,VST,-0.047,129
+RSI Momentum,Momentum,AAL,0.632,160
+RSI Momentum,Momentum,BHE,0.302,115
+RSI Momentum,Momentum,CDE,0.231,145
+RSI Momentum,Momentum,CRS,1.597,174
+RSI Momentum,Momentum,DELL,0.663,174
+RSI Momentum,Momentum,EXTR,1.333,156
+RSI Momentum,Momentum,GMED,-0.346,123
+RSI Momentum,Momentum,KNX,-0.096,113
+RSI Momentum,Momentum,MYRG,1.301,151
+RSI Momentum,Momentum,PATH,-0.544,99
+RSI Momentum,Momentum,PRIM,-0.128,185
+RSI Momentum,Momentum,SMPL,-0.187,72
+RSI Momentum,Momentum,TMUS,0.714,106
+RSI Momentum,Momentum,VECO,0.348,109
+Donchian Breakout,Momentum,ACLS,0.595,204
+Donchian Breakout,Momentum,APD,0.028,200
+Donchian Breakout,Momentum,BEAM,-0.471,157
+Donchian Breakout,Momentum,CIFR,1.327,193
+Donchian Breakout,Momentum,CRM,-0.87,159
+Donchian Breakout,Momentum,FCX,-0.183,197
+Donchian Breakout,Momentum,HL,0.529,189
+Donchian Breakout,Momentum,IREN,0.693,212
+Donchian Breakout,Momentum,LLY,-0.326,160
+Donchian Breakout,Momentum,MRVL,1.381,251
+Donchian Breakout,Momentum,NU,-0.714,160
+Donchian Breakout,Momentum,ORCL,0.764,210
+Donchian Breakout,Momentum,RBRK,0.647,213
+Donchian Breakout,Momentum,SAIC,-0.161,223
+Donchian Breakout,Momentum,TSLA,1.0,181
+Donchian Breakout,Momentum,VST,0.769,189
+Donchian Breakout,Momentum,AAL,0.183,226
+Donchian Breakout,Momentum,BHE,0.872,273
+Donchian Breakout,Momentum,CDE,0.24,170
+Donchian Breakout,Momentum,CRS,1.235,246
+Donchian Breakout,Momentum,DELL,1.564,254
+Donchian Breakout,Momentum,EXTR,1.691,214
+Donchian Breakout,Momentum,GMED,0.551,195
+Donchian Breakout,Momentum,KNX,-0.12,179
+Donchian Breakout,Momentum,MYRG,1.235,292
+Donchian Breakout,Momentum,PATH,-0.222,192
+Donchian Breakout,Momentum,PRIM,0.968,260
+Donchian Breakout,Momentum,SMPL,-0.464,112
+Donchian Breakout,Momentum,TMUS,0.508,147
+Donchian Breakout,Momentum,VECO,0.535,177

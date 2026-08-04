@@ -317,6 +317,29 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    # ── Daily option chain snapshots (Aug 3 2026) — enables new-strike/
+    #    new-expiry detection and IV-rank-from-own-history, both deferred
+    #    items from the Aug 3 ideation doc. v1 scope: held-position
+    #    underlyings only (options/collect_chain_snapshots.py, EOD daily).
+    c.execute('''CREATE TABLE IF NOT EXISTS options_chain_snapshots (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_date   TEXT NOT NULL,
+        symbol          TEXT NOT NULL,
+        underlying      REAL,
+        expiry          TEXT NOT NULL,
+        right           TEXT NOT NULL,
+        strike          REAL NOT NULL,
+        bid             REAL,
+        ask             REAL,
+        last            REAL,
+        iv              REAL,
+        volume          INTEGER,
+        open_interest    INTEGER,
+        UNIQUE(snapshot_date, symbol, expiry, right, strike)
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_chain_snap_lookup '
+              'ON options_chain_snapshots(symbol, expiry, right, snapshot_date)')
+
     # ── Book-level options Greeks snapshots (Aug 3 2026, watchman writes
     #    every full scan; dashboard reads latest row) ───────────────────
     c.execute('''CREATE TABLE IF NOT EXISTS options_book_greeks (
@@ -1379,6 +1402,63 @@ def log_calc_run(calc: dict) -> int:
     conn.commit()
     conn.close()
     return row_id
+
+
+def save_chain_snapshot(snapshot_date: str, symbol: str, underlying: float | None,
+                        expiry: str, right: str, rows: list[dict]):
+    """Bulk-insert one expiry's chain (all strikes) for one day.
+    rows: [{'strike','bid','ask','last','iv','volume','oi'}, ...].
+    INSERT OR IGNORE — re-running the same day/symbol/expiry is a no-op,
+    not a duplicate (idempotent, safe to re-run after a partial failure)."""
+    if not rows:
+        return 0
+    conn = get_connection()
+    c = conn.cursor()
+    c.executemany(
+        '''INSERT OR IGNORE INTO options_chain_snapshots
+           (snapshot_date, symbol, underlying, expiry, right, strike,
+            bid, ask, last, iv, volume, open_interest)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+        [(snapshot_date, symbol, underlying, expiry, right,
+          r['strike'], r.get('bid'), r.get('ask'), r.get('last'),
+          r.get('iv'), r.get('volume'), r.get('oi'))
+         for r in rows])
+    n = c.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
+def get_new_strikes(symbol: str, expiry: str, right: str,
+                    as_of: str, band_pct: float = 30.0,
+                    held_strike: float | None = None) -> list[float]:
+    """Strikes present in today's (as_of) snapshot but absent from the prior
+    snapshot for the same symbol/expiry/right — 'newly listed since last
+    time we looked'. Optionally restricted to a +/-band_pct window around
+    the held strike (matches the video's 'nearby strikes' framing)."""
+    conn = get_connection()
+    c = conn.cursor()
+    prior = c.execute(
+        '''SELECT MAX(snapshot_date) FROM options_chain_snapshots
+           WHERE symbol=? AND expiry=? AND right=? AND snapshot_date<?''',
+        (symbol, expiry, right, as_of)).fetchone()[0]
+    if not prior:
+        conn.close()
+        return []   # no prior snapshot to diff against yet
+    today_strikes = {r[0] for r in c.execute(
+        'SELECT DISTINCT strike FROM options_chain_snapshots '
+        'WHERE symbol=? AND expiry=? AND right=? AND snapshot_date=?',
+        (symbol, expiry, right, as_of))}
+    prior_strikes = {r[0] for r in c.execute(
+        'SELECT DISTINCT strike FROM options_chain_snapshots '
+        'WHERE symbol=? AND expiry=? AND right=? AND snapshot_date=?',
+        (symbol, expiry, right, prior))}
+    conn.close()
+    new = today_strikes - prior_strikes
+    if held_strike:
+        lo, hi = held_strike * (1 - band_pct / 100), held_strike * (1 + band_pct / 100)
+        new = {s for s in new if lo <= s <= hi}
+    return sorted(new)
 
 
 def log_book_greeks(positions: int, total_value: float | None,
