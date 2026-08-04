@@ -17,6 +17,48 @@ Last updated: Aug 3 2026 (night)
 
 ---
 
+## Active Work Board (live-maintained snapshot — overwritten each session, not appended)
+
+**Read this first for "what's the status."** The sections below this one are a
+chronological log (useful for "why did we do X"); this one is always current for
+"what's shipped, what's running, what's still open." Last refreshed: Aug 3 2026 (night).
+
+**Shipped and live tonight:**
+- ✅ Spread Toll Gate (options liquidity decider) — replaced the rule that blocked
+  37/37 candidates since Jul 22. Sunset review **Sep 3 2026**.
+- ✅ Book Pulse — options book-level Greeks + concentration on the dashboard.
+- ✅ T3a_NEAR options alert tier (80%-to-target, INFO, once/day).
+- ✅ Daily option chain snapshots — collector + launchd job running, held positions only.
+- ✅ Equity reversion shadow book — `REVERSION_LONG` candidates logging now, log-only,
+  zero live capital. Sunset review **Sep 3 2026** (~20 trading days needed).
+- ✅ `futures/close_all_now.sh` — the only sanctioned way to manually flatten futures.
+
+**Active research threads (not wired into anything live):**
+- 🔬 HMM regime classifier (futures) — correctly flagged the Jun 18 2026 misclassified-
+  TRENDING case, but inconclusive in aggregate at the current 3-state config. Needs
+  iteration (feature/component tuning) before it's a real candidate. Not scheduled.
+- 🔬 Sector-conditioned reversion — materials/mining favored reversion, tech favored
+  momentum in the 2yr equity sweep. User wants to pursue. Blocked on the reversion
+  shadow book (above) accumulating enough rows — natural cut once the Sep 3 review
+  lands, not before.
+
+**Known gaps, not yet started:**
+- ⬜ Dashboard: no dedicated Options view yet — current state is incremental data
+  added to the existing System Health row + Options Positions table, not the
+  "Bloomberg terminal" experience from the Aug 3 ideation doc (strike ladder,
+  theta-decay chart). Explicitly sequenced AFTER strategy work per user request
+  (Aug 3) — next up.
+- ⬜ IV-rank-from-own-chain-history (now unblocked by the chain snapshot collector,
+  just not built).
+- ⬜ Real-money IBKR funding gap: `IBKR_FLOOR=$5,000` is undersized for the system's
+  own 2-contract cap at current live margin (~$8,750 to hold size with zero buffer).
+  Flagged, not revisited.
+
+**Full detail on all of the above:** `docs/IDEATION_2026-08-03_strategy_and_options_dashboard_review.md`,
+`analysis_pending` memory, and the dated log entries below.
+
+---
+
 ## Knowledge Graph (graphify)
 
 A knowledge graph of the entire codebase lives at `graphify-out/graph.json` (1,155 nodes, 2,275 edges, 93 communities).
