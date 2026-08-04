@@ -156,6 +156,12 @@ TRENDING_REQUIRES_DIRECTIONAL = False
 #   CLI-reachable until now). See point-of-use comments in simulate_day().
 RATCHET  = None
 REV_EXIT = None
+# --rev-exit-vol-mult N: research variant (Jul 26 2026) — require each
+# counted adverse bar's volume >= N x the session's running average volume,
+# i.e. only count "confirmed" adverse bars toward REV_EXIT's streak. Tests
+# whether volume can separate a real reversal (institutional flow, high
+# volume) from noise/fakeout (thin volume drift) — see point-of-use comment.
+REV_EXIT_VOL_MULT = None
 # --partial N: on 2-contract trades, close 1 contract at +N pts (limit-style
 # fill when the bar traverses it) and move the runner's stop to breakeven.
 PARTIAL_TAKE_PTS = None
@@ -948,6 +954,22 @@ def simulate_day(
                 _cur    = (entry - float(bar['close'])) if is_short else (float(bar['close']) - entry)
                 _prev_c = position.get('prev_close')
                 _adv    = _prev_c is not None and ((float(bar['close']) < _prev_c) if not is_short else (float(bar['close']) > _prev_c))
+                # Research variant (--rev-exit-vol-mult, Jul 26 2026): only
+                # count a bar toward the streak if its volume also confirms
+                # (>= REV_EXIT_VOL_MULT x running session average) — tests
+                # whether volume separates a real reversal (institutional
+                # flow) from thin/noise drift. Off by default (REV_EXIT ships
+                # without this — see point-of-use in futures_trader.py).
+                if REV_EXIT_VOL_MULT is not None:
+                    # Trailing 12-bar (1hr) local window, not whole-day-so-far
+                    # average — the latter is confounded by the U-shaped
+                    # intraday volume curve (high at 9:30 open, low midday),
+                    # which would flag most midday bars as "low volume"
+                    # regardless of whether a real reversal is happening.
+                    _lookback = bars_today['volume'].iloc[max(0, i - 12):i]
+                    _vol_avg  = _lookback.mean() if len(_lookback) > 0 else float(bar['volume'])
+                    _vol_ok   = _vol_avg > 0 and float(bar['volume']) >= REV_EXIT_VOL_MULT * _vol_avg
+                    _adv      = _adv and _vol_ok
                 position['adv_streak'] = position.get('adv_streak', 0) + 1 if _adv else 0
                 if (_pk_pts >= _peak_min and position['adv_streak'] >= _n_req
                         and (_pk_pts - _cur) >= _retr_frac * _pk_pts):
@@ -1474,6 +1496,10 @@ def main():
                          'protected fraction of peak interpolates f0→f1 as peak grows p0→p1 pts, '
                          'applied every bar on top of the tier system (only tightens). '
                          'e.g. --ratchet 0.40,0.75,90,450')
+    ap.add_argument('--rev-exit-vol-mult', type=float, default=None, dest='rev_exit_vol_mult',
+                    help='Research (Jul 26 2026): only count an adverse bar toward --rev-exit '
+                         "if its volume >= N x the session's running average — tests whether "
+                         'volume separates a real reversal from noise. e.g. --rev-exit-vol-mult 1.3')
     ap.add_argument('--rev-exit', type=str, default=None, dest='rev_exit',
                     help='Candidate (Jul 24 2026): reversal exit "n_bars,retrace_frac,peak_min" — '
                          'after peak ≥ peak_min pts, exit at close on n_bars consecutive adverse '
@@ -1502,9 +1528,11 @@ def main():
 
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
-    global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS
+    global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS, REV_EXIT_VOL_MULT
     if args.partial is not None:
         PARTIAL_TAKE_PTS = args.partial
+    if args.rev_exit_vol_mult is not None:
+        REV_EXIT_VOL_MULT = args.rev_exit_vol_mult
     if args.ratchet:
         _r = [float(x) for x in args.ratchet.split(',')]
         assert len(_r) == 4, '--ratchet needs f0,f1,p0,p1'

@@ -1856,7 +1856,20 @@ def poll_telegram_commands():
             msg = u.get('message', {}).get('text', '').strip().upper()
             if msg:
                 log(f"[TG CMD] recv: {msg[:80]}")
-            if 'FUT PAUSE' in msg:
+            if 'FUT HELP' in msg:
+                send_telegram(
+                    "📖 *Futures commands* (this chat is shared — IBKR paper "
+                    "AND TC sandbox each pick up every command independently):\n"
+                    "FUT HELP                 — this message\n"
+                    "FUT PAUSE / FUT RESUME   — halt/resume new entries (monitor stays on)\n"
+                    "FUT STATUS               — price, bias, session, open positions + uPnL\n"
+                    "FUT BIAS LONG/SHORT/BOTH — manual macro bias override\n"
+                    "FUT CLOSE                — flatten ALL open positions now\n"
+                    "STATUS ALL               — combined portfolio across all systems\n"
+                    "\n"
+                    "Send a command ONCE — no need to repeat it per account."
+                )
+            elif 'FUT PAUSE' in msg:
                 _trading_paused = True
                 send_telegram("⏸ FUTURES trading paused.")
             elif 'FUT RESUME' in msg:
