@@ -25,12 +25,18 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-body {
+html, body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   font-size: 13px;
   line-height: 1.5;
+  /* Aug 4 2026 fix: wide tables (13 cols on Options) had no scroll container
+     of their own, so they forced the whole page wider on mobile instead of
+     scrolling in place. This is the safety net; the per-table fix below is
+     what actually keeps every column reachable via a contained swipe. */
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 /* ── HEADER ─────────────────────────────────────────────── */
@@ -203,6 +209,12 @@ body {
 .chart-tall { height: 150px; }
 
 /* ── TABLES ──────────────────────────────────────────────── */
+/* Every table-holding section scrolls horizontally within itself — the
+   table can stay full-width, only this wrapper's overflow moves. */
+#equity-table, #options-table, #futures-table, #scorecard {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .positions-table {
   width: 100%; border-collapse: collapse; font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -220,6 +232,14 @@ body {
 
 .empty-state {
   text-align: center; padding: 24px; color: var(--muted); font-size: 12px;
+}
+.opt-empty-state { text-align: left; }
+.opt-summary-bar {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  padding: 8px 10px; margin-bottom: 8px; font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(255,255,255,0.02); border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
 }
 
 .status-badge {

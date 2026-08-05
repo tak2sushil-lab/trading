@@ -68,7 +68,7 @@ function renderAll(d) {
   renderPnlChart(d.pnl_by_book);
   renderScorecard(d.scorecard);
   renderEquityTable(d.equity_positions);
-  renderOptionsTable(d.options_positions);
+  renderOptionsTable(d.options_positions, d.system_health?.options);
   renderFuturesTable(d.futures_positions, d.futures_session);
   renderSectors(d.sector_grades);
   renderSystemHealth(d.system_health);
@@ -160,19 +160,14 @@ function renderOptionsHealth(o) {
     .map(t => `${t.symbol} ${t.strategy} ($${Math.round(t.premium)})`)
     .join(', ') || 'none';
   const wPnl = w.pnl ?? 0;
-  // Book-level Greeks (latest watchman snapshot today) + premium concentration
-  const g = o.book_greeks;
-  const greekLine = g
-    ? ` · book Δ ${g.net_delta >= 0 ? '+' : ''}${g.net_delta} / θ ${g.net_theta >= 0 ? '+' : ''}$${g.net_theta}/day / vega ${g.net_vega >= 0 ? '+' : ''}${g.net_vega} (as of ${g.ts})`
-    : '';
-  const conc = (o.concentration || [])
-    .map(x => `${x.symbol} ${x.pct}%`).join(' · ');
-  const concLine = conc ? ` · premium mix: ${conc}` : '';
+  // Book-level Greeks + concentration moved to the Options Positions card
+  // (Aug 4 2026) — they describe the positions, so they live next to them.
+  // This row stays focused on the gating/funnel story specifically.
   return `
     <div class="health-row">
-      <span class="health-label" title="Options trade only in directions whose equity book is healthy (same Books row above). Funnel = calculator runs today; Ghost Ledger = what the suggestions we did NOT take would have made (scored nightly). Book Δ/θ/vega = net share-equivalent delta, daily theta bleed in $, and vega per 1 IV pt across every open leg (watchman snapshot, every 5 min)">Options</span>
+      <span class="health-label" title="Options trade only in directions whose equity book is healthy (same Books row above). Funnel = calculator runs today; Ghost Ledger = what the suggestions we did NOT take would have made (scored nightly). Full Greeks + concentration are in the Options Positions card below.">Options</span>
       <span>open: ${openList}</span>
-      <span class="health-detail-inline">funnel today: ${c.total ?? 0} calcs / ${c.enter ?? 0} enter · closed 14d: ${cl.n ?? 0} for ${(cl.pnl ?? 0) >= 0 ? '+' : ''}$${cl.pnl ?? 0} · ghost ledger 14d: ${w.n ?? 0} skips ${wPnl >= 0 ? '+' : ''}$${wPnl}${greekLine}${concLine}</span>
+      <span class="health-detail-inline">funnel today: ${c.total ?? 0} calcs / ${c.enter ?? 0} enter · closed 14d: ${cl.n ?? 0} for ${(cl.pnl ?? 0) >= 0 ? '+' : ''}$${cl.pnl ?? 0} · ghost ledger 14d: ${w.n ?? 0} skips ${wPnl >= 0 ? '+' : ''}$${wPnl}</span>
     </div>`;
 }
 
@@ -384,7 +379,7 @@ function renderEquityRow(p) {
 }
 
 // ── Options table ──────────────────────────────────────────
-function renderOptionsTable(positions) {
+function renderOptionsTable(positions, health) {
   const el = document.getElementById('options-table');
   document.getElementById('opt-count').textContent = `${positions?.length ?? 0} open`;
 
@@ -396,18 +391,47 @@ function renderOptionsTable(positions) {
     thetaChip.textContent = '';
   }
 
+  // Book-level Greeks + concentration summary bar (Aug 4 2026 — moved here from
+  // System Health so it sits next to the positions it describes; shown whenever
+  // there's a fresh snapshot, whether or not positions are currently open).
+  const h = health || {};
+  const g = h.book_greeks;
+  const summaryBar = g ? `
+    <div class="opt-summary-bar">
+      <span title="Net delta across every open leg, share-equivalent">Δ ${g.net_delta >= 0 ? '+' : ''}${g.net_delta}</span>
+      <span title="What the whole options book loses per day if nothing moves">Θ ${g.net_theta >= 0 ? '+' : ''}$${g.net_theta}/day</span>
+      <span title="Dollar sensitivity per 1-point move in implied volatility">vega ${g.net_vega >= 0 ? '+' : ''}${g.net_vega}</span>
+      <span class="muted-text">as of ${g.ts}</span>
+      ${(h.concentration||[]).length ? `<span class="muted-text">· ${h.concentration.map(x=>`${x.symbol} ${x.pct}%`).join(' · ')}</span>` : ''}
+    </div>` : '';
+
   if (!positions || positions.length === 0) {
-    el.innerHTML = '<div class="empty-state">No open options positions</div>';
+    const c = h.calcs_today || {};
+    const w = h.whatif_14d || {};
+    el.innerHTML = `${summaryBar}<div class="empty-state opt-empty-state">
+      <div>No open options positions.</div>
+      <div class="muted-text" style="margin-top:6px">
+        Today: ${c.total ?? 0} candidates evaluated, ${c.enter ?? 0} passed every gate.
+        Last 14d: ${w.n ?? 0} skipped suggestions scored via the Ghost Ledger
+        (${(w.pnl ?? 0) >= 0 ? '+' : ''}$${w.pnl ?? 0} if we'd taken them).
+      </div>
+      <div class="muted-text" style="margin-top:4px">
+        This is expected when the equity direction's book is unhealthy or no candidate
+        clears the liquidity gate — not a sign anything's broken. See SYSTEM HEALTH above
+        for which one.
+      </div>
+    </div>`;
     return;
   }
-  el.innerHTML = `<table class="positions-table">
+  el.innerHTML = `${summaryBar}<table class="positions-table">
     <thead><tr>
       <th>Symbol</th><th>Strategy</th><th>Expiry / DTE</th><th>Strikes</th>
       <th>Paid</th><th>Now</th><th>Unreal P&amp;L</th><th>%</th>
       <th>Δ</th><th>Θ/day</th><th>Earnings</th><th>Grade</th><th>Status</th>
     </tr></thead>
     <tbody>${positions.map(renderOptionsRow).join('')}</tbody>
-  </table>`;
+  </table>
+  <div class="muted-text" style="margin-top:6px">Tap a row for strike ladder + theta decay (coming once a position and 2+ days of chain snapshots exist).</div>`;
 }
 
 function renderOptionsRow(p) {
