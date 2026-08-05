@@ -1,0 +1,3070 @@
+strategy,family,direction,symbol,regime,sharpe,wr,active_days
+RSI Revert,Reversion,LONG,ACLS,ALL,0.311,50.0,140
+RSI Revert,Reversion,LONG,ACLS,STRONG,2.791,81.1,37
+RSI Revert,Reversion,LONG,ACLS,NORMAL,0.339,53.8,26
+RSI Revert,Reversion,LONG,ACLS,WEAK,-1.907,16.7,36
+RSI Revert,Reversion,LONG,ACLS,CHOPPY,0.99,55.2,29
+RSI Revert,Reversion,SHORT,ACLS,ALL,-0.691,50.0,92
+RSI Revert,Reversion,SHORT,ACLS,STRONG,-1.782,28.0,25
+RSI Revert,Reversion,SHORT,ACLS,NORMAL,-0.182,52.4,21
+RSI Revert,Reversion,SHORT,ACLS,CHOPPY,0.626,56.0,25
+Zscore Revert,Reversion,LONG,ACLS,ALL,0.651,53.0,115
+Zscore Revert,Reversion,LONG,ACLS,STRONG,2.54,76.5,34
+Zscore Revert,Reversion,LONG,ACLS,NORMAL,0.087,58.8,17
+Zscore Revert,Reversion,LONG,ACLS,WEAK,-1.04,25.8,31
+Zscore Revert,Reversion,LONG,ACLS,CHOPPY,0.428,54.2,24
+Zscore Revert,Reversion,SHORT,ACLS,ALL,-1.175,49.5,99
+Zscore Revert,Reversion,SHORT,ACLS,STRONG,-2.824,17.2,29
+Zscore Revert,Reversion,SHORT,ACLS,CAUTIOUS,0.183,68.8,16
+Zscore Revert,Reversion,SHORT,ACLS,WEAK,1.785,87.5,16
+Zscore Revert,Reversion,SHORT,ACLS,CHOPPY,0.149,58.3,24
+Keltner Revert,Reversion,LONG,ACLS,ALL,0.39,51.6,91
+Keltner Revert,Reversion,LONG,ACLS,STRONG,1.951,69.2,26
+Keltner Revert,Reversion,LONG,ACLS,WEAK,-1.164,29.2,24
+Keltner Revert,Reversion,LONG,ACLS,CHOPPY,0.651,52.2,23
+Keltner Revert,Reversion,SHORT,ACLS,ALL,-0.485,50.8,118
+Keltner Revert,Reversion,SHORT,ACLS,STRONG,-2.451,16.1,31
+Keltner Revert,Reversion,SHORT,ACLS,NORMAL,-0.62,50.0,20
+Keltner Revert,Reversion,SHORT,ACLS,CAUTIOUS,0.355,66.7,18
+Keltner Revert,Reversion,SHORT,ACLS,CHOPPY,0.94,57.1,35
+MFI Revert,Reversion,LONG,ACLS,ALL,-0.634,45.5,33
+MFI Revert,Reversion,SHORT,ACLS,ALL,-0.445,50.0,22
+RSI Momentum,Momentum,LONG,ACLS,ALL,0.691,50.0,92
+RSI Momentum,Momentum,LONG,ACLS,STRONG,1.782,72.0,25
+RSI Momentum,Momentum,LONG,ACLS,NORMAL,0.182,47.6,21
+RSI Momentum,Momentum,LONG,ACLS,CHOPPY,-0.626,44.0,25
+RSI Momentum,Momentum,SHORT,ACLS,ALL,-0.311,50.0,140
+RSI Momentum,Momentum,SHORT,ACLS,STRONG,-2.791,18.9,37
+RSI Momentum,Momentum,SHORT,ACLS,NORMAL,-0.339,46.2,26
+RSI Momentum,Momentum,SHORT,ACLS,WEAK,1.907,83.3,36
+RSI Momentum,Momentum,SHORT,ACLS,CHOPPY,-0.99,44.8,29
+Donchian/Turtle,Momentum,LONG,ACLS,ALL,0.893,51.2,121
+Donchian/Turtle,Momentum,LONG,ACLS,STRONG,2.524,80.0,35
+Donchian/Turtle,Momentum,LONG,ACLS,NORMAL,1.051,63.2,19
+Donchian/Turtle,Momentum,LONG,ACLS,CAUTIOUS,-0.103,35.3,17
+Donchian/Turtle,Momentum,LONG,ACLS,CHOPPY,-0.802,38.9,36
+Donchian/Turtle,Momentum,SHORT,ACLS,ALL,-0.953,47.4,135
+Donchian/Turtle,Momentum,SHORT,ACLS,STRONG,-2.786,22.0,41
+Donchian/Turtle,Momentum,SHORT,ACLS,NORMAL,-0.414,40.7,27
+Donchian/Turtle,Momentum,SHORT,ACLS,WEAK,1.066,75.0,32
+Donchian/Turtle,Momentum,SHORT,ACLS,CHOPPY,-0.192,52.0,25
+ADX Trend,Momentum,LONG,ACLS,ALL,0.38,48.9,176
+ADX Trend,Momentum,LONG,ACLS,STRONG,2.489,80.5,41
+ADX Trend,Momentum,LONG,ACLS,NORMAL,1.197,65.7,35
+ADX Trend,Momentum,LONG,ACLS,CAUTIOUS,-0.816,30.8,26
+ADX Trend,Momentum,LONG,ACLS,WEAK,-2.101,14.3,28
+ADX Trend,Momentum,LONG,ACLS,CHOPPY,-1.205,39.1,46
+ADX Trend,Momentum,SHORT,ACLS,ALL,0.108,50.3,177
+ADX Trend,Momentum,SHORT,ACLS,STRONG,-2.952,23.9,46
+ADX Trend,Momentum,SHORT,ACLS,NORMAL,-0.386,43.3,30
+ADX Trend,Momentum,SHORT,ACLS,CAUTIOUS,0.783,70.6,17
+ADX Trend,Momentum,SHORT,ACLS,WEAK,1.99,77.5,40
+ADX Trend,Momentum,SHORT,ACLS,CHOPPY,0.313,50.0,44
+RSI Revert,Reversion,LONG,AI,ALL,-0.053,51.0,157
+RSI Revert,Reversion,LONG,AI,STRONG,2.741,78.0,41
+RSI Revert,Reversion,LONG,AI,NORMAL,1.622,75.0,24
+RSI Revert,Reversion,LONG,AI,CAUTIOUS,-0.13,36.8,19
+RSI Revert,Reversion,LONG,AI,WEAK,-2.51,28.6,42
+RSI Revert,Reversion,LONG,AI,CHOPPY,-0.724,35.5,31
+RSI Revert,Reversion,SHORT,AI,ALL,0.006,45.0,100
+RSI Revert,Reversion,SHORT,AI,STRONG,-1.264,26.1,23
+RSI Revert,Reversion,SHORT,AI,NORMAL,-0.837,31.8,22
+RSI Revert,Reversion,SHORT,AI,WEAK,2.315,80.0,20
+RSI Revert,Reversion,SHORT,AI,CHOPPY,-0.563,39.3,28
+Zscore Revert,Reversion,LONG,AI,ALL,-0.354,48.5,101
+Zscore Revert,Reversion,LONG,AI,STRONG,1.623,72.7,22
+Zscore Revert,Reversion,LONG,AI,NORMAL,0.081,55.6,18
+Zscore Revert,Reversion,LONG,AI,WEAK,-1.231,35.5,31
+Zscore Revert,Reversion,LONG,AI,CHOPPY,-0.304,33.3,18
+Zscore Revert,Reversion,SHORT,AI,ALL,0.216,50.0,74
+Zscore Revert,Reversion,SHORT,AI,STRONG,-1.362,23.8,21
+Zscore Revert,Reversion,SHORT,AI,NORMAL,-0.263,46.7,15
+Zscore Revert,Reversion,SHORT,AI,CHOPPY,0.297,47.4,19
+Keltner Revert,Reversion,LONG,AI,ALL,-0.692,49.3,134
+Keltner Revert,Reversion,LONG,AI,STRONG,2.135,71.4,35
+Keltner Revert,Reversion,LONG,AI,NORMAL,0.89,57.1,21
+Keltner Revert,Reversion,LONG,AI,CAUTIOUS,-0.732,36.8,19
+Keltner Revert,Reversion,LONG,AI,WEAK,-2.112,28.9,38
+Keltner Revert,Reversion,LONG,AI,CHOPPY,-0.269,52.4,21
+Keltner Revert,Reversion,SHORT,AI,ALL,0.289,50.0,72
+Keltner Revert,Reversion,SHORT,AI,STRONG,-0.963,25.0,20
+Keltner Revert,Reversion,SHORT,AI,NORMAL,0.133,56.2,16
+Keltner Revert,Reversion,SHORT,AI,CHOPPY,-0.785,45.0,20
+MFI Revert,Reversion,LONG,AI,ALL,0.043,45.5,44
+MFI Revert,Reversion,SHORT,AI,ALL,0.434,52.8,36
+RSI Momentum,Momentum,LONG,AI,ALL,-0.006,55.0,100
+RSI Momentum,Momentum,LONG,AI,STRONG,1.264,73.9,23
+RSI Momentum,Momentum,LONG,AI,NORMAL,0.837,68.2,22
+RSI Momentum,Momentum,LONG,AI,WEAK,-2.315,20.0,20
+RSI Momentum,Momentum,LONG,AI,CHOPPY,0.563,60.7,28
+RSI Momentum,Momentum,SHORT,AI,ALL,0.053,49.0,157
+RSI Momentum,Momentum,SHORT,AI,STRONG,-2.741,22.0,41
+RSI Momentum,Momentum,SHORT,AI,NORMAL,-1.622,25.0,24
+RSI Momentum,Momentum,SHORT,AI,CAUTIOUS,0.13,63.2,19
+RSI Momentum,Momentum,SHORT,AI,WEAK,2.51,71.4,42
+RSI Momentum,Momentum,SHORT,AI,CHOPPY,0.724,64.5,31
+Donchian/Turtle,Momentum,LONG,AI,ALL,0.039,51.9,106
+Donchian/Turtle,Momentum,LONG,AI,STRONG,1.269,66.7,30
+Donchian/Turtle,Momentum,LONG,AI,NORMAL,0.736,62.5,24
+Donchian/Turtle,Momentum,LONG,AI,CHOPPY,0.08,50.0,28
+Donchian/Turtle,Momentum,SHORT,AI,ALL,0.639,49.6,137
+Donchian/Turtle,Momentum,SHORT,AI,STRONG,-2.918,22.5,40
+Donchian/Turtle,Momentum,SHORT,AI,NORMAL,-0.816,38.1,21
+Donchian/Turtle,Momentum,SHORT,AI,CAUTIOUS,0.83,56.2,16
+Donchian/Turtle,Momentum,SHORT,AI,WEAK,1.707,71.9,32
+Donchian/Turtle,Momentum,SHORT,AI,CHOPPY,0.689,67.9,28
+ADX Trend,Momentum,LONG,AI,ALL,-0.281,47.2,159
+ADX Trend,Momentum,LONG,AI,STRONG,1.57,71.8,39
+ADX Trend,Momentum,LONG,AI,NORMAL,0.687,61.3,31
+ADX Trend,Momentum,LONG,AI,CAUTIOUS,-1.521,26.1,23
+ADX Trend,Momentum,LONG,AI,WEAK,-2.641,8.7,23
+ADX Trend,Momentum,LONG,AI,CHOPPY,0.504,46.5,43
+ADX Trend,Momentum,SHORT,AI,ALL,0.27,51.2,209
+ADX Trend,Momentum,SHORT,AI,STRONG,-2.702,28.6,56
+ADX Trend,Momentum,SHORT,AI,NORMAL,-1.071,37.5,32
+ADX Trend,Momentum,SHORT,AI,CAUTIOUS,-0.163,65.2,23
+ADX Trend,Momentum,SHORT,AI,WEAK,2.927,71.7,53
+ADX Trend,Momentum,SHORT,AI,CHOPPY,0.67,57.8,45
+RSI Revert,Reversion,LONG,APD,ALL,0.493,53.8,106
+RSI Revert,Reversion,LONG,APD,STRONG,1.492,76.2,21
+RSI Revert,Reversion,LONG,APD,NORMAL,-0.436,55.6,18
+RSI Revert,Reversion,LONG,APD,WEAK,0.278,41.7,36
+RSI Revert,Reversion,LONG,APD,CHOPPY,-0.054,54.5,22
+RSI Revert,Reversion,SHORT,APD,ALL,0.018,48.5,134
+RSI Revert,Reversion,SHORT,APD,STRONG,-1.476,33.3,39
+RSI Revert,Reversion,SHORT,APD,NORMAL,0.315,45.5,22
+RSI Revert,Reversion,SHORT,APD,CAUTIOUS,-0.152,52.9,17
+RSI Revert,Reversion,SHORT,APD,WEAK,0.19,61.1,18
+RSI Revert,Reversion,SHORT,APD,CHOPPY,0.995,57.9,38
+Zscore Revert,Reversion,LONG,APD,ALL,0.721,50.0,84
+Zscore Revert,Reversion,LONG,APD,STRONG,0.914,63.6,22
+Zscore Revert,Reversion,LONG,APD,NORMAL,0.467,56.2,16
+Zscore Revert,Reversion,LONG,APD,WEAK,0.748,47.6,21
+Zscore Revert,Reversion,LONG,APD,CHOPPY,-0.129,33.3,18
+Zscore Revert,Reversion,SHORT,APD,ALL,-0.108,45.9,111
+Zscore Revert,Reversion,SHORT,APD,STRONG,-1.556,31.0,29
+Zscore Revert,Reversion,SHORT,APD,WEAK,1.598,73.7,19
+Zscore Revert,Reversion,SHORT,APD,CHOPPY,-0.06,45.0,40
+Keltner Revert,Reversion,LONG,APD,ALL,0.495,50.6,89
+Keltner Revert,Reversion,LONG,APD,STRONG,1.34,72.7,22
+Keltner Revert,Reversion,LONG,APD,NORMAL,0.619,53.3,15
+Keltner Revert,Reversion,LONG,APD,WEAK,0.213,39.3,28
+Keltner Revert,Reversion,LONG,APD,CHOPPY,-0.264,41.2,17
+Keltner Revert,Reversion,SHORT,APD,ALL,0.126,46.8,94
+Keltner Revert,Reversion,SHORT,APD,STRONG,-1.624,26.1,23
+Keltner Revert,Reversion,SHORT,APD,WEAK,0.847,60.0,15
+Keltner Revert,Reversion,SHORT,APD,CHOPPY,0.571,51.4,35
+MFI Revert,Reversion,LONG,APD,ALL,0.704,65.0,20
+MFI Revert,Reversion,SHORT,APD,ALL,0.713,60.0,40
+RSI Momentum,Momentum,LONG,APD,ALL,-0.018,51.5,134
+RSI Momentum,Momentum,LONG,APD,STRONG,1.476,66.7,39
+RSI Momentum,Momentum,LONG,APD,NORMAL,-0.315,54.5,22
+RSI Momentum,Momentum,LONG,APD,CAUTIOUS,0.152,47.1,17
+RSI Momentum,Momentum,LONG,APD,WEAK,-0.19,38.9,18
+RSI Momentum,Momentum,LONG,APD,CHOPPY,-0.995,42.1,38
+RSI Momentum,Momentum,SHORT,APD,ALL,-0.493,46.2,106
+RSI Momentum,Momentum,SHORT,APD,STRONG,-1.492,23.8,21
+RSI Momentum,Momentum,SHORT,APD,NORMAL,0.436,44.4,18
+RSI Momentum,Momentum,SHORT,APD,WEAK,-0.278,58.3,36
+RSI Momentum,Momentum,SHORT,APD,CHOPPY,0.054,45.5,22
+Donchian/Turtle,Momentum,LONG,APD,ALL,0.014,54.3,129
+Donchian/Turtle,Momentum,LONG,APD,STRONG,1.256,65.8,38
+Donchian/Turtle,Momentum,LONG,APD,NORMAL,-0.205,55.6,18
+Donchian/Turtle,Momentum,LONG,APD,CAUTIOUS,0.235,50.0,16
+Donchian/Turtle,Momentum,LONG,APD,WEAK,-1.108,33.3,18
+Donchian/Turtle,Momentum,LONG,APD,CHOPPY,0.091,53.8,39
+Donchian/Turtle,Momentum,SHORT,APD,ALL,-0.713,49.1,106
+Donchian/Turtle,Momentum,SHORT,APD,STRONG,-1.395,31.0,29
+Donchian/Turtle,Momentum,SHORT,APD,NORMAL,-0.094,50.0,18
+Donchian/Turtle,Momentum,SHORT,APD,WEAK,-0.586,51.9,27
+Donchian/Turtle,Momentum,SHORT,APD,CHOPPY,-0.14,60.9,23
+ADX Trend,Momentum,LONG,APD,ALL,0.137,52.9,172
+ADX Trend,Momentum,LONG,APD,STRONG,1.85,61.5,39
+ADX Trend,Momentum,LONG,APD,NORMAL,-0.087,60.0,35
+ADX Trend,Momentum,LONG,APD,CAUTIOUS,0.922,57.1,28
+ADX Trend,Momentum,LONG,APD,WEAK,-1.677,28.2,39
+ADX Trend,Momentum,LONG,APD,CHOPPY,0.871,61.3,31
+ADX Trend,Momentum,SHORT,APD,ALL,-0.326,53.2,171
+ADX Trend,Momentum,SHORT,APD,STRONG,-1.653,36.4,44
+ADX Trend,Momentum,SHORT,APD,NORMAL,0.265,56.5,23
+ADX Trend,Momentum,SHORT,APD,CAUTIOUS,-0.424,50.0,18
+ADX Trend,Momentum,SHORT,APD,WEAK,-0.092,66.0,47
+ADX Trend,Momentum,SHORT,APD,CHOPPY,1.045,56.4,39
+RSI Revert,Reversion,LONG,ARRY,ALL,1.139,54.3,105
+RSI Revert,Reversion,LONG,ARRY,STRONG,1.168,68.4,19
+RSI Revert,Reversion,LONG,ARRY,WEAK,-1.301,35.9,39
+RSI Revert,Reversion,LONG,ARRY,CHOPPY,1.383,69.6,23
+RSI Revert,Reversion,SHORT,ARRY,ALL,-0.424,53.6,112
+RSI Revert,Reversion,SHORT,ARRY,STRONG,-1.273,42.4,33
+RSI Revert,Reversion,SHORT,ARRY,NORMAL,-1.137,40.0,20
+RSI Revert,Reversion,SHORT,ARRY,CAUTIOUS,0.682,62.5,16
+RSI Revert,Reversion,SHORT,ARRY,WEAK,1.252,73.7,19
+RSI Revert,Reversion,SHORT,ARRY,CHOPPY,0.777,58.3,24
+Zscore Revert,Reversion,LONG,ARRY,ALL,1.087,48.3,89
+Zscore Revert,Reversion,LONG,ARRY,STRONG,1.702,70.8,24
+Zscore Revert,Reversion,LONG,ARRY,WEAK,-1.513,27.3,33
+Zscore Revert,Reversion,LONG,ARRY,CHOPPY,0.912,59.1,22
+Zscore Revert,Reversion,SHORT,ARRY,ALL,-0.067,52.0,102
+Zscore Revert,Reversion,SHORT,ARRY,STRONG,-0.77,42.3,26
+Zscore Revert,Reversion,SHORT,ARRY,NORMAL,-0.473,47.4,19
+Zscore Revert,Reversion,SHORT,ARRY,WEAK,1.391,71.4,21
+Zscore Revert,Reversion,SHORT,ARRY,CHOPPY,0.303,60.9,23
+Keltner Revert,Reversion,LONG,ARRY,ALL,0.573,45.1,71
+Keltner Revert,Reversion,LONG,ARRY,STRONG,1.268,72.2,18
+Keltner Revert,Reversion,LONG,ARRY,WEAK,-1.554,20.7,29
+Keltner Revert,Reversion,LONG,ARRY,CHOPPY,1.079,60.0,15
+Keltner Revert,Reversion,SHORT,ARRY,ALL,0.061,47.8,46
+MFI Revert,Reversion,LONG,ARRY,ALL,-0.014,43.8,48
+MFI Revert,Reversion,LONG,ARRY,WEAK,-0.904,31.8,22
+MFI Revert,Reversion,SHORT,ARRY,ALL,-0.654,50.0,44
+MFI Revert,Reversion,SHORT,ARRY,STRONG,-0.448,60.0,15
+RSI Momentum,Momentum,LONG,ARRY,ALL,0.424,46.4,112
+RSI Momentum,Momentum,LONG,ARRY,STRONG,1.273,57.6,33
+RSI Momentum,Momentum,LONG,ARRY,NORMAL,1.137,60.0,20
+RSI Momentum,Momentum,LONG,ARRY,CAUTIOUS,-0.682,37.5,16
+RSI Momentum,Momentum,LONG,ARRY,WEAK,-1.252,26.3,19
+RSI Momentum,Momentum,LONG,ARRY,CHOPPY,-0.777,41.7,24
+RSI Momentum,Momentum,SHORT,ARRY,ALL,-1.139,45.7,105
+RSI Momentum,Momentum,SHORT,ARRY,STRONG,-1.168,31.6,19
+RSI Momentum,Momentum,SHORT,ARRY,WEAK,1.301,64.1,39
+RSI Momentum,Momentum,SHORT,ARRY,CHOPPY,-1.383,30.4,23
+Donchian/Turtle,Momentum,LONG,ARRY,ALL,0.077,48.7,76
+Donchian/Turtle,Momentum,LONG,ARRY,STRONG,0.559,57.9,19
+Donchian/Turtle,Momentum,LONG,ARRY,NORMAL,0.391,55.0,20
+Donchian/Turtle,Momentum,LONG,ARRY,WEAK,-1.039,26.7,15
+Donchian/Turtle,Momentum,SHORT,ARRY,ALL,-0.824,50.8,128
+Donchian/Turtle,Momentum,SHORT,ARRY,STRONG,-2.069,26.5,34
+Donchian/Turtle,Momentum,SHORT,ARRY,NORMAL,-0.639,45.0,20
+Donchian/Turtle,Momentum,SHORT,ARRY,WEAK,1.702,72.5,40
+Donchian/Turtle,Momentum,SHORT,ARRY,CHOPPY,-0.504,48.0,25
+ADX Trend,Momentum,LONG,ARRY,ALL,1.031,54.7,159
+ADX Trend,Momentum,LONG,ARRY,STRONG,1.089,65.7,35
+ADX Trend,Momentum,LONG,ARRY,NORMAL,0.62,55.2,29
+ADX Trend,Momentum,LONG,ARRY,CAUTIOUS,0.824,60.7,28
+ADX Trend,Momentum,LONG,ARRY,WEAK,-1.325,37.1,35
+ADX Trend,Momentum,LONG,ARRY,CHOPPY,0.742,56.2,32
+ADX Trend,Momentum,SHORT,ARRY,ALL,-0.353,53.6,166
+ADX Trend,Momentum,SHORT,ARRY,STRONG,-1.258,44.2,52
+ADX Trend,Momentum,SHORT,ARRY,NORMAL,-0.473,52.0,25
+ADX Trend,Momentum,SHORT,ARRY,WEAK,1.653,72.7,33
+ADX Trend,Momentum,SHORT,ARRY,CHOPPY,-0.409,50.0,42
+RSI Revert,Reversion,LONG,BEAM,ALL,0.55,50.4,115
+RSI Revert,Reversion,LONG,BEAM,STRONG,2.371,77.4,31
+RSI Revert,Reversion,LONG,BEAM,WEAK,-0.894,32.4,34
+RSI Revert,Reversion,LONG,BEAM,CHOPPY,-0.727,45.8,24
+RSI Revert,Reversion,SHORT,BEAM,ALL,-0.099,49.0,102
+RSI Revert,Reversion,SHORT,BEAM,STRONG,-1.116,32.0,25
+RSI Revert,Reversion,SHORT,BEAM,NORMAL,0.009,43.8,16
+RSI Revert,Reversion,SHORT,BEAM,CHOPPY,-0.881,38.2,34
+Zscore Revert,Reversion,LONG,BEAM,ALL,0.94,64.1,39
+Zscore Revert,Reversion,SHORT,BEAM,ALL,0.586,52.7,112
+Zscore Revert,Reversion,SHORT,BEAM,STRONG,-1.116,29.6,27
+Zscore Revert,Reversion,SHORT,BEAM,NORMAL,0.556,53.3,15
+Zscore Revert,Reversion,SHORT,BEAM,CAUTIOUS,0.898,56.2,16
+Zscore Revert,Reversion,SHORT,BEAM,WEAK,2.578,94.7,19
+Zscore Revert,Reversion,SHORT,BEAM,CHOPPY,-0.408,45.7,35
+Keltner Revert,Reversion,LONG,BEAM,ALL,0.698,55.3,47
+Keltner Revert,Reversion,SHORT,BEAM,ALL,0.465,54.1,85
+Keltner Revert,Reversion,SHORT,BEAM,STRONG,-1.278,22.2,18
+Keltner Revert,Reversion,SHORT,BEAM,WEAK,2.486,100.0,16
+Keltner Revert,Reversion,SHORT,BEAM,CHOPPY,-0.35,44.4,27
+MFI Revert,Reversion,LONG,BEAM,ALL,0.676,63.2,38
+RSI Momentum,Momentum,LONG,BEAM,ALL,0.099,51.0,102
+RSI Momentum,Momentum,LONG,BEAM,STRONG,1.116,68.0,25
+RSI Momentum,Momentum,LONG,BEAM,NORMAL,-0.009,56.2,16
+RSI Momentum,Momentum,LONG,BEAM,CHOPPY,0.881,61.8,34
+RSI Momentum,Momentum,SHORT,BEAM,ALL,-0.55,49.6,115
+RSI Momentum,Momentum,SHORT,BEAM,STRONG,-2.371,22.6,31
+RSI Momentum,Momentum,SHORT,BEAM,WEAK,0.894,67.6,34
+RSI Momentum,Momentum,SHORT,BEAM,CHOPPY,0.727,54.2,24
+Donchian/Turtle,Momentum,LONG,BEAM,ALL,-0.504,48.5,101
+Donchian/Turtle,Momentum,LONG,BEAM,STRONG,1.072,70.4,27
+Donchian/Turtle,Momentum,LONG,BEAM,WEAK,-2.319,10.5,19
+Donchian/Turtle,Momentum,LONG,BEAM,CHOPPY,0.691,61.3,31
+Donchian/Turtle,Momentum,SHORT,BEAM,ALL,-0.98,46.0,126
+Donchian/Turtle,Momentum,SHORT,BEAM,STRONG,-2.304,26.5,34
+Donchian/Turtle,Momentum,SHORT,BEAM,NORMAL,0.382,47.1,17
+Donchian/Turtle,Momentum,SHORT,BEAM,WEAK,0.21,57.6,33
+Donchian/Turtle,Momentum,SHORT,BEAM,CHOPPY,0.279,53.3,30
+ADX Trend,Momentum,LONG,BEAM,ALL,-0.801,47.6,168
+ADX Trend,Momentum,LONG,BEAM,STRONG,1.306,71.4,42
+ADX Trend,Momentum,LONG,BEAM,NORMAL,0.15,48.3,29
+ADX Trend,Momentum,LONG,BEAM,CAUTIOUS,-0.375,48.1,27
+ADX Trend,Momentum,LONG,BEAM,WEAK,-2.195,21.2,33
+ADX Trend,Momentum,LONG,BEAM,CHOPPY,-0.492,43.2,37
+ADX Trend,Momentum,SHORT,BEAM,ALL,0.116,53.5,170
+ADX Trend,Momentum,SHORT,BEAM,STRONG,-1.918,36.8,38
+ADX Trend,Momentum,SHORT,BEAM,NORMAL,-0.174,41.4,29
+ADX Trend,Momentum,SHORT,BEAM,CAUTIOUS,1.075,72.0,25
+ADX Trend,Momentum,SHORT,BEAM,WEAK,1.773,70.0,40
+ADX Trend,Momentum,SHORT,BEAM,CHOPPY,-0.645,50.0,38
+RSI Revert,Reversion,LONG,CACI,ALL,0.146,47.7,130
+RSI Revert,Reversion,LONG,CACI,STRONG,0.572,54.8,42
+RSI Revert,Reversion,LONG,CACI,NORMAL,-0.208,33.3,21
+RSI Revert,Reversion,LONG,CACI,CAUTIOUS,0.055,52.6,19
+RSI Revert,Reversion,LONG,CACI,WEAK,-0.29,44.4,18
+RSI Revert,Reversion,LONG,CACI,CHOPPY,0.033,46.7,30
+RSI Revert,Reversion,SHORT,CACI,ALL,-0.451,46.3,190
+RSI Revert,Reversion,SHORT,CACI,STRONG,-0.942,37.8,45
+RSI Revert,Reversion,SHORT,CACI,NORMAL,-1.145,34.9,43
+RSI Revert,Reversion,SHORT,CACI,CAUTIOUS,0.124,61.1,18
+RSI Revert,Reversion,SHORT,CACI,WEAK,1.04,61.7,47
+RSI Revert,Reversion,SHORT,CACI,CHOPPY,-0.105,43.2,37
+Zscore Revert,Reversion,LONG,CACI,ALL,0.757,50.5,95
+Zscore Revert,Reversion,LONG,CACI,STRONG,1.269,65.5,29
+Zscore Revert,Reversion,LONG,CACI,NORMAL,0.669,41.2,17
+Zscore Revert,Reversion,LONG,CACI,CAUTIOUS,-0.961,26.7,15
+Zscore Revert,Reversion,LONG,CACI,WEAK,-0.399,50.0,16
+Zscore Revert,Reversion,LONG,CACI,CHOPPY,0.833,55.6,18
+Zscore Revert,Reversion,SHORT,CACI,ALL,0.06,48.0,127
+Zscore Revert,Reversion,SHORT,CACI,STRONG,0.024,51.7,29
+Zscore Revert,Reversion,SHORT,CACI,NORMAL,-0.062,43.8,16
+Zscore Revert,Reversion,SHORT,CACI,WEAK,0.24,48.0,25
+Zscore Revert,Reversion,SHORT,CACI,CHOPPY,0.121,40.9,44
+Keltner Revert,Reversion,LONG,CACI,ALL,-0.406,43.4,76
+Keltner Revert,Reversion,LONG,CACI,STRONG,0.58,55.6,27
+Keltner Revert,Reversion,LONG,CACI,CHOPPY,-0.203,41.2,17
+Keltner Revert,Reversion,SHORT,CACI,ALL,0.09,45.3,117
+Keltner Revert,Reversion,SHORT,CACI,STRONG,-0.448,41.2,34
+Keltner Revert,Reversion,SHORT,CACI,NORMAL,-0.786,26.1,23
+Keltner Revert,Reversion,SHORT,CACI,WEAK,0.849,65.0,20
+Keltner Revert,Reversion,SHORT,CACI,CHOPPY,-0.014,43.8,32
+MFI Revert,Reversion,LONG,CACI,ALL,0.488,39.4,33
+MFI Revert,Reversion,SHORT,CACI,ALL,0.037,50.9,53
+MFI Revert,Reversion,SHORT,CACI,STRONG,-0.226,37.5,16
+RSI Momentum,Momentum,LONG,CACI,ALL,0.451,53.7,190
+RSI Momentum,Momentum,LONG,CACI,STRONG,0.942,62.2,45
+RSI Momentum,Momentum,LONG,CACI,NORMAL,1.145,65.1,43
+RSI Momentum,Momentum,LONG,CACI,CAUTIOUS,-0.124,38.9,18
+RSI Momentum,Momentum,LONG,CACI,WEAK,-1.04,38.3,47
+RSI Momentum,Momentum,LONG,CACI,CHOPPY,0.105,56.8,37
+RSI Momentum,Momentum,SHORT,CACI,ALL,-0.146,52.3,130
+RSI Momentum,Momentum,SHORT,CACI,STRONG,-0.572,45.2,42
+RSI Momentum,Momentum,SHORT,CACI,NORMAL,0.208,66.7,21
+RSI Momentum,Momentum,SHORT,CACI,CAUTIOUS,-0.055,47.4,19
+RSI Momentum,Momentum,SHORT,CACI,WEAK,0.29,55.6,18
+RSI Momentum,Momentum,SHORT,CACI,CHOPPY,-0.033,53.3,30
+Donchian/Turtle,Momentum,LONG,CACI,ALL,0.434,53.2,126
+Donchian/Turtle,Momentum,LONG,CACI,STRONG,0.006,53.1,32
+Donchian/Turtle,Momentum,LONG,CACI,NORMAL,0.175,57.7,26
+Donchian/Turtle,Momentum,LONG,CACI,CAUTIOUS,0.084,20.0,15
+Donchian/Turtle,Momentum,LONG,CACI,WEAK,0.698,52.6,19
+Donchian/Turtle,Momentum,LONG,CACI,CHOPPY,0.224,64.7,34
+Donchian/Turtle,Momentum,SHORT,CACI,ALL,0.511,56.8,111
+Donchian/Turtle,Momentum,SHORT,CACI,STRONG,-0.352,46.2,39
+Donchian/Turtle,Momentum,SHORT,CACI,NORMAL,0.386,72.2,18
+Donchian/Turtle,Momentum,SHORT,CACI,WEAK,0.503,53.3,15
+Donchian/Turtle,Momentum,SHORT,CACI,CHOPPY,0.264,56.0,25
+ADX Trend,Momentum,LONG,CACI,ALL,0.443,50.5,222
+ADX Trend,Momentum,LONG,CACI,STRONG,0.868,55.9,59
+ADX Trend,Momentum,LONG,CACI,NORMAL,0.572,57.5,40
+ADX Trend,Momentum,LONG,CACI,CAUTIOUS,-0.509,37.0,27
+ADX Trend,Momentum,LONG,CACI,WEAK,-0.679,36.4,44
+ADX Trend,Momentum,LONG,CACI,CHOPPY,0.69,57.7,52
+ADX Trend,Momentum,SHORT,CACI,ALL,0.39,53.5,198
+ADX Trend,Momentum,SHORT,CACI,STRONG,-0.23,41.5,53
+ADX Trend,Momentum,SHORT,CACI,NORMAL,-0.617,54.5,33
+ADX Trend,Momentum,SHORT,CACI,CAUTIOUS,0.212,62.1,29
+ADX Trend,Momentum,SHORT,CACI,WEAK,1.091,58.5,41
+ADX Trend,Momentum,SHORT,CACI,CHOPPY,0.423,57.1,42
+RSI Revert,Reversion,LONG,CIFR,ALL,0.716,50.0,76
+RSI Revert,Reversion,LONG,CIFR,STRONG,2.342,84.2,19
+RSI Revert,Reversion,LONG,CIFR,WEAK,-1.458,30.4,23
+RSI Revert,Reversion,LONG,CIFR,CHOPPY,1.017,46.7,15
+RSI Revert,Reversion,SHORT,CIFR,ALL,-0.664,52.4,124
+RSI Revert,Reversion,SHORT,CIFR,STRONG,-1.773,34.5,29
+RSI Revert,Reversion,SHORT,CIFR,NORMAL,-1.02,40.0,20
+RSI Revert,Reversion,SHORT,CIFR,WEAK,1.722,75.0,20
+RSI Revert,Reversion,SHORT,CIFR,CHOPPY,-0.541,53.3,45
+Zscore Revert,Reversion,LONG,CIFR,ALL,0.855,45.8,83
+Zscore Revert,Reversion,LONG,CIFR,STRONG,2.431,80.0,20
+Zscore Revert,Reversion,LONG,CIFR,WEAK,-2.353,12.5,24
+Zscore Revert,Reversion,SHORT,CIFR,ALL,0.058,57.5,146
+Zscore Revert,Reversion,SHORT,CIFR,STRONG,-1.349,45.2,31
+Zscore Revert,Reversion,SHORT,CIFR,NORMAL,-1.419,33.3,24
+Zscore Revert,Reversion,SHORT,CIFR,WEAK,2.404,80.0,30
+Zscore Revert,Reversion,SHORT,CIFR,CHOPPY,-0.074,60.0,50
+Keltner Revert,Reversion,LONG,CIFR,ALL,-0.303,41.9,43
+Keltner Revert,Reversion,LONG,CIFR,WEAK,-0.847,35.0,20
+Keltner Revert,Reversion,SHORT,CIFR,ALL,-0.383,56.8,125
+Keltner Revert,Reversion,SHORT,CIFR,STRONG,-1.499,40.7,27
+Keltner Revert,Reversion,SHORT,CIFR,NORMAL,-1.245,42.1,19
+Keltner Revert,Reversion,SHORT,CIFR,WEAK,2.002,82.6,23
+Keltner Revert,Reversion,SHORT,CIFR,CHOPPY,-0.361,55.6,45
+MFI Revert,Reversion,SHORT,CIFR,ALL,-1.769,46.5,86
+MFI Revert,Reversion,SHORT,CIFR,STRONG,-1.723,33.3,24
+MFI Revert,Reversion,SHORT,CIFR,NORMAL,-1.569,40.0,20
+MFI Revert,Reversion,SHORT,CIFR,CHOPPY,-0.701,51.9,27
+RSI Momentum,Momentum,LONG,CIFR,ALL,0.664,47.6,124
+RSI Momentum,Momentum,LONG,CIFR,STRONG,1.773,65.5,29
+RSI Momentum,Momentum,LONG,CIFR,NORMAL,1.02,60.0,20
+RSI Momentum,Momentum,LONG,CIFR,WEAK,-1.722,25.0,20
+RSI Momentum,Momentum,LONG,CIFR,CHOPPY,0.541,46.7,45
+RSI Momentum,Momentum,SHORT,CIFR,ALL,-0.716,50.0,76
+RSI Momentum,Momentum,SHORT,CIFR,STRONG,-2.342,15.8,19
+RSI Momentum,Momentum,SHORT,CIFR,WEAK,1.458,69.6,23
+RSI Momentum,Momentum,SHORT,CIFR,CHOPPY,-1.017,53.3,15
+Donchian/Turtle,Momentum,LONG,CIFR,ALL,0.197,43.0,149
+Donchian/Turtle,Momentum,LONG,CIFR,STRONG,1.719,59.4,32
+Donchian/Turtle,Momentum,LONG,CIFR,NORMAL,1.168,55.2,29
+Donchian/Turtle,Momentum,LONG,CIFR,WEAK,-2.174,22.2,27
+Donchian/Turtle,Momentum,LONG,CIFR,CHOPPY,-0.149,39.6,48
+Donchian/Turtle,Momentum,SHORT,CIFR,ALL,-0.775,50.5,93
+Donchian/Turtle,Momentum,SHORT,CIFR,STRONG,-2.46,23.1,26
+Donchian/Turtle,Momentum,SHORT,CIFR,NORMAL,-0.715,43.8,16
+Donchian/Turtle,Momentum,SHORT,CIFR,WEAK,1.746,78.6,28
+ADX Trend,Momentum,LONG,CIFR,ALL,0.042,44.6,177
+ADX Trend,Momentum,LONG,CIFR,STRONG,1.369,58.1,31
+ADX Trend,Momentum,LONG,CIFR,NORMAL,0.988,46.9,32
+ADX Trend,Momentum,LONG,CIFR,CAUTIOUS,-0.894,32.1,28
+ADX Trend,Momentum,LONG,CIFR,WEAK,-2.111,31.2,32
+ADX Trend,Momentum,LONG,CIFR,CHOPPY,0.849,50.0,54
+ADX Trend,Momentum,SHORT,CIFR,ALL,-1.63,45.6,149
+ADX Trend,Momentum,SHORT,CIFR,STRONG,-3.084,24.0,50
+ADX Trend,Momentum,SHORT,CIFR,NORMAL,-1.18,40.9,22
+ADX Trend,Momentum,SHORT,CIFR,CAUTIOUS,0.172,40.0,15
+ADX Trend,Momentum,SHORT,CIFR,WEAK,2.064,73.5,34
+ADX Trend,Momentum,SHORT,CIFR,CHOPPY,-0.735,57.1,28
+RSI Revert,Reversion,LONG,COHR,ALL,0.154,60.0,35
+RSI Revert,Reversion,SHORT,COHR,ALL,-0.541,42.5,153
+RSI Revert,Reversion,SHORT,COHR,STRONG,-2.921,12.1,33
+RSI Revert,Reversion,SHORT,COHR,NORMAL,-1.639,27.3,22
+RSI Revert,Reversion,SHORT,COHR,CAUTIOUS,0.336,45.5,22
+RSI Revert,Reversion,SHORT,COHR,WEAK,1.628,83.9,31
+RSI Revert,Reversion,SHORT,COHR,CHOPPY,0.028,42.2,45
+Zscore Revert,Reversion,LONG,COHR,ALL,0.865,61.8,55
+Zscore Revert,Reversion,LONG,COHR,WEAK,-0.741,36.4,22
+Zscore Revert,Reversion,SHORT,COHR,ALL,-0.066,48.2,141
+Zscore Revert,Reversion,SHORT,COHR,STRONG,-2.732,15.2,33
+Zscore Revert,Reversion,SHORT,COHR,NORMAL,-1.588,35.7,28
+Zscore Revert,Reversion,SHORT,COHR,CAUTIOUS,0.776,60.0,20
+Zscore Revert,Reversion,SHORT,COHR,WEAK,1.967,93.1,29
+Zscore Revert,Reversion,SHORT,COHR,CHOPPY,-0.157,45.2,31
+Keltner Revert,Reversion,LONG,COHR,ALL,0.405,58.5,41
+Keltner Revert,Reversion,LONG,COHR,WEAK,-0.571,40.0,20
+Keltner Revert,Reversion,SHORT,COHR,ALL,-0.232,44.6,139
+Keltner Revert,Reversion,SHORT,COHR,STRONG,-2.494,18.8,32
+Keltner Revert,Reversion,SHORT,COHR,NORMAL,-1.261,35.7,28
+Keltner Revert,Reversion,SHORT,COHR,CAUTIOUS,-0.766,36.8,19
+Keltner Revert,Reversion,SHORT,COHR,WEAK,1.585,95.7,23
+Keltner Revert,Reversion,SHORT,COHR,CHOPPY,0.624,45.9,37
+MFI Revert,Reversion,SHORT,COHR,ALL,0.708,44.6,65
+MFI Revert,Reversion,SHORT,COHR,CHOPPY,0.754,37.5,24
+RSI Momentum,Momentum,LONG,COHR,ALL,0.541,57.5,153
+RSI Momentum,Momentum,LONG,COHR,STRONG,2.921,87.9,33
+RSI Momentum,Momentum,LONG,COHR,NORMAL,1.639,72.7,22
+RSI Momentum,Momentum,LONG,COHR,CAUTIOUS,-0.336,54.5,22
+RSI Momentum,Momentum,LONG,COHR,WEAK,-1.628,16.1,31
+RSI Momentum,Momentum,LONG,COHR,CHOPPY,-0.028,57.8,45
+RSI Momentum,Momentum,SHORT,COHR,ALL,-0.154,40.0,35
+Donchian/Turtle,Momentum,LONG,COHR,ALL,0.805,56.3,197
+Donchian/Turtle,Momentum,LONG,COHR,STRONG,3.685,86.5,52
+Donchian/Turtle,Momentum,LONG,COHR,NORMAL,1.272,59.5,37
+Donchian/Turtle,Momentum,LONG,COHR,CAUTIOUS,-0.054,50.0,26
+Donchian/Turtle,Momentum,LONG,COHR,WEAK,-2.259,10.8,37
+Donchian/Turtle,Momentum,LONG,COHR,CHOPPY,0.045,60.0,45
+Donchian/Turtle,Momentum,SHORT,COHR,ALL,-0.66,40.6,64
+Donchian/Turtle,Momentum,SHORT,COHR,STRONG,-2.51,5.6,18
+Donchian/Turtle,Momentum,SHORT,COHR,WEAK,0.923,71.4,21
+ADX Trend,Momentum,LONG,COHR,ALL,-0.538,53.4,161
+ADX Trend,Momentum,LONG,COHR,STRONG,2.889,87.2,39
+ADX Trend,Momentum,LONG,COHR,NORMAL,0.236,63.0,27
+ADX Trend,Momentum,LONG,COHR,CAUTIOUS,-0.942,43.5,23
+ADX Trend,Momentum,LONG,COHR,WEAK,-2.595,11.5,26
+ADX Trend,Momentum,LONG,COHR,CHOPPY,-1.109,47.8,46
+ADX Trend,Momentum,SHORT,COHR,ALL,-1.718,37.0,108
+ADX Trend,Momentum,SHORT,COHR,STRONG,-3.088,6.1,33
+ADX Trend,Momentum,SHORT,COHR,NORMAL,-1.557,35.3,17
+ADX Trend,Momentum,SHORT,COHR,WEAK,1.527,75.0,20
+ADX Trend,Momentum,SHORT,COHR,CHOPPY,-0.534,46.4,28
+RSI Revert,Reversion,LONG,CRM,ALL,-0.39,45.8,144
+RSI Revert,Reversion,LONG,CRM,STRONG,1.943,67.5,40
+RSI Revert,Reversion,LONG,CRM,NORMAL,0.179,50.0,20
+RSI Revert,Reversion,LONG,CRM,CAUTIOUS,-1.138,28.6,21
+RSI Revert,Reversion,LONG,CRM,WEAK,-1.509,25.0,36
+RSI Revert,Reversion,LONG,CRM,CHOPPY,0.15,51.9,27
+RSI Revert,Reversion,SHORT,CRM,ALL,1.526,53.2,111
+RSI Revert,Reversion,SHORT,CRM,STRONG,-0.999,29.6,27
+RSI Revert,Reversion,SHORT,CRM,NORMAL,1.017,45.0,20
+RSI Revert,Reversion,SHORT,CRM,WEAK,2.219,87.5,24
+RSI Revert,Reversion,SHORT,CRM,CHOPPY,0.444,51.7,29
+Zscore Revert,Reversion,LONG,CRM,ALL,0.094,48.6,74
+Zscore Revert,Reversion,LONG,CRM,STRONG,0.962,65.0,20
+Zscore Revert,Reversion,LONG,CRM,WEAK,-0.558,31.8,22
+Zscore Revert,Reversion,SHORT,CRM,ALL,0.78,53.7,82
+Zscore Revert,Reversion,SHORT,CRM,STRONG,-1.126,34.8,23
+Zscore Revert,Reversion,SHORT,CRM,NORMAL,-0.407,43.8,16
+Zscore Revert,Reversion,SHORT,CRM,WEAK,2.048,84.2,19
+Zscore Revert,Reversion,SHORT,CRM,CHOPPY,0.446,50.0,18
+Keltner Revert,Reversion,LONG,CRM,ALL,0.101,50.5,107
+Keltner Revert,Reversion,LONG,CRM,STRONG,2.187,69.7,33
+Keltner Revert,Reversion,LONG,CRM,NORMAL,1.193,66.7,15
+Keltner Revert,Reversion,LONG,CRM,WEAK,-1.051,31.0,29
+Keltner Revert,Reversion,LONG,CRM,CHOPPY,-0.025,47.4,19
+Keltner Revert,Reversion,SHORT,CRM,ALL,0.391,46.6,88
+Keltner Revert,Reversion,SHORT,CRM,STRONG,-1.902,22.7,22
+Keltner Revert,Reversion,SHORT,CRM,NORMAL,-0.482,33.3,18
+Keltner Revert,Reversion,SHORT,CRM,WEAK,2.274,89.5,19
+Keltner Revert,Reversion,SHORT,CRM,CHOPPY,-0.105,38.1,21
+MFI Revert,Reversion,LONG,CRM,ALL,1.002,55.2,58
+MFI Revert,Reversion,LONG,CRM,STRONG,2.115,78.9,19
+MFI Revert,Reversion,SHORT,CRM,ALL,-0.304,39.4,33
+RSI Momentum,Momentum,LONG,CRM,ALL,-1.526,46.8,111
+RSI Momentum,Momentum,LONG,CRM,STRONG,0.999,70.4,27
+RSI Momentum,Momentum,LONG,CRM,NORMAL,-1.017,55.0,20
+RSI Momentum,Momentum,LONG,CRM,WEAK,-2.219,12.5,24
+RSI Momentum,Momentum,LONG,CRM,CHOPPY,-0.444,48.3,29
+RSI Momentum,Momentum,SHORT,CRM,ALL,0.39,54.2,144
+RSI Momentum,Momentum,SHORT,CRM,STRONG,-1.943,32.5,40
+RSI Momentum,Momentum,SHORT,CRM,NORMAL,-0.179,50.0,20
+RSI Momentum,Momentum,SHORT,CRM,CAUTIOUS,1.138,71.4,21
+RSI Momentum,Momentum,SHORT,CRM,WEAK,1.509,75.0,36
+RSI Momentum,Momentum,SHORT,CRM,CHOPPY,-0.15,48.1,27
+Donchian/Turtle,Momentum,LONG,CRM,ALL,-1.002,47.7,107
+Donchian/Turtle,Momentum,LONG,CRM,STRONG,0.691,65.5,29
+Donchian/Turtle,Momentum,LONG,CRM,NORMAL,-0.105,52.4,21
+Donchian/Turtle,Momentum,LONG,CRM,WEAK,-1.84,26.1,23
+Donchian/Turtle,Momentum,LONG,CRM,CHOPPY,-0.378,45.8,24
+Donchian/Turtle,Momentum,SHORT,CRM,ALL,-0.227,49.2,132
+Donchian/Turtle,Momentum,SHORT,CRM,STRONG,-1.602,34.2,38
+Donchian/Turtle,Momentum,SHORT,CRM,NORMAL,-1.342,38.1,21
+Donchian/Turtle,Momentum,SHORT,CRM,CAUTIOUS,0.976,68.8,16
+Donchian/Turtle,Momentum,SHORT,CRM,WEAK,0.971,66.7,33
+Donchian/Turtle,Momentum,SHORT,CRM,CHOPPY,0.19,45.8,24
+ADX Trend,Momentum,LONG,CRM,ALL,-0.776,47.4,190
+ADX Trend,Momentum,LONG,CRM,STRONG,1.491,67.4,43
+ADX Trend,Momentum,LONG,CRM,NORMAL,0.835,61.8,34
+ADX Trend,Momentum,LONG,CRM,CAUTIOUS,-1.43,31.2,32
+ADX Trend,Momentum,LONG,CRM,WEAK,-1.677,29.3,41
+ADX Trend,Momentum,LONG,CRM,CHOPPY,-0.876,45.0,40
+ADX Trend,Momentum,SHORT,CRM,ALL,-0.204,47.1,174
+ADX Trend,Momentum,SHORT,CRM,STRONG,-2.559,19.0,42
+ADX Trend,Momentum,SHORT,CRM,NORMAL,-0.016,46.9,32
+ADX Trend,Momentum,SHORT,CRM,CAUTIOUS,0.171,64.7,17
+ADX Trend,Momentum,SHORT,CRM,WEAK,1.294,69.6,46
+ADX Trend,Momentum,SHORT,CRM,CHOPPY,0.4,43.2,37
+RSI Revert,Reversion,LONG,DECK,ALL,-0.729,45.3,117
+RSI Revert,Reversion,LONG,DECK,STRONG,1.598,70.4,27
+RSI Revert,Reversion,LONG,DECK,NORMAL,-0.267,45.0,20
+RSI Revert,Reversion,LONG,DECK,WEAK,-2.366,12.0,25
+RSI Revert,Reversion,LONG,DECK,CHOPPY,-0.563,48.4,31
+RSI Revert,Reversion,SHORT,DECK,ALL,0.228,50.4,127
+RSI Revert,Reversion,SHORT,DECK,STRONG,-1.971,31.4,35
+RSI Revert,Reversion,SHORT,DECK,NORMAL,-1.838,30.4,23
+RSI Revert,Reversion,SHORT,DECK,CAUTIOUS,-0.704,40.0,15
+RSI Revert,Reversion,SHORT,DECK,WEAK,1.858,89.3,28
+RSI Revert,Reversion,SHORT,DECK,CHOPPY,1.014,57.7,26
+Zscore Revert,Reversion,LONG,DECK,ALL,0.312,49.6,113
+Zscore Revert,Reversion,LONG,DECK,STRONG,1.331,63.0,27
+Zscore Revert,Reversion,LONG,DECK,NORMAL,0.097,47.6,21
+Zscore Revert,Reversion,LONG,DECK,WEAK,-1.126,18.2,22
+Zscore Revert,Reversion,LONG,DECK,CHOPPY,0.581,59.5,37
+Zscore Revert,Reversion,SHORT,DECK,ALL,0.162,53.2,111
+Zscore Revert,Reversion,SHORT,DECK,STRONG,-2.05,29.0,31
+Zscore Revert,Reversion,SHORT,DECK,NORMAL,-0.987,54.2,24
+Zscore Revert,Reversion,SHORT,DECK,CAUTIOUS,0.328,66.7,18
+Zscore Revert,Reversion,SHORT,DECK,WEAK,1.226,72.2,18
+Zscore Revert,Reversion,SHORT,DECK,CHOPPY,0.726,60.0,20
+Keltner Revert,Reversion,LONG,DECK,ALL,-0.39,47.3,146
+Keltner Revert,Reversion,LONG,DECK,STRONG,1.976,70.6,34
+Keltner Revert,Reversion,LONG,DECK,NORMAL,0.364,51.6,31
+Keltner Revert,Reversion,LONG,DECK,WEAK,-2.345,14.7,34
+Keltner Revert,Reversion,LONG,DECK,CHOPPY,-0.032,52.8,36
+Keltner Revert,Reversion,SHORT,DECK,ALL,-0.031,50.6,89
+Keltner Revert,Reversion,SHORT,DECK,STRONG,-1.49,33.3,24
+Keltner Revert,Reversion,SHORT,DECK,NORMAL,-0.782,52.4,21
+Keltner Revert,Reversion,SHORT,DECK,CAUTIOUS,0.129,56.2,16
+Keltner Revert,Reversion,SHORT,DECK,WEAK,1.196,75.0,16
+MFI Revert,Reversion,LONG,DECK,ALL,-0.958,45.5,44
+MFI Revert,Reversion,SHORT,DECK,ALL,1.011,58.1,31
+RSI Momentum,Momentum,LONG,DECK,ALL,-0.228,49.6,127
+RSI Momentum,Momentum,LONG,DECK,STRONG,1.971,68.6,35
+RSI Momentum,Momentum,LONG,DECK,NORMAL,1.838,69.6,23
+RSI Momentum,Momentum,LONG,DECK,CAUTIOUS,0.704,60.0,15
+RSI Momentum,Momentum,LONG,DECK,WEAK,-1.858,10.7,28
+RSI Momentum,Momentum,LONG,DECK,CHOPPY,-1.014,42.3,26
+RSI Momentum,Momentum,SHORT,DECK,ALL,0.729,54.7,117
+RSI Momentum,Momentum,SHORT,DECK,STRONG,-1.598,29.6,27
+RSI Momentum,Momentum,SHORT,DECK,NORMAL,0.267,55.0,20
+RSI Momentum,Momentum,SHORT,DECK,WEAK,2.366,88.0,25
+RSI Momentum,Momentum,SHORT,DECK,CHOPPY,0.563,51.6,31
+Donchian/Turtle,Momentum,LONG,DECK,ALL,-0.546,48.3,147
+Donchian/Turtle,Momentum,LONG,DECK,STRONG,2.2,67.5,40
+Donchian/Turtle,Momentum,LONG,DECK,NORMAL,1.231,53.3,30
+Donchian/Turtle,Momentum,LONG,DECK,CAUTIOUS,-0.289,47.8,23
+Donchian/Turtle,Momentum,LONG,DECK,WEAK,-1.694,22.2,27
+Donchian/Turtle,Momentum,LONG,DECK,CHOPPY,-0.75,40.7,27
+Donchian/Turtle,Momentum,SHORT,DECK,ALL,-0.242,50.7,136
+Donchian/Turtle,Momentum,SHORT,DECK,STRONG,-1.509,35.3,34
+Donchian/Turtle,Momentum,SHORT,DECK,NORMAL,-0.177,50.0,26
+Donchian/Turtle,Momentum,SHORT,DECK,WEAK,1.456,81.8,33
+Donchian/Turtle,Momentum,SHORT,DECK,CHOPPY,-0.367,40.0,35
+ADX Trend,Momentum,LONG,DECK,ALL,-0.172,45.9,170
+ADX Trend,Momentum,LONG,DECK,STRONG,0.83,61.2,49
+ADX Trend,Momentum,LONG,DECK,NORMAL,1.763,58.8,34
+ADX Trend,Momentum,LONG,DECK,CAUTIOUS,0.426,48.0,25
+ADX Trend,Momentum,LONG,DECK,WEAK,-2.293,18.8,32
+ADX Trend,Momentum,LONG,DECK,CHOPPY,-0.942,33.3,30
+ADX Trend,Momentum,SHORT,DECK,ALL,0.901,52.9,189
+ADX Trend,Momentum,SHORT,DECK,STRONG,-2.127,27.3,44
+ADX Trend,Momentum,SHORT,DECK,NORMAL,-0.343,47.1,34
+ADX Trend,Momentum,SHORT,DECK,CAUTIOUS,-0.062,44.4,18
+ADX Trend,Momentum,SHORT,DECK,WEAK,2.128,86.7,45
+ADX Trend,Momentum,SHORT,DECK,CHOPPY,0.72,52.1,48
+RSI Revert,Reversion,LONG,FCX,ALL,1.729,56.1,98
+RSI Revert,Reversion,LONG,FCX,STRONG,2.302,75.0,24
+RSI Revert,Reversion,LONG,FCX,WEAK,-0.233,36.0,25
+RSI Revert,Reversion,LONG,FCX,CHOPPY,1.024,58.6,29
+RSI Revert,Reversion,SHORT,FCX,ALL,0.448,45.5,154
+RSI Revert,Reversion,SHORT,FCX,STRONG,-2.445,21.4,42
+RSI Revert,Reversion,SHORT,FCX,NORMAL,-1.663,33.3,27
+RSI Revert,Reversion,SHORT,FCX,CAUTIOUS,0.928,57.1,21
+RSI Revert,Reversion,SHORT,FCX,WEAK,1.967,71.9,32
+RSI Revert,Reversion,SHORT,FCX,CHOPPY,0.843,53.1,32
+Zscore Revert,Reversion,LONG,FCX,ALL,1.369,58.9,90
+Zscore Revert,Reversion,LONG,FCX,STRONG,2.087,80.0,20
+Zscore Revert,Reversion,LONG,FCX,NORMAL,0.749,53.3,15
+Zscore Revert,Reversion,LONG,FCX,WEAK,-0.115,42.9,28
+Zscore Revert,Reversion,LONG,FCX,CHOPPY,1.154,66.7,18
+Zscore Revert,Reversion,SHORT,FCX,ALL,-0.035,46.2,106
+Zscore Revert,Reversion,SHORT,FCX,STRONG,-1.711,26.9,26
+Zscore Revert,Reversion,SHORT,FCX,NORMAL,-1.746,33.3,18
+Zscore Revert,Reversion,SHORT,FCX,CAUTIOUS,0.45,55.6,18
+Zscore Revert,Reversion,SHORT,FCX,WEAK,1.767,72.2,18
+Zscore Revert,Reversion,SHORT,FCX,CHOPPY,0.639,50.0,26
+Keltner Revert,Reversion,LONG,FCX,ALL,2.286,63.6,88
+Keltner Revert,Reversion,LONG,FCX,STRONG,2.339,83.3,24
+Keltner Revert,Reversion,LONG,FCX,WEAK,0.261,45.8,24
+Keltner Revert,Reversion,LONG,FCX,CHOPPY,1.243,63.2,19
+Keltner Revert,Reversion,SHORT,FCX,ALL,0.33,45.2,93
+Keltner Revert,Reversion,SHORT,FCX,STRONG,-1.657,20.8,24
+Keltner Revert,Reversion,SHORT,FCX,NORMAL,-1.716,26.7,15
+Keltner Revert,Reversion,SHORT,FCX,CAUTIOUS,0.97,56.2,16
+Keltner Revert,Reversion,SHORT,FCX,WEAK,1.158,68.8,16
+Keltner Revert,Reversion,SHORT,FCX,CHOPPY,0.971,59.1,22
+MFI Revert,Reversion,LONG,FCX,ALL,0.698,45.5,33
+MFI Revert,Reversion,SHORT,FCX,ALL,0.126,40.9,22
+RSI Momentum,Momentum,LONG,FCX,ALL,-0.448,54.5,154
+RSI Momentum,Momentum,LONG,FCX,STRONG,2.445,78.6,42
+RSI Momentum,Momentum,LONG,FCX,NORMAL,1.663,66.7,27
+RSI Momentum,Momentum,LONG,FCX,CAUTIOUS,-0.928,42.9,21
+RSI Momentum,Momentum,LONG,FCX,WEAK,-1.967,28.1,32
+RSI Momentum,Momentum,LONG,FCX,CHOPPY,-0.843,46.9,32
+RSI Momentum,Momentum,SHORT,FCX,ALL,-1.729,43.9,98
+RSI Momentum,Momentum,SHORT,FCX,STRONG,-2.302,25.0,24
+RSI Momentum,Momentum,SHORT,FCX,WEAK,0.233,64.0,25
+RSI Momentum,Momentum,SHORT,FCX,CHOPPY,-1.024,41.4,29
+Donchian/Turtle,Momentum,LONG,FCX,ALL,0.28,54.3,129
+Donchian/Turtle,Momentum,LONG,FCX,STRONG,2.023,71.9,32
+Donchian/Turtle,Momentum,LONG,FCX,NORMAL,2.013,69.2,26
+Donchian/Turtle,Momentum,LONG,FCX,CAUTIOUS,-0.863,39.1,23
+Donchian/Turtle,Momentum,LONG,FCX,WEAK,-1.271,34.8,23
+Donchian/Turtle,Momentum,LONG,FCX,CHOPPY,-0.685,48.0,25
+Donchian/Turtle,Momentum,SHORT,FCX,ALL,-1.991,41.1,112
+Donchian/Turtle,Momentum,SHORT,FCX,STRONG,-2.501,16.0,25
+Donchian/Turtle,Momentum,SHORT,FCX,NORMAL,-0.954,46.7,15
+Donchian/Turtle,Momentum,SHORT,FCX,WEAK,0.497,65.6,32
+Donchian/Turtle,Momentum,SHORT,FCX,CHOPPY,-1.726,33.3,30
+ADX Trend,Momentum,LONG,FCX,ALL,1.166,54.3,208
+ADX Trend,Momentum,LONG,FCX,STRONG,2.939,83.0,47
+ADX Trend,Momentum,LONG,FCX,NORMAL,1.169,55.6,45
+ADX Trend,Momentum,LONG,FCX,CAUTIOUS,0.413,44.8,29
+ADX Trend,Momentum,LONG,FCX,WEAK,-1.68,32.3,31
+ADX Trend,Momentum,LONG,FCX,CHOPPY,-0.521,46.4,56
+ADX Trend,Momentum,SHORT,FCX,ALL,-0.976,47.1,153
+ADX Trend,Momentum,SHORT,FCX,STRONG,-2.845,25.5,47
+ADX Trend,Momentum,SHORT,FCX,NORMAL,-1.167,41.2,17
+ADX Trend,Momentum,SHORT,FCX,CAUTIOUS,0.676,55.6,18
+ADX Trend,Momentum,SHORT,FCX,WEAK,0.453,63.2,38
+ADX Trend,Momentum,SHORT,FCX,CHOPPY,0.568,57.6,33
+RSI Revert,Reversion,LONG,GILD,ALL,0.005,56.4,55
+RSI Revert,Reversion,LONG,GILD,STRONG,0.877,66.7,15
+RSI Revert,Reversion,SHORT,GILD,ALL,-0.684,45.8,155
+RSI Revert,Reversion,SHORT,GILD,STRONG,-0.865,39.5,43
+RSI Revert,Reversion,SHORT,GILD,NORMAL,-0.053,48.0,25
+RSI Revert,Reversion,SHORT,GILD,CAUTIOUS,-0.28,56.2,16
+RSI Revert,Reversion,SHORT,GILD,WEAK,0.797,58.1,31
+RSI Revert,Reversion,SHORT,GILD,CHOPPY,-0.788,37.5,40
+Zscore Revert,Reversion,LONG,GILD,ALL,0.567,53.0,66
+Zscore Revert,Reversion,LONG,GILD,STRONG,1.002,56.2,16
+Zscore Revert,Reversion,LONG,GILD,WEAK,-0.102,47.1,17
+Zscore Revert,Reversion,LONG,GILD,CHOPPY,-0.457,47.1,17
+Zscore Revert,Reversion,SHORT,GILD,ALL,-1.157,42.6,122
+Zscore Revert,Reversion,SHORT,GILD,STRONG,-1.016,38.5,26
+Zscore Revert,Reversion,SHORT,GILD,NORMAL,-0.628,43.8,16
+Zscore Revert,Reversion,SHORT,GILD,CAUTIOUS,0.002,47.4,19
+Zscore Revert,Reversion,SHORT,GILD,WEAK,0.373,52.0,25
+Zscore Revert,Reversion,SHORT,GILD,CHOPPY,-1.007,36.1,36
+Keltner Revert,Reversion,LONG,GILD,ALL,1.062,61.5,26
+Keltner Revert,Reversion,SHORT,GILD,ALL,-0.668,47.2,123
+Keltner Revert,Reversion,SHORT,GILD,STRONG,-0.576,46.4,28
+Keltner Revert,Reversion,SHORT,GILD,NORMAL,-0.628,44.4,18
+Keltner Revert,Reversion,SHORT,GILD,CAUTIOUS,-0.232,55.6,18
+Keltner Revert,Reversion,SHORT,GILD,WEAK,0.576,57.1,28
+Keltner Revert,Reversion,SHORT,GILD,CHOPPY,-0.667,35.5,31
+MFI Revert,Reversion,SHORT,GILD,ALL,-1.008,43.1,65
+MFI Revert,Reversion,SHORT,GILD,STRONG,-0.767,37.5,16
+MFI Revert,Reversion,SHORT,GILD,WEAK,0.751,60.0,15
+MFI Revert,Reversion,SHORT,GILD,CHOPPY,-0.952,33.3,15
+RSI Momentum,Momentum,LONG,GILD,ALL,0.684,54.2,155
+RSI Momentum,Momentum,LONG,GILD,STRONG,0.865,60.5,43
+RSI Momentum,Momentum,LONG,GILD,NORMAL,0.053,52.0,25
+RSI Momentum,Momentum,LONG,GILD,CAUTIOUS,0.28,43.8,16
+RSI Momentum,Momentum,LONG,GILD,WEAK,-0.797,41.9,31
+RSI Momentum,Momentum,LONG,GILD,CHOPPY,0.788,62.5,40
+RSI Momentum,Momentum,SHORT,GILD,ALL,-0.005,43.6,55
+RSI Momentum,Momentum,SHORT,GILD,STRONG,-0.877,33.3,15
+Donchian/Turtle,Momentum,LONG,GILD,ALL,0.798,53.3,182
+Donchian/Turtle,Momentum,LONG,GILD,STRONG,1.177,63.0,46
+Donchian/Turtle,Momentum,LONG,GILD,NORMAL,0.834,56.5,23
+Donchian/Turtle,Momentum,LONG,GILD,CAUTIOUS,0.044,45.8,24
+Donchian/Turtle,Momentum,LONG,GILD,WEAK,-1.077,38.1,42
+Donchian/Turtle,Momentum,LONG,GILD,CHOPPY,0.762,59.6,47
+Donchian/Turtle,Momentum,SHORT,GILD,ALL,0.02,47.3,55
+Donchian/Turtle,Momentum,SHORT,GILD,WEAK,0.281,60.0,15
+Donchian/Turtle,Momentum,SHORT,GILD,CHOPPY,0.457,53.3,15
+ADX Trend,Momentum,LONG,GILD,ALL,0.5,54.5,202
+ADX Trend,Momentum,LONG,GILD,STRONG,1.245,66.7,54
+ADX Trend,Momentum,LONG,GILD,NORMAL,-0.128,51.4,35
+ADX Trend,Momentum,LONG,GILD,CAUTIOUS,0.177,46.7,30
+ADX Trend,Momentum,LONG,GILD,WEAK,-1.02,45.0,40
+ADX Trend,Momentum,LONG,GILD,CHOPPY,0.727,55.8,43
+ADX Trend,Momentum,SHORT,GILD,ALL,-0.675,44.1,127
+ADX Trend,Momentum,SHORT,GILD,STRONG,-0.011,60.9,23
+ADX Trend,Momentum,SHORT,GILD,NORMAL,-0.847,29.6,27
+ADX Trend,Momentum,SHORT,GILD,WEAK,0.787,58.6,29
+ADX Trend,Momentum,SHORT,GILD,CHOPPY,-1.45,28.6,35
+RSI Revert,Reversion,LONG,HL,ALL,1.281,59.2,76
+RSI Revert,Reversion,LONG,HL,STRONG,1.43,70.6,17
+RSI Revert,Reversion,LONG,HL,NORMAL,-0.424,41.2,17
+RSI Revert,Reversion,LONG,HL,WEAK,0.041,47.6,21
+RSI Revert,Reversion,SHORT,HL,ALL,0.336,48.9,135
+RSI Revert,Reversion,SHORT,HL,STRONG,-1.107,36.7,30
+RSI Revert,Reversion,SHORT,HL,NORMAL,0.741,62.5,24
+RSI Revert,Reversion,SHORT,HL,CAUTIOUS,0.415,42.1,19
+RSI Revert,Reversion,SHORT,HL,WEAK,0.162,57.1,21
+RSI Revert,Reversion,SHORT,HL,CHOPPY,0.513,48.8,41
+Zscore Revert,Reversion,LONG,HL,ALL,1.56,63.3,49
+Zscore Revert,Reversion,SHORT,HL,ALL,0.18,51.9,129
+Zscore Revert,Reversion,SHORT,HL,STRONG,-1.114,33.3,30
+Zscore Revert,Reversion,SHORT,HL,NORMAL,-0.527,55.6,18
+Zscore Revert,Reversion,SHORT,HL,CAUTIOUS,0.765,50.0,20
+Zscore Revert,Reversion,SHORT,HL,WEAK,1.057,70.0,20
+Zscore Revert,Reversion,SHORT,HL,CHOPPY,0.365,56.1,41
+Keltner Revert,Reversion,LONG,HL,ALL,1.424,62.7,51
+Keltner Revert,Reversion,SHORT,HL,ALL,-0.798,45.7,129
+Keltner Revert,Reversion,SHORT,HL,STRONG,-1.436,30.8,26
+Keltner Revert,Reversion,SHORT,HL,NORMAL,-0.984,46.2,26
+Keltner Revert,Reversion,SHORT,HL,CAUTIOUS,0.775,54.2,24
+Keltner Revert,Reversion,SHORT,HL,WEAK,0.076,52.9,17
+Keltner Revert,Reversion,SHORT,HL,CHOPPY,0.014,47.2,36
+MFI Revert,Reversion,SHORT,HL,ALL,0.601,51.9,79
+MFI Revert,Reversion,SHORT,HL,STRONG,-0.791,40.0,20
+MFI Revert,Reversion,SHORT,HL,CAUTIOUS,0.578,46.7,15
+MFI Revert,Reversion,SHORT,HL,WEAK,0.971,60.0,15
+MFI Revert,Reversion,SHORT,HL,CHOPPY,0.66,60.0,15
+RSI Momentum,Momentum,LONG,HL,ALL,-0.336,51.1,135
+RSI Momentum,Momentum,LONG,HL,STRONG,1.107,63.3,30
+RSI Momentum,Momentum,LONG,HL,NORMAL,-0.741,37.5,24
+RSI Momentum,Momentum,LONG,HL,CAUTIOUS,-0.415,57.9,19
+RSI Momentum,Momentum,LONG,HL,WEAK,-0.162,42.9,21
+RSI Momentum,Momentum,LONG,HL,CHOPPY,-0.513,51.2,41
+RSI Momentum,Momentum,SHORT,HL,ALL,-1.281,40.8,76
+RSI Momentum,Momentum,SHORT,HL,STRONG,-1.43,29.4,17
+RSI Momentum,Momentum,SHORT,HL,NORMAL,0.424,58.8,17
+RSI Momentum,Momentum,SHORT,HL,WEAK,-0.041,52.4,21
+Donchian/Turtle,Momentum,LONG,HL,ALL,0.539,52.2,138
+Donchian/Turtle,Momentum,LONG,HL,STRONG,0.995,63.3,30
+Donchian/Turtle,Momentum,LONG,HL,NORMAL,0.836,48.0,25
+Donchian/Turtle,Momentum,LONG,HL,CAUTIOUS,-0.885,40.9,22
+Donchian/Turtle,Momentum,LONG,HL,WEAK,-0.119,52.6,19
+Donchian/Turtle,Momentum,LONG,HL,CHOPPY,0.203,52.4,42
+Donchian/Turtle,Momentum,SHORT,HL,ALL,-0.689,44.4,90
+Donchian/Turtle,Momentum,SHORT,HL,STRONG,-1.753,28.6,21
+Donchian/Turtle,Momentum,SHORT,HL,NORMAL,0.78,50.0,18
+Donchian/Turtle,Momentum,SHORT,HL,WEAK,0.454,55.2,29
+ADX Trend,Momentum,LONG,HL,ALL,1.198,55.0,200
+ADX Trend,Momentum,LONG,HL,STRONG,2.297,72.0,50
+ADX Trend,Momentum,LONG,HL,NORMAL,0.264,41.7,36
+ADX Trend,Momentum,LONG,HL,CAUTIOUS,-0.209,53.6,28
+ADX Trend,Momentum,LONG,HL,WEAK,0.628,61.3,31
+ADX Trend,Momentum,LONG,HL,CHOPPY,-0.509,45.5,55
+ADX Trend,Momentum,SHORT,HL,ALL,-0.771,47.2,144
+ADX Trend,Momentum,SHORT,HL,STRONG,-2.241,30.8,39
+ADX Trend,Momentum,SHORT,HL,NORMAL,-0.85,44.0,25
+ADX Trend,Momentum,SHORT,HL,CAUTIOUS,0.069,41.2,17
+ADX Trend,Momentum,SHORT,HL,WEAK,1.374,70.0,40
+ADX Trend,Momentum,SHORT,HL,CHOPPY,-0.636,43.5,23
+RSI Revert,Reversion,LONG,HWM,ALL,0.491,51.2,43
+RSI Revert,Reversion,SHORT,HWM,ALL,-1.08,44.7,188
+RSI Revert,Reversion,SHORT,HWM,STRONG,-2.359,30.0,50
+RSI Revert,Reversion,SHORT,HWM,NORMAL,-1.156,37.1,35
+RSI Revert,Reversion,SHORT,HWM,CAUTIOUS,1.133,66.7,21
+RSI Revert,Reversion,SHORT,HWM,WEAK,1.871,62.9,35
+RSI Revert,Reversion,SHORT,HWM,CHOPPY,-1.592,42.6,47
+Zscore Revert,Reversion,LONG,HWM,ALL,0.684,50.9,55
+Zscore Revert,Reversion,LONG,HWM,WEAK,0.299,36.8,19
+Zscore Revert,Reversion,SHORT,HWM,ALL,-0.606,45.0,140
+Zscore Revert,Reversion,SHORT,HWM,STRONG,-2.429,28.2,39
+Zscore Revert,Reversion,SHORT,HWM,NORMAL,-2.025,20.0,25
+Zscore Revert,Reversion,SHORT,HWM,CAUTIOUS,1.229,70.0,20
+Zscore Revert,Reversion,SHORT,HWM,WEAK,2.04,74.1,27
+Zscore Revert,Reversion,SHORT,HWM,CHOPPY,-0.932,44.8,29
+Keltner Revert,Reversion,SHORT,HWM,ALL,-0.148,45.6,158
+Keltner Revert,Reversion,SHORT,HWM,STRONG,-1.942,30.0,40
+Keltner Revert,Reversion,SHORT,HWM,NORMAL,-1.649,30.8,26
+Keltner Revert,Reversion,SHORT,HWM,CAUTIOUS,1.166,66.7,18
+Keltner Revert,Reversion,SHORT,HWM,WEAK,2.477,69.7,33
+Keltner Revert,Reversion,SHORT,HWM,CHOPPY,-1.447,41.5,41
+MFI Revert,Reversion,SHORT,HWM,ALL,-0.434,45.8,96
+MFI Revert,Reversion,SHORT,HWM,STRONG,-2.496,19.2,26
+MFI Revert,Reversion,SHORT,HWM,WEAK,2.076,81.0,21
+MFI Revert,Reversion,SHORT,HWM,CHOPPY,-1.356,39.3,28
+RSI Momentum,Momentum,LONG,HWM,ALL,1.08,55.3,188
+RSI Momentum,Momentum,LONG,HWM,STRONG,2.359,70.0,50
+RSI Momentum,Momentum,LONG,HWM,NORMAL,1.156,62.9,35
+RSI Momentum,Momentum,LONG,HWM,CAUTIOUS,-1.133,33.3,21
+RSI Momentum,Momentum,LONG,HWM,WEAK,-1.871,37.1,35
+RSI Momentum,Momentum,LONG,HWM,CHOPPY,1.592,57.4,47
+RSI Momentum,Momentum,SHORT,HWM,ALL,-0.491,48.8,43
+Donchian/Turtle,Momentum,LONG,HWM,ALL,0.475,55.1,198
+Donchian/Turtle,Momentum,LONG,HWM,STRONG,2.766,76.0,50
+Donchian/Turtle,Momentum,LONG,HWM,NORMAL,1.637,69.4,36
+Donchian/Turtle,Momentum,LONG,HWM,CAUTIOUS,-1.416,32.0,25
+Donchian/Turtle,Momentum,LONG,HWM,WEAK,-2.465,30.8,39
+Donchian/Turtle,Momentum,LONG,HWM,CHOPPY,1.129,54.2,48
+Donchian/Turtle,Momentum,SHORT,HWM,ALL,-1.323,45.8,48
+Donchian/Turtle,Momentum,SHORT,HWM,WEAK,-0.497,62.5,16
+ADX Trend,Momentum,LONG,HWM,ALL,2.099,58.4,221
+ADX Trend,Momentum,LONG,HWM,STRONG,2.538,73.4,64
+ADX Trend,Momentum,LONG,HWM,NORMAL,1.749,70.0,40
+ADX Trend,Momentum,LONG,HWM,CAUTIOUS,-0.878,32.1,28
+ADX Trend,Momentum,LONG,HWM,WEAK,-1.354,38.5,39
+ADX Trend,Momentum,LONG,HWM,CHOPPY,1.515,60.0,50
+ADX Trend,Momentum,SHORT,HWM,ALL,-0.859,49.0,153
+ADX Trend,Momentum,SHORT,HWM,STRONG,-2.097,20.0,35
+ADX Trend,Momentum,SHORT,HWM,NORMAL,-0.354,52.0,25
+ADX Trend,Momentum,SHORT,HWM,CAUTIOUS,-0.386,42.9,21
+ADX Trend,Momentum,SHORT,HWM,WEAK,1.671,75.0,32
+ADX Trend,Momentum,SHORT,HWM,CHOPPY,-0.184,55.0,40
+RSI Revert,Reversion,LONG,IREN,ALL,0.718,56.2,80
+RSI Revert,Reversion,LONG,IREN,STRONG,1.991,73.1,26
+RSI Revert,Reversion,LONG,IREN,WEAK,-1.117,40.9,22
+RSI Revert,Reversion,LONG,IREN,CHOPPY,-1.042,26.7,15
+RSI Revert,Reversion,SHORT,IREN,ALL,-0.928,48.6,144
+RSI Revert,Reversion,SHORT,IREN,STRONG,-1.396,38.2,34
+RSI Revert,Reversion,SHORT,IREN,NORMAL,-2.044,26.1,23
+RSI Revert,Reversion,SHORT,IREN,CAUTIOUS,0.462,55.6,18
+RSI Revert,Reversion,SHORT,IREN,WEAK,1.31,73.7,19
+RSI Revert,Reversion,SHORT,IREN,CHOPPY,-0.462,54.0,50
+Zscore Revert,Reversion,LONG,IREN,ALL,0.2,46.4,69
+Zscore Revert,Reversion,LONG,IREN,STRONG,1.634,72.2,18
+Zscore Revert,Reversion,LONG,IREN,WEAK,-1.442,23.8,21
+Zscore Revert,Reversion,SHORT,IREN,ALL,-0.88,51.0,143
+Zscore Revert,Reversion,SHORT,IREN,STRONG,-1.287,44.1,34
+Zscore Revert,Reversion,SHORT,IREN,NORMAL,-1.517,30.8,26
+Zscore Revert,Reversion,SHORT,IREN,WEAK,1.624,78.3,23
+Zscore Revert,Reversion,SHORT,IREN,CHOPPY,-0.138,57.4,47
+Keltner Revert,Reversion,LONG,IREN,ALL,0.107,43.8,73
+Keltner Revert,Reversion,LONG,IREN,STRONG,1.999,88.9,18
+Keltner Revert,Reversion,LONG,IREN,WEAK,-2.193,16.0,25
+Keltner Revert,Reversion,SHORT,IREN,ALL,-1.006,49.7,147
+Keltner Revert,Reversion,SHORT,IREN,STRONG,-1.328,39.4,33
+Keltner Revert,Reversion,SHORT,IREN,NORMAL,-1.556,32.1,28
+Keltner Revert,Reversion,SHORT,IREN,CAUTIOUS,-0.655,43.8,16
+Keltner Revert,Reversion,SHORT,IREN,WEAK,1.394,77.3,22
+Keltner Revert,Reversion,SHORT,IREN,CHOPPY,-0.157,56.2,48
+MFI Revert,Reversion,LONG,IREN,ALL,0.228,36.4,22
+MFI Revert,Reversion,SHORT,IREN,ALL,-2.271,39.0,77
+MFI Revert,Reversion,SHORT,IREN,STRONG,-1.344,28.6,21
+MFI Revert,Reversion,SHORT,IREN,CHOPPY,-0.37,52.0,25
+RSI Momentum,Momentum,LONG,IREN,ALL,0.928,51.4,144
+RSI Momentum,Momentum,LONG,IREN,STRONG,1.396,61.8,34
+RSI Momentum,Momentum,LONG,IREN,NORMAL,2.044,73.9,23
+RSI Momentum,Momentum,LONG,IREN,CAUTIOUS,-0.462,44.4,18
+RSI Momentum,Momentum,LONG,IREN,WEAK,-1.31,26.3,19
+RSI Momentum,Momentum,LONG,IREN,CHOPPY,0.462,46.0,50
+RSI Momentum,Momentum,SHORT,IREN,ALL,-0.718,43.8,80
+RSI Momentum,Momentum,SHORT,IREN,STRONG,-1.991,26.9,26
+RSI Momentum,Momentum,SHORT,IREN,WEAK,1.117,59.1,22
+RSI Momentum,Momentum,SHORT,IREN,CHOPPY,1.042,73.3,15
+Donchian/Turtle,Momentum,LONG,IREN,ALL,0.854,49.4,166
+Donchian/Turtle,Momentum,LONG,IREN,STRONG,1.797,62.5,40
+Donchian/Turtle,Momentum,LONG,IREN,NORMAL,1.799,66.7,33
+Donchian/Turtle,Momentum,LONG,IREN,CAUTIOUS,-0.148,46.7,15
+Donchian/Turtle,Momentum,LONG,IREN,WEAK,-1.594,26.7,30
+Donchian/Turtle,Momentum,LONG,IREN,CHOPPY,0.071,41.7,48
+Donchian/Turtle,Momentum,SHORT,IREN,ALL,-0.846,50.0,108
+Donchian/Turtle,Momentum,SHORT,IREN,STRONG,-2.202,25.0,32
+Donchian/Turtle,Momentum,SHORT,IREN,NORMAL,-0.647,40.0,20
+Donchian/Turtle,Momentum,SHORT,IREN,WEAK,1.605,74.1,27
+Donchian/Turtle,Momentum,SHORT,IREN,CHOPPY,0.731,75.0,16
+ADX Trend,Momentum,LONG,IREN,ALL,0.974,49.5,210
+ADX Trend,Momentum,LONG,IREN,STRONG,2.255,66.7,51
+ADX Trend,Momentum,LONG,IREN,NORMAL,1.682,60.5,43
+ADX Trend,Momentum,LONG,IREN,CAUTIOUS,-0.076,45.5,22
+ADX Trend,Momentum,LONG,IREN,WEAK,-1.61,23.5,34
+ADX Trend,Momentum,LONG,IREN,CHOPPY,-0.107,43.3,60
+ADX Trend,Momentum,SHORT,IREN,ALL,-1.074,48.4,153
+ADX Trend,Momentum,SHORT,IREN,STRONG,-2.671,26.0,50
+ADX Trend,Momentum,SHORT,IREN,NORMAL,-1.64,29.4,17
+ADX Trend,Momentum,SHORT,IREN,CAUTIOUS,-0.529,40.0,15
+ADX Trend,Momentum,SHORT,IREN,WEAK,2.809,79.5,39
+ADX Trend,Momentum,SHORT,IREN,CHOPPY,0.045,59.4,32
+RSI Revert,Reversion,LONG,KKR,ALL,-0.493,47.2,123
+RSI Revert,Reversion,LONG,KKR,STRONG,2.777,86.7,30
+RSI Revert,Reversion,LONG,KKR,NORMAL,1.242,57.1,21
+RSI Revert,Reversion,LONG,KKR,CAUTIOUS,-0.636,37.5,16
+RSI Revert,Reversion,LONG,KKR,WEAK,-1.742,18.9,37
+RSI Revert,Reversion,LONG,KKR,CHOPPY,-0.551,36.8,19
+RSI Revert,Reversion,SHORT,KKR,ALL,-0.286,51.9,162
+RSI Revert,Reversion,SHORT,KKR,STRONG,-2.385,20.5,44
+RSI Revert,Reversion,SHORT,KKR,NORMAL,-1.181,40.6,32
+RSI Revert,Reversion,SHORT,KKR,CAUTIOUS,2.045,88.9,18
+RSI Revert,Reversion,SHORT,KKR,WEAK,2.936,85.7,28
+RSI Revert,Reversion,SHORT,KKR,CHOPPY,-0.014,55.0,40
+Zscore Revert,Reversion,LONG,KKR,ALL,-0.351,49.0,100
+Zscore Revert,Reversion,LONG,KKR,STRONG,2.211,76.9,26
+Zscore Revert,Reversion,LONG,KKR,NORMAL,0.893,56.2,16
+Zscore Revert,Reversion,LONG,KKR,WEAK,-1.445,20.7,29
+Zscore Revert,Reversion,LONG,KKR,CHOPPY,0.021,52.9,17
+Zscore Revert,Reversion,SHORT,KKR,ALL,-0.244,46.4,97
+Zscore Revert,Reversion,SHORT,KKR,STRONG,-1.431,18.2,22
+Zscore Revert,Reversion,SHORT,KKR,NORMAL,-1.363,31.2,16
+Zscore Revert,Reversion,SHORT,KKR,WEAK,1.999,75.0,16
+Zscore Revert,Reversion,SHORT,KKR,CHOPPY,-0.196,51.7,29
+Keltner Revert,Reversion,LONG,KKR,ALL,-0.448,45.7,81
+Keltner Revert,Reversion,LONG,KKR,STRONG,2.2,84.2,19
+Keltner Revert,Reversion,LONG,KKR,WEAK,-1.218,19.2,26
+Keltner Revert,Reversion,SHORT,KKR,ALL,0.567,56.4,110
+Keltner Revert,Reversion,SHORT,KKR,STRONG,-1.301,18.2,22
+Keltner Revert,Reversion,SHORT,KKR,NORMAL,-0.842,45.8,24
+Keltner Revert,Reversion,SHORT,KKR,CAUTIOUS,1.037,76.5,17
+Keltner Revert,Reversion,SHORT,KKR,WEAK,2.107,86.7,15
+Keltner Revert,Reversion,SHORT,KKR,CHOPPY,1.149,65.6,32
+MFI Revert,Reversion,LONG,KKR,ALL,-0.804,46.9,64
+MFI Revert,Reversion,LONG,KKR,STRONG,1.79,87.5,16
+MFI Revert,Reversion,SHORT,KKR,ALL,0.982,76.5,17
+RSI Momentum,Momentum,LONG,KKR,ALL,0.286,48.1,162
+RSI Momentum,Momentum,LONG,KKR,STRONG,2.385,79.5,44
+RSI Momentum,Momentum,LONG,KKR,NORMAL,1.181,59.4,32
+RSI Momentum,Momentum,LONG,KKR,CAUTIOUS,-2.045,11.1,18
+RSI Momentum,Momentum,LONG,KKR,WEAK,-2.936,14.3,28
+RSI Momentum,Momentum,LONG,KKR,CHOPPY,0.014,45.0,40
+RSI Momentum,Momentum,SHORT,KKR,ALL,0.493,52.8,123
+RSI Momentum,Momentum,SHORT,KKR,STRONG,-2.777,13.3,30
+RSI Momentum,Momentum,SHORT,KKR,NORMAL,-1.242,42.9,21
+RSI Momentum,Momentum,SHORT,KKR,CAUTIOUS,0.636,62.5,16
+RSI Momentum,Momentum,SHORT,KKR,WEAK,1.742,81.1,37
+RSI Momentum,Momentum,SHORT,KKR,CHOPPY,0.551,63.2,19
+Donchian/Turtle,Momentum,LONG,KKR,ALL,0.887,54.1,133
+Donchian/Turtle,Momentum,LONG,KKR,STRONG,2.366,86.1,36
+Donchian/Turtle,Momentum,LONG,KKR,NORMAL,1.084,65.4,26
+Donchian/Turtle,Momentum,LONG,KKR,CAUTIOUS,-1.085,27.8,18
+Donchian/Turtle,Momentum,LONG,KKR,WEAK,-2.151,21.1,19
+Donchian/Turtle,Momentum,LONG,KKR,CHOPPY,0.251,44.1,34
+Donchian/Turtle,Momentum,SHORT,KKR,ALL,0.311,52.7,148
+Donchian/Turtle,Momentum,SHORT,KKR,STRONG,-2.458,22.9,35
+Donchian/Turtle,Momentum,SHORT,KKR,NORMAL,-0.593,50.0,24
+Donchian/Turtle,Momentum,SHORT,KKR,CAUTIOUS,0.863,66.7,18
+Donchian/Turtle,Momentum,SHORT,KKR,WEAK,1.601,79.1,43
+Donchian/Turtle,Momentum,SHORT,KKR,CHOPPY,-0.382,42.9,28
+ADX Trend,Momentum,LONG,KKR,ALL,-0.021,53.4,163
+ADX Trend,Momentum,LONG,KKR,STRONG,2.455,88.4,43
+ADX Trend,Momentum,LONG,KKR,NORMAL,1.333,62.5,32
+ADX Trend,Momentum,LONG,KKR,CAUTIOUS,-0.751,32.0,25
+ADX Trend,Momentum,LONG,KKR,WEAK,-2.5,13.0,23
+ADX Trend,Momentum,LONG,KKR,CHOPPY,-0.77,45.0,40
+ADX Trend,Momentum,SHORT,KKR,ALL,0.312,52.8,176
+ADX Trend,Momentum,SHORT,KKR,STRONG,-2.988,25.0,48
+ADX Trend,Momentum,SHORT,KKR,NORMAL,-1.398,40.7,27
+ADX Trend,Momentum,SHORT,KKR,WEAK,2.746,80.4,46
+ADX Trend,Momentum,SHORT,KKR,CHOPPY,0.237,51.2,41
+RSI Revert,Reversion,LONG,LLY,ALL,0.914,52.4,84
+RSI Revert,Reversion,LONG,LLY,STRONG,1.359,73.3,15
+RSI Revert,Reversion,LONG,LLY,NORMAL,0.567,46.7,15
+RSI Revert,Reversion,LONG,LLY,WEAK,-1.329,33.3,18
+RSI Revert,Reversion,LONG,LLY,CHOPPY,0.961,65.2,23
+RSI Revert,Reversion,SHORT,LLY,ALL,0.709,53.9,141
+RSI Revert,Reversion,SHORT,LLY,STRONG,-0.569,46.9,32
+RSI Revert,Reversion,SHORT,LLY,NORMAL,0.064,41.4,29
+RSI Revert,Reversion,SHORT,LLY,WEAK,1.445,64.7,34
+RSI Revert,Reversion,SHORT,LLY,CHOPPY,0.641,57.1,35
+Zscore Revert,Reversion,LONG,LLY,ALL,0.519,57.4,68
+Zscore Revert,Reversion,LONG,LLY,STRONG,0.897,72.2,18
+Zscore Revert,Reversion,LONG,LLY,WEAK,-0.922,42.1,19
+Zscore Revert,Reversion,LONG,LLY,CHOPPY,0.231,53.3,15
+Zscore Revert,Reversion,SHORT,LLY,ALL,-0.045,48.4,64
+Zscore Revert,Reversion,SHORT,LLY,CHOPPY,-0.191,45.8,24
+Keltner Revert,Reversion,LONG,LLY,ALL,1.156,56.0,75
+Keltner Revert,Reversion,LONG,LLY,STRONG,1.464,75.0,16
+Keltner Revert,Reversion,LONG,LLY,WEAK,-0.976,33.3,18
+Keltner Revert,Reversion,LONG,LLY,CHOPPY,1.018,66.7,15
+Keltner Revert,Reversion,SHORT,LLY,ALL,-0.072,50.0,94
+Keltner Revert,Reversion,SHORT,LLY,STRONG,-0.257,56.5,23
+Keltner Revert,Reversion,SHORT,LLY,WEAK,0.983,56.0,25
+Keltner Revert,Reversion,SHORT,LLY,CHOPPY,-0.296,42.3,26
+MFI Revert,Reversion,SHORT,LLY,ALL,0.447,53.1,98
+MFI Revert,Reversion,SHORT,LLY,STRONG,-1.224,34.8,23
+MFI Revert,Reversion,SHORT,LLY,NORMAL,0.178,54.2,24
+MFI Revert,Reversion,SHORT,LLY,WEAK,1.606,71.4,21
+MFI Revert,Reversion,SHORT,LLY,CHOPPY,-0.013,47.6,21
+RSI Momentum,Momentum,LONG,LLY,ALL,-0.709,46.1,141
+RSI Momentum,Momentum,LONG,LLY,STRONG,0.569,53.1,32
+RSI Momentum,Momentum,LONG,LLY,NORMAL,-0.064,58.6,29
+RSI Momentum,Momentum,LONG,LLY,WEAK,-1.445,35.3,34
+RSI Momentum,Momentum,LONG,LLY,CHOPPY,-0.641,42.9,35
+RSI Momentum,Momentum,SHORT,LLY,ALL,-0.914,47.6,84
+RSI Momentum,Momentum,SHORT,LLY,STRONG,-1.359,26.7,15
+RSI Momentum,Momentum,SHORT,LLY,NORMAL,-0.567,53.3,15
+RSI Momentum,Momentum,SHORT,LLY,WEAK,1.329,66.7,18
+RSI Momentum,Momentum,SHORT,LLY,CHOPPY,-0.961,34.8,23
+Donchian/Turtle,Momentum,LONG,LLY,ALL,-0.372,47.2,125
+Donchian/Turtle,Momentum,LONG,LLY,STRONG,0.471,51.7,29
+Donchian/Turtle,Momentum,LONG,LLY,NORMAL,0.004,58.3,24
+Donchian/Turtle,Momentum,LONG,LLY,WEAK,-0.744,40.0,25
+Donchian/Turtle,Momentum,LONG,LLY,CHOPPY,0.15,48.5,33
+Donchian/Turtle,Momentum,SHORT,LLY,ALL,-0.718,47.2,125
+Donchian/Turtle,Momentum,SHORT,LLY,STRONG,-1.656,31.4,35
+Donchian/Turtle,Momentum,SHORT,LLY,NORMAL,-0.745,46.2,26
+Donchian/Turtle,Momentum,SHORT,LLY,CAUTIOUS,-0.271,53.3,15
+Donchian/Turtle,Momentum,SHORT,LLY,WEAK,1.333,66.7,27
+Donchian/Turtle,Momentum,SHORT,LLY,CHOPPY,-0.246,45.5,22
+ADX Trend,Momentum,LONG,LLY,ALL,0.369,49.5,190
+ADX Trend,Momentum,LONG,LLY,STRONG,1.079,56.0,50
+ADX Trend,Momentum,LONG,LLY,NORMAL,0.056,58.5,41
+ADX Trend,Momentum,LONG,LLY,CAUTIOUS,-0.24,37.0,27
+ADX Trend,Momentum,LONG,LLY,WEAK,-1.36,41.0,39
+ADX Trend,Momentum,LONG,LLY,CHOPPY,0.752,48.5,33
+ADX Trend,Momentum,SHORT,LLY,ALL,-1.449,40.6,138
+ADX Trend,Momentum,SHORT,LLY,STRONG,-2.182,23.5,34
+ADX Trend,Momentum,SHORT,LLY,NORMAL,-0.88,42.3,26
+ADX Trend,Momentum,SHORT,LLY,WEAK,0.921,61.3,31
+ADX Trend,Momentum,SHORT,LLY,CHOPPY,-1.241,33.3,36
+RSI Revert,Reversion,LONG,MDB,ALL,1.373,58.3,103
+RSI Revert,Reversion,LONG,MDB,STRONG,1.669,79.3,29
+RSI Revert,Reversion,LONG,MDB,WEAK,0.047,35.7,28
+RSI Revert,Reversion,LONG,MDB,CHOPPY,0.325,47.6,21
+RSI Revert,Reversion,SHORT,MDB,ALL,0.244,53.9,141
+RSI Revert,Reversion,SHORT,MDB,STRONG,-1.549,32.5,40
+RSI Revert,Reversion,SHORT,MDB,NORMAL,-0.821,58.3,24
+RSI Revert,Reversion,SHORT,MDB,CAUTIOUS,1.474,73.3,15
+RSI Revert,Reversion,SHORT,MDB,WEAK,2.121,70.0,30
+RSI Revert,Reversion,SHORT,MDB,CHOPPY,0.83,53.1,32
+Zscore Revert,Reversion,LONG,MDB,ALL,-0.377,47.5,59
+Zscore Revert,Reversion,LONG,MDB,WEAK,-0.93,32.0,25
+Zscore Revert,Reversion,SHORT,MDB,ALL,-0.256,50.8,122
+Zscore Revert,Reversion,SHORT,MDB,STRONG,-0.982,43.8,32
+Zscore Revert,Reversion,SHORT,MDB,NORMAL,-0.952,46.2,26
+Zscore Revert,Reversion,SHORT,MDB,CAUTIOUS,0.775,66.7,15
+Zscore Revert,Reversion,SHORT,MDB,WEAK,1.505,64.0,25
+Zscore Revert,Reversion,SHORT,MDB,CHOPPY,-0.675,41.7,24
+Keltner Revert,Reversion,LONG,MDB,ALL,0.3,56.2,80
+Keltner Revert,Reversion,LONG,MDB,STRONG,1.486,80.0,25
+Keltner Revert,Reversion,LONG,MDB,WEAK,-0.824,25.0,24
+Keltner Revert,Reversion,SHORT,MDB,ALL,1.144,57.2,138
+Keltner Revert,Reversion,SHORT,MDB,STRONG,-0.976,40.0,35
+Keltner Revert,Reversion,SHORT,MDB,NORMAL,0.417,63.0,27
+Keltner Revert,Reversion,SHORT,MDB,CAUTIOUS,1.303,66.7,21
+Keltner Revert,Reversion,SHORT,MDB,WEAK,1.829,73.3,30
+Keltner Revert,Reversion,SHORT,MDB,CHOPPY,0.381,48.0,25
+MFI Revert,Reversion,LONG,MDB,ALL,1.602,70.0,40
+MFI Revert,Reversion,LONG,MDB,STRONG,1.891,93.3,15
+MFI Revert,Reversion,SHORT,MDB,ALL,0.027,50.0,22
+RSI Momentum,Momentum,LONG,MDB,ALL,-0.244,46.1,141
+RSI Momentum,Momentum,LONG,MDB,STRONG,1.549,67.5,40
+RSI Momentum,Momentum,LONG,MDB,NORMAL,0.821,41.7,24
+RSI Momentum,Momentum,LONG,MDB,CAUTIOUS,-1.474,26.7,15
+RSI Momentum,Momentum,LONG,MDB,WEAK,-2.121,30.0,30
+RSI Momentum,Momentum,LONG,MDB,CHOPPY,-0.83,46.9,32
+RSI Momentum,Momentum,SHORT,MDB,ALL,-1.373,41.7,103
+RSI Momentum,Momentum,SHORT,MDB,STRONG,-1.669,20.7,29
+RSI Momentum,Momentum,SHORT,MDB,WEAK,-0.047,64.3,28
+RSI Momentum,Momentum,SHORT,MDB,CHOPPY,-0.325,52.4,21
+Donchian/Turtle,Momentum,LONG,MDB,ALL,-0.135,47.5,120
+Donchian/Turtle,Momentum,LONG,MDB,STRONG,1.193,62.5,32
+Donchian/Turtle,Momentum,LONG,MDB,NORMAL,0.334,45.8,24
+Donchian/Turtle,Momentum,LONG,MDB,CAUTIOUS,-1.014,35.3,17
+Donchian/Turtle,Momentum,LONG,MDB,WEAK,-1.943,26.9,26
+Donchian/Turtle,Momentum,LONG,MDB,CHOPPY,0.937,61.9,21
+Donchian/Turtle,Momentum,SHORT,MDB,ALL,-0.943,48.5,101
+Donchian/Turtle,Momentum,SHORT,MDB,STRONG,-2.046,24.1,29
+Donchian/Turtle,Momentum,SHORT,MDB,CAUTIOUS,0.41,68.8,16
+Donchian/Turtle,Momentum,SHORT,MDB,WEAK,0.701,69.2,26
+Donchian/Turtle,Momentum,SHORT,MDB,CHOPPY,-0.833,57.9,19
+ADX Trend,Momentum,LONG,MDB,ALL,-1.081,44.5,191
+ADX Trend,Momentum,LONG,MDB,STRONG,1.618,67.3,49
+ADX Trend,Momentum,LONG,MDB,NORMAL,0.207,50.0,36
+ADX Trend,Momentum,LONG,MDB,CAUTIOUS,-1.969,26.5,34
+ADX Trend,Momentum,LONG,MDB,WEAK,-2.024,24.1,29
+ADX Trend,Momentum,LONG,MDB,CHOPPY,-0.453,41.9,43
+ADX Trend,Momentum,SHORT,MDB,ALL,-0.5,49.5,200
+ADX Trend,Momentum,SHORT,MDB,STRONG,-2.76,18.0,50
+ADX Trend,Momentum,SHORT,MDB,NORMAL,-1.316,31.2,32
+ADX Trend,Momentum,SHORT,MDB,CAUTIOUS,0.156,59.1,22
+ADX Trend,Momentum,SHORT,MDB,WEAK,1.666,77.8,54
+ADX Trend,Momentum,SHORT,MDB,CHOPPY,0.693,59.5,42
+RSI Revert,Reversion,LONG,MRVL,ALL,0.126,57.0,93
+RSI Revert,Reversion,LONG,MRVL,STRONG,2.195,81.0,21
+RSI Revert,Reversion,LONG,MRVL,WEAK,-1.17,36.0,25
+RSI Revert,Reversion,LONG,MRVL,CHOPPY,0.191,59.1,22
+RSI Revert,Reversion,SHORT,MRVL,ALL,-1.037,46.3,147
+RSI Revert,Reversion,SHORT,MRVL,STRONG,-3.056,18.9,37
+RSI Revert,Reversion,SHORT,MRVL,NORMAL,-0.718,51.9,27
+RSI Revert,Reversion,SHORT,MRVL,CAUTIOUS,-1.803,20.0,15
+RSI Revert,Reversion,SHORT,MRVL,WEAK,2.392,82.8,29
+RSI Revert,Reversion,SHORT,MRVL,CHOPPY,0.043,51.3,39
+Zscore Revert,Reversion,LONG,MRVL,ALL,0.097,62.7,67
+Zscore Revert,Reversion,LONG,MRVL,STRONG,1.723,75.0,16
+Zscore Revert,Reversion,LONG,MRVL,WEAK,-1.171,41.7,24
+Zscore Revert,Reversion,LONG,MRVL,CHOPPY,1.051,75.0,16
+Zscore Revert,Reversion,SHORT,MRVL,ALL,-0.872,43.6,117
+Zscore Revert,Reversion,SHORT,MRVL,STRONG,-2.206,11.5,26
+Zscore Revert,Reversion,SHORT,MRVL,NORMAL,-1.031,40.7,27
+Zscore Revert,Reversion,SHORT,MRVL,CAUTIOUS,0.153,56.2,16
+Zscore Revert,Reversion,SHORT,MRVL,WEAK,2.018,80.0,20
+Zscore Revert,Reversion,SHORT,MRVL,CHOPPY,-0.721,42.9,28
+Keltner Revert,Reversion,LONG,MRVL,ALL,-0.342,54.8,62
+Keltner Revert,Reversion,LONG,MRVL,STRONG,1.588,76.5,17
+Keltner Revert,Reversion,LONG,MRVL,WEAK,-1.242,31.8,22
+Keltner Revert,Reversion,SHORT,MRVL,ALL,-1.027,44.0,134
+Keltner Revert,Reversion,SHORT,MRVL,STRONG,-2.789,14.3,35
+Keltner Revert,Reversion,SHORT,MRVL,NORMAL,-0.967,44.4,27
+Keltner Revert,Reversion,SHORT,MRVL,CAUTIOUS,-0.58,43.8,16
+Keltner Revert,Reversion,SHORT,MRVL,WEAK,2.064,79.2,24
+Keltner Revert,Reversion,SHORT,MRVL,CHOPPY,0.256,50.0,32
+MFI Revert,Reversion,LONG,MRVL,ALL,0.147,55.6,18
+MFI Revert,Reversion,SHORT,MRVL,ALL,-1.763,43.9,66
+MFI Revert,Reversion,SHORT,MRVL,STRONG,-2.514,19.0,21
+MFI Revert,Reversion,SHORT,MRVL,CHOPPY,0.869,68.8,16
+RSI Momentum,Momentum,LONG,MRVL,ALL,1.037,53.7,147
+RSI Momentum,Momentum,LONG,MRVL,STRONG,3.056,81.1,37
+RSI Momentum,Momentum,LONG,MRVL,NORMAL,0.718,48.1,27
+RSI Momentum,Momentum,LONG,MRVL,CAUTIOUS,1.803,80.0,15
+RSI Momentum,Momentum,LONG,MRVL,WEAK,-2.392,17.2,29
+RSI Momentum,Momentum,LONG,MRVL,CHOPPY,-0.043,48.7,39
+RSI Momentum,Momentum,SHORT,MRVL,ALL,-0.126,43.0,93
+RSI Momentum,Momentum,SHORT,MRVL,STRONG,-2.195,19.0,21
+RSI Momentum,Momentum,SHORT,MRVL,WEAK,1.17,64.0,25
+RSI Momentum,Momentum,SHORT,MRVL,CHOPPY,-0.191,40.9,22
+Donchian/Turtle,Momentum,LONG,MRVL,ALL,0.816,53.5,155
+Donchian/Turtle,Momentum,LONG,MRVL,STRONG,2.688,81.6,38
+Donchian/Turtle,Momentum,LONG,MRVL,NORMAL,0.889,60.6,33
+Donchian/Turtle,Momentum,LONG,MRVL,CAUTIOUS,0.291,44.4,18
+Donchian/Turtle,Momentum,LONG,MRVL,WEAK,-2.099,25.0,28
+Donchian/Turtle,Momentum,LONG,MRVL,CHOPPY,0.174,44.7,38
+Donchian/Turtle,Momentum,SHORT,MRVL,ALL,0.117,38.2,76
+Donchian/Turtle,Momentum,SHORT,MRVL,STRONG,-2.085,19.0,21
+Donchian/Turtle,Momentum,SHORT,MRVL,WEAK,1.501,61.5,26
+ADX Trend,Momentum,LONG,MRVL,ALL,0.644,53.8,184
+ADX Trend,Momentum,LONG,MRVL,STRONG,3.628,88.6,44
+ADX Trend,Momentum,LONG,MRVL,NORMAL,1.09,60.5,43
+ADX Trend,Momentum,LONG,MRVL,CAUTIOUS,0.666,45.5,22
+ADX Trend,Momentum,LONG,MRVL,WEAK,-2.391,17.6,34
+ADX Trend,Momentum,LONG,MRVL,CHOPPY,-0.599,43.9,41
+ADX Trend,Momentum,SHORT,MRVL,ALL,-0.812,45.4,141
+ADX Trend,Momentum,SHORT,MRVL,STRONG,-3.141,17.1,41
+ADX Trend,Momentum,SHORT,MRVL,NORMAL,-0.085,62.5,16
+ADX Trend,Momentum,SHORT,MRVL,WEAK,1.783,73.8,42
+ADX Trend,Momentum,SHORT,MRVL,CHOPPY,-0.959,37.5,32
+RSI Revert,Reversion,LONG,NEM,ALL,0.104,55.2,67
+RSI Revert,Reversion,LONG,NEM,STRONG,0.799,53.3,15
+RSI Revert,Reversion,LONG,NEM,NORMAL,-0.333,46.7,15
+RSI Revert,Reversion,LONG,NEM,WEAK,-1.395,31.2,16
+RSI Revert,Reversion,SHORT,NEM,ALL,0.099,45.1,182
+RSI Revert,Reversion,SHORT,NEM,STRONG,-1.064,30.4,46
+RSI Revert,Reversion,SHORT,NEM,NORMAL,0.187,39.3,28
+RSI Revert,Reversion,SHORT,NEM,CAUTIOUS,0.228,37.0,27
+RSI Revert,Reversion,SHORT,NEM,WEAK,0.739,54.5,33
+RSI Revert,Reversion,SHORT,NEM,CHOPPY,0.082,60.4,48
+Zscore Revert,Reversion,LONG,NEM,ALL,0.312,57.1,56
+Zscore Revert,Reversion,SHORT,NEM,ALL,-0.289,44.9,118
+Zscore Revert,Reversion,SHORT,NEM,STRONG,-1.462,28.6,28
+Zscore Revert,Reversion,SHORT,NEM,NORMAL,0.192,47.6,21
+Zscore Revert,Reversion,SHORT,NEM,CAUTIOUS,0.287,47.8,23
+Zscore Revert,Reversion,SHORT,NEM,WEAK,-0.171,44.4,18
+Zscore Revert,Reversion,SHORT,NEM,CHOPPY,0.511,57.1,28
+Keltner Revert,Reversion,LONG,NEM,ALL,0.387,48.4,62
+Keltner Revert,Reversion,LONG,NEM,STRONG,1.193,62.5,16
+Keltner Revert,Reversion,SHORT,NEM,ALL,-0.175,46.3,164
+Keltner Revert,Reversion,SHORT,NEM,STRONG,-1.468,29.7,37
+Keltner Revert,Reversion,SHORT,NEM,NORMAL,0.035,37.0,27
+Keltner Revert,Reversion,SHORT,NEM,CAUTIOUS,0.428,44.8,29
+Keltner Revert,Reversion,SHORT,NEM,WEAK,0.209,51.9,27
+Keltner Revert,Reversion,SHORT,NEM,CHOPPY,0.466,63.6,44
+MFI Revert,Reversion,SHORT,NEM,ALL,-1.624,38.2,55
+MFI Revert,Reversion,SHORT,NEM,CHOPPY,-1.275,41.2,17
+RSI Momentum,Momentum,LONG,NEM,ALL,-0.099,54.9,182
+RSI Momentum,Momentum,LONG,NEM,STRONG,1.064,69.6,46
+RSI Momentum,Momentum,LONG,NEM,NORMAL,-0.187,60.7,28
+RSI Momentum,Momentum,LONG,NEM,CAUTIOUS,-0.228,63.0,27
+RSI Momentum,Momentum,LONG,NEM,WEAK,-0.739,45.5,33
+RSI Momentum,Momentum,LONG,NEM,CHOPPY,-0.082,39.6,48
+RSI Momentum,Momentum,SHORT,NEM,ALL,-0.104,44.8,67
+RSI Momentum,Momentum,SHORT,NEM,STRONG,-0.799,46.7,15
+RSI Momentum,Momentum,SHORT,NEM,NORMAL,0.333,53.3,15
+RSI Momentum,Momentum,SHORT,NEM,WEAK,1.395,68.8,16
+Donchian/Turtle,Momentum,LONG,NEM,ALL,0.976,56.3,158
+Donchian/Turtle,Momentum,LONG,NEM,STRONG,1.443,63.9,36
+Donchian/Turtle,Momentum,LONG,NEM,NORMAL,0.291,63.6,22
+Donchian/Turtle,Momentum,LONG,NEM,CAUTIOUS,-0.356,51.9,27
+Donchian/Turtle,Momentum,LONG,NEM,WEAK,0.429,53.8,26
+Donchian/Turtle,Momentum,LONG,NEM,CHOPPY,0.451,51.1,47
+Donchian/Turtle,Momentum,SHORT,NEM,ALL,-0.517,45.4,97
+Donchian/Turtle,Momentum,SHORT,NEM,STRONG,-1.771,30.4,23
+Donchian/Turtle,Momentum,SHORT,NEM,NORMAL,0.256,47.6,21
+Donchian/Turtle,Momentum,SHORT,NEM,WEAK,1.508,65.2,23
+Donchian/Turtle,Momentum,SHORT,NEM,CHOPPY,-1.006,42.1,19
+ADX Trend,Momentum,LONG,NEM,ALL,0.4,53.9,204
+ADX Trend,Momentum,LONG,NEM,STRONG,0.841,64.0,50
+ADX Trend,Momentum,LONG,NEM,NORMAL,1.115,54.1,37
+ADX Trend,Momentum,LONG,NEM,CAUTIOUS,-0.388,58.6,29
+ADX Trend,Momentum,LONG,NEM,WEAK,-0.177,48.6,37
+ADX Trend,Momentum,LONG,NEM,CHOPPY,-0.228,45.1,51
+ADX Trend,Momentum,SHORT,NEM,ALL,-1.521,41.1,141
+ADX Trend,Momentum,SHORT,NEM,STRONG,-2.203,27.0,37
+ADX Trend,Momentum,SHORT,NEM,NORMAL,0.327,43.8,32
+ADX Trend,Momentum,SHORT,NEM,CAUTIOUS,-0.293,44.4,18
+ADX Trend,Momentum,SHORT,NEM,WEAK,0.328,54.5,33
+ADX Trend,Momentum,SHORT,NEM,CHOPPY,-1.191,38.1,21
+RSI Revert,Reversion,LONG,NU,ALL,0.007,49.6,137
+RSI Revert,Reversion,LONG,NU,STRONG,1.435,77.8,36
+RSI Revert,Reversion,LONG,NU,NORMAL,0.176,57.1,21
+RSI Revert,Reversion,LONG,NU,CAUTIOUS,1.209,68.8,16
+RSI Revert,Reversion,LONG,NU,WEAK,-1.664,18.9,37
+RSI Revert,Reversion,LONG,NU,CHOPPY,-0.529,37.0,27
+RSI Revert,Reversion,SHORT,NU,ALL,-0.201,44.3,149
+RSI Revert,Reversion,SHORT,NU,STRONG,-2.543,16.7,30
+RSI Revert,Reversion,SHORT,NU,NORMAL,-0.25,32.0,25
+RSI Revert,Reversion,SHORT,NU,CAUTIOUS,0.238,47.1,17
+RSI Revert,Reversion,SHORT,NU,WEAK,2.503,84.6,26
+RSI Revert,Reversion,SHORT,NU,CHOPPY,-0.01,45.1,51
+Zscore Revert,Reversion,LONG,NU,ALL,-0.056,54.2,59
+Zscore Revert,Reversion,LONG,NU,STRONG,0.46,73.7,19
+Zscore Revert,Reversion,LONG,NU,WEAK,-0.637,27.8,18
+Zscore Revert,Reversion,SHORT,NU,ALL,-1.047,41.5,82
+Zscore Revert,Reversion,SHORT,NU,STRONG,-1.685,28.6,21
+Zscore Revert,Reversion,SHORT,NU,NORMAL,0.104,44.4,18
+Zscore Revert,Reversion,SHORT,NU,CHOPPY,-0.137,40.0,15
+Keltner Revert,Reversion,LONG,NU,ALL,0.817,54.2,96
+Keltner Revert,Reversion,LONG,NU,STRONG,1.889,80.8,26
+Keltner Revert,Reversion,LONG,NU,WEAK,-1.148,25.8,31
+Keltner Revert,Reversion,LONG,NU,CHOPPY,-0.062,44.4,18
+Keltner Revert,Reversion,SHORT,NU,ALL,0.658,46.6,103
+Keltner Revert,Reversion,SHORT,NU,STRONG,-1.887,15.8,19
+Keltner Revert,Reversion,SHORT,NU,NORMAL,-0.082,43.5,23
+Keltner Revert,Reversion,SHORT,NU,CAUTIOUS,1.028,60.0,15
+Keltner Revert,Reversion,SHORT,NU,WEAK,1.291,72.2,18
+Keltner Revert,Reversion,SHORT,NU,CHOPPY,0.027,46.4,28
+MFI Revert,Reversion,LONG,NU,ALL,1.109,65.0,20
+MFI Revert,Reversion,SHORT,NU,ALL,0.876,50.6,81
+MFI Revert,Reversion,SHORT,NU,NORMAL,-0.757,30.0,20
+MFI Revert,Reversion,SHORT,NU,WEAK,1.544,83.3,18
+MFI Revert,Reversion,SHORT,NU,CHOPPY,0.269,58.8,17
+RSI Momentum,Momentum,LONG,NU,ALL,0.201,55.7,149
+RSI Momentum,Momentum,LONG,NU,STRONG,2.543,83.3,30
+RSI Momentum,Momentum,LONG,NU,NORMAL,0.25,68.0,25
+RSI Momentum,Momentum,LONG,NU,CAUTIOUS,-0.238,52.9,17
+RSI Momentum,Momentum,LONG,NU,WEAK,-2.503,15.4,26
+RSI Momentum,Momentum,LONG,NU,CHOPPY,0.01,54.9,51
+RSI Momentum,Momentum,SHORT,NU,ALL,-0.007,50.4,137
+RSI Momentum,Momentum,SHORT,NU,STRONG,-1.435,22.2,36
+RSI Momentum,Momentum,SHORT,NU,NORMAL,-0.176,42.9,21
+RSI Momentum,Momentum,SHORT,NU,CAUTIOUS,-1.209,31.2,16
+RSI Momentum,Momentum,SHORT,NU,WEAK,1.664,81.1,37
+RSI Momentum,Momentum,SHORT,NU,CHOPPY,0.529,63.0,27
+Donchian/Turtle,Momentum,LONG,NU,ALL,-0.432,54.3,140
+Donchian/Turtle,Momentum,LONG,NU,STRONG,2.394,82.1,28
+Donchian/Turtle,Momentum,LONG,NU,NORMAL,0.134,59.4,32
+Donchian/Turtle,Momentum,LONG,NU,CAUTIOUS,-0.821,47.4,19
+Donchian/Turtle,Momentum,LONG,NU,WEAK,-1.4,27.3,22
+Donchian/Turtle,Momentum,LONG,NU,CHOPPY,-0.363,48.7,39
+Donchian/Turtle,Momentum,SHORT,NU,ALL,-0.275,47.8,115
+Donchian/Turtle,Momentum,SHORT,NU,STRONG,-1.488,31.4,35
+Donchian/Turtle,Momentum,SHORT,NU,NORMAL,-0.303,43.8,16
+Donchian/Turtle,Momentum,SHORT,NU,WEAK,0.972,69.7,33
+Donchian/Turtle,Momentum,SHORT,NU,CHOPPY,0.167,47.1,17
+ADX Trend,Momentum,LONG,NU,ALL,1.192,56.0,232
+ADX Trend,Momentum,LONG,NU,STRONG,2.835,84.3,51
+ADX Trend,Momentum,LONG,NU,NORMAL,1.317,65.1,43
+ADX Trend,Momentum,LONG,NU,CAUTIOUS,0.389,57.1,28
+ADX Trend,Momentum,LONG,NU,WEAK,-2.136,23.4,47
+ADX Trend,Momentum,LONG,NU,CHOPPY,-0.133,50.8,63
+ADX Trend,Momentum,SHORT,NU,ALL,0.44,50.5,194
+ADX Trend,Momentum,SHORT,NU,STRONG,-2.835,23.1,52
+ADX Trend,Momentum,SHORT,NU,NORMAL,-0.419,38.9,36
+ADX Trend,Momentum,SHORT,NU,CAUTIOUS,-0.414,42.9,21
+ADX Trend,Momentum,SHORT,NU,WEAK,2.301,81.8,44
+ADX Trend,Momentum,SHORT,NU,CHOPPY,1.386,65.9,41
+RSI Revert,Reversion,LONG,OKTA,ALL,1.591,53.8,106
+RSI Revert,Reversion,LONG,OKTA,STRONG,2.265,76.9,26
+RSI Revert,Reversion,LONG,OKTA,NORMAL,0.434,56.2,16
+RSI Revert,Reversion,LONG,OKTA,WEAK,0.75,41.7,24
+RSI Revert,Reversion,LONG,OKTA,CHOPPY,0.45,53.8,26
+RSI Revert,Reversion,SHORT,OKTA,ALL,-0.329,52.0,123
+RSI Revert,Reversion,SHORT,OKTA,STRONG,-2.801,26.5,34
+RSI Revert,Reversion,SHORT,OKTA,NORMAL,-0.914,47.4,19
+RSI Revert,Reversion,SHORT,OKTA,WEAK,1.839,75.0,28
+RSI Revert,Reversion,SHORT,OKTA,CHOPPY,0.296,57.6,33
+Zscore Revert,Reversion,LONG,OKTA,ALL,1.496,52.4,103
+Zscore Revert,Reversion,LONG,OKTA,STRONG,1.488,70.0,30
+Zscore Revert,Reversion,LONG,OKTA,NORMAL,0.77,60.0,15
+Zscore Revert,Reversion,LONG,OKTA,WEAK,0.672,41.7,24
+Zscore Revert,Reversion,LONG,OKTA,CHOPPY,-0.001,45.0,20
+Zscore Revert,Reversion,SHORT,OKTA,ALL,-0.895,46.7,92
+Zscore Revert,Reversion,SHORT,OKTA,STRONG,-2.39,22.7,22
+Zscore Revert,Reversion,SHORT,OKTA,NORMAL,-1.077,28.6,21
+Zscore Revert,Reversion,SHORT,OKTA,WEAK,1.44,61.9,21
+Zscore Revert,Reversion,SHORT,OKTA,CHOPPY,0.442,70.0,20
+Keltner Revert,Reversion,LONG,OKTA,ALL,1.48,50.6,87
+Keltner Revert,Reversion,LONG,OKTA,STRONG,1.6,59.3,27
+Keltner Revert,Reversion,LONG,OKTA,NORMAL,1.035,56.2,16
+Keltner Revert,Reversion,LONG,OKTA,WEAK,0.539,45.0,20
+Keltner Revert,Reversion,LONG,OKTA,CHOPPY,-0.257,42.1,19
+Keltner Revert,Reversion,SHORT,OKTA,ALL,-0.499,49.5,107
+Keltner Revert,Reversion,SHORT,OKTA,STRONG,-2.448,21.7,23
+Keltner Revert,Reversion,SHORT,OKTA,NORMAL,-1.098,28.6,21
+Keltner Revert,Reversion,SHORT,OKTA,WEAK,1.97,75.0,28
+Keltner Revert,Reversion,SHORT,OKTA,CHOPPY,-0.105,58.6,29
+MFI Revert,Reversion,LONG,OKTA,ALL,0.438,46.3,41
+MFI Revert,Reversion,SHORT,OKTA,ALL,0.102,59.3,54
+RSI Momentum,Momentum,LONG,OKTA,ALL,0.329,48.0,123
+RSI Momentum,Momentum,LONG,OKTA,STRONG,2.801,73.5,34
+RSI Momentum,Momentum,LONG,OKTA,NORMAL,0.914,52.6,19
+RSI Momentum,Momentum,LONG,OKTA,WEAK,-1.839,25.0,28
+RSI Momentum,Momentum,LONG,OKTA,CHOPPY,-0.296,42.4,33
+RSI Momentum,Momentum,SHORT,OKTA,ALL,-1.591,46.2,106
+RSI Momentum,Momentum,SHORT,OKTA,STRONG,-2.265,23.1,26
+RSI Momentum,Momentum,SHORT,OKTA,NORMAL,-0.434,43.8,16
+RSI Momentum,Momentum,SHORT,OKTA,WEAK,-0.75,58.3,24
+RSI Momentum,Momentum,SHORT,OKTA,CHOPPY,-0.45,46.2,26
+Donchian/Turtle,Momentum,LONG,OKTA,ALL,0.236,47.5,141
+Donchian/Turtle,Momentum,LONG,OKTA,STRONG,2.788,77.1,35
+Donchian/Turtle,Momentum,LONG,OKTA,NORMAL,1.048,62.5,24
+Donchian/Turtle,Momentum,LONG,OKTA,CAUTIOUS,-1.024,33.3,15
+Donchian/Turtle,Momentum,LONG,OKTA,WEAK,-2.123,26.5,34
+Donchian/Turtle,Momentum,LONG,OKTA,CHOPPY,-0.588,33.3,33
+Donchian/Turtle,Momentum,SHORT,OKTA,ALL,-0.719,53.0,115
+Donchian/Turtle,Momentum,SHORT,OKTA,STRONG,-1.372,34.4,32
+Donchian/Turtle,Momentum,SHORT,OKTA,NORMAL,-0.446,47.1,17
+Donchian/Turtle,Momentum,SHORT,OKTA,CAUTIOUS,0.716,80.0,15
+Donchian/Turtle,Momentum,SHORT,OKTA,WEAK,0.021,65.4,26
+Donchian/Turtle,Momentum,SHORT,OKTA,CHOPPY,0.126,52.0,25
+ADX Trend,Momentum,LONG,OKTA,ALL,0.726,50.7,205
+ADX Trend,Momentum,LONG,OKTA,STRONG,1.949,72.3,47
+ADX Trend,Momentum,LONG,OKTA,NORMAL,1.361,61.5,39
+ADX Trend,Momentum,LONG,OKTA,CAUTIOUS,-0.601,44.1,34
+ADX Trend,Momentum,LONG,OKTA,WEAK,-1.407,31.7,41
+ADX Trend,Momentum,LONG,OKTA,CHOPPY,-1.187,40.9,44
+ADX Trend,Momentum,SHORT,OKTA,ALL,-0.358,49.4,170
+ADX Trend,Momentum,SHORT,OKTA,STRONG,-1.767,30.4,46
+ADX Trend,Momentum,SHORT,OKTA,NORMAL,0.632,54.5,22
+ADX Trend,Momentum,SHORT,OKTA,CAUTIOUS,-0.212,60.0,15
+ADX Trend,Momentum,SHORT,OKTA,WEAK,0.649,71.1,38
+ADX Trend,Momentum,SHORT,OKTA,CHOPPY,-0.647,44.9,49
+RSI Revert,Reversion,LONG,ORCL,ALL,0.392,46.3,108
+RSI Revert,Reversion,LONG,ORCL,STRONG,2.293,73.3,30
+RSI Revert,Reversion,LONG,ORCL,WEAK,-1.846,19.4,31
+RSI Revert,Reversion,LONG,ORCL,CHOPPY,-0.679,37.5,24
+RSI Revert,Reversion,SHORT,ORCL,ALL,-0.365,43.7,158
+RSI Revert,Reversion,SHORT,ORCL,STRONG,-1.846,17.1,41
+RSI Revert,Reversion,SHORT,ORCL,NORMAL,-1.504,34.6,26
+RSI Revert,Reversion,SHORT,ORCL,WEAK,1.535,83.3,24
+RSI Revert,Reversion,SHORT,ORCL,CHOPPY,0.034,50.0,54
+Zscore Revert,Reversion,LONG,ORCL,ALL,-0.096,45.4,97
+Zscore Revert,Reversion,LONG,ORCL,STRONG,1.977,81.5,27
+Zscore Revert,Reversion,LONG,ORCL,NORMAL,0.157,46.7,15
+Zscore Revert,Reversion,LONG,ORCL,WEAK,-2.061,7.7,26
+Zscore Revert,Reversion,LONG,ORCL,CHOPPY,0.233,46.7,15
+Zscore Revert,Reversion,SHORT,ORCL,ALL,0.432,50.5,95
+Zscore Revert,Reversion,SHORT,ORCL,STRONG,-0.625,28.6,21
+Zscore Revert,Reversion,SHORT,ORCL,NORMAL,-1.016,42.9,21
+Zscore Revert,Reversion,SHORT,ORCL,WEAK,1.416,87.5,16
+Zscore Revert,Reversion,SHORT,ORCL,CHOPPY,-0.083,52.0,25
+Keltner Revert,Reversion,LONG,ORCL,ALL,-0.231,47.7,130
+Keltner Revert,Reversion,LONG,ORCL,STRONG,2.604,81.1,37
+Keltner Revert,Reversion,LONG,ORCL,NORMAL,0.643,66.7,18
+Keltner Revert,Reversion,LONG,ORCL,CAUTIOUS,-0.757,44.4,18
+Keltner Revert,Reversion,LONG,ORCL,WEAK,-2.377,16.2,37
+Keltner Revert,Reversion,LONG,ORCL,CHOPPY,-0.837,30.0,20
+Keltner Revert,Reversion,SHORT,ORCL,ALL,-0.354,43.8,144
+Keltner Revert,Reversion,SHORT,ORCL,STRONG,-2.971,11.9,42
+Keltner Revert,Reversion,SHORT,ORCL,NORMAL,-1.283,40.0,25
+Keltner Revert,Reversion,SHORT,ORCL,WEAK,1.468,81.0,21
+Keltner Revert,Reversion,SHORT,ORCL,CHOPPY,0.273,57.1,42
+MFI Revert,Reversion,LONG,ORCL,ALL,-0.186,46.7,75
+MFI Revert,Reversion,LONG,ORCL,STRONG,2.048,76.0,25
+MFI Revert,Reversion,LONG,ORCL,WEAK,-2.176,13.3,15
+MFI Revert,Reversion,LONG,ORCL,CHOPPY,-0.764,33.3,18
+MFI Revert,Reversion,SHORT,ORCL,ALL,0.129,52.5,59
+MFI Revert,Reversion,SHORT,ORCL,STRONG,-1.417,18.8,16
+RSI Momentum,Momentum,LONG,ORCL,ALL,0.365,56.3,158
+RSI Momentum,Momentum,LONG,ORCL,STRONG,1.846,82.9,41
+RSI Momentum,Momentum,LONG,ORCL,NORMAL,1.504,65.4,26
+RSI Momentum,Momentum,LONG,ORCL,WEAK,-1.535,16.7,24
+RSI Momentum,Momentum,LONG,ORCL,CHOPPY,-0.034,50.0,54
+RSI Momentum,Momentum,SHORT,ORCL,ALL,-0.392,53.7,108
+RSI Momentum,Momentum,SHORT,ORCL,STRONG,-2.293,26.7,30
+RSI Momentum,Momentum,SHORT,ORCL,WEAK,1.846,80.6,31
+RSI Momentum,Momentum,SHORT,ORCL,CHOPPY,0.679,62.5,24
+Donchian/Turtle,Momentum,LONG,ORCL,ALL,0.228,56.1,164
+Donchian/Turtle,Momentum,LONG,ORCL,STRONG,1.782,80.4,46
+Donchian/Turtle,Momentum,LONG,ORCL,NORMAL,1.672,64.7,34
+Donchian/Turtle,Momentum,LONG,ORCL,CAUTIOUS,-1.213,55.6,18
+Donchian/Turtle,Momentum,LONG,ORCL,WEAK,-1.619,14.3,21
+Donchian/Turtle,Momentum,LONG,ORCL,CHOPPY,-0.371,44.4,45
+Donchian/Turtle,Momentum,SHORT,ORCL,ALL,0.3,54.7,139
+Donchian/Turtle,Momentum,SHORT,ORCL,STRONG,-2.14,25.7,35
+Donchian/Turtle,Momentum,SHORT,ORCL,NORMAL,-0.465,40.9,22
+Donchian/Turtle,Momentum,SHORT,ORCL,CAUTIOUS,0.614,54.5,22
+Donchian/Turtle,Momentum,SHORT,ORCL,WEAK,2.244,85.7,35
+Donchian/Turtle,Momentum,SHORT,ORCL,CHOPPY,0.41,64.0,25
+ADX Trend,Momentum,LONG,ORCL,ALL,0.419,53.9,193
+ADX Trend,Momentum,LONG,ORCL,STRONG,2.796,88.5,52
+ADX Trend,Momentum,LONG,ORCL,NORMAL,1.219,65.7,35
+ADX Trend,Momentum,LONG,ORCL,CAUTIOUS,-1.556,40.9,22
+ADX Trend,Momentum,LONG,ORCL,WEAK,-2.051,14.3,28
+ADX Trend,Momentum,LONG,ORCL,CHOPPY,-0.899,39.3,56
+ADX Trend,Momentum,SHORT,ORCL,ALL,0.167,50.8,199
+ADX Trend,Momentum,SHORT,ORCL,STRONG,-2.668,21.8,55
+ADX Trend,Momentum,SHORT,ORCL,NORMAL,-0.789,43.3,30
+ADX Trend,Momentum,SHORT,ORCL,CAUTIOUS,0.967,60.0,25
+ADX Trend,Momentum,SHORT,ORCL,WEAK,3.194,83.7,43
+ADX Trend,Momentum,SHORT,ORCL,CHOPPY,0.128,54.3,46
+RSI Revert,Reversion,LONG,POET,ALL,0.056,46.7,105
+RSI Revert,Reversion,LONG,POET,STRONG,2.006,78.6,28
+RSI Revert,Reversion,LONG,POET,NORMAL,0.9,50.0,18
+RSI Revert,Reversion,LONG,POET,WEAK,-2.24,18.2,22
+RSI Revert,Reversion,LONG,POET,CHOPPY,-0.55,40.7,27
+RSI Revert,Reversion,SHORT,POET,ALL,0.059,54.3,138
+RSI Revert,Reversion,SHORT,POET,STRONG,-1.542,39.4,33
+RSI Revert,Reversion,SHORT,POET,NORMAL,-1.152,32.0,25
+RSI Revert,Reversion,SHORT,POET,CAUTIOUS,0.223,44.4,18
+RSI Revert,Reversion,SHORT,POET,WEAK,2.012,88.5,26
+RSI Revert,Reversion,SHORT,POET,CHOPPY,0.974,63.9,36
+Zscore Revert,Reversion,LONG,POET,ALL,0.404,51.1,45
+Zscore Revert,Reversion,LONG,POET,WEAK,-0.48,43.8,16
+Zscore Revert,Reversion,SHORT,POET,ALL,0.151,56.7,134
+Zscore Revert,Reversion,SHORT,POET,STRONG,-1.251,48.5,33
+Zscore Revert,Reversion,SHORT,POET,NORMAL,-0.96,38.7,31
+Zscore Revert,Reversion,SHORT,POET,CAUTIOUS,-0.453,43.8,16
+Zscore Revert,Reversion,SHORT,POET,WEAK,1.781,87.0,23
+Zscore Revert,Reversion,SHORT,POET,CHOPPY,1.132,67.7,31
+Keltner Revert,Reversion,LONG,POET,ALL,0.357,54.1,37
+Keltner Revert,Reversion,SHORT,POET,ALL,0.284,60.4,96
+Keltner Revert,Reversion,SHORT,POET,STRONG,-1.578,38.5,26
+Keltner Revert,Reversion,SHORT,POET,NORMAL,-0.709,50.0,16
+Keltner Revert,Reversion,SHORT,POET,CAUTIOUS,0.559,60.0,15
+Keltner Revert,Reversion,SHORT,POET,WEAK,2.034,86.7,15
+Keltner Revert,Reversion,SHORT,POET,CHOPPY,1.418,75.0,24
+MFI Revert,Reversion,LONG,POET,ALL,0.781,51.3,39
+MFI Revert,Reversion,SHORT,POET,ALL,0.391,60.0,60
+MFI Revert,Reversion,SHORT,POET,STRONG,-1.429,37.5,16
+MFI Revert,Reversion,SHORT,POET,CHOPPY,1.204,68.4,19
+RSI Momentum,Momentum,LONG,POET,ALL,-0.059,45.7,138
+RSI Momentum,Momentum,LONG,POET,STRONG,1.542,60.6,33
+RSI Momentum,Momentum,LONG,POET,NORMAL,1.152,68.0,25
+RSI Momentum,Momentum,LONG,POET,CAUTIOUS,-0.223,55.6,18
+RSI Momentum,Momentum,LONG,POET,WEAK,-2.012,11.5,26
+RSI Momentum,Momentum,LONG,POET,CHOPPY,-0.974,36.1,36
+RSI Momentum,Momentum,SHORT,POET,ALL,-0.056,53.3,105
+RSI Momentum,Momentum,SHORT,POET,STRONG,-2.006,21.4,28
+RSI Momentum,Momentum,SHORT,POET,NORMAL,-0.9,50.0,18
+RSI Momentum,Momentum,SHORT,POET,WEAK,2.24,81.8,22
+RSI Momentum,Momentum,SHORT,POET,CHOPPY,0.55,59.3,27
+Donchian/Turtle,Momentum,LONG,POET,ALL,-0.187,43.1,153
+Donchian/Turtle,Momentum,LONG,POET,STRONG,1.423,55.0,40
+Donchian/Turtle,Momentum,LONG,POET,NORMAL,1.374,63.6,33
+Donchian/Turtle,Momentum,LONG,POET,CAUTIOUS,-0.49,40.0,20
+Donchian/Turtle,Momentum,LONG,POET,WEAK,-2.702,8.0,25
+Donchian/Turtle,Momentum,LONG,POET,CHOPPY,-1.009,37.1,35
+Donchian/Turtle,Momentum,SHORT,POET,ALL,0.258,54.4,90
+Donchian/Turtle,Momentum,SHORT,POET,STRONG,-2.262,14.3,21
+Donchian/Turtle,Momentum,SHORT,POET,WEAK,2.38,82.6,23
+Donchian/Turtle,Momentum,SHORT,POET,CHOPPY,1.159,65.0,20
+ADX Trend,Momentum,LONG,POET,ALL,0.469,43.4,175
+ADX Trend,Momentum,LONG,POET,STRONG,1.535,59.1,44
+ADX Trend,Momentum,LONG,POET,NORMAL,1.087,51.4,35
+ADX Trend,Momentum,LONG,POET,CAUTIOUS,-0.722,39.1,23
+ADX Trend,Momentum,LONG,POET,WEAK,-2.447,12.5,32
+ADX Trend,Momentum,LONG,POET,CHOPPY,0.386,46.3,41
+ADX Trend,Momentum,SHORT,POET,ALL,-0.861,53.3,182
+ADX Trend,Momentum,SHORT,POET,STRONG,-2.482,27.3,44
+ADX Trend,Momentum,SHORT,POET,NORMAL,-1.075,44.0,25
+ADX Trend,Momentum,SHORT,POET,CAUTIOUS,-0.121,50.0,22
+ADX Trend,Momentum,SHORT,POET,WEAK,1.287,74.5,47
+ADX Trend,Momentum,SHORT,POET,CHOPPY,0.94,63.6,44
+RSI Revert,Reversion,LONG,RBRK,ALL,0.839,51.5,97
+RSI Revert,Reversion,LONG,RBRK,STRONG,1.417,69.6,23
+RSI Revert,Reversion,LONG,RBRK,NORMAL,0.727,52.4,21
+RSI Revert,Reversion,LONG,RBRK,CAUTIOUS,-0.099,50.0,16
+RSI Revert,Reversion,LONG,RBRK,WEAK,-0.803,37.5,24
+RSI Revert,Reversion,SHORT,RBRK,ALL,-0.969,49.2,179
+RSI Revert,Reversion,SHORT,RBRK,STRONG,-2.66,26.5,49
+RSI Revert,Reversion,SHORT,RBRK,NORMAL,-1.07,41.2,34
+RSI Revert,Reversion,SHORT,RBRK,CAUTIOUS,0.883,60.0,15
+RSI Revert,Reversion,SHORT,RBRK,WEAK,1.919,82.9,35
+RSI Revert,Reversion,SHORT,RBRK,CHOPPY,0.063,50.0,46
+Zscore Revert,Reversion,LONG,RBRK,ALL,0.031,51.6,62
+Zscore Revert,Reversion,LONG,RBRK,NORMAL,0.729,64.7,17
+Zscore Revert,Reversion,LONG,RBRK,WEAK,-1.824,26.7,15
+Zscore Revert,Reversion,SHORT,RBRK,ALL,-0.116,56.3,103
+Zscore Revert,Reversion,SHORT,RBRK,STRONG,-1.816,37.9,29
+Zscore Revert,Reversion,SHORT,RBRK,NORMAL,0.004,55.6,18
+Zscore Revert,Reversion,SHORT,RBRK,WEAK,1.471,87.0,23
+Zscore Revert,Reversion,SHORT,RBRK,CHOPPY,0.049,52.2,23
+Keltner Revert,Reversion,LONG,RBRK,ALL,0.663,53.7,54
+Keltner Revert,Reversion,LONG,RBRK,WEAK,-0.133,40.0,15
+Keltner Revert,Reversion,SHORT,RBRK,ALL,-0.728,48.7,113
+Keltner Revert,Reversion,SHORT,RBRK,STRONG,-1.924,32.3,31
+Keltner Revert,Reversion,SHORT,RBRK,NORMAL,-1.022,37.5,24
+Keltner Revert,Reversion,SHORT,RBRK,WEAK,1.229,81.8,22
+Keltner Revert,Reversion,SHORT,RBRK,CHOPPY,0.753,52.0,25
+MFI Revert,Reversion,LONG,RBRK,ALL,1.227,56.1,41
+MFI Revert,Reversion,SHORT,RBRK,ALL,0.448,52.1,71
+MFI Revert,Reversion,SHORT,RBRK,STRONG,-1.13,36.8,19
+MFI Revert,Reversion,SHORT,RBRK,CHOPPY,0.029,50.0,20
+RSI Momentum,Momentum,LONG,RBRK,ALL,0.969,50.8,179
+RSI Momentum,Momentum,LONG,RBRK,STRONG,2.66,73.5,49
+RSI Momentum,Momentum,LONG,RBRK,NORMAL,1.07,58.8,34
+RSI Momentum,Momentum,LONG,RBRK,CAUTIOUS,-0.883,40.0,15
+RSI Momentum,Momentum,LONG,RBRK,WEAK,-1.919,17.1,35
+RSI Momentum,Momentum,LONG,RBRK,CHOPPY,-0.063,50.0,46
+RSI Momentum,Momentum,SHORT,RBRK,ALL,-0.839,48.5,97
+RSI Momentum,Momentum,SHORT,RBRK,STRONG,-1.417,30.4,23
+RSI Momentum,Momentum,SHORT,RBRK,NORMAL,-0.727,47.6,21
+RSI Momentum,Momentum,SHORT,RBRK,CAUTIOUS,0.099,50.0,16
+RSI Momentum,Momentum,SHORT,RBRK,WEAK,0.803,62.5,24
+Donchian/Turtle,Momentum,LONG,RBRK,ALL,-0.0,49.3,144
+Donchian/Turtle,Momentum,LONG,RBRK,STRONG,1.992,70.7,41
+Donchian/Turtle,Momentum,LONG,RBRK,NORMAL,0.421,57.1,28
+Donchian/Turtle,Momentum,LONG,RBRK,WEAK,-1.95,13.8,29
+Donchian/Turtle,Momentum,LONG,RBRK,CHOPPY,-0.467,48.5,33
+Donchian/Turtle,Momentum,SHORT,RBRK,ALL,-0.815,42.6,101
+Donchian/Turtle,Momentum,SHORT,RBRK,STRONG,-2.321,25.9,27
+Donchian/Turtle,Momentum,SHORT,RBRK,NORMAL,-0.949,35.0,20
+Donchian/Turtle,Momentum,SHORT,RBRK,WEAK,1.649,61.9,21
+Donchian/Turtle,Momentum,SHORT,RBRK,CHOPPY,-0.289,47.4,19
+ADX Trend,Momentum,LONG,RBRK,ALL,1.46,54.7,172
+ADX Trend,Momentum,LONG,RBRK,STRONG,1.926,71.4,35
+ADX Trend,Momentum,LONG,RBRK,NORMAL,1.515,63.2,38
+ADX Trend,Momentum,LONG,RBRK,CAUTIOUS,-0.472,46.2,26
+ADX Trend,Momentum,LONG,RBRK,WEAK,-0.659,38.2,34
+ADX Trend,Momentum,LONG,RBRK,CHOPPY,-0.172,51.3,39
+ADX Trend,Momentum,SHORT,RBRK,ALL,-0.424,43.9,157
+ADX Trend,Momentum,SHORT,RBRK,STRONG,-2.098,21.7,46
+ADX Trend,Momentum,SHORT,RBRK,NORMAL,-0.029,42.3,26
+ADX Trend,Momentum,SHORT,RBRK,CAUTIOUS,0.683,68.8,16
+ADX Trend,Momentum,SHORT,RBRK,WEAK,1.644,72.5,40
+ADX Trend,Momentum,SHORT,RBRK,CHOPPY,-0.503,27.6,29
+RSI Revert,Reversion,LONG,RIVN,ALL,-0.017,47.8,115
+RSI Revert,Reversion,LONG,RIVN,STRONG,2.141,75.0,32
+RSI Revert,Reversion,LONG,RIVN,NORMAL,0.297,43.8,16
+RSI Revert,Reversion,LONG,RIVN,WEAK,-2.651,13.6,22
+RSI Revert,Reversion,LONG,RIVN,CHOPPY,-0.152,48.5,33
+RSI Revert,Reversion,SHORT,RIVN,ALL,-0.303,52.6,97
+RSI Revert,Reversion,SHORT,RIVN,STRONG,-1.484,38.5,26
+RSI Revert,Reversion,SHORT,RIVN,NORMAL,0.472,61.1,18
+RSI Revert,Reversion,SHORT,RIVN,WEAK,0.231,56.5,23
+RSI Revert,Reversion,SHORT,RIVN,CHOPPY,0.181,59.1,22
+Zscore Revert,Reversion,LONG,RIVN,ALL,-0.06,44.7,47
+Zscore Revert,Reversion,LONG,RIVN,CHOPPY,0.183,55.6,18
+Zscore Revert,Reversion,SHORT,RIVN,ALL,1.165,58.7,126
+Zscore Revert,Reversion,SHORT,RIVN,STRONG,-0.56,42.3,26
+Zscore Revert,Reversion,SHORT,RIVN,NORMAL,-0.18,57.7,26
+Zscore Revert,Reversion,SHORT,RIVN,CAUTIOUS,0.638,64.7,17
+Zscore Revert,Reversion,SHORT,RIVN,WEAK,1.471,70.0,30
+Zscore Revert,Reversion,SHORT,RIVN,CHOPPY,0.815,59.3,27
+Keltner Revert,Reversion,LONG,RIVN,ALL,0.034,41.9,62
+Keltner Revert,Reversion,LONG,RIVN,STRONG,1.256,62.5,16
+Keltner Revert,Reversion,LONG,RIVN,WEAK,-2.121,13.3,15
+Keltner Revert,Reversion,SHORT,RIVN,ALL,1.289,62.4,85
+Keltner Revert,Reversion,SHORT,RIVN,STRONG,-0.408,52.6,19
+Keltner Revert,Reversion,SHORT,RIVN,NORMAL,0.366,68.8,16
+Keltner Revert,Reversion,SHORT,RIVN,WEAK,0.948,66.7,18
+Keltner Revert,Reversion,SHORT,RIVN,CHOPPY,0.553,57.1,21
+MFI Revert,Reversion,SHORT,RIVN,ALL,-0.406,56.2,32
+RSI Momentum,Momentum,LONG,RIVN,ALL,0.303,47.4,97
+RSI Momentum,Momentum,LONG,RIVN,STRONG,1.484,61.5,26
+RSI Momentum,Momentum,LONG,RIVN,NORMAL,-0.472,38.9,18
+RSI Momentum,Momentum,LONG,RIVN,WEAK,-0.231,43.5,23
+RSI Momentum,Momentum,LONG,RIVN,CHOPPY,-0.181,40.9,22
+RSI Momentum,Momentum,SHORT,RIVN,ALL,0.017,52.2,115
+RSI Momentum,Momentum,SHORT,RIVN,STRONG,-2.141,25.0,32
+RSI Momentum,Momentum,SHORT,RIVN,NORMAL,-0.297,56.2,16
+RSI Momentum,Momentum,SHORT,RIVN,WEAK,2.651,86.4,22
+RSI Momentum,Momentum,SHORT,RIVN,CHOPPY,0.152,51.5,33
+Donchian/Turtle,Momentum,LONG,RIVN,ALL,-0.854,42.9,147
+Donchian/Turtle,Momentum,LONG,RIVN,STRONG,0.653,50.0,40
+Donchian/Turtle,Momentum,LONG,RIVN,NORMAL,-0.219,33.3,27
+Donchian/Turtle,Momentum,LONG,RIVN,WEAK,-1.264,40.0,35
+Donchian/Turtle,Momentum,LONG,RIVN,CHOPPY,-0.55,46.9,32
+Donchian/Turtle,Momentum,SHORT,RIVN,ALL,-0.276,52.2,115
+Donchian/Turtle,Momentum,SHORT,RIVN,STRONG,-2.058,21.4,28
+Donchian/Turtle,Momentum,SHORT,RIVN,NORMAL,-0.842,45.5,22
+Donchian/Turtle,Momentum,SHORT,RIVN,WEAK,2.333,83.3,24
+Donchian/Turtle,Momentum,SHORT,RIVN,CHOPPY,-0.167,55.6,27
+ADX Trend,Momentum,LONG,RIVN,ALL,0.416,48.1,189
+ADX Trend,Momentum,LONG,RIVN,STRONG,1.516,65.8,38
+ADX Trend,Momentum,LONG,RIVN,NORMAL,1.008,53.5,43
+ADX Trend,Momentum,LONG,RIVN,CAUTIOUS,-0.752,38.5,26
+ADX Trend,Momentum,LONG,RIVN,WEAK,-2.147,20.0,40
+ADX Trend,Momentum,LONG,RIVN,CHOPPY,0.673,59.5,42
+ADX Trend,Momentum,SHORT,RIVN,ALL,-0.914,47.8,161
+ADX Trend,Momentum,SHORT,RIVN,STRONG,-2.114,26.9,52
+ADX Trend,Momentum,SHORT,RIVN,NORMAL,0.82,58.8,17
+ADX Trend,Momentum,SHORT,RIVN,WEAK,0.671,56.8,37
+ADX Trend,Momentum,SHORT,RIVN,CHOPPY,-0.184,56.1,41
+RSI Revert,Reversion,LONG,SAIC,ALL,0.332,51.6,128
+RSI Revert,Reversion,LONG,SAIC,STRONG,1.093,62.5,32
+RSI Revert,Reversion,LONG,SAIC,NORMAL,0.929,53.6,28
+RSI Revert,Reversion,LONG,SAIC,CAUTIOUS,-0.44,63.2,19
+RSI Revert,Reversion,LONG,SAIC,WEAK,-0.699,38.1,21
+RSI Revert,Reversion,LONG,SAIC,CHOPPY,-0.415,39.3,28
+RSI Revert,Reversion,SHORT,SAIC,ALL,0.562,51.2,162
+RSI Revert,Reversion,SHORT,SAIC,STRONG,0.287,42.5,40
+RSI Revert,Reversion,SHORT,SAIC,NORMAL,-0.747,40.0,30
+RSI Revert,Reversion,SHORT,SAIC,CAUTIOUS,-0.148,60.0,20
+RSI Revert,Reversion,SHORT,SAIC,WEAK,1.149,64.7,34
+RSI Revert,Reversion,SHORT,SAIC,CHOPPY,0.361,52.6,38
+Zscore Revert,Reversion,LONG,SAIC,ALL,-0.021,50.0,88
+Zscore Revert,Reversion,LONG,SAIC,STRONG,0.017,68.0,25
+Zscore Revert,Reversion,LONG,SAIC,NORMAL,0.525,38.1,21
+Zscore Revert,Reversion,LONG,SAIC,WEAK,-0.061,40.0,15
+Zscore Revert,Reversion,LONG,SAIC,CHOPPY,-0.227,42.1,19
+Zscore Revert,Reversion,SHORT,SAIC,ALL,0.359,48.4,122
+Zscore Revert,Reversion,SHORT,SAIC,STRONG,-0.837,35.1,37
+Zscore Revert,Reversion,SHORT,SAIC,NORMAL,-0.481,47.6,21
+Zscore Revert,Reversion,SHORT,SAIC,CAUTIOUS,0.599,57.9,19
+Zscore Revert,Reversion,SHORT,SAIC,WEAK,0.917,61.1,18
+Zscore Revert,Reversion,SHORT,SAIC,CHOPPY,0.891,51.9,27
+Keltner Revert,Reversion,LONG,SAIC,ALL,0.429,49.1,108
+Keltner Revert,Reversion,LONG,SAIC,STRONG,0.664,59.3,27
+Keltner Revert,Reversion,LONG,SAIC,NORMAL,0.637,50.0,26
+Keltner Revert,Reversion,LONG,SAIC,WEAK,-0.539,35.3,17
+Keltner Revert,Reversion,LONG,SAIC,CHOPPY,-0.385,40.7,27
+Keltner Revert,Reversion,SHORT,SAIC,ALL,0.542,46.0,100
+Keltner Revert,Reversion,SHORT,SAIC,STRONG,-0.826,27.3,22
+Keltner Revert,Reversion,SHORT,SAIC,CAUTIOUS,-0.003,60.0,15
+Keltner Revert,Reversion,SHORT,SAIC,WEAK,1.239,71.4,21
+Keltner Revert,Reversion,SHORT,SAIC,CHOPPY,-0.733,40.0,35
+MFI Revert,Reversion,LONG,SAIC,ALL,0.636,53.6,28
+MFI Revert,Reversion,SHORT,SAIC,ALL,-0.182,45.5,44
+RSI Momentum,Momentum,LONG,SAIC,ALL,-0.562,48.8,162
+RSI Momentum,Momentum,LONG,SAIC,STRONG,-0.287,57.5,40
+RSI Momentum,Momentum,LONG,SAIC,NORMAL,0.747,60.0,30
+RSI Momentum,Momentum,LONG,SAIC,CAUTIOUS,0.148,40.0,20
+RSI Momentum,Momentum,LONG,SAIC,WEAK,-1.149,35.3,34
+RSI Momentum,Momentum,LONG,SAIC,CHOPPY,-0.361,47.4,38
+RSI Momentum,Momentum,SHORT,SAIC,ALL,-0.332,48.4,128
+RSI Momentum,Momentum,SHORT,SAIC,STRONG,-1.093,37.5,32
+RSI Momentum,Momentum,SHORT,SAIC,NORMAL,-0.929,46.4,28
+RSI Momentum,Momentum,SHORT,SAIC,CAUTIOUS,0.44,36.8,19
+RSI Momentum,Momentum,SHORT,SAIC,WEAK,0.699,61.9,21
+RSI Momentum,Momentum,SHORT,SAIC,CHOPPY,0.415,60.7,28
+Donchian/Turtle,Momentum,LONG,SAIC,ALL,-0.155,52.6,133
+Donchian/Turtle,Momentum,LONG,SAIC,STRONG,1.03,66.7,36
+Donchian/Turtle,Momentum,LONG,SAIC,NORMAL,0.54,52.2,23
+Donchian/Turtle,Momentum,LONG,SAIC,CAUTIOUS,-0.269,52.2,23
+Donchian/Turtle,Momentum,LONG,SAIC,WEAK,-0.983,37.5,24
+Donchian/Turtle,Momentum,LONG,SAIC,CHOPPY,-0.727,48.1,27
+Donchian/Turtle,Momentum,SHORT,SAIC,ALL,0.28,48.7,117
+Donchian/Turtle,Momentum,SHORT,SAIC,STRONG,-0.877,34.5,29
+Donchian/Turtle,Momentum,SHORT,SAIC,NORMAL,-0.194,53.3,30
+Donchian/Turtle,Momentum,SHORT,SAIC,WEAK,0.645,55.0,20
+Donchian/Turtle,Momentum,SHORT,SAIC,CHOPPY,0.141,57.7,26
+ADX Trend,Momentum,LONG,SAIC,ALL,0.376,52.1,190
+ADX Trend,Momentum,LONG,SAIC,STRONG,0.815,65.1,43
+ADX Trend,Momentum,LONG,SAIC,NORMAL,1.084,53.1,32
+ADX Trend,Momentum,LONG,SAIC,CAUTIOUS,-0.446,48.3,29
+ADX Trend,Momentum,LONG,SAIC,WEAK,-0.519,45.7,35
+ADX Trend,Momentum,LONG,SAIC,CHOPPY,-0.563,47.1,51
+ADX Trend,Momentum,SHORT,SAIC,ALL,0.22,45.6,180
+ADX Trend,Momentum,SHORT,SAIC,STRONG,-0.258,35.8,53
+ADX Trend,Momentum,SHORT,SAIC,NORMAL,-0.058,46.7,30
+ADX Trend,Momentum,SHORT,SAIC,CAUTIOUS,0.385,38.1,21
+ADX Trend,Momentum,SHORT,SAIC,WEAK,0.221,53.8,39
+ADX Trend,Momentum,SHORT,SAIC,CHOPPY,0.315,54.1,37
+RSI Revert,Reversion,LONG,SMH,ALL,0.748,63.6,44
+RSI Revert,Reversion,LONG,SMH,STRONG,2.176,100.0,15
+RSI Revert,Reversion,LONG,SMH,WEAK,-0.24,33.3,15
+RSI Revert,Reversion,SHORT,SMH,ALL,-0.763,43.8,185
+RSI Revert,Reversion,SHORT,SMH,STRONG,-4.191,5.8,52
+RSI Revert,Reversion,SHORT,SMH,NORMAL,-2.356,25.8,31
+RSI Revert,Reversion,SHORT,SMH,CAUTIOUS,1.393,72.7,22
+RSI Revert,Reversion,SHORT,SMH,WEAK,2.962,87.5,32
+RSI Revert,Reversion,SHORT,SMH,CHOPPY,0.096,54.2,48
+Zscore Revert,Reversion,LONG,SMH,ALL,0.874,71.2,52
+Zscore Revert,Reversion,LONG,SMH,STRONG,2.269,100.0,17
+Zscore Revert,Reversion,LONG,SMH,WEAK,-0.688,27.8,18
+Zscore Revert,Reversion,SHORT,SMH,ALL,-0.345,46.4,97
+Zscore Revert,Reversion,SHORT,SMH,STRONG,-2.947,8.0,25
+Zscore Revert,Reversion,SHORT,SMH,NORMAL,-1.779,30.0,20
+Zscore Revert,Reversion,SHORT,SMH,WEAK,2.313,95.0,20
+Zscore Revert,Reversion,SHORT,SMH,CHOPPY,-0.677,36.8,19
+Keltner Revert,Reversion,LONG,SMH,ALL,0.101,65.4,26
+Keltner Revert,Reversion,SHORT,SMH,ALL,-1.023,43.6,140
+Keltner Revert,Reversion,SHORT,SMH,STRONG,-3.445,2.9,34
+Keltner Revert,Reversion,SHORT,SMH,NORMAL,-2.446,23.3,30
+Keltner Revert,Reversion,SHORT,SMH,CAUTIOUS,1.374,82.4,17
+Keltner Revert,Reversion,SHORT,SMH,WEAK,2.264,90.9,22
+Keltner Revert,Reversion,SHORT,SMH,CHOPPY,-0.521,51.4,37
+MFI Revert,Reversion,SHORT,SMH,ALL,-1.718,34.1,44
+MFI Revert,Reversion,SHORT,SMH,STRONG,-2.322,0.0,15
+RSI Momentum,Momentum,LONG,SMH,ALL,0.763,56.2,185
+RSI Momentum,Momentum,LONG,SMH,STRONG,4.191,94.2,52
+RSI Momentum,Momentum,LONG,SMH,NORMAL,2.356,74.2,31
+RSI Momentum,Momentum,LONG,SMH,CAUTIOUS,-1.393,27.3,22
+RSI Momentum,Momentum,LONG,SMH,WEAK,-2.962,12.5,32
+RSI Momentum,Momentum,LONG,SMH,CHOPPY,-0.096,45.8,48
+RSI Momentum,Momentum,SHORT,SMH,ALL,-0.748,36.4,44
+RSI Momentum,Momentum,SHORT,SMH,STRONG,-2.176,0.0,15
+RSI Momentum,Momentum,SHORT,SMH,WEAK,0.24,66.7,15
+Donchian/Turtle,Momentum,LONG,SMH,ALL,1.205,58.1,215
+Donchian/Turtle,Momentum,LONG,SMH,STRONG,4.428,94.7,57
+Donchian/Turtle,Momentum,LONG,SMH,NORMAL,2.416,73.5,34
+Donchian/Turtle,Momentum,LONG,SMH,CAUTIOUS,-1.496,28.1,32
+Donchian/Turtle,Momentum,LONG,SMH,WEAK,-3.02,14.7,34
+Donchian/Turtle,Momentum,LONG,SMH,CHOPPY,0.109,55.2,58
+Donchian/Turtle,Momentum,SHORT,SMH,ALL,-0.916,37.9,66
+Donchian/Turtle,Momentum,SHORT,SMH,STRONG,-2.446,5.0,20
+Donchian/Turtle,Momentum,SHORT,SMH,WEAK,0.47,70.0,20
+ADX Trend,Momentum,LONG,SMH,ALL,1.55,59.6,178
+ADX Trend,Momentum,LONG,SMH,STRONG,3.903,95.7,46
+ADX Trend,Momentum,LONG,SMH,NORMAL,2.245,73.2,41
+ADX Trend,Momentum,LONG,SMH,CAUTIOUS,-0.963,31.8,22
+ADX Trend,Momentum,LONG,SMH,WEAK,-2.527,12.5,24
+ADX Trend,Momentum,LONG,SMH,CHOPPY,0.139,48.9,45
+ADX Trend,Momentum,SHORT,SMH,ALL,-0.49,39.6,101
+ADX Trend,Momentum,SHORT,SMH,STRONG,-2.752,4.2,24
+ADX Trend,Momentum,SHORT,SMH,NORMAL,-2.087,26.3,19
+ADX Trend,Momentum,SHORT,SMH,WEAK,2.27,79.3,29
+ADX Trend,Momentum,SHORT,SMH,CHOPPY,0.362,43.8,16
+RSI Revert,Reversion,LONG,TSLA,ALL,0.386,48.1,81
+RSI Revert,Reversion,LONG,TSLA,STRONG,1.975,85.7,21
+RSI Revert,Reversion,LONG,TSLA,WEAK,-2.016,10.5,19
+RSI Revert,Reversion,LONG,TSLA,CHOPPY,1.113,52.4,21
+RSI Revert,Reversion,SHORT,TSLA,ALL,-1.43,44.0,125
+RSI Revert,Reversion,SHORT,TSLA,STRONG,-2.757,20.7,29
+RSI Revert,Reversion,SHORT,TSLA,NORMAL,-1.421,33.3,27
+RSI Revert,Reversion,SHORT,TSLA,CAUTIOUS,0.495,52.6,19
+RSI Revert,Reversion,SHORT,TSLA,WEAK,2.353,86.4,22
+RSI Revert,Reversion,SHORT,TSLA,CHOPPY,-1.034,39.3,28
+Zscore Revert,Reversion,LONG,TSLA,ALL,-0.109,48.4,95
+Zscore Revert,Reversion,LONG,TSLA,STRONG,2.356,94.7,19
+Zscore Revert,Reversion,LONG,TSLA,NORMAL,0.467,40.0,15
+Zscore Revert,Reversion,LONG,TSLA,WEAK,-2.406,17.9,28
+Zscore Revert,Reversion,LONG,TSLA,CHOPPY,0.264,52.6,19
+Zscore Revert,Reversion,SHORT,TSLA,ALL,-1.257,43.6,78
+Zscore Revert,Reversion,SHORT,TSLA,STRONG,-2.135,22.2,18
+Zscore Revert,Reversion,SHORT,TSLA,NORMAL,-1.344,33.3,15
+Zscore Revert,Reversion,SHORT,TSLA,CHOPPY,-1.231,30.4,23
+Keltner Revert,Reversion,LONG,TSLA,ALL,0.316,46.6,58
+Keltner Revert,Reversion,LONG,TSLA,CHOPPY,0.987,53.3,15
+Keltner Revert,Reversion,SHORT,TSLA,ALL,-0.078,53.5,99
+Keltner Revert,Reversion,SHORT,TSLA,STRONG,-2.17,25.0,24
+Keltner Revert,Reversion,SHORT,TSLA,NORMAL,-1.048,38.9,18
+Keltner Revert,Reversion,SHORT,TSLA,WEAK,2.177,88.2,17
+Keltner Revert,Reversion,SHORT,TSLA,CHOPPY,0.468,55.2,29
+MFI Revert,Reversion,SHORT,TSLA,ALL,0.593,57.1,42
+RSI Momentum,Momentum,LONG,TSLA,ALL,1.43,56.0,125
+RSI Momentum,Momentum,LONG,TSLA,STRONG,2.757,79.3,29
+RSI Momentum,Momentum,LONG,TSLA,NORMAL,1.421,66.7,27
+RSI Momentum,Momentum,LONG,TSLA,CAUTIOUS,-0.495,47.4,19
+RSI Momentum,Momentum,LONG,TSLA,WEAK,-2.353,13.6,22
+RSI Momentum,Momentum,LONG,TSLA,CHOPPY,1.034,60.7,28
+RSI Momentum,Momentum,SHORT,TSLA,ALL,-0.386,51.9,81
+RSI Momentum,Momentum,SHORT,TSLA,STRONG,-1.975,14.3,21
+RSI Momentum,Momentum,SHORT,TSLA,WEAK,2.016,89.5,19
+RSI Momentum,Momentum,SHORT,TSLA,CHOPPY,-1.113,47.6,21
+Donchian/Turtle,Momentum,LONG,TSLA,ALL,1.121,52.0,150
+Donchian/Turtle,Momentum,LONG,TSLA,STRONG,2.958,81.0,42
+Donchian/Turtle,Momentum,LONG,TSLA,NORMAL,1.477,68.2,22
+Donchian/Turtle,Momentum,LONG,TSLA,CAUTIOUS,-0.317,35.3,17
+Donchian/Turtle,Momentum,LONG,TSLA,WEAK,-2.5,9.1,22
+Donchian/Turtle,Momentum,LONG,TSLA,CHOPPY,-0.281,44.7,47
+Donchian/Turtle,Momentum,SHORT,TSLA,ALL,0.036,52.6,95
+Donchian/Turtle,Momentum,SHORT,TSLA,STRONG,-2.494,4.8,21
+Donchian/Turtle,Momentum,SHORT,TSLA,NORMAL,-0.441,58.8,17
+Donchian/Turtle,Momentum,SHORT,TSLA,WEAK,2.296,80.0,25
+Donchian/Turtle,Momentum,SHORT,TSLA,CHOPPY,-0.128,61.1,18
+ADX Trend,Momentum,LONG,TSLA,ALL,-0.744,41.7,163
+ADX Trend,Momentum,LONG,TSLA,STRONG,2.203,69.7,33
+ADX Trend,Momentum,LONG,TSLA,NORMAL,0.712,48.5,33
+ADX Trend,Momentum,LONG,TSLA,CAUTIOUS,-0.762,34.8,23
+ADX Trend,Momentum,LONG,TSLA,WEAK,-3.186,6.5,31
+ADX Trend,Momentum,LONG,TSLA,CHOPPY,-0.308,44.2,43
+ADX Trend,Momentum,SHORT,TSLA,ALL,-0.925,45.0,189
+ADX Trend,Momentum,SHORT,TSLA,STRONG,-3.445,12.1,58
+ADX Trend,Momentum,SHORT,TSLA,NORMAL,-1.101,40.7,27
+ADX Trend,Momentum,SHORT,TSLA,CAUTIOUS,1.225,58.3,24
+ADX Trend,Momentum,SHORT,TSLA,WEAK,3.11,87.2,39
+ADX Trend,Momentum,SHORT,TSLA,CHOPPY,-0.06,46.3,41
+RSI Revert,Reversion,LONG,UBER,ALL,0.924,59.8,122
+RSI Revert,Reversion,LONG,UBER,STRONG,1.72,66.7,39
+RSI Revert,Reversion,LONG,UBER,NORMAL,1.18,63.0,27
+RSI Revert,Reversion,LONG,UBER,CAUTIOUS,-0.863,54.5,22
+RSI Revert,Reversion,LONG,UBER,WEAK,-0.965,42.9,21
+RSI Revert,Reversion,SHORT,UBER,ALL,0.362,57.6,118
+RSI Revert,Reversion,SHORT,UBER,STRONG,-1.349,39.3,28
+RSI Revert,Reversion,SHORT,UBER,NORMAL,-0.51,61.9,21
+RSI Revert,Reversion,SHORT,UBER,WEAK,1.111,65.0,20
+RSI Revert,Reversion,SHORT,UBER,CHOPPY,0.996,57.9,38
+Zscore Revert,Reversion,LONG,UBER,ALL,0.716,54.3,92
+Zscore Revert,Reversion,LONG,UBER,STRONG,1.431,66.7,30
+Zscore Revert,Reversion,LONG,UBER,NORMAL,0.355,47.4,19
+Zscore Revert,Reversion,LONG,UBER,WEAK,0.145,50.0,18
+Zscore Revert,Reversion,LONG,UBER,CHOPPY,-0.31,60.0,15
+Zscore Revert,Reversion,SHORT,UBER,ALL,1.495,60.2,93
+Zscore Revert,Reversion,SHORT,UBER,STRONG,-0.168,35.3,17
+Zscore Revert,Reversion,SHORT,UBER,CHOPPY,0.593,51.3,39
+Keltner Revert,Reversion,LONG,UBER,ALL,0.253,53.4,58
+Keltner Revert,Reversion,LONG,UBER,STRONG,0.67,61.1,18
+Keltner Revert,Reversion,SHORT,UBER,ALL,0.405,63.3,49
+MFI Revert,Reversion,SHORT,UBER,ALL,-0.646,52.6,19
+RSI Momentum,Momentum,LONG,UBER,ALL,-0.362,42.4,118
+RSI Momentum,Momentum,LONG,UBER,STRONG,1.349,60.7,28
+RSI Momentum,Momentum,LONG,UBER,NORMAL,0.51,38.1,21
+RSI Momentum,Momentum,LONG,UBER,WEAK,-1.111,35.0,20
+RSI Momentum,Momentum,LONG,UBER,CHOPPY,-0.996,42.1,38
+RSI Momentum,Momentum,SHORT,UBER,ALL,-0.924,40.2,122
+RSI Momentum,Momentum,SHORT,UBER,STRONG,-1.72,33.3,39
+RSI Momentum,Momentum,SHORT,UBER,NORMAL,-1.18,37.0,27
+RSI Momentum,Momentum,SHORT,UBER,CAUTIOUS,0.863,45.5,22
+RSI Momentum,Momentum,SHORT,UBER,WEAK,0.965,57.1,21
+Donchian/Turtle,Momentum,LONG,UBER,ALL,0.337,46.4,110
+Donchian/Turtle,Momentum,LONG,UBER,STRONG,0.903,65.0,20
+Donchian/Turtle,Momentum,LONG,UBER,NORMAL,0.023,33.3,24
+Donchian/Turtle,Momentum,LONG,UBER,WEAK,-0.399,33.3,18
+Donchian/Turtle,Momentum,LONG,UBER,CHOPPY,0.218,55.0,40
+Donchian/Turtle,Momentum,SHORT,UBER,ALL,-1.039,39.3,122
+Donchian/Turtle,Momentum,SHORT,UBER,STRONG,-1.152,35.1,37
+Donchian/Turtle,Momentum,SHORT,UBER,NORMAL,-1.164,30.4,23
+Donchian/Turtle,Momentum,SHORT,UBER,CAUTIOUS,0.527,44.4,18
+Donchian/Turtle,Momentum,SHORT,UBER,WEAK,-0.067,52.0,25
+Donchian/Turtle,Momentum,SHORT,UBER,CHOPPY,-1.001,36.8,19
+ADX Trend,Momentum,LONG,UBER,ALL,0.806,51.6,153
+ADX Trend,Momentum,LONG,UBER,STRONG,1.402,66.7,39
+ADX Trend,Momentum,LONG,UBER,NORMAL,0.969,54.8,31
+ADX Trend,Momentum,LONG,UBER,CAUTIOUS,-0.165,52.4,21
+ADX Trend,Momentum,LONG,UBER,WEAK,-0.896,32.0,25
+ADX Trend,Momentum,LONG,UBER,CHOPPY,-0.109,45.9,37
+ADX Trend,Momentum,SHORT,UBER,ALL,-0.055,46.4,151
+ADX Trend,Momentum,SHORT,UBER,STRONG,-1.983,37.5,48
+ADX Trend,Momentum,SHORT,UBER,NORMAL,-0.958,38.5,26
+ADX Trend,Momentum,SHORT,UBER,CAUTIOUS,1.18,61.1,18
+ADX Trend,Momentum,SHORT,UBER,WEAK,1.144,58.6,29
+ADX Trend,Momentum,SHORT,UBER,CHOPPY,0.854,46.7,30
+RSI Revert,Reversion,LONG,VST,ALL,0.843,57.1,63
+RSI Revert,Reversion,LONG,VST,STRONG,2.168,88.2,17
+RSI Revert,Reversion,LONG,VST,WEAK,-1.479,26.7,15
+RSI Revert,Reversion,SHORT,VST,ALL,0.047,49.6,129
+RSI Revert,Reversion,SHORT,VST,STRONG,-2.688,21.2,33
+RSI Revert,Reversion,SHORT,VST,NORMAL,0.63,57.1,28
+RSI Revert,Reversion,SHORT,VST,WEAK,1.496,65.2,23
+RSI Revert,Reversion,SHORT,VST,CHOPPY,-0.142,51.4,35
+Zscore Revert,Reversion,LONG,VST,ALL,1.551,60.4,91
+Zscore Revert,Reversion,LONG,VST,STRONG,2.368,69.0,29
+Zscore Revert,Reversion,LONG,VST,NORMAL,1.804,77.8,18
+Zscore Revert,Reversion,LONG,VST,WEAK,-0.592,44.4,27
+Zscore Revert,Reversion,SHORT,VST,ALL,-1.135,47.1,68
+Zscore Revert,Reversion,SHORT,VST,STRONG,-1.438,31.6,19
+Zscore Revert,Reversion,SHORT,VST,CHOPPY,-1.318,38.5,26
+Keltner Revert,Reversion,LONG,VST,ALL,0.961,67.4,43
+Keltner Revert,Reversion,LONG,VST,WEAK,-0.38,55.6,18
+Keltner Revert,Reversion,SHORT,VST,ALL,-1.207,40.7,91
+Keltner Revert,Reversion,SHORT,VST,STRONG,-2.369,22.2,27
+Keltner Revert,Reversion,SHORT,VST,NORMAL,0.852,60.0,15
+Keltner Revert,Reversion,SHORT,VST,WEAK,0.627,50.0,16
+Keltner Revert,Reversion,SHORT,VST,CHOPPY,-1.318,37.0,27
+MFI Revert,Reversion,LONG,VST,ALL,1.648,66.7,30
+MFI Revert,Reversion,SHORT,VST,ALL,-0.449,45.5,44
+RSI Momentum,Momentum,LONG,VST,ALL,-0.047,50.4,129
+RSI Momentum,Momentum,LONG,VST,STRONG,2.688,78.8,33
+RSI Momentum,Momentum,LONG,VST,NORMAL,-0.63,42.9,28
+RSI Momentum,Momentum,LONG,VST,WEAK,-1.496,34.8,23
+RSI Momentum,Momentum,LONG,VST,CHOPPY,0.142,48.6,35
+RSI Momentum,Momentum,SHORT,VST,ALL,-0.843,42.9,63
+RSI Momentum,Momentum,SHORT,VST,STRONG,-2.168,11.8,17
+RSI Momentum,Momentum,SHORT,VST,WEAK,1.479,73.3,15
+Donchian/Turtle,Momentum,LONG,VST,ALL,0.814,55.1,127
+Donchian/Turtle,Momentum,LONG,VST,STRONG,2.345,73.0,37
+Donchian/Turtle,Momentum,LONG,VST,NORMAL,0.109,50.0,22
+Donchian/Turtle,Momentum,LONG,VST,WEAK,-1.108,38.1,21
+Donchian/Turtle,Momentum,LONG,VST,CHOPPY,1.068,55.9,34
+Donchian/Turtle,Momentum,SHORT,VST,ALL,-1.535,41.6,89
+Donchian/Turtle,Momentum,SHORT,VST,STRONG,-2.295,25.0,24
+Donchian/Turtle,Momentum,SHORT,VST,NORMAL,-1.5,31.6,19
+Donchian/Turtle,Momentum,SHORT,VST,WEAK,0.395,55.6,27
+ADX Trend,Momentum,LONG,VST,ALL,0.224,51.0,147
+ADX Trend,Momentum,LONG,VST,STRONG,2.761,78.4,37
+ADX Trend,Momentum,LONG,VST,NORMAL,-0.028,48.1,27
+ADX Trend,Momentum,LONG,VST,CAUTIOUS,-0.104,41.2,17
+ADX Trend,Momentum,LONG,VST,WEAK,-1.477,33.3,24
+ADX Trend,Momentum,LONG,VST,CHOPPY,-0.035,42.9,42
+ADX Trend,Momentum,SHORT,VST,ALL,-0.784,48.2,141
+ADX Trend,Momentum,SHORT,VST,STRONG,-2.76,21.6,37
+ADX Trend,Momentum,SHORT,VST,NORMAL,-0.975,53.3,30
+ADX Trend,Momentum,SHORT,VST,WEAK,1.87,65.6,32
+ADX Trend,Momentum,SHORT,VST,CHOPPY,-0.519,48.3,29
+RSI Revert,Reversion,LONG,XLE,ALL,1.178,59.2,71
+RSI Revert,Reversion,LONG,XLE,STRONG,0.937,60.9,23
+RSI Revert,Reversion,LONG,XLE,WEAK,0.143,50.0,18
+RSI Revert,Reversion,LONG,XLE,CHOPPY,0.987,57.1,21
+RSI Revert,Reversion,SHORT,XLE,ALL,0.04,41.5,147
+RSI Revert,Reversion,SHORT,XLE,STRONG,0.429,47.6,42
+RSI Revert,Reversion,SHORT,XLE,NORMAL,0.77,48.1,27
+RSI Revert,Reversion,SHORT,XLE,CAUTIOUS,-1.197,41.2,17
+RSI Revert,Reversion,SHORT,XLE,WEAK,0.581,41.9,31
+RSI Revert,Reversion,SHORT,XLE,CHOPPY,-1.409,26.7,30
+Zscore Revert,Reversion,LONG,XLE,ALL,0.93,52.4,82
+Zscore Revert,Reversion,LONG,XLE,STRONG,1.627,70.8,24
+Zscore Revert,Reversion,LONG,XLE,WEAK,-0.098,41.7,24
+Zscore Revert,Reversion,LONG,XLE,CHOPPY,0.534,35.3,17
+Zscore Revert,Reversion,SHORT,XLE,ALL,0.142,46.0,113
+Zscore Revert,Reversion,SHORT,XLE,STRONG,0.126,44.0,25
+Zscore Revert,Reversion,SHORT,XLE,NORMAL,1.401,59.3,27
+Zscore Revert,Reversion,SHORT,XLE,CAUTIOUS,-0.963,44.4,18
+Zscore Revert,Reversion,SHORT,XLE,WEAK,-0.013,39.1,23
+Zscore Revert,Reversion,SHORT,XLE,CHOPPY,-0.279,40.0,20
+Keltner Revert,Reversion,LONG,XLE,ALL,0.584,51.0,51
+Keltner Revert,Reversion,LONG,XLE,WEAK,-0.095,41.2,17
+Keltner Revert,Reversion,SHORT,XLE,ALL,-0.168,43.2,125
+Keltner Revert,Reversion,SHORT,XLE,STRONG,0.648,50.0,30
+Keltner Revert,Reversion,SHORT,XLE,NORMAL,0.786,46.4,28
+Keltner Revert,Reversion,SHORT,XLE,CAUTIOUS,-1.326,40.9,22
+Keltner Revert,Reversion,SHORT,XLE,WEAK,-0.323,34.6,26
+Keltner Revert,Reversion,SHORT,XLE,CHOPPY,-0.293,42.1,19
+MFI Revert,Reversion,SHORT,XLE,ALL,0.624,50.0,60
+MFI Revert,Reversion,SHORT,XLE,STRONG,0.258,45.0,20
+RSI Momentum,Momentum,LONG,XLE,ALL,-0.04,58.5,147
+RSI Momentum,Momentum,LONG,XLE,STRONG,-0.429,52.4,42
+RSI Momentum,Momentum,LONG,XLE,NORMAL,-0.77,51.9,27
+RSI Momentum,Momentum,LONG,XLE,CAUTIOUS,1.197,58.8,17
+RSI Momentum,Momentum,LONG,XLE,WEAK,-0.581,58.1,31
+RSI Momentum,Momentum,LONG,XLE,CHOPPY,1.409,73.3,30
+RSI Momentum,Momentum,SHORT,XLE,ALL,-1.178,40.8,71
+RSI Momentum,Momentum,SHORT,XLE,STRONG,-0.937,39.1,23
+RSI Momentum,Momentum,SHORT,XLE,WEAK,-0.143,50.0,18
+RSI Momentum,Momentum,SHORT,XLE,CHOPPY,-0.987,42.9,21
+Donchian/Turtle,Momentum,LONG,XLE,ALL,-0.639,52.8,176
+Donchian/Turtle,Momentum,LONG,XLE,STRONG,-0.34,51.0,49
+Donchian/Turtle,Momentum,LONG,XLE,NORMAL,-0.984,46.3,41
+Donchian/Turtle,Momentum,LONG,XLE,CAUTIOUS,1.159,53.8,26
+Donchian/Turtle,Momentum,LONG,XLE,WEAK,-0.939,54.3,35
+Donchian/Turtle,Momentum,LONG,XLE,CHOPPY,0.482,64.0,25
+Donchian/Turtle,Momentum,SHORT,XLE,ALL,-0.949,44.2,86
+Donchian/Turtle,Momentum,SHORT,XLE,STRONG,-0.791,36.0,25
+Donchian/Turtle,Momentum,SHORT,XLE,WEAK,0.083,52.6,19
+Donchian/Turtle,Momentum,SHORT,XLE,CHOPPY,-1.32,52.2,23
+ADX Trend,Momentum,LONG,XLE,ALL,0.681,56.4,220
+ADX Trend,Momentum,LONG,XLE,STRONG,0.493,55.3,47
+ADX Trend,Momentum,LONG,XLE,NORMAL,-0.579,53.5,43
+ADX Trend,Momentum,LONG,XLE,CAUTIOUS,1.51,60.6,33
+ADX Trend,Momentum,LONG,XLE,WEAK,-0.245,55.6,45
+ADX Trend,Momentum,LONG,XLE,CHOPPY,0.802,57.7,52
+ADX Trend,Momentum,SHORT,XLE,ALL,-0.719,43.8,137
+ADX Trend,Momentum,SHORT,XLE,STRONG,-0.223,37.8,37
+ADX Trend,Momentum,SHORT,XLE,NORMAL,-0.853,48.0,25
+ADX Trend,Momentum,SHORT,XLE,CAUTIOUS,-0.317,33.3,15
+ADX Trend,Momentum,SHORT,XLE,WEAK,0.439,61.3,31
+ADX Trend,Momentum,SHORT,XLE,CHOPPY,-1.607,34.5,29
+RSI Revert,Reversion,LONG,AAL,ALL,-0.589,43.3,104
+RSI Revert,Reversion,LONG,AAL,STRONG,1.579,68.8,16
+RSI Revert,Reversion,LONG,AAL,NORMAL,0.473,62.5,16
+RSI Revert,Reversion,LONG,AAL,CAUTIOUS,0.494,66.7,15
+RSI Revert,Reversion,LONG,AAL,WEAK,-1.786,16.7,36
+RSI Revert,Reversion,LONG,AAL,CHOPPY,-0.0,38.1,21
+RSI Revert,Reversion,SHORT,AAL,ALL,-0.632,47.4,152
+RSI Revert,Reversion,SHORT,AAL,STRONG,-1.819,29.5,44
+RSI Revert,Reversion,SHORT,AAL,NORMAL,0.181,60.0,20
+RSI Revert,Reversion,SHORT,AAL,CAUTIOUS,-0.384,52.6,19
+RSI Revert,Reversion,SHORT,AAL,WEAK,2.119,80.0,20
+RSI Revert,Reversion,SHORT,AAL,CHOPPY,-0.302,42.9,49
+Zscore Revert,Reversion,LONG,AAL,ALL,-0.295,43.7,71
+Zscore Revert,Reversion,LONG,AAL,STRONG,1.976,68.8,16
+Zscore Revert,Reversion,LONG,AAL,WEAK,-1.081,13.6,22
+Zscore Revert,Reversion,SHORT,AAL,ALL,-0.033,52.5,122
+Zscore Revert,Reversion,SHORT,AAL,STRONG,-1.303,34.2,38
+Zscore Revert,Reversion,SHORT,AAL,NORMAL,0.583,47.6,21
+Zscore Revert,Reversion,SHORT,AAL,WEAK,2.074,77.8,18
+Zscore Revert,Reversion,SHORT,AAL,CHOPPY,-0.396,51.4,35
+Keltner Revert,Reversion,LONG,AAL,ALL,-0.366,45.7,81
+Keltner Revert,Reversion,LONG,AAL,STRONG,2.239,86.7,15
+Keltner Revert,Reversion,LONG,AAL,NORMAL,0.085,55.6,18
+Keltner Revert,Reversion,LONG,AAL,WEAK,-1.408,11.5,26
+Keltner Revert,Reversion,SHORT,AAL,ALL,0.565,50.4,141
+Keltner Revert,Reversion,SHORT,AAL,STRONG,-0.926,33.3,33
+Keltner Revert,Reversion,SHORT,AAL,NORMAL,0.596,50.0,22
+Keltner Revert,Reversion,SHORT,AAL,CAUTIOUS,-0.207,52.6,19
+Keltner Revert,Reversion,SHORT,AAL,WEAK,2.519,81.8,22
+Keltner Revert,Reversion,SHORT,AAL,CHOPPY,-0.22,46.7,45
+MFI Revert,Reversion,LONG,AAL,ALL,-0.492,37.9,29
+MFI Revert,Reversion,SHORT,AAL,ALL,0.088,55.8,43
+RSI Momentum,Momentum,LONG,AAL,ALL,0.632,52.6,152
+RSI Momentum,Momentum,LONG,AAL,STRONG,1.819,70.5,44
+RSI Momentum,Momentum,LONG,AAL,NORMAL,-0.181,40.0,20
+RSI Momentum,Momentum,LONG,AAL,CAUTIOUS,0.384,47.4,19
+RSI Momentum,Momentum,LONG,AAL,WEAK,-2.119,20.0,20
+RSI Momentum,Momentum,LONG,AAL,CHOPPY,0.302,57.1,49
+RSI Momentum,Momentum,SHORT,AAL,ALL,0.589,56.7,104
+RSI Momentum,Momentum,SHORT,AAL,STRONG,-1.579,31.2,16
+RSI Momentum,Momentum,SHORT,AAL,NORMAL,-0.473,37.5,16
+RSI Momentum,Momentum,SHORT,AAL,CAUTIOUS,-0.494,33.3,15
+RSI Momentum,Momentum,SHORT,AAL,WEAK,1.786,83.3,36
+RSI Momentum,Momentum,SHORT,AAL,CHOPPY,0.0,61.9,21
+Donchian/Turtle,Momentum,LONG,AAL,ALL,0.544,54.8,146
+Donchian/Turtle,Momentum,LONG,AAL,STRONG,0.822,63.6,33
+Donchian/Turtle,Momentum,LONG,AAL,NORMAL,-0.153,60.0,30
+Donchian/Turtle,Momentum,LONG,AAL,CAUTIOUS,0.601,45.0,20
+Donchian/Turtle,Momentum,LONG,AAL,WEAK,-2.014,28.6,21
+Donchian/Turtle,Momentum,LONG,AAL,CHOPPY,1.307,61.9,42
+Donchian/Turtle,Momentum,SHORT,AAL,ALL,0.299,55.0,109
+Donchian/Turtle,Momentum,SHORT,AAL,STRONG,-2.0,31.8,22
+Donchian/Turtle,Momentum,SHORT,AAL,NORMAL,0.375,47.4,19
+Donchian/Turtle,Momentum,SHORT,AAL,WEAK,1.34,78.8,33
+Donchian/Turtle,Momentum,SHORT,AAL,CHOPPY,0.337,57.1,21
+ADX Trend,Momentum,LONG,AAL,ALL,1.016,52.7,205
+ADX Trend,Momentum,LONG,AAL,STRONG,2.559,69.0,58
+ADX Trend,Momentum,LONG,AAL,NORMAL,-0.019,59.4,32
+ADX Trend,Momentum,LONG,AAL,CAUTIOUS,-0.549,36.0,25
+ADX Trend,Momentum,LONG,AAL,WEAK,-1.159,40.6,32
+ADX Trend,Momentum,LONG,AAL,CHOPPY,-0.175,46.6,58
+ADX Trend,Momentum,SHORT,AAL,ALL,0.222,53.5,185
+ADX Trend,Momentum,SHORT,AAL,STRONG,-2.453,25.6,39
+ADX Trend,Momentum,SHORT,AAL,NORMAL,-0.342,40.7,27
+ADX Trend,Momentum,SHORT,AAL,CAUTIOUS,-0.3,52.0,25
+ADX Trend,Momentum,SHORT,AAL,WEAK,2.158,82.6,46
+ADX Trend,Momentum,SHORT,AAL,CHOPPY,-0.254,56.2,48
+RSI Revert,Reversion,LONG,ALK,ALL,-0.899,41.3,104
+RSI Revert,Reversion,LONG,ALK,STRONG,1.034,56.2,16
+RSI Revert,Reversion,LONG,ALK,NORMAL,0.483,50.0,20
+RSI Revert,Reversion,LONG,ALK,WEAK,-1.657,14.7,34
+RSI Revert,Reversion,LONG,ALK,CHOPPY,0.528,54.5,22
+RSI Revert,Reversion,SHORT,ALK,ALL,-1.142,45.7,186
+RSI Revert,Reversion,SHORT,ALK,STRONG,-2.286,31.5,54
+RSI Revert,Reversion,SHORT,ALK,NORMAL,0.4,46.4,28
+RSI Revert,Reversion,SHORT,ALK,CAUTIOUS,0.165,60.0,20
+RSI Revert,Reversion,SHORT,ALK,WEAK,0.941,59.4,32
+RSI Revert,Reversion,SHORT,ALK,CHOPPY,-0.197,46.2,52
+Zscore Revert,Reversion,LONG,ALK,ALL,-0.616,44.9,78
+Zscore Revert,Reversion,LONG,ALK,STRONG,1.687,73.3,15
+Zscore Revert,Reversion,LONG,ALK,NORMAL,-0.866,38.9,18
+Zscore Revert,Reversion,LONG,ALK,WEAK,-1.171,13.0,23
+Zscore Revert,Reversion,SHORT,ALK,ALL,-1.181,45.3,137
+Zscore Revert,Reversion,SHORT,ALK,STRONG,-2.676,20.5,39
+Zscore Revert,Reversion,SHORT,ALK,NORMAL,0.3,56.0,25
+Zscore Revert,Reversion,SHORT,ALK,CAUTIOUS,0.827,56.2,16
+Zscore Revert,Reversion,SHORT,ALK,WEAK,1.174,63.6,22
+Zscore Revert,Reversion,SHORT,ALK,CHOPPY,-0.207,48.6,35
+Keltner Revert,Reversion,LONG,ALK,ALL,-0.883,40.0,95
+Keltner Revert,Reversion,LONG,ALK,STRONG,1.282,72.2,18
+Keltner Revert,Reversion,LONG,ALK,NORMAL,-0.393,36.8,19
+Keltner Revert,Reversion,LONG,ALK,WEAK,-1.49,12.9,31
+Keltner Revert,Reversion,LONG,ALK,CHOPPY,0.019,47.1,17
+Keltner Revert,Reversion,SHORT,ALK,ALL,-1.112,45.4,174
+Keltner Revert,Reversion,SHORT,ALK,STRONG,-1.953,30.6,49
+Keltner Revert,Reversion,SHORT,ALK,NORMAL,0.593,57.7,26
+Keltner Revert,Reversion,SHORT,ALK,CAUTIOUS,0.993,65.4,26
+Keltner Revert,Reversion,SHORT,ALK,WEAK,0.748,57.1,28
+Keltner Revert,Reversion,SHORT,ALK,CHOPPY,-1.287,35.6,45
+MFI Revert,Reversion,LONG,ALK,ALL,-0.542,38.6,44
+MFI Revert,Reversion,LONG,ALK,WEAK,-0.945,6.2,16
+MFI Revert,Reversion,SHORT,ALK,ALL,-0.399,43.6,39
+RSI Momentum,Momentum,LONG,ALK,ALL,1.142,54.3,186
+RSI Momentum,Momentum,LONG,ALK,STRONG,2.286,68.5,54
+RSI Momentum,Momentum,LONG,ALK,NORMAL,-0.4,53.6,28
+RSI Momentum,Momentum,LONG,ALK,CAUTIOUS,-0.165,40.0,20
+RSI Momentum,Momentum,LONG,ALK,WEAK,-0.941,40.6,32
+RSI Momentum,Momentum,LONG,ALK,CHOPPY,0.197,53.8,52
+RSI Momentum,Momentum,SHORT,ALK,ALL,0.899,58.7,104
+RSI Momentum,Momentum,SHORT,ALK,STRONG,-1.034,43.8,16
+RSI Momentum,Momentum,SHORT,ALK,NORMAL,-0.483,50.0,20
+RSI Momentum,Momentum,SHORT,ALK,WEAK,1.657,85.3,34
+RSI Momentum,Momentum,SHORT,ALK,CHOPPY,-0.528,45.5,22
+Donchian/Turtle,Momentum,LONG,ALK,ALL,0.755,52.8,199
+Donchian/Turtle,Momentum,LONG,ALK,STRONG,2.16,67.9,56
+Donchian/Turtle,Momentum,LONG,ALK,NORMAL,-0.273,48.5,33
+Donchian/Turtle,Momentum,LONG,ALK,CAUTIOUS,-0.516,37.5,24
+Donchian/Turtle,Momentum,LONG,ALK,WEAK,-1.855,33.3,36
+Donchian/Turtle,Momentum,LONG,ALK,CHOPPY,0.912,60.0,50
+Donchian/Turtle,Momentum,SHORT,ALK,ALL,-0.219,50.0,122
+Donchian/Turtle,Momentum,SHORT,ALK,STRONG,-1.967,31.2,32
+Donchian/Turtle,Momentum,SHORT,ALK,NORMAL,-1.012,41.9,31
+Donchian/Turtle,Momentum,SHORT,ALK,WEAK,1.619,89.3,28
+Donchian/Turtle,Momentum,SHORT,ALK,CHOPPY,-0.886,36.8,19
+ADX Trend,Momentum,LONG,ALK,ALL,0.253,49.3,203
+ADX Trend,Momentum,LONG,ALK,STRONG,2.084,64.2,53
+ADX Trend,Momentum,LONG,ALK,NORMAL,0.106,51.6,31
+ADX Trend,Momentum,LONG,ALK,CAUTIOUS,-0.503,32.0,25
+ADX Trend,Momentum,LONG,ALK,WEAK,-2.286,29.5,44
+ADX Trend,Momentum,LONG,ALK,CHOPPY,0.664,58.0,50
+ADX Trend,Momentum,SHORT,ALK,ALL,0.437,51.6,190
+ADX Trend,Momentum,SHORT,ALK,STRONG,-2.518,25.5,47
+ADX Trend,Momentum,SHORT,ALK,NORMAL,0.815,58.1,31
+ADX Trend,Momentum,SHORT,ALK,CAUTIOUS,0.184,52.4,21
+ADX Trend,Momentum,SHORT,ALK,WEAK,1.599,73.3,45
+ADX Trend,Momentum,SHORT,ALK,CHOPPY,-0.313,52.2,46
+RSI Revert,Reversion,LONG,BHE,ALL,1.362,54.1,74
+RSI Revert,Reversion,LONG,BHE,STRONG,2.35,95.0,20
+RSI Revert,Reversion,LONG,BHE,WEAK,-0.102,34.8,23
+RSI Revert,Reversion,SHORT,BHE,ALL,-0.302,49.1,114
+RSI Revert,Reversion,SHORT,BHE,STRONG,-2.248,22.6,31
+RSI Revert,Reversion,SHORT,BHE,NORMAL,0.456,43.5,23
+RSI Revert,Reversion,SHORT,BHE,WEAK,1.891,81.0,21
+RSI Revert,Reversion,SHORT,BHE,CHOPPY,0.089,59.3,27
+Zscore Revert,Reversion,LONG,BHE,ALL,0.916,55.6,81
+Zscore Revert,Reversion,LONG,BHE,STRONG,1.73,83.3,18
+Zscore Revert,Reversion,LONG,BHE,NORMAL,0.92,60.0,15
+Zscore Revert,Reversion,LONG,BHE,WEAK,-0.611,35.7,28
+Zscore Revert,Reversion,SHORT,BHE,ALL,0.335,52.1,96
+Zscore Revert,Reversion,SHORT,BHE,STRONG,-1.972,31.2,32
+Zscore Revert,Reversion,SHORT,BHE,NORMAL,-0.231,37.5,16
+Zscore Revert,Reversion,SHORT,BHE,WEAK,1.787,80.0,15
+Zscore Revert,Reversion,SHORT,BHE,CHOPPY,1.298,75.0,20
+Keltner Revert,Reversion,LONG,BHE,ALL,0.951,60.9,46
+Keltner Revert,Reversion,LONG,BHE,WEAK,0.002,42.9,21
+Keltner Revert,Reversion,SHORT,BHE,ALL,-0.835,48.0,102
+Keltner Revert,Reversion,SHORT,BHE,STRONG,-2.137,26.7,30
+Keltner Revert,Reversion,SHORT,BHE,NORMAL,-0.677,33.3,18
+Keltner Revert,Reversion,SHORT,BHE,WEAK,1.78,77.8,18
+Keltner Revert,Reversion,SHORT,BHE,CHOPPY,0.344,62.5,24
+MFI Revert,Reversion,SHORT,BHE,ALL,-1.199,35.9,39
+RSI Momentum,Momentum,LONG,BHE,ALL,0.302,50.9,114
+RSI Momentum,Momentum,LONG,BHE,STRONG,2.248,77.4,31
+RSI Momentum,Momentum,LONG,BHE,NORMAL,-0.456,56.5,23
+RSI Momentum,Momentum,LONG,BHE,WEAK,-1.891,19.0,21
+RSI Momentum,Momentum,LONG,BHE,CHOPPY,-0.089,40.7,27
+RSI Momentum,Momentum,SHORT,BHE,ALL,-1.362,45.9,74
+RSI Momentum,Momentum,SHORT,BHE,STRONG,-2.35,5.0,20
+RSI Momentum,Momentum,SHORT,BHE,WEAK,0.102,65.2,23
+Donchian/Turtle,Momentum,LONG,BHE,ALL,0.28,51.7,151
+Donchian/Turtle,Momentum,LONG,BHE,STRONG,2.089,70.0,40
+Donchian/Turtle,Momentum,LONG,BHE,NORMAL,1.181,72.0,25
+Donchian/Turtle,Momentum,LONG,BHE,CAUTIOUS,0.249,53.3,15
+Donchian/Turtle,Momentum,LONG,BHE,WEAK,-2.613,17.9,28
+Donchian/Turtle,Momentum,LONG,BHE,CHOPPY,-0.44,44.2,43
+Donchian/Turtle,Momentum,SHORT,BHE,ALL,-1.131,41.8,91
+Donchian/Turtle,Momentum,SHORT,BHE,STRONG,-2.111,10.5,19
+Donchian/Turtle,Momentum,SHORT,BHE,NORMAL,-1.332,35.3,17
+Donchian/Turtle,Momentum,SHORT,BHE,WEAK,0.814,61.3,31
+Donchian/Turtle,Momentum,SHORT,BHE,CHOPPY,-0.639,43.8,16
+ADX Trend,Momentum,LONG,BHE,ALL,0.511,48.5,163
+ADX Trend,Momentum,LONG,BHE,STRONG,2.31,75.0,36
+ADX Trend,Momentum,LONG,BHE,NORMAL,-0.084,62.1,29
+ADX Trend,Momentum,LONG,BHE,CAUTIOUS,0.149,30.4,23
+ADX Trend,Momentum,LONG,BHE,WEAK,-1.687,29.0,31
+ADX Trend,Momentum,LONG,BHE,CHOPPY,-0.169,40.9,44
+ADX Trend,Momentum,SHORT,BHE,ALL,-0.762,44.4,117
+ADX Trend,Momentum,SHORT,BHE,STRONG,-2.974,11.4,35
+ADX Trend,Momentum,SHORT,BHE,NORMAL,-1.322,39.1,23
+ADX Trend,Momentum,SHORT,BHE,WEAK,1.817,79.5,39
+RSI Revert,Reversion,LONG,CAR,ALL,0.908,51.9,135
+RSI Revert,Reversion,LONG,CAR,STRONG,1.482,56.8,37
+RSI Revert,Reversion,LONG,CAR,NORMAL,1.152,68.8,16
+RSI Revert,Reversion,LONG,CAR,CAUTIOUS,0.461,47.1,17
+RSI Revert,Reversion,LONG,CAR,WEAK,-1.278,37.5,32
+RSI Revert,Reversion,LONG,CAR,CHOPPY,0.817,54.5,33
+RSI Revert,Reversion,SHORT,CAR,ALL,-1.166,43.8,153
+RSI Revert,Reversion,SHORT,CAR,STRONG,-0.616,35.3,34
+RSI Revert,Reversion,SHORT,CAR,NORMAL,-2.046,30.3,33
+RSI Revert,Reversion,SHORT,CAR,CAUTIOUS,-0.744,47.4,19
+RSI Revert,Reversion,SHORT,CAR,WEAK,-0.532,50.0,34
+RSI Revert,Reversion,SHORT,CAR,CHOPPY,0.565,57.6,33
+Zscore Revert,Reversion,LONG,CAR,ALL,0.237,49.6,115
+Zscore Revert,Reversion,LONG,CAR,STRONG,0.607,51.7,29
+Zscore Revert,Reversion,LONG,CAR,WEAK,-1.641,33.3,27
+Zscore Revert,Reversion,LONG,CAR,CHOPPY,0.951,53.1,32
+Zscore Revert,Reversion,SHORT,CAR,ALL,-0.927,42.0,81
+Zscore Revert,Reversion,SHORT,CAR,STRONG,-0.478,47.6,21
+Zscore Revert,Reversion,SHORT,CAR,NORMAL,-1.528,34.8,23
+Zscore Revert,Reversion,SHORT,CAR,CAUTIOUS,-0.894,40.0,15
+Keltner Revert,Reversion,LONG,CAR,ALL,0.572,52.8,108
+Keltner Revert,Reversion,LONG,CAR,STRONG,1.55,64.3,28
+Keltner Revert,Reversion,LONG,CAR,WEAK,-1.304,37.9,29
+Keltner Revert,Reversion,LONG,CAR,CHOPPY,0.439,54.2,24
+Keltner Revert,Reversion,SHORT,CAR,ALL,-1.107,39.1,92
+Keltner Revert,Reversion,SHORT,CAR,STRONG,-0.596,36.0,25
+Keltner Revert,Reversion,SHORT,CAR,NORMAL,-1.872,30.8,26
+Keltner Revert,Reversion,SHORT,CAR,CHOPPY,0.755,61.1,18
+MFI Revert,Reversion,LONG,CAR,ALL,0.808,55.3,76
+MFI Revert,Reversion,LONG,CAR,STRONG,1.649,71.4,21
+MFI Revert,Reversion,LONG,CAR,WEAK,-1.081,29.4,17
+MFI Revert,Reversion,LONG,CAR,CHOPPY,0.191,55.0,20
+MFI Revert,Reversion,SHORT,CAR,ALL,-0.65,47.5,80
+MFI Revert,Reversion,SHORT,CAR,STRONG,-0.22,40.0,25
+MFI Revert,Reversion,SHORT,CAR,WEAK,-0.15,57.1,21
+MFI Revert,Reversion,SHORT,CAR,CHOPPY,0.708,70.6,17
+RSI Momentum,Momentum,LONG,CAR,ALL,1.166,56.2,153
+RSI Momentum,Momentum,LONG,CAR,STRONG,0.616,64.7,34
+RSI Momentum,Momentum,LONG,CAR,NORMAL,2.046,69.7,33
+RSI Momentum,Momentum,LONG,CAR,CAUTIOUS,0.744,52.6,19
+RSI Momentum,Momentum,LONG,CAR,WEAK,0.532,50.0,34
+RSI Momentum,Momentum,LONG,CAR,CHOPPY,-0.565,42.4,33
+RSI Momentum,Momentum,SHORT,CAR,ALL,-0.908,48.1,135
+RSI Momentum,Momentum,SHORT,CAR,STRONG,-1.482,43.2,37
+RSI Momentum,Momentum,SHORT,CAR,NORMAL,-1.152,31.2,16
+RSI Momentum,Momentum,SHORT,CAR,CAUTIOUS,-0.461,52.9,17
+RSI Momentum,Momentum,SHORT,CAR,WEAK,1.278,62.5,32
+RSI Momentum,Momentum,SHORT,CAR,CHOPPY,-0.817,45.5,33
+Donchian/Turtle,Momentum,LONG,CAR,ALL,1.003,56.6,129
+Donchian/Turtle,Momentum,LONG,CAR,STRONG,0.925,65.6,32
+Donchian/Turtle,Momentum,LONG,CAR,NORMAL,1.786,62.5,32
+Donchian/Turtle,Momentum,LONG,CAR,CAUTIOUS,0.655,52.6,19
+Donchian/Turtle,Momentum,LONG,CAR,WEAK,0.22,52.0,25
+Donchian/Turtle,Momentum,LONG,CAR,CHOPPY,-0.887,42.9,21
+Donchian/Turtle,Momentum,SHORT,CAR,ALL,-0.411,50.3,149
+Donchian/Turtle,Momentum,SHORT,CAR,STRONG,-1.174,48.7,39
+Donchian/Turtle,Momentum,SHORT,CAR,NORMAL,-1.332,30.0,20
+Donchian/Turtle,Momentum,SHORT,CAR,WEAK,1.514,66.7,33
+Donchian/Turtle,Momentum,SHORT,CAR,CHOPPY,-0.907,46.5,43
+ADX Trend,Momentum,LONG,CAR,ALL,1.548,55.0,240
+ADX Trend,Momentum,LONG,CAR,STRONG,1.213,61.3,62
+ADX Trend,Momentum,LONG,CAR,NORMAL,2.264,69.8,43
+ADX Trend,Momentum,LONG,CAR,CAUTIOUS,0.702,50.0,32
+ADX Trend,Momentum,LONG,CAR,WEAK,0.187,49.0,49
+ADX Trend,Momentum,LONG,CAR,CHOPPY,-0.455,44.4,54
+ADX Trend,Momentum,SHORT,CAR,ALL,0.358,48.5,165
+ADX Trend,Momentum,SHORT,CAR,STRONG,-0.94,40.0,40
+ADX Trend,Momentum,SHORT,CAR,NORMAL,-1.509,22.7,22
+ADX Trend,Momentum,SHORT,CAR,CAUTIOUS,0.988,64.7,17
+ADX Trend,Momentum,SHORT,CAR,WEAK,1.201,61.0,41
+ADX Trend,Momentum,SHORT,CAR,CHOPPY,-0.072,51.1,45
+RSI Revert,Reversion,LONG,CDE,ALL,1.583,59.7,67
+RSI Revert,Reversion,LONG,CDE,WEAK,-0.319,37.0,27
+RSI Revert,Reversion,SHORT,CDE,ALL,-0.231,46.2,145
+RSI Revert,Reversion,SHORT,CDE,STRONG,-1.637,31.4,35
+RSI Revert,Reversion,SHORT,CDE,NORMAL,-0.248,50.0,20
+RSI Revert,Reversion,SHORT,CDE,CAUTIOUS,0.444,52.2,23
+RSI Revert,Reversion,SHORT,CDE,WEAK,0.65,44.0,25
+RSI Revert,Reversion,SHORT,CDE,CHOPPY,0.63,54.8,42
+Zscore Revert,Reversion,LONG,CDE,ALL,1.516,59.6,52
+Zscore Revert,Reversion,LONG,CDE,WEAK,0.006,40.0,20
+Zscore Revert,Reversion,SHORT,CDE,ALL,-0.117,52.8,125
+Zscore Revert,Reversion,SHORT,CDE,STRONG,-1.701,32.3,31
+Zscore Revert,Reversion,SHORT,CDE,NORMAL,1.116,75.0,20
+Zscore Revert,Reversion,SHORT,CDE,CAUTIOUS,-0.218,47.4,19
+Zscore Revert,Reversion,SHORT,CDE,WEAK,0.826,47.1,17
+Zscore Revert,Reversion,SHORT,CDE,CHOPPY,0.648,63.2,38
+Keltner Revert,Reversion,LONG,CDE,ALL,0.943,58.5,41
+Keltner Revert,Reversion,LONG,CDE,WEAK,-0.014,42.1,19
+Keltner Revert,Reversion,SHORT,CDE,ALL,-0.331,47.1,104
+Keltner Revert,Reversion,SHORT,CDE,STRONG,-1.433,30.4,23
+Keltner Revert,Reversion,SHORT,CDE,NORMAL,-0.183,50.0,18
+Keltner Revert,Reversion,SHORT,CDE,CAUTIOUS,0.514,53.3,15
+Keltner Revert,Reversion,SHORT,CDE,CHOPPY,0.315,55.6,36
+MFI Revert,Reversion,SHORT,CDE,ALL,-1.408,31.8,22
+RSI Momentum,Momentum,LONG,CDE,ALL,0.231,53.8,145
+RSI Momentum,Momentum,LONG,CDE,STRONG,1.637,68.6,35
+RSI Momentum,Momentum,LONG,CDE,NORMAL,0.248,50.0,20
+RSI Momentum,Momentum,LONG,CDE,CAUTIOUS,-0.444,47.8,23
+RSI Momentum,Momentum,LONG,CDE,WEAK,-0.65,56.0,25
+RSI Momentum,Momentum,LONG,CDE,CHOPPY,-0.63,45.2,42
+RSI Momentum,Momentum,SHORT,CDE,ALL,-1.583,40.3,67
+RSI Momentum,Momentum,SHORT,CDE,WEAK,0.319,63.0,27
+Donchian/Turtle,Momentum,LONG,CDE,ALL,0.401,51.5,136
+Donchian/Turtle,Momentum,LONG,CDE,STRONG,1.786,70.0,30
+Donchian/Turtle,Momentum,LONG,CDE,NORMAL,-0.282,36.8,19
+Donchian/Turtle,Momentum,LONG,CDE,CAUTIOUS,0.081,52.4,21
+Donchian/Turtle,Momentum,LONG,CDE,WEAK,-0.984,45.0,20
+Donchian/Turtle,Momentum,LONG,CDE,CHOPPY,-0.187,47.8,46
+Donchian/Turtle,Momentum,SHORT,CDE,ALL,-0.543,49.5,93
+Donchian/Turtle,Momentum,SHORT,CDE,STRONG,-1.983,30.0,20
+Donchian/Turtle,Momentum,SHORT,CDE,NORMAL,-0.267,40.0,15
+Donchian/Turtle,Momentum,SHORT,CDE,WEAK,1.055,66.7,33
+ADX Trend,Momentum,LONG,CDE,ALL,1.103,55.2,212
+ADX Trend,Momentum,LONG,CDE,STRONG,2.822,83.7,49
+ADX Trend,Momentum,LONG,CDE,NORMAL,0.15,40.5,37
+ADX Trend,Momentum,LONG,CDE,CAUTIOUS,-0.752,46.7,30
+ADX Trend,Momentum,LONG,CDE,WEAK,-0.117,54.1,37
+ADX Trend,Momentum,LONG,CDE,CHOPPY,-0.301,45.8,59
+ADX Trend,Momentum,SHORT,CDE,ALL,-0.74,48.3,147
+ADX Trend,Momentum,SHORT,CDE,STRONG,-2.018,28.9,38
+ADX Trend,Momentum,SHORT,CDE,NORMAL,-0.067,50.0,30
+ADX Trend,Momentum,SHORT,CDE,CAUTIOUS,-0.373,52.4,21
+ADX Trend,Momentum,SHORT,CDE,WEAK,1.068,65.7,35
+ADX Trend,Momentum,SHORT,CDE,CHOPPY,-0.659,47.8,23
+RSI Revert,Reversion,LONG,CLF,ALL,0.795,51.3,117
+RSI Revert,Reversion,LONG,CLF,STRONG,1.581,64.3,28
+RSI Revert,Reversion,LONG,CLF,WEAK,-0.804,38.2,34
+RSI Revert,Reversion,LONG,CLF,CHOPPY,0.337,43.3,30
+RSI Revert,Reversion,SHORT,CLF,ALL,-0.111,46.4,138
+RSI Revert,Reversion,SHORT,CLF,STRONG,-2.022,31.1,45
+RSI Revert,Reversion,SHORT,CLF,NORMAL,-0.622,34.8,23
+RSI Revert,Reversion,SHORT,CLF,CAUTIOUS,0.78,43.8,16
+RSI Revert,Reversion,SHORT,CLF,WEAK,2.428,100.0,20
+RSI Revert,Reversion,SHORT,CLF,CHOPPY,-0.201,44.1,34
+Zscore Revert,Reversion,LONG,CLF,ALL,-0.295,52.0,98
+Zscore Revert,Reversion,LONG,CLF,STRONG,0.765,56.0,25
+Zscore Revert,Reversion,LONG,CLF,NORMAL,0.447,55.6,18
+Zscore Revert,Reversion,LONG,CLF,WEAK,-1.356,37.9,29
+Zscore Revert,Reversion,LONG,CLF,CHOPPY,0.893,56.2,16
+Zscore Revert,Reversion,SHORT,CLF,ALL,-0.036,46.2,130
+Zscore Revert,Reversion,SHORT,CLF,STRONG,-2.484,20.0,30
+Zscore Revert,Reversion,SHORT,CLF,NORMAL,-0.702,35.7,28
+Zscore Revert,Reversion,SHORT,CLF,CAUTIOUS,1.463,56.5,23
+Zscore Revert,Reversion,SHORT,CLF,WEAK,2.47,94.1,17
+Zscore Revert,Reversion,SHORT,CLF,CHOPPY,0.525,46.9,32
+Keltner Revert,Reversion,LONG,CLF,ALL,0.835,53.7,108
+Keltner Revert,Reversion,LONG,CLF,STRONG,1.543,67.9,28
+Keltner Revert,Reversion,LONG,CLF,NORMAL,0.66,62.5,16
+Keltner Revert,Reversion,LONG,CLF,WEAK,-0.836,37.5,32
+Keltner Revert,Reversion,LONG,CLF,CHOPPY,0.655,45.0,20
+Keltner Revert,Reversion,SHORT,CLF,ALL,-0.155,51.1,90
+Keltner Revert,Reversion,SHORT,CLF,STRONG,-1.915,31.8,22
+Keltner Revert,Reversion,SHORT,CLF,NORMAL,-1.496,31.2,16
+Keltner Revert,Reversion,SHORT,CLF,CHOPPY,0.185,44.8,29
+MFI Revert,Reversion,LONG,CLF,ALL,0.872,58.5,41
+MFI Revert,Reversion,SHORT,CLF,ALL,0.324,52.9,17
+RSI Momentum,Momentum,LONG,CLF,ALL,0.111,53.6,138
+RSI Momentum,Momentum,LONG,CLF,STRONG,2.022,68.9,45
+RSI Momentum,Momentum,LONG,CLF,NORMAL,0.622,65.2,23
+RSI Momentum,Momentum,LONG,CLF,CAUTIOUS,-0.78,56.2,16
+RSI Momentum,Momentum,LONG,CLF,WEAK,-2.428,0.0,20
+RSI Momentum,Momentum,LONG,CLF,CHOPPY,0.201,55.9,34
+RSI Momentum,Momentum,SHORT,CLF,ALL,-0.795,48.7,117
+RSI Momentum,Momentum,SHORT,CLF,STRONG,-1.581,35.7,28
+RSI Momentum,Momentum,SHORT,CLF,WEAK,0.804,61.8,34
+RSI Momentum,Momentum,SHORT,CLF,CHOPPY,-0.337,56.7,30
+Donchian/Turtle,Momentum,LONG,CLF,ALL,-0.582,50.3,151
+Donchian/Turtle,Momentum,LONG,CLF,STRONG,1.86,67.6,34
+Donchian/Turtle,Momentum,LONG,CLF,NORMAL,0.7,64.5,31
+Donchian/Turtle,Momentum,LONG,CLF,CAUTIOUS,-1.593,40.9,22
+Donchian/Turtle,Momentum,LONG,CLF,WEAK,-2.316,16.0,25
+Donchian/Turtle,Momentum,LONG,CLF,CHOPPY,-0.719,51.3,39
+Donchian/Turtle,Momentum,SHORT,CLF,ALL,0.156,53.2,111
+Donchian/Turtle,Momentum,SHORT,CLF,STRONG,-1.233,38.5,26
+Donchian/Turtle,Momentum,SHORT,CLF,NORMAL,0.117,58.8,17
+Donchian/Turtle,Momentum,SHORT,CLF,WEAK,1.325,62.9,35
+Donchian/Turtle,Momentum,SHORT,CLF,CHOPPY,-0.964,54.5,22
+ADX Trend,Momentum,LONG,CLF,ALL,-0.934,48.9,188
+ADX Trend,Momentum,LONG,CLF,STRONG,2.196,65.2,46
+ADX Trend,Momentum,LONG,CLF,NORMAL,-0.089,61.3,31
+ADX Trend,Momentum,LONG,CLF,CAUTIOUS,-1.387,37.5,24
+ADX Trend,Momentum,LONG,CLF,WEAK,-2.471,26.3,38
+ADX Trend,Momentum,LONG,CLF,CHOPPY,-0.512,49.0,49
+ADX Trend,Momentum,SHORT,CLF,ALL,-0.457,43.3,157
+ADX Trend,Momentum,SHORT,CLF,STRONG,-2.13,26.2,42
+ADX Trend,Momentum,SHORT,CLF,NORMAL,0.024,45.5,22
+ADX Trend,Momentum,SHORT,CLF,CAUTIOUS,-0.529,21.1,19
+ADX Trend,Momentum,SHORT,CLF,WEAK,1.856,78.9,38
+ADX Trend,Momentum,SHORT,CLF,CHOPPY,-0.977,36.1,36
+RSI Revert,Reversion,LONG,CRS,ALL,1.032,55.2,58
+RSI Revert,Reversion,LONG,CRS,WEAK,-0.34,31.2,16
+RSI Revert,Reversion,LONG,CRS,CHOPPY,0.362,47.4,19
+RSI Revert,Reversion,SHORT,CRS,ALL,-1.596,42.0,174
+RSI Revert,Reversion,SHORT,CRS,STRONG,-2.862,21.6,51
+RSI Revert,Reversion,SHORT,CRS,NORMAL,-1.45,40.6,32
+RSI Revert,Reversion,SHORT,CRS,WEAK,2.371,74.3,35
+RSI Revert,Reversion,SHORT,CRS,CHOPPY,-0.707,37.2,43
+Zscore Revert,Reversion,LONG,CRS,ALL,1.825,57.1,70
+Zscore Revert,Reversion,LONG,CRS,STRONG,2.369,82.6,23
+Zscore Revert,Reversion,LONG,CRS,WEAK,0.464,44.4,18
+Zscore Revert,Reversion,SHORT,CRS,ALL,-1.051,42.5,106
+Zscore Revert,Reversion,SHORT,CRS,STRONG,-1.054,30.0,30
+Zscore Revert,Reversion,SHORT,CRS,NORMAL,-1.079,41.7,24
+Zscore Revert,Reversion,SHORT,CRS,WEAK,1.702,76.2,21
+Zscore Revert,Reversion,SHORT,CRS,CHOPPY,-1.281,26.1,23
+Keltner Revert,Reversion,LONG,CRS,ALL,0.831,56.2,32
+Keltner Revert,Reversion,SHORT,CRS,ALL,-1.053,39.4,142
+Keltner Revert,Reversion,SHORT,CRS,STRONG,-2.229,16.7,36
+Keltner Revert,Reversion,SHORT,CRS,NORMAL,-1.154,32.1,28
+Keltner Revert,Reversion,SHORT,CRS,WEAK,2.246,71.9,32
+Keltner Revert,Reversion,SHORT,CRS,CHOPPY,-1.361,33.3,36
+MFI Revert,Reversion,LONG,CRS,ALL,0.299,54.5,22
+MFI Revert,Reversion,SHORT,CRS,ALL,-0.612,41.6,77
+MFI Revert,Reversion,SHORT,CRS,STRONG,-1.517,21.7,23
+MFI Revert,Reversion,SHORT,CRS,CHOPPY,-0.235,33.3,18
+RSI Momentum,Momentum,LONG,CRS,ALL,1.596,58.0,174
+RSI Momentum,Momentum,LONG,CRS,STRONG,2.862,78.4,51
+RSI Momentum,Momentum,LONG,CRS,NORMAL,1.45,59.4,32
+RSI Momentum,Momentum,LONG,CRS,WEAK,-2.371,25.7,35
+RSI Momentum,Momentum,LONG,CRS,CHOPPY,0.707,62.8,43
+RSI Momentum,Momentum,SHORT,CRS,ALL,-1.032,44.8,58
+RSI Momentum,Momentum,SHORT,CRS,WEAK,0.34,68.8,16
+RSI Momentum,Momentum,SHORT,CRS,CHOPPY,-0.362,52.6,19
+Donchian/Turtle,Momentum,LONG,CRS,ALL,1.11,56.1,180
+Donchian/Turtle,Momentum,LONG,CRS,STRONG,1.834,75.0,48
+Donchian/Turtle,Momentum,LONG,CRS,NORMAL,1.773,64.9,37
+Donchian/Turtle,Momentum,LONG,CRS,CAUTIOUS,-0.615,39.1,23
+Donchian/Turtle,Momentum,LONG,CRS,WEAK,-2.189,21.2,33
+Donchian/Turtle,Momentum,LONG,CRS,CHOPPY,0.666,64.1,39
+Donchian/Turtle,Momentum,SHORT,CRS,ALL,-0.895,45.5,55
+Donchian/Turtle,Momentum,SHORT,CRS,WEAK,-0.263,55.6,18
+ADX Trend,Momentum,LONG,CRS,ALL,0.669,52.9,204
+ADX Trend,Momentum,LONG,CRS,STRONG,2.119,74.1,54
+ADX Trend,Momentum,LONG,CRS,NORMAL,0.953,58.3,36
+ADX Trend,Momentum,LONG,CRS,CAUTIOUS,-0.02,40.0,20
+ADX Trend,Momentum,LONG,CRS,WEAK,-2.587,19.0,42
+ADX Trend,Momentum,LONG,CRS,CHOPPY,0.397,59.6,52
+ADX Trend,Momentum,SHORT,CRS,ALL,-0.527,46.2,145
+ADX Trend,Momentum,SHORT,CRS,STRONG,-1.789,23.5,34
+ADX Trend,Momentum,SHORT,CRS,NORMAL,-0.748,50.0,20
+ADX Trend,Momentum,SHORT,CRS,CAUTIOUS,-0.921,47.1,17
+ADX Trend,Momentum,SHORT,CRS,WEAK,1.748,79.3,29
+ADX Trend,Momentum,SHORT,CRS,CHOPPY,-0.704,40.0,45
+RSI Revert,Reversion,LONG,CVNA,ALL,1.022,61.8,89
+RSI Revert,Reversion,LONG,CVNA,STRONG,2.08,80.6,31
+RSI Revert,Reversion,LONG,CVNA,WEAK,-1.654,26.3,19
+RSI Revert,Reversion,LONG,CVNA,CHOPPY,0.704,62.5,16
+RSI Revert,Reversion,SHORT,CVNA,ALL,-0.695,43.2,169
+RSI Revert,Reversion,SHORT,CVNA,STRONG,-2.285,29.5,44
+RSI Revert,Reversion,SHORT,CVNA,NORMAL,-1.224,30.3,33
+RSI Revert,Reversion,SHORT,CVNA,CAUTIOUS,-0.13,52.6,19
+RSI Revert,Reversion,SHORT,CVNA,WEAK,0.366,52.0,25
+RSI Revert,Reversion,SHORT,CVNA,CHOPPY,1.129,56.2,48
+Zscore Revert,Reversion,LONG,CVNA,ALL,0.111,61.2,85
+Zscore Revert,Reversion,LONG,CVNA,STRONG,1.123,84.0,25
+Zscore Revert,Reversion,LONG,CVNA,WEAK,-2.205,24.0,25
+Zscore Revert,Reversion,SHORT,CVNA,ALL,-0.91,41.6,77
+Zscore Revert,Reversion,SHORT,CVNA,STRONG,-1.991,26.1,23
+Zscore Revert,Reversion,SHORT,CVNA,CHOPPY,0.743,55.6,18
+Keltner Revert,Reversion,LONG,CVNA,ALL,0.945,68.8,64
+Keltner Revert,Reversion,LONG,CVNA,STRONG,1.636,89.5,19
+Keltner Revert,Reversion,LONG,CVNA,WEAK,-2.045,18.8,16
+Keltner Revert,Reversion,SHORT,CVNA,ALL,-0.581,46.5,142
+Keltner Revert,Reversion,SHORT,CVNA,STRONG,-1.645,31.4,35
+Keltner Revert,Reversion,SHORT,CVNA,NORMAL,-0.883,34.5,29
+Keltner Revert,Reversion,SHORT,CVNA,WEAK,0.227,60.0,20
+Keltner Revert,Reversion,SHORT,CVNA,CHOPPY,1.072,56.8,44
+MFI Revert,Reversion,LONG,CVNA,ALL,0.936,62.7,51
+MFI Revert,Reversion,LONG,CVNA,STRONG,2.235,93.8,16
+MFI Revert,Reversion,SHORT,CVNA,ALL,-0.787,43.0,93
+MFI Revert,Reversion,SHORT,CVNA,STRONG,-1.747,29.6,27
+MFI Revert,Reversion,SHORT,CVNA,NORMAL,-0.924,33.3,15
+MFI Revert,Reversion,SHORT,CVNA,WEAK,-0.091,50.0,16
+MFI Revert,Reversion,SHORT,CVNA,CHOPPY,0.894,59.3,27
+RSI Momentum,Momentum,LONG,CVNA,ALL,0.695,56.8,169
+RSI Momentum,Momentum,LONG,CVNA,STRONG,2.285,70.5,44
+RSI Momentum,Momentum,LONG,CVNA,NORMAL,1.224,69.7,33
+RSI Momentum,Momentum,LONG,CVNA,CAUTIOUS,0.13,47.4,19
+RSI Momentum,Momentum,LONG,CVNA,WEAK,-0.366,48.0,25
+RSI Momentum,Momentum,LONG,CVNA,CHOPPY,-1.129,43.8,48
+RSI Momentum,Momentum,SHORT,CVNA,ALL,-1.022,38.2,89
+RSI Momentum,Momentum,SHORT,CVNA,STRONG,-2.08,19.4,31
+RSI Momentum,Momentum,SHORT,CVNA,WEAK,1.654,73.7,19
+RSI Momentum,Momentum,SHORT,CVNA,CHOPPY,-0.704,37.5,16
+Donchian/Turtle,Momentum,LONG,CVNA,ALL,1.06,62.7,126
+Donchian/Turtle,Momentum,LONG,CVNA,STRONG,2.03,69.7,33
+Donchian/Turtle,Momentum,LONG,CVNA,NORMAL,1.691,81.0,21
+Donchian/Turtle,Momentum,LONG,CVNA,WEAK,-0.224,50.0,16
+Donchian/Turtle,Momentum,LONG,CVNA,CHOPPY,-0.816,48.8,43
+Donchian/Turtle,Momentum,SHORT,CVNA,ALL,-0.052,40.2,87
+Donchian/Turtle,Momentum,SHORT,CVNA,STRONG,-1.123,16.0,25
+Donchian/Turtle,Momentum,SHORT,CVNA,NORMAL,-1.802,18.8,16
+Donchian/Turtle,Momentum,SHORT,CVNA,WEAK,2.205,76.0,25
+ADX Trend,Momentum,LONG,CVNA,ALL,1.018,56.9,195
+ADX Trend,Momentum,LONG,CVNA,STRONG,2.584,71.9,57
+ADX Trend,Momentum,LONG,CVNA,NORMAL,0.855,65.7,35
+ADX Trend,Momentum,LONG,CVNA,CAUTIOUS,0.73,50.0,20
+ADX Trend,Momentum,LONG,CVNA,WEAK,-0.974,41.4,29
+ADX Trend,Momentum,LONG,CVNA,CHOPPY,-0.658,46.3,54
+ADX Trend,Momentum,SHORT,CVNA,ALL,-0.369,42.5,153
+ADX Trend,Momentum,SHORT,CVNA,STRONG,-2.04,20.0,35
+ADX Trend,Momentum,SHORT,CVNA,NORMAL,-1.532,26.9,26
+ADX Trend,Momentum,SHORT,CVNA,CAUTIOUS,-0.21,52.4,21
+ADX Trend,Momentum,SHORT,CVNA,WEAK,1.694,72.1,43
+ADX Trend,Momentum,SHORT,CVNA,CHOPPY,-0.831,32.1,28
+RSI Revert,Reversion,LONG,DELL,ALL,0.835,57.3,82
+RSI Revert,Reversion,LONG,DELL,STRONG,2.484,87.5,24
+RSI Revert,Reversion,LONG,DELL,WEAK,-0.488,36.4,22
+RSI Revert,Reversion,LONG,DELL,CHOPPY,0.395,60.0,15
+RSI Revert,Reversion,SHORT,DELL,ALL,-0.662,52.3,174
+RSI Revert,Reversion,SHORT,DELL,STRONG,-2.263,22.5,40
+RSI Revert,Reversion,SHORT,DELL,NORMAL,-1.511,25.0,32
+RSI Revert,Reversion,SHORT,DELL,CAUTIOUS,0.417,65.0,20
+RSI Revert,Reversion,SHORT,DELL,WEAK,2.835,84.2,38
+RSI Revert,Reversion,SHORT,DELL,CHOPPY,1.11,65.9,44
+Zscore Revert,Reversion,LONG,DELL,ALL,0.691,56.2,64
+Zscore Revert,Reversion,LONG,DELL,STRONG,2.128,81.0,21
+Zscore Revert,Reversion,LONG,DELL,WEAK,-0.484,35.0,20
+Zscore Revert,Reversion,SHORT,DELL,ALL,-0.208,58.5,142
+Zscore Revert,Reversion,SHORT,DELL,STRONG,-2.361,11.1,27
+Zscore Revert,Reversion,SHORT,DELL,NORMAL,-1.262,41.9,31
+Zscore Revert,Reversion,SHORT,DELL,CAUTIOUS,1.684,77.8,18
+Zscore Revert,Reversion,SHORT,DELL,WEAK,2.942,90.6,32
+Zscore Revert,Reversion,SHORT,DELL,CHOPPY,1.143,70.6,34
+Keltner Revert,Reversion,LONG,DELL,ALL,1.017,58.0,81
+Keltner Revert,Reversion,LONG,DELL,STRONG,2.766,88.5,26
+Keltner Revert,Reversion,LONG,DELL,WEAK,-0.57,37.5,24
+Keltner Revert,Reversion,LONG,DELL,CHOPPY,0.592,60.0,15
+Keltner Revert,Reversion,SHORT,DELL,ALL,-0.72,54.0,161
+Keltner Revert,Reversion,SHORT,DELL,STRONG,-2.44,17.6,34
+Keltner Revert,Reversion,SHORT,DELL,NORMAL,-1.487,32.4,34
+Keltner Revert,Reversion,SHORT,DELL,CAUTIOUS,1.135,69.6,23
+Keltner Revert,Reversion,SHORT,DELL,WEAK,2.604,87.1,31
+Keltner Revert,Reversion,SHORT,DELL,CHOPPY,1.476,69.2,39
+MFI Revert,Reversion,LONG,DELL,ALL,1.194,57.1,21
+MFI Revert,Reversion,SHORT,DELL,ALL,-0.046,52.9,51
+MFI Revert,Reversion,SHORT,DELL,STRONG,-2.08,11.1,18
+RSI Momentum,Momentum,LONG,DELL,ALL,0.662,47.7,174
+RSI Momentum,Momentum,LONG,DELL,STRONG,2.263,77.5,40
+RSI Momentum,Momentum,LONG,DELL,NORMAL,1.511,75.0,32
+RSI Momentum,Momentum,LONG,DELL,CAUTIOUS,-0.417,35.0,20
+RSI Momentum,Momentum,LONG,DELL,WEAK,-2.835,15.8,38
+RSI Momentum,Momentum,LONG,DELL,CHOPPY,-1.11,34.1,44
+RSI Momentum,Momentum,SHORT,DELL,ALL,-0.835,42.7,82
+RSI Momentum,Momentum,SHORT,DELL,STRONG,-2.484,12.5,24
+RSI Momentum,Momentum,SHORT,DELL,WEAK,0.488,63.6,22
+RSI Momentum,Momentum,SHORT,DELL,CHOPPY,-0.395,40.0,15
+Donchian/Turtle,Momentum,LONG,DELL,ALL,1.44,51.9,183
+Donchian/Turtle,Momentum,LONG,DELL,STRONG,2.881,85.0,40
+Donchian/Turtle,Momentum,LONG,DELL,NORMAL,1.593,64.7,34
+Donchian/Turtle,Momentum,LONG,DELL,CAUTIOUS,-0.558,41.7,24
+Donchian/Turtle,Momentum,LONG,DELL,WEAK,-2.525,22.2,36
+Donchian/Turtle,Momentum,LONG,DELL,CHOPPY,0.412,42.9,49
+Donchian/Turtle,Momentum,SHORT,DELL,ALL,-0.554,44.2,77
+Donchian/Turtle,Momentum,SHORT,DELL,STRONG,-2.514,16.0,25
+Donchian/Turtle,Momentum,SHORT,DELL,WEAK,0.778,65.2,23
+Donchian/Turtle,Momentum,SHORT,DELL,CHOPPY,-0.503,40.0,15
+ADX Trend,Momentum,LONG,DELL,ALL,1.085,53.9,204
+ADX Trend,Momentum,LONG,DELL,STRONG,2.938,83.0,47
+ADX Trend,Momentum,LONG,DELL,NORMAL,1.495,68.3,41
+ADX Trend,Momentum,LONG,DELL,CAUTIOUS,-0.474,42.4,33
+ADX Trend,Momentum,LONG,DELL,WEAK,-2.009,26.3,38
+ADX Trend,Momentum,LONG,DELL,CHOPPY,-1.182,42.2,45
+ADX Trend,Momentum,SHORT,DELL,ALL,-1.286,41.6,161
+ADX Trend,Momentum,SHORT,DELL,STRONG,-3.15,17.6,51
+ADX Trend,Momentum,SHORT,DELL,NORMAL,-1.688,33.3,33
+ADX Trend,Momentum,SHORT,DELL,WEAK,2.213,78.1,32
+ADX Trend,Momentum,SHORT,DELL,CHOPPY,0.33,54.8,31
+RSI Revert,Reversion,LONG,DY,ALL,0.581,59.6,57
+RSI Revert,Reversion,LONG,DY,WEAK,-1.58,17.6,17
+RSI Revert,Reversion,SHORT,DY,ALL,-0.538,45.2,166
+RSI Revert,Reversion,SHORT,DY,STRONG,-2.814,22.2,45
+RSI Revert,Reversion,SHORT,DY,NORMAL,-1.199,42.9,35
+RSI Revert,Reversion,SHORT,DY,CAUTIOUS,0.971,63.6,22
+RSI Revert,Reversion,SHORT,DY,WEAK,0.472,68.2,22
+RSI Revert,Reversion,SHORT,DY,CHOPPY,1.504,50.0,42
+Zscore Revert,Reversion,LONG,DY,ALL,0.829,60.7,56
+Zscore Revert,Reversion,LONG,DY,STRONG,0.936,73.3,15
+Zscore Revert,Reversion,LONG,DY,WEAK,-0.901,18.8,16
+Zscore Revert,Reversion,SHORT,DY,ALL,0.366,46.5,144
+Zscore Revert,Reversion,SHORT,DY,STRONG,-2.798,21.4,42
+Zscore Revert,Reversion,SHORT,DY,NORMAL,0.386,56.7,30
+Zscore Revert,Reversion,SHORT,DY,CAUTIOUS,-0.013,57.9,19
+Zscore Revert,Reversion,SHORT,DY,WEAK,1.844,73.7,19
+Zscore Revert,Reversion,SHORT,DY,CHOPPY,1.223,47.1,34
+Keltner Revert,Reversion,LONG,DY,ALL,1.29,66.7,39
+Keltner Revert,Reversion,SHORT,DY,ALL,-0.247,46.1,152
+Keltner Revert,Reversion,SHORT,DY,STRONG,-2.614,23.3,43
+Keltner Revert,Reversion,SHORT,DY,NORMAL,0.548,57.1,28
+Keltner Revert,Reversion,SHORT,DY,CAUTIOUS,-0.319,47.6,21
+Keltner Revert,Reversion,SHORT,DY,WEAK,0.532,72.7,22
+Keltner Revert,Reversion,SHORT,DY,CHOPPY,1.311,47.4,38
+MFI Revert,Reversion,SHORT,DY,ALL,-0.914,38.0,71
+MFI Revert,Reversion,SHORT,DY,STRONG,-1.896,28.0,25
+MFI Revert,Reversion,SHORT,DY,CHOPPY,0.394,30.8,26
+RSI Momentum,Momentum,LONG,DY,ALL,0.538,54.8,166
+RSI Momentum,Momentum,LONG,DY,STRONG,2.814,77.8,45
+RSI Momentum,Momentum,LONG,DY,NORMAL,1.199,57.1,35
+RSI Momentum,Momentum,LONG,DY,CAUTIOUS,-0.971,36.4,22
+RSI Momentum,Momentum,LONG,DY,WEAK,-0.472,31.8,22
+RSI Momentum,Momentum,LONG,DY,CHOPPY,-1.504,50.0,42
+RSI Momentum,Momentum,SHORT,DY,ALL,-0.581,40.4,57
+RSI Momentum,Momentum,SHORT,DY,WEAK,1.58,82.4,17
+Donchian/Turtle,Momentum,LONG,DY,ALL,0.671,54.7,179
+Donchian/Turtle,Momentum,LONG,DY,STRONG,3.03,78.8,52
+Donchian/Turtle,Momentum,LONG,DY,NORMAL,0.864,53.7,41
+Donchian/Turtle,Momentum,LONG,DY,CAUTIOUS,-0.031,44.4,27
+Donchian/Turtle,Momentum,LONG,DY,WEAK,-1.454,32.0,25
+Donchian/Turtle,Momentum,LONG,DY,CHOPPY,-1.915,44.1,34
+Donchian/Turtle,Momentum,SHORT,DY,ALL,-0.791,37.7,77
+Donchian/Turtle,Momentum,SHORT,DY,STRONG,-1.692,18.2,22
+Donchian/Turtle,Momentum,SHORT,DY,WEAK,1.453,77.8,18
+Donchian/Turtle,Momentum,SHORT,DY,CHOPPY,-0.575,26.7,15
+ADX Trend,Momentum,LONG,DY,ALL,0.716,55.2,210
+ADX Trend,Momentum,LONG,DY,STRONG,3.307,75.9,58
+ADX Trend,Momentum,LONG,DY,NORMAL,1.313,57.9,38
+ADX Trend,Momentum,LONG,DY,CAUTIOUS,0.443,50.0,26
+ADX Trend,Momentum,LONG,DY,WEAK,-2.543,24.3,37
+ADX Trend,Momentum,LONG,DY,CHOPPY,-0.826,54.9,51
+ADX Trend,Momentum,SHORT,DY,ALL,-1.123,43.8,146
+ADX Trend,Momentum,SHORT,DY,STRONG,-2.495,18.6,43
+ADX Trend,Momentum,SHORT,DY,NORMAL,-1.521,26.3,19
+ADX Trend,Momentum,SHORT,DY,WEAK,1.552,82.9,35
+ADX Trend,Momentum,SHORT,DY,CHOPPY,0.294,50.0,38
+RSI Revert,Reversion,LONG,EXTR,ALL,0.51,53.7,95
+RSI Revert,Reversion,LONG,EXTR,STRONG,1.859,78.6,28
+RSI Revert,Reversion,LONG,EXTR,WEAK,-0.459,45.8,24
+RSI Revert,Reversion,LONG,EXTR,CHOPPY,1.226,50.0,20
+RSI Revert,Reversion,SHORT,EXTR,ALL,-1.331,47.7,155
+RSI Revert,Reversion,SHORT,EXTR,STRONG,-2.44,28.6,42
+RSI Revert,Reversion,SHORT,EXTR,NORMAL,-1.6,25.9,27
+RSI Revert,Reversion,SHORT,EXTR,CAUTIOUS,0.185,50.0,16
+RSI Revert,Reversion,SHORT,EXTR,WEAK,1.949,72.0,25
+RSI Revert,Reversion,SHORT,EXTR,CHOPPY,-0.068,64.4,45
+Zscore Revert,Reversion,LONG,EXTR,ALL,-0.469,46.1,76
+Zscore Revert,Reversion,LONG,EXTR,STRONG,2.244,93.3,15
+Zscore Revert,Reversion,LONG,EXTR,NORMAL,-0.216,43.8,16
+Zscore Revert,Reversion,LONG,EXTR,WEAK,-1.379,33.3,24
+Zscore Revert,Reversion,LONG,EXTR,CHOPPY,0.603,35.3,17
+Zscore Revert,Reversion,SHORT,EXTR,ALL,-1.099,44.3,115
+Zscore Revert,Reversion,SHORT,EXTR,STRONG,-2.101,26.7,30
+Zscore Revert,Reversion,SHORT,EXTR,NORMAL,-1.537,28.6,21
+Zscore Revert,Reversion,SHORT,EXTR,WEAK,1.59,68.4,19
+Zscore Revert,Reversion,SHORT,EXTR,CHOPPY,0.872,61.3,31
+Keltner Revert,Reversion,LONG,EXTR,ALL,-0.028,52.1,71
+Keltner Revert,Reversion,LONG,EXTR,STRONG,2.331,100.0,15
+Keltner Revert,Reversion,LONG,EXTR,NORMAL,-0.102,43.8,16
+Keltner Revert,Reversion,LONG,EXTR,WEAK,-0.978,38.9,18
+Keltner Revert,Reversion,LONG,EXTR,CHOPPY,0.415,33.3,15
+Keltner Revert,Reversion,SHORT,EXTR,ALL,-1.095,47.1,153
+Keltner Revert,Reversion,SHORT,EXTR,STRONG,-2.885,22.2,45
+Keltner Revert,Reversion,SHORT,EXTR,NORMAL,-1.75,29.2,24
+Keltner Revert,Reversion,SHORT,EXTR,CAUTIOUS,1.228,73.3,15
+Keltner Revert,Reversion,SHORT,EXTR,WEAK,1.962,71.4,28
+Keltner Revert,Reversion,SHORT,EXTR,CHOPPY,1.078,58.5,41
+MFI Revert,Reversion,LONG,EXTR,ALL,0.193,50.0,22
+MFI Revert,Reversion,SHORT,EXTR,ALL,0.673,58.0,50
+MFI Revert,Reversion,SHORT,EXTR,STRONG,-0.865,46.7,15
+RSI Momentum,Momentum,LONG,EXTR,ALL,1.331,52.3,155
+RSI Momentum,Momentum,LONG,EXTR,STRONG,2.44,71.4,42
+RSI Momentum,Momentum,LONG,EXTR,NORMAL,1.6,74.1,27
+RSI Momentum,Momentum,LONG,EXTR,CAUTIOUS,-0.185,50.0,16
+RSI Momentum,Momentum,LONG,EXTR,WEAK,-1.949,28.0,25
+RSI Momentum,Momentum,LONG,EXTR,CHOPPY,0.068,35.6,45
+RSI Momentum,Momentum,SHORT,EXTR,ALL,-0.51,46.3,95
+RSI Momentum,Momentum,SHORT,EXTR,STRONG,-1.859,21.4,28
+RSI Momentum,Momentum,SHORT,EXTR,WEAK,0.459,54.2,24
+RSI Momentum,Momentum,SHORT,EXTR,CHOPPY,-1.226,50.0,20
+Donchian/Turtle,Momentum,LONG,EXTR,ALL,1.173,53.9,141
+Donchian/Turtle,Momentum,LONG,EXTR,STRONG,2.484,74.4,39
+Donchian/Turtle,Momentum,LONG,EXTR,NORMAL,1.736,76.0,25
+Donchian/Turtle,Momentum,LONG,EXTR,CAUTIOUS,0.155,47.1,17
+Donchian/Turtle,Momentum,LONG,EXTR,WEAK,-2.1,23.1,26
+Donchian/Turtle,Momentum,LONG,EXTR,CHOPPY,-0.955,41.2,34
+Donchian/Turtle,Momentum,SHORT,EXTR,ALL,0.233,48.0,102
+Donchian/Turtle,Momentum,SHORT,EXTR,STRONG,-2.313,13.6,22
+Donchian/Turtle,Momentum,SHORT,EXTR,NORMAL,0.081,52.6,19
+Donchian/Turtle,Momentum,SHORT,EXTR,WEAK,1.468,65.5,29
+Donchian/Turtle,Momentum,SHORT,EXTR,CHOPPY,-0.782,60.0,20
+ADX Trend,Momentum,LONG,EXTR,ALL,0.364,50.3,185
+ADX Trend,Momentum,LONG,EXTR,STRONG,2.786,74.0,50
+ADX Trend,Momentum,LONG,EXTR,NORMAL,2.412,77.1,35
+ADX Trend,Momentum,LONG,EXTR,CAUTIOUS,-1.396,25.0,24
+ADX Trend,Momentum,LONG,EXTR,WEAK,-2.744,21.9,32
+ADX Trend,Momentum,LONG,EXTR,CHOPPY,-1.182,36.4,44
+ADX Trend,Momentum,SHORT,EXTR,ALL,-1.448,40.6,133
+ADX Trend,Momentum,SHORT,EXTR,STRONG,-2.073,24.2,33
+ADX Trend,Momentum,SHORT,EXTR,NORMAL,-1.17,28.6,28
+ADX Trend,Momentum,SHORT,EXTR,CAUTIOUS,-0.291,52.6,19
+ADX Trend,Momentum,SHORT,EXTR,WEAK,0.603,47.6,21
+ADX Trend,Momentum,SHORT,EXTR,CHOPPY,-0.509,56.2,32
+RSI Revert,Reversion,LONG,FIX,ALL,-0.654,48.7,39
+RSI Revert,Reversion,SHORT,FIX,ALL,-0.865,41.8,189
+RSI Revert,Reversion,SHORT,FIX,STRONG,-3.347,22.0,50
+RSI Revert,Reversion,SHORT,FIX,NORMAL,-2.253,31.4,35
+RSI Revert,Reversion,SHORT,FIX,CAUTIOUS,-0.277,40.9,22
+RSI Revert,Reversion,SHORT,FIX,WEAK,1.905,80.6,31
+RSI Revert,Reversion,SHORT,FIX,CHOPPY,-0.348,45.1,51
+Zscore Revert,Reversion,LONG,FIX,ALL,1.598,64.1,39
+Zscore Revert,Reversion,SHORT,FIX,ALL,-0.988,39.7,156
+Zscore Revert,Reversion,SHORT,FIX,STRONG,-2.826,23.8,42
+Zscore Revert,Reversion,SHORT,FIX,NORMAL,-1.731,25.9,27
+Zscore Revert,Reversion,SHORT,FIX,CAUTIOUS,-0.623,45.0,20
+Zscore Revert,Reversion,SHORT,FIX,WEAK,1.652,77.8,27
+Zscore Revert,Reversion,SHORT,FIX,CHOPPY,-1.006,37.5,40
+Keltner Revert,Reversion,LONG,FIX,ALL,1.099,60.0,50
+Keltner Revert,Reversion,LONG,FIX,STRONG,2.198,87.5,16
+Keltner Revert,Reversion,LONG,FIX,WEAK,-0.654,29.4,17
+Keltner Revert,Reversion,SHORT,FIX,ALL,-0.698,43.4,196
+Keltner Revert,Reversion,SHORT,FIX,STRONG,-3.252,25.5,51
+Keltner Revert,Reversion,SHORT,FIX,NORMAL,-1.394,39.4,33
+Keltner Revert,Reversion,SHORT,FIX,CAUTIOUS,0.243,52.0,25
+Keltner Revert,Reversion,SHORT,FIX,WEAK,1.684,78.1,32
+Keltner Revert,Reversion,SHORT,FIX,CHOPPY,-0.381,38.2,55
+MFI Revert,Reversion,LONG,FIX,ALL,0.011,45.5,22
+MFI Revert,Reversion,SHORT,FIX,ALL,-1.077,42.0,88
+MFI Revert,Reversion,SHORT,FIX,STRONG,-2.235,18.5,27
+MFI Revert,Reversion,SHORT,FIX,CHOPPY,-0.671,32.0,25
+RSI Momentum,Momentum,LONG,FIX,ALL,0.865,58.2,189
+RSI Momentum,Momentum,LONG,FIX,STRONG,3.347,78.0,50
+RSI Momentum,Momentum,LONG,FIX,NORMAL,2.253,68.6,35
+RSI Momentum,Momentum,LONG,FIX,CAUTIOUS,0.277,59.1,22
+RSI Momentum,Momentum,LONG,FIX,WEAK,-1.905,19.4,31
+RSI Momentum,Momentum,LONG,FIX,CHOPPY,0.348,54.9,51
+RSI Momentum,Momentum,SHORT,FIX,ALL,0.654,51.3,39
+Donchian/Turtle,Momentum,LONG,FIX,ALL,1.095,59.1,225
+Donchian/Turtle,Momentum,LONG,FIX,STRONG,3.726,83.0,53
+Donchian/Turtle,Momentum,LONG,FIX,NORMAL,1.636,69.8,43
+Donchian/Turtle,Momentum,LONG,FIX,CAUTIOUS,0.476,51.4,35
+Donchian/Turtle,Momentum,LONG,FIX,WEAK,-2.128,21.6,37
+Donchian/Turtle,Momentum,LONG,FIX,CHOPPY,-0.023,57.9,57
+Donchian/Turtle,Momentum,SHORT,FIX,ALL,-0.849,41.0,83
+Donchian/Turtle,Momentum,SHORT,FIX,STRONG,-2.754,8.7,23
+Donchian/Turtle,Momentum,SHORT,FIX,WEAK,0.872,64.5,31
+Donchian/Turtle,Momentum,SHORT,FIX,CHOPPY,-0.089,44.4,18
+ADX Trend,Momentum,LONG,FIX,ALL,0.213,51.7,209
+ADX Trend,Momentum,LONG,FIX,STRONG,3.707,80.7,57
+ADX Trend,Momentum,LONG,FIX,NORMAL,0.407,57.9,38
+ADX Trend,Momentum,LONG,FIX,CAUTIOUS,-0.494,40.0,25
+ADX Trend,Momentum,LONG,FIX,WEAK,-2.355,14.6,41
+ADX Trend,Momentum,LONG,FIX,CHOPPY,0.098,50.0,48
+ADX Trend,Momentum,SHORT,FIX,ALL,-1.394,39.0,141
+ADX Trend,Momentum,SHORT,FIX,STRONG,-3.208,15.4,39
+ADX Trend,Momentum,SHORT,FIX,NORMAL,-2.178,33.3,24
+ADX Trend,Momentum,SHORT,FIX,WEAK,2.756,77.8,36
+ADX Trend,Momentum,SHORT,FIX,CHOPPY,-0.442,34.5,29
+RSI Revert,Reversion,LONG,GMED,ALL,0.348,47.6,103
+RSI Revert,Reversion,LONG,GMED,STRONG,2.124,79.2,24
+RSI Revert,Reversion,LONG,GMED,NORMAL,0.971,59.1,22
+RSI Revert,Reversion,LONG,GMED,CAUTIOUS,0.396,38.9,18
+RSI Revert,Reversion,LONG,GMED,WEAK,-2.535,16.7,24
+RSI Revert,Reversion,LONG,GMED,CHOPPY,-0.161,40.0,15
+RSI Revert,Reversion,SHORT,GMED,ALL,0.345,55.7,122
+RSI Revert,Reversion,SHORT,GMED,STRONG,-1.856,33.3,30
+RSI Revert,Reversion,SHORT,GMED,NORMAL,0.649,62.5,24
+RSI Revert,Reversion,SHORT,GMED,CAUTIOUS,-0.426,50.0,18
+RSI Revert,Reversion,SHORT,GMED,WEAK,2.178,85.7,21
+RSI Revert,Reversion,SHORT,GMED,CHOPPY,0.636,55.2,29
+Zscore Revert,Reversion,LONG,GMED,ALL,0.716,54.3,94
+Zscore Revert,Reversion,LONG,GMED,STRONG,2.261,82.6,23
+Zscore Revert,Reversion,LONG,GMED,NORMAL,1.18,59.1,22
+Zscore Revert,Reversion,LONG,GMED,WEAK,-0.738,35.3,17
+Zscore Revert,Reversion,LONG,GMED,CHOPPY,-0.504,47.4,19
+Zscore Revert,Reversion,SHORT,GMED,ALL,-0.052,53.3,92
+Zscore Revert,Reversion,SHORT,GMED,STRONG,-1.354,30.8,26
+Zscore Revert,Reversion,SHORT,GMED,NORMAL,0.691,70.6,17
+Zscore Revert,Reversion,SHORT,GMED,CHOPPY,0.506,47.8,23
+Keltner Revert,Reversion,LONG,GMED,ALL,0.195,50.0,90
+Keltner Revert,Reversion,LONG,GMED,STRONG,2.223,81.8,22
+Keltner Revert,Reversion,LONG,GMED,NORMAL,0.606,55.0,20
+Keltner Revert,Reversion,LONG,GMED,WEAK,-1.252,25.0,20
+Keltner Revert,Reversion,LONG,GMED,CHOPPY,-0.396,50.0,18
+Keltner Revert,Reversion,SHORT,GMED,ALL,-0.15,55.6,99
+Keltner Revert,Reversion,SHORT,GMED,STRONG,-1.697,33.3,24
+Keltner Revert,Reversion,SHORT,GMED,NORMAL,0.258,60.0,25
+Keltner Revert,Reversion,SHORT,GMED,CAUTIOUS,-0.12,60.0,15
+Keltner Revert,Reversion,SHORT,GMED,CHOPPY,0.272,52.4,21
+MFI Revert,Reversion,LONG,GMED,ALL,1.032,49.1,53
+MFI Revert,Reversion,SHORT,GMED,ALL,1.249,57.7,26
+RSI Momentum,Momentum,LONG,GMED,ALL,-0.345,44.3,122
+RSI Momentum,Momentum,LONG,GMED,STRONG,1.856,66.7,30
+RSI Momentum,Momentum,LONG,GMED,NORMAL,-0.649,37.5,24
+RSI Momentum,Momentum,LONG,GMED,CAUTIOUS,0.426,50.0,18
+RSI Momentum,Momentum,LONG,GMED,WEAK,-2.178,14.3,21
+RSI Momentum,Momentum,LONG,GMED,CHOPPY,-0.636,44.8,29
+RSI Momentum,Momentum,SHORT,GMED,ALL,-0.348,52.4,103
+RSI Momentum,Momentum,SHORT,GMED,STRONG,-2.124,20.8,24
+RSI Momentum,Momentum,SHORT,GMED,NORMAL,-0.971,40.9,22
+RSI Momentum,Momentum,SHORT,GMED,CAUTIOUS,-0.396,61.1,18
+RSI Momentum,Momentum,SHORT,GMED,WEAK,2.535,83.3,24
+RSI Momentum,Momentum,SHORT,GMED,CHOPPY,0.161,60.0,15
+Donchian/Turtle,Momentum,LONG,GMED,ALL,0.12,48.0,127
+Donchian/Turtle,Momentum,LONG,GMED,STRONG,1.613,69.7,33
+Donchian/Turtle,Momentum,LONG,GMED,NORMAL,-0.411,38.5,26
+Donchian/Turtle,Momentum,LONG,GMED,CAUTIOUS,0.254,44.4,18
+Donchian/Turtle,Momentum,LONG,GMED,WEAK,-1.532,26.3,19
+Donchian/Turtle,Momentum,LONG,GMED,CHOPPY,-0.305,48.4,31
+Donchian/Turtle,Momentum,SHORT,GMED,ALL,-0.82,44.3,88
+Donchian/Turtle,Momentum,SHORT,GMED,STRONG,-2.19,15.8,19
+Donchian/Turtle,Momentum,SHORT,GMED,NORMAL,-1.515,29.4,17
+Donchian/Turtle,Momentum,SHORT,GMED,WEAK,0.847,65.4,26
+Donchian/Turtle,Momentum,SHORT,GMED,CHOPPY,0.456,57.9,19
+ADX Trend,Momentum,LONG,GMED,ALL,0.576,45.2,188
+ADX Trend,Momentum,LONG,GMED,STRONG,2.063,69.2,52
+ADX Trend,Momentum,LONG,GMED,NORMAL,-1.612,33.3,30
+ADX Trend,Momentum,LONG,GMED,CAUTIOUS,0.273,38.2,34
+ADX Trend,Momentum,LONG,GMED,WEAK,-2.061,25.0,32
+ADX Trend,Momentum,LONG,GMED,CHOPPY,0.588,45.0,40
+ADX Trend,Momentum,SHORT,GMED,ALL,-0.305,53.7,190
+ADX Trend,Momentum,SHORT,GMED,STRONG,-2.841,24.4,45
+ADX Trend,Momentum,SHORT,GMED,NORMAL,-0.655,40.5,37
+ADX Trend,Momentum,SHORT,GMED,CAUTIOUS,0.809,73.7,19
+ADX Trend,Momentum,SHORT,GMED,WEAK,2.103,78.3,46
+ADX Trend,Momentum,SHORT,GMED,CHOPPY,0.524,60.5,43
+RSI Revert,Reversion,LONG,HPQ,ALL,-0.271,43.7,126
+RSI Revert,Reversion,LONG,HPQ,STRONG,1.746,77.4,31
+RSI Revert,Reversion,LONG,HPQ,NORMAL,0.63,45.0,20
+RSI Revert,Reversion,LONG,HPQ,CAUTIOUS,-0.442,38.9,18
+RSI Revert,Reversion,LONG,HPQ,WEAK,-1.412,21.9,32
+RSI Revert,Reversion,LONG,HPQ,CHOPPY,-0.283,32.0,25
+RSI Revert,Reversion,SHORT,HPQ,ALL,0.126,52.0,102
+RSI Revert,Reversion,SHORT,HPQ,STRONG,-0.421,38.5,26
+RSI Revert,Reversion,SHORT,HPQ,NORMAL,-0.88,41.2,17
+RSI Revert,Reversion,SHORT,HPQ,WEAK,2.295,77.3,22
+RSI Revert,Reversion,SHORT,HPQ,CHOPPY,-0.001,46.4,28
+Zscore Revert,Reversion,LONG,HPQ,ALL,0.067,52.1,73
+Zscore Revert,Reversion,LONG,HPQ,STRONG,0.803,66.7,15
+Zscore Revert,Reversion,LONG,HPQ,WEAK,-0.439,42.3,26
+Zscore Revert,Reversion,SHORT,HPQ,ALL,0.359,51.6,95
+Zscore Revert,Reversion,SHORT,HPQ,STRONG,-0.187,34.6,26
+Zscore Revert,Reversion,SHORT,HPQ,NORMAL,-0.892,50.0,16
+Zscore Revert,Reversion,SHORT,HPQ,WEAK,1.718,62.5,16
+Zscore Revert,Reversion,SHORT,HPQ,CHOPPY,0.839,61.5,26
+Keltner Revert,Reversion,LONG,HPQ,ALL,-0.663,46.1,76
+Keltner Revert,Reversion,LONG,HPQ,STRONG,2.026,82.6,23
+Keltner Revert,Reversion,LONG,HPQ,WEAK,-1.285,25.0,24
+Keltner Revert,Reversion,SHORT,HPQ,ALL,0.357,55.6,81
+Keltner Revert,Reversion,SHORT,HPQ,STRONG,0.224,50.0,22
+Keltner Revert,Reversion,SHORT,HPQ,WEAK,1.404,53.3,15
+Keltner Revert,Reversion,SHORT,HPQ,CHOPPY,0.612,61.9,21
+MFI Revert,Reversion,LONG,HPQ,ALL,-0.361,43.2,44
+MFI Revert,Reversion,LONG,HPQ,WEAK,-0.351,33.3,15
+MFI Revert,Reversion,SHORT,HPQ,ALL,1.912,69.4,36
+RSI Momentum,Momentum,LONG,HPQ,ALL,-0.126,48.0,102
+RSI Momentum,Momentum,LONG,HPQ,STRONG,0.421,61.5,26
+RSI Momentum,Momentum,LONG,HPQ,NORMAL,0.88,58.8,17
+RSI Momentum,Momentum,LONG,HPQ,WEAK,-2.295,22.7,22
+RSI Momentum,Momentum,LONG,HPQ,CHOPPY,0.001,53.6,28
+RSI Momentum,Momentum,SHORT,HPQ,ALL,0.271,56.3,126
+RSI Momentum,Momentum,SHORT,HPQ,STRONG,-1.746,22.6,31
+RSI Momentum,Momentum,SHORT,HPQ,NORMAL,-0.63,55.0,20
+RSI Momentum,Momentum,SHORT,HPQ,CAUTIOUS,0.442,61.1,18
+RSI Momentum,Momentum,SHORT,HPQ,WEAK,1.412,78.1,32
+RSI Momentum,Momentum,SHORT,HPQ,CHOPPY,0.283,68.0,25
+Donchian/Turtle,Momentum,LONG,HPQ,ALL,-0.136,50.0,122
+Donchian/Turtle,Momentum,LONG,HPQ,STRONG,0.625,62.9,35
+Donchian/Turtle,Momentum,LONG,HPQ,NORMAL,0.718,52.6,19
+Donchian/Turtle,Momentum,LONG,HPQ,WEAK,-1.694,36.8,19
+Donchian/Turtle,Momentum,LONG,HPQ,CHOPPY,-0.474,48.6,35
+Donchian/Turtle,Momentum,SHORT,HPQ,ALL,-0.5,45.5,112
+Donchian/Turtle,Momentum,SHORT,HPQ,STRONG,-1.89,25.0,28
+Donchian/Turtle,Momentum,SHORT,HPQ,NORMAL,-1.076,40.9,22
+Donchian/Turtle,Momentum,SHORT,HPQ,WEAK,0.997,69.0,29
+Donchian/Turtle,Momentum,SHORT,HPQ,CHOPPY,-0.886,45.0,20
+ADX Trend,Momentum,LONG,HPQ,ALL,0.461,52.3,155
+ADX Trend,Momentum,LONG,HPQ,STRONG,1.704,70.3,37
+ADX Trend,Momentum,LONG,HPQ,NORMAL,1.143,61.3,31
+ADX Trend,Momentum,LONG,HPQ,CAUTIOUS,-0.543,38.1,21
+ADX Trend,Momentum,LONG,HPQ,WEAK,-1.824,31.0,29
+ADX Trend,Momentum,LONG,HPQ,CHOPPY,0.043,51.4,37
+ADX Trend,Momentum,SHORT,HPQ,ALL,0.883,54.9,184
+ADX Trend,Momentum,SHORT,HPQ,STRONG,-1.11,30.0,50
+ADX Trend,Momentum,SHORT,HPQ,NORMAL,-1.033,46.7,30
+ADX Trend,Momentum,SHORT,HPQ,CAUTIOUS,1.291,65.2,23
+ADX Trend,Momentum,SHORT,HPQ,WEAK,1.906,71.7,46
+ADX Trend,Momentum,SHORT,HPQ,CHOPPY,0.681,68.6,35
+RSI Revert,Reversion,LONG,KNX,ALL,-0.275,45.7,94
+RSI Revert,Reversion,LONG,KNX,STRONG,1.995,78.9,19
+RSI Revert,Reversion,LONG,KNX,WEAK,-1.51,27.3,33
+RSI Revert,Reversion,LONG,KNX,CHOPPY,-0.128,38.9,18
+RSI Revert,Reversion,SHORT,KNX,ALL,0.096,55.4,112
+RSI Revert,Reversion,SHORT,KNX,STRONG,-1.143,38.2,34
+RSI Revert,Reversion,SHORT,KNX,NORMAL,-0.503,48.1,27
+RSI Revert,Reversion,SHORT,KNX,WEAK,1.331,82.4,17
+RSI Revert,Reversion,SHORT,KNX,CHOPPY,0.686,60.0,20
+Zscore Revert,Reversion,LONG,KNX,ALL,0.604,47.0,83
+Zscore Revert,Reversion,LONG,KNX,STRONG,1.291,66.7,21
+Zscore Revert,Reversion,LONG,KNX,WEAK,-0.672,35.7,28
+Zscore Revert,Reversion,SHORT,KNX,ALL,-0.426,50.4,123
+Zscore Revert,Reversion,SHORT,KNX,STRONG,-1.625,28.9,38
+Zscore Revert,Reversion,SHORT,KNX,NORMAL,-0.432,52.0,25
+Zscore Revert,Reversion,SHORT,KNX,CAUTIOUS,0.021,46.7,15
+Zscore Revert,Reversion,SHORT,KNX,WEAK,1.622,87.0,23
+Zscore Revert,Reversion,SHORT,KNX,CHOPPY,-0.099,50.0,22
+Keltner Revert,Reversion,LONG,KNX,ALL,-0.195,47.5,59
+Keltner Revert,Reversion,LONG,KNX,STRONG,1.593,73.3,15
+Keltner Revert,Reversion,LONG,KNX,WEAK,-0.891,30.4,23
+Keltner Revert,Reversion,SHORT,KNX,ALL,-0.428,48.0,100
+Keltner Revert,Reversion,SHORT,KNX,STRONG,-1.176,28.6,28
+Keltner Revert,Reversion,SHORT,KNX,NORMAL,-0.668,47.8,23
+Keltner Revert,Reversion,SHORT,KNX,CAUTIOUS,-0.01,50.0,16
+Keltner Revert,Reversion,SHORT,KNX,WEAK,1.306,82.4,17
+Keltner Revert,Reversion,SHORT,KNX,CHOPPY,-0.521,43.8,16
+MFI Revert,Reversion,LONG,KNX,ALL,-0.189,40.0,30
+MFI Revert,Reversion,SHORT,KNX,ALL,0.743,60.5,38
+RSI Momentum,Momentum,LONG,KNX,ALL,-0.096,44.6,112
+RSI Momentum,Momentum,LONG,KNX,STRONG,1.143,61.8,34
+RSI Momentum,Momentum,LONG,KNX,NORMAL,0.503,51.9,27
+RSI Momentum,Momentum,LONG,KNX,WEAK,-1.331,17.6,17
+RSI Momentum,Momentum,LONG,KNX,CHOPPY,-0.686,40.0,20
+RSI Momentum,Momentum,SHORT,KNX,ALL,0.275,54.3,94
+RSI Momentum,Momentum,SHORT,KNX,STRONG,-1.995,21.1,19
+RSI Momentum,Momentum,SHORT,KNX,WEAK,1.51,72.7,33
+RSI Momentum,Momentum,SHORT,KNX,CHOPPY,0.128,61.1,18
+Donchian/Turtle,Momentum,LONG,KNX,ALL,0.119,51.3,115
+Donchian/Turtle,Momentum,LONG,KNX,STRONG,1.407,75.0,32
+Donchian/Turtle,Momentum,LONG,KNX,NORMAL,0.712,52.0,25
+Donchian/Turtle,Momentum,LONG,KNX,WEAK,-1.818,16.0,25
+Donchian/Turtle,Momentum,LONG,KNX,CHOPPY,0.043,50.0,20
+Donchian/Turtle,Momentum,SHORT,KNX,ALL,-0.803,52.1,94
+Donchian/Turtle,Momentum,SHORT,KNX,STRONG,-1.412,30.4,23
+Donchian/Turtle,Momentum,SHORT,KNX,NORMAL,-0.71,50.0,16
+Donchian/Turtle,Momentum,SHORT,KNX,WEAK,0.781,63.3,30
+ADX Trend,Momentum,LONG,KNX,ALL,0.217,45.7,188
+ADX Trend,Momentum,LONG,KNX,STRONG,1.073,58.8,51
+ADX Trend,Momentum,LONG,KNX,NORMAL,0.724,51.5,33
+ADX Trend,Momentum,LONG,KNX,CAUTIOUS,-0.306,46.9,32
+ADX Trend,Momentum,LONG,KNX,WEAK,-0.884,29.0,31
+ADX Trend,Momentum,LONG,KNX,CHOPPY,-0.399,36.6,41
+ADX Trend,Momentum,SHORT,KNX,ALL,-0.699,50.3,153
+ADX Trend,Momentum,SHORT,KNX,STRONG,-2.655,15.8,38
+ADX Trend,Momentum,SHORT,KNX,NORMAL,-0.151,63.0,27
+ADX Trend,Momentum,SHORT,KNX,WEAK,0.916,68.4,38
+ADX Trend,Momentum,SHORT,KNX,CHOPPY,0.824,59.5,37
+RSI Revert,Reversion,LONG,MTRN,ALL,0.283,51.9,79
+RSI Revert,Reversion,LONG,MTRN,STRONG,1.883,80.0,20
+RSI Revert,Reversion,LONG,MTRN,WEAK,-1.183,33.3,27
+RSI Revert,Reversion,LONG,MTRN,CHOPPY,-0.109,53.3,15
+RSI Revert,Reversion,SHORT,MTRN,ALL,-0.776,47.0,149
+RSI Revert,Reversion,SHORT,MTRN,STRONG,-2.787,22.2,45
+RSI Revert,Reversion,SHORT,MTRN,NORMAL,-0.063,33.3,27
+RSI Revert,Reversion,SHORT,MTRN,CAUTIOUS,-0.492,70.6,17
+RSI Revert,Reversion,SHORT,MTRN,WEAK,1.887,84.0,25
+RSI Revert,Reversion,SHORT,MTRN,CHOPPY,0.984,51.4,35
+Zscore Revert,Reversion,LONG,MTRN,ALL,0.41,50.0,78
+Zscore Revert,Reversion,LONG,MTRN,STRONG,2.409,92.0,25
+Zscore Revert,Reversion,LONG,MTRN,WEAK,-1.477,16.7,24
+Zscore Revert,Reversion,SHORT,MTRN,ALL,-1.167,41.5,118
+Zscore Revert,Reversion,SHORT,MTRN,STRONG,-2.47,14.7,34
+Zscore Revert,Reversion,SHORT,MTRN,NORMAL,0.101,26.1,23
+Zscore Revert,Reversion,SHORT,MTRN,CAUTIOUS,-0.935,52.6,19
+Zscore Revert,Reversion,SHORT,MTRN,WEAK,1.649,81.8,22
+Zscore Revert,Reversion,SHORT,MTRN,CHOPPY,-0.789,50.0,20
+Keltner Revert,Reversion,LONG,MTRN,ALL,0.706,52.1,73
+Keltner Revert,Reversion,LONG,MTRN,STRONG,2.341,85.2,27
+Keltner Revert,Reversion,LONG,MTRN,WEAK,-1.023,25.0,24
+Keltner Revert,Reversion,SHORT,MTRN,ALL,-1.242,44.6,157
+Keltner Revert,Reversion,SHORT,MTRN,STRONG,-2.834,22.2,45
+Keltner Revert,Reversion,SHORT,MTRN,NORMAL,0.21,34.5,29
+Keltner Revert,Reversion,SHORT,MTRN,CAUTIOUS,-0.989,52.4,21
+Keltner Revert,Reversion,SHORT,MTRN,WEAK,1.677,80.0,25
+Keltner Revert,Reversion,SHORT,MTRN,CHOPPY,0.201,51.4,37
+MFI Revert,Reversion,LONG,MTRN,ALL,0.44,51.7,29
+MFI Revert,Reversion,SHORT,MTRN,ALL,0.052,49.2,59
+MFI Revert,Reversion,SHORT,MTRN,STRONG,-1.934,6.7,15
+RSI Momentum,Momentum,LONG,MTRN,ALL,0.776,53.0,149
+RSI Momentum,Momentum,LONG,MTRN,STRONG,2.787,77.8,45
+RSI Momentum,Momentum,LONG,MTRN,NORMAL,0.063,66.7,27
+RSI Momentum,Momentum,LONG,MTRN,CAUTIOUS,0.492,29.4,17
+RSI Momentum,Momentum,LONG,MTRN,WEAK,-1.887,16.0,25
+RSI Momentum,Momentum,LONG,MTRN,CHOPPY,-0.984,48.6,35
+RSI Momentum,Momentum,SHORT,MTRN,ALL,-0.283,48.1,79
+RSI Momentum,Momentum,SHORT,MTRN,STRONG,-1.883,20.0,20
+RSI Momentum,Momentum,SHORT,MTRN,WEAK,1.183,66.7,27
+RSI Momentum,Momentum,SHORT,MTRN,CHOPPY,0.109,46.7,15
+Donchian/Turtle,Momentum,LONG,MTRN,ALL,1.248,55.3,170
+Donchian/Turtle,Momentum,LONG,MTRN,STRONG,3.109,81.2,48
+Donchian/Turtle,Momentum,LONG,MTRN,NORMAL,-0.13,71.4,28
+Donchian/Turtle,Momentum,LONG,MTRN,CAUTIOUS,0.708,38.1,21
+Donchian/Turtle,Momentum,LONG,MTRN,WEAK,-2.271,13.8,29
+Donchian/Turtle,Momentum,LONG,MTRN,CHOPPY,0.232,52.3,44
+Donchian/Turtle,Momentum,SHORT,MTRN,ALL,-0.536,50.0,92
+Donchian/Turtle,Momentum,SHORT,MTRN,STRONG,-2.189,14.8,27
+Donchian/Turtle,Momentum,SHORT,MTRN,WEAK,1.478,75.9,29
+Donchian/Turtle,Momentum,SHORT,MTRN,CHOPPY,-0.803,38.9,18
+ADX Trend,Momentum,LONG,MTRN,ALL,0.308,51.1,227
+ADX Trend,Momentum,LONG,MTRN,STRONG,2.979,81.7,60
+ADX Trend,Momentum,LONG,MTRN,NORMAL,-0.065,52.8,36
+ADX Trend,Momentum,LONG,MTRN,CAUTIOUS,0.558,38.7,31
+ADX Trend,Momentum,LONG,MTRN,WEAK,-2.496,25.0,48
+ADX Trend,Momentum,LONG,MTRN,CHOPPY,-1.03,46.2,52
+ADX Trend,Momentum,SHORT,MTRN,ALL,-0.616,45.3,150
+ADX Trend,Momentum,SHORT,MTRN,STRONG,-3.088,6.1,33
+ADX Trend,Momentum,SHORT,MTRN,NORMAL,-0.004,40.6,32
+ADX Trend,Momentum,SHORT,MTRN,CAUTIOUS,-0.477,53.3,15
+ADX Trend,Momentum,SHORT,MTRN,WEAK,1.987,83.3,36
+ADX Trend,Momentum,SHORT,MTRN,CHOPPY,-0.153,44.1,34
+RSI Revert,Reversion,LONG,MYRG,ALL,0.402,56.3,71
+RSI Revert,Reversion,LONG,MYRG,STRONG,2.377,89.5,19
+RSI Revert,Reversion,LONG,MYRG,WEAK,-0.402,31.8,22
+RSI Revert,Reversion,SHORT,MYRG,ALL,-1.3,46.7,150
+RSI Revert,Reversion,SHORT,MYRG,STRONG,-2.6,10.8,37
+RSI Revert,Reversion,SHORT,MYRG,NORMAL,-1.052,48.6,35
+RSI Revert,Reversion,SHORT,MYRG,WEAK,1.596,64.0,25
+RSI Revert,Reversion,SHORT,MYRG,CHOPPY,0.741,63.4,41
+Zscore Revert,Reversion,LONG,MYRG,ALL,0.766,58.7,63
+Zscore Revert,Reversion,LONG,MYRG,STRONG,2.532,90.9,22
+Zscore Revert,Reversion,LONG,MYRG,WEAK,-1.272,22.2,18
+Zscore Revert,Reversion,SHORT,MYRG,ALL,-0.68,44.0,109
+Zscore Revert,Reversion,SHORT,MYRG,STRONG,-2.403,16.7,30
+Zscore Revert,Reversion,SHORT,MYRG,NORMAL,-1.114,42.9,28
+Zscore Revert,Reversion,SHORT,MYRG,WEAK,1.423,68.8,16
+Zscore Revert,Reversion,SHORT,MYRG,CHOPPY,0.623,57.1,21
+Keltner Revert,Reversion,LONG,MYRG,ALL,0.704,63.6,33
+Keltner Revert,Reversion,LONG,MYRG,STRONG,2.448,93.8,16
+Keltner Revert,Reversion,SHORT,MYRG,ALL,-1.421,44.3,131
+Keltner Revert,Reversion,SHORT,MYRG,STRONG,-2.513,10.5,38
+Keltner Revert,Reversion,SHORT,MYRG,NORMAL,-0.909,46.7,30
+Keltner Revert,Reversion,SHORT,MYRG,CAUTIOUS,1.131,58.8,17
+Keltner Revert,Reversion,SHORT,MYRG,WEAK,1.434,66.7,18
+Keltner Revert,Reversion,SHORT,MYRG,CHOPPY,0.513,64.3,28
+MFI Revert,Reversion,SHORT,MYRG,ALL,-1.138,44.2,43
+MFI Revert,Reversion,SHORT,MYRG,CHOPPY,-0.292,46.7,15
+RSI Momentum,Momentum,LONG,MYRG,ALL,1.3,53.3,150
+RSI Momentum,Momentum,LONG,MYRG,STRONG,2.6,89.2,37
+RSI Momentum,Momentum,LONG,MYRG,NORMAL,1.052,51.4,35
+RSI Momentum,Momentum,LONG,MYRG,WEAK,-1.596,36.0,25
+RSI Momentum,Momentum,LONG,MYRG,CHOPPY,-0.741,36.6,41
+RSI Momentum,Momentum,SHORT,MYRG,ALL,-0.402,43.7,71
+RSI Momentum,Momentum,SHORT,MYRG,STRONG,-2.377,10.5,19
+RSI Momentum,Momentum,SHORT,MYRG,WEAK,0.402,68.2,22
+Donchian/Turtle,Momentum,LONG,MYRG,ALL,1.473,57.5,167
+Donchian/Turtle,Momentum,LONG,MYRG,STRONG,2.751,82.6,46
+Donchian/Turtle,Momentum,LONG,MYRG,NORMAL,1.435,62.8,43
+Donchian/Turtle,Momentum,LONG,MYRG,CAUTIOUS,-0.726,47.6,21
+Donchian/Turtle,Momentum,LONG,MYRG,WEAK,-2.012,32.1,28
+Donchian/Turtle,Momentum,LONG,MYRG,CHOPPY,-0.794,41.4,29
+Donchian/Turtle,Momentum,SHORT,MYRG,ALL,-0.1,50.8,63
+Donchian/Turtle,Momentum,SHORT,MYRG,STRONG,-2.26,20.0,20
+Donchian/Turtle,Momentum,SHORT,MYRG,WEAK,1.069,86.7,15
+Donchian/Turtle,Momentum,SHORT,MYRG,CHOPPY,0.805,53.3,15
+ADX Trend,Momentum,LONG,MYRG,ALL,0.713,55.7,176
+ADX Trend,Momentum,LONG,MYRG,STRONG,2.84,80.4,46
+ADX Trend,Momentum,LONG,MYRG,NORMAL,0.603,57.6,33
+ADX Trend,Momentum,LONG,MYRG,CAUTIOUS,-0.313,54.5,22
+ADX Trend,Momentum,LONG,MYRG,WEAK,-1.817,34.5,29
+ADX Trend,Momentum,LONG,MYRG,CHOPPY,-0.004,43.5,46
+ADX Trend,Momentum,SHORT,MYRG,ALL,-0.999,53.1,128
+ADX Trend,Momentum,SHORT,MYRG,STRONG,-2.234,22.9,35
+ADX Trend,Momentum,SHORT,MYRG,NORMAL,-0.687,40.0,20
+ADX Trend,Momentum,SHORT,MYRG,WEAK,1.178,85.7,28
+ADX Trend,Momentum,SHORT,MYRG,CHOPPY,0.826,68.6,35
+RSI Revert,Reversion,LONG,NVT,ALL,1.302,53.7,54
+RSI Revert,Reversion,LONG,NVT,STRONG,2.209,83.3,18
+RSI Revert,Reversion,LONG,NVT,WEAK,-0.084,31.6,19
+RSI Revert,Reversion,SHORT,NVT,ALL,-0.964,47.1,138
+RSI Revert,Reversion,SHORT,NVT,STRONG,-2.889,20.0,35
+RSI Revert,Reversion,SHORT,NVT,NORMAL,-1.511,31.8,22
+RSI Revert,Reversion,SHORT,NVT,CAUTIOUS,1.121,66.7,18
+RSI Revert,Reversion,SHORT,NVT,WEAK,0.758,72.0,25
+RSI Revert,Reversion,SHORT,NVT,CHOPPY,0.657,55.3,38
+Zscore Revert,Reversion,LONG,NVT,ALL,1.568,60.0,75
+Zscore Revert,Reversion,LONG,NVT,STRONG,2.157,81.0,21
+Zscore Revert,Reversion,LONG,NVT,WEAK,-0.406,34.6,26
+Zscore Revert,Reversion,SHORT,NVT,ALL,-0.551,50.4,139
+Zscore Revert,Reversion,SHORT,NVT,STRONG,-2.547,20.6,34
+Zscore Revert,Reversion,SHORT,NVT,NORMAL,-1.092,40.9,22
+Zscore Revert,Reversion,SHORT,NVT,CAUTIOUS,1.129,65.0,20
+Zscore Revert,Reversion,SHORT,NVT,WEAK,0.737,80.0,20
+Zscore Revert,Reversion,SHORT,NVT,CHOPPY,0.496,58.1,43
+Keltner Revert,Reversion,LONG,NVT,ALL,0.438,57.4,47
+Keltner Revert,Reversion,LONG,NVT,STRONG,1.977,80.0,15
+Keltner Revert,Reversion,LONG,NVT,WEAK,-0.733,30.0,20
+Keltner Revert,Reversion,SHORT,NVT,ALL,-0.478,52.7,129
+Keltner Revert,Reversion,SHORT,NVT,STRONG,-2.701,12.9,31
+Keltner Revert,Reversion,SHORT,NVT,NORMAL,-0.741,47.6,21
+Keltner Revert,Reversion,SHORT,NVT,WEAK,2.251,88.2,17
+Keltner Revert,Reversion,SHORT,NVT,CHOPPY,1.043,64.0,50
+MFI Revert,Reversion,SHORT,NVT,ALL,-0.816,43.6,39
+RSI Momentum,Momentum,LONG,NVT,ALL,0.964,52.9,138
+RSI Momentum,Momentum,LONG,NVT,STRONG,2.889,80.0,35
+RSI Momentum,Momentum,LONG,NVT,NORMAL,1.511,68.2,22
+RSI Momentum,Momentum,LONG,NVT,CAUTIOUS,-1.121,33.3,18
+RSI Momentum,Momentum,LONG,NVT,WEAK,-0.758,28.0,25
+RSI Momentum,Momentum,LONG,NVT,CHOPPY,-0.657,44.7,38
+RSI Momentum,Momentum,SHORT,NVT,ALL,-1.302,46.3,54
+RSI Momentum,Momentum,SHORT,NVT,STRONG,-2.209,16.7,18
+RSI Momentum,Momentum,SHORT,NVT,WEAK,0.084,68.4,19
+Donchian/Turtle,Momentum,LONG,NVT,ALL,0.517,51.1,180
+Donchian/Turtle,Momentum,LONG,NVT,STRONG,3.334,82.6,46
+Donchian/Turtle,Momentum,LONG,NVT,NORMAL,0.515,51.7,29
+Donchian/Turtle,Momentum,LONG,NVT,CAUTIOUS,-0.479,33.3,24
+Donchian/Turtle,Momentum,LONG,NVT,WEAK,-1.418,11.5,26
+Donchian/Turtle,Momentum,LONG,NVT,CHOPPY,-0.341,50.9,55
+Donchian/Turtle,Momentum,SHORT,NVT,ALL,-1.277,44.9,78
+Donchian/Turtle,Momentum,SHORT,NVT,STRONG,-2.268,18.2,22
+Donchian/Turtle,Momentum,SHORT,NVT,WEAK,0.422,68.0,25
+ADX Trend,Momentum,LONG,NVT,ALL,0.44,52.2,205
+ADX Trend,Momentum,LONG,NVT,STRONG,3.616,82.4,51
+ADX Trend,Momentum,LONG,NVT,NORMAL,1.211,57.5,40
+ADX Trend,Momentum,LONG,NVT,CAUTIOUS,-1.195,29.6,27
+ADX Trend,Momentum,LONG,NVT,WEAK,-1.857,17.2,29
+ADX Trend,Momentum,LONG,NVT,CHOPPY,-0.683,50.0,58
+ADX Trend,Momentum,SHORT,NVT,ALL,-1.059,45.5,132
+ADX Trend,Momentum,SHORT,NVT,STRONG,-2.84,17.1,35
+ADX Trend,Momentum,SHORT,NVT,NORMAL,-1.311,27.3,22
+ADX Trend,Momentum,SHORT,NVT,WEAK,1.119,67.6,37
+ADX Trend,Momentum,SHORT,NVT,CHOPPY,0.107,57.1,28
