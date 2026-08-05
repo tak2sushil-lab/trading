@@ -23,6 +23,14 @@ Last updated: Aug 3 2026 (night)
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Aug 5 2026.
 
+**⚠️ NEXT SESSION PRIORITY (user flagged Aug 5, do not lose this):** wire
+`_scan_regime_adaptive()` into `equity_replay.py`. It currently calls the underlying
+decision pieces (`get_regime`, `get_intraday_signals`, `grade_setup`, `book_is_on`,
+...) directly rather than the full `run_scan()` orchestration, so the Regime-Adaptive
+Suite shipped tonight has **zero replay/parity coverage** right now — the live paper
+trial is the only validation that exists for it. Close this before trusting any
+replay-based check of this path, and ideally before the Sep 5 sunset review needs one.
+
 **Shipped and live:**
 - ✅ Regime-Adaptive Suite (equity) — second entry path, picks strategy+direction by
   regime instead of always trading momentum, NOT gated by Book Health, shares the
