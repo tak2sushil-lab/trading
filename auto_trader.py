@@ -1030,6 +1030,46 @@ def get_intraday_signals(symbol, spy_chg=0):
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
         rsi   = round(float(100 - (100 / (1 + gain.iloc[-1] / loss.iloc[-1]))), 1) if loss.iloc[-1] != 0 else 100.0
 
+        # ── ADX(14) + Keltner(20 EMA, 2x ATR) — Aug 5 2026, regime-adaptive suite ──
+        # Reuses df1d (already fetched above for ma20/ema/rsi) — no extra data call.
+        # ADX: is today's move a real, confirmed trend, or just drift/noise (>25 = real).
+        # Keltner: is price stretched outside its normal volatility-adjusted range
+        # (used by the CAUTIOUS/CHOPPY reversion legs, not the trend legs).
+        adx = None
+        above_keltner_upper = below_keltner_lower = False
+        try:
+            _high, _low = df1d['High'], df1d['Low']
+            _up_move   = _high.diff()
+            _down_move = -_low.diff()
+            _plus_dm   = ((_up_move > _down_move) & (_up_move > 0)).astype(float) * _up_move.clip(lower=0)
+            _minus_dm  = ((_down_move > _up_move) & (_down_move > 0)).astype(float) * _down_move.clip(lower=0)
+            _tr = pd.concat([_high - _low, (_high - close.shift()).abs(),
+                             (_low - close.shift()).abs()], axis=1).max(axis=1)
+            _atr14 = _tr.rolling(14).mean()
+            _plus_di  = 100 * _plus_dm.rolling(14).mean() / _atr14
+            _minus_di = 100 * _minus_dm.rolling(14).mean() / _atr14
+            _dx = 100 * (_plus_di - _minus_di).abs() / (_plus_di + _minus_di).replace(0, np.nan)
+            _adx_val = _dx.rolling(14).mean().iloc[-1]
+            adx = round(float(_adx_val), 1) if pd.notna(_adx_val) else None
+
+            _ema20 = close.ewm(span=20).mean()
+            _keltner_upper = _ema20 + 2 * _atr14
+            _keltner_lower = _ema20 - 2 * _atr14
+            above_keltner_upper = bool(price > _keltner_upper.iloc[-1]) if pd.notna(_keltner_upper.iloc[-1]) else False
+            below_keltner_lower = bool(price < _keltner_lower.iloc[-1]) if pd.notna(_keltner_lower.iloc[-1]) else False
+        except Exception:
+            pass  # ADX/Keltner are informational for the regime-adaptive scanner only — never block on failure
+
+        # 5-trading-day price comparison — the ADX Trend leg's direction confirmation
+        # (matches research_full_suite_regime.py's `Close > Close.shift(5)` exactly).
+        chg_5d_up = chg_5d_down = False
+        try:
+            if len(close) > 5:
+                chg_5d_up   = bool(price > float(close.iloc[-6]))
+                chg_5d_down = bool(price < float(close.iloc[-6]))
+        except Exception:
+            pass
+
         # 5-min RSI — intraday exhaustion check (resets each session, much more sensitive)
         d5    = df5['Close'].diff()
         g5    = d5.clip(lower=0).rolling(14).mean()
@@ -1258,6 +1298,9 @@ def get_intraday_signals(symbol, spy_chg=0):
             'burst_age_min':    burst_age_min,
             'consec_new_highs': consec_new_highs,
             'consec_new_lows':  consec_new_lows,
+            'adx': adx, 'above_keltner_upper': above_keltner_upper,
+            'below_keltner_lower': below_keltner_lower,
+            'chg_5d_up': chg_5d_up, 'chg_5d_down': chg_5d_down,
         }
     except:
         return None
@@ -3313,6 +3356,16 @@ def run_scan():
             _scan_premarket_catalyst(open_trades)
         return  # no monitoring needed — no open positions pre-market
 
+    # Regime-adaptive strategy suite (Aug 5 2026) — runs once per scan cycle,
+    # independent of the LONG/SHORT routing below (deliberately not gated by
+    # book_is_on(); see the module comment above REGIME_STRATEGY_MAP). Shares
+    # the same MAX_OPEN_TRADES/$10K pool, so open_trades is refreshed right
+    # after — everything below this point must see the true, current count,
+    # not a stale pre-regime-adaptive snapshot.
+    if _entries_allowed and is_entry_window() and not is_trading_blocked()[0]:
+        _scan_regime_adaptive(regime, open_trades)
+        open_trades = get_open_trades()
+
     if not _entries_allowed:
         log("Gateway unstable / position mismatch — monitoring only, no new entries")
         exits = monitor_open_trades(regime, confirmed_scans)
@@ -3394,6 +3447,147 @@ def get_position_capital(grade, is_catalyst, deployed, first_bar_strong=False):
     if first_bar_strong:
         alloc = int(alloc * 1.15)
     return round(min(alloc, remaining), 2)
+
+
+# ─────────────────────────────────────────────────────────
+# REGIME-ADAPTIVE STRATEGY SUITE (Aug 5 2026)
+# ─────────────────────────────────────────────────────────
+# Baseline: research_full_suite_regime.py (2yr) -> _3yr.py (3yr confirm,
+# same winners 4 of 5 regimes) -> _eod.py (re-tested under the REAL exit
+# constraint this system actually enforces, MAX_HOLD_DAYS=1/EOD close, since
+# the original 10-day-hold backtest doesn't reflect what gets captured live).
+# Full research trail + plain-English table: CLAUDE.md, analysis_pending memory.
+#
+# Design decisions, explicit, so a future reader doesn't have to reverse-engineer them:
+#   - Deliberately NOT gated by book_is_on(). This suite exists specifically to
+#     trade through periods the book-health gate has the existing LONG/SHORT
+#     books shut down, using a different (regime-conditioned) signal instead
+#     of the book's own trailing-drift history. Whether that's actually a good
+#     idea is the open question this live paper trial is designed to answer.
+#   - Shares the existing $10,000 / MAX_OPEN_TRADES=5 pool via
+#     get_position_capital()/get_deployed_capital() — explicit user decision
+#     Aug 5 2026, not a separate allocation.
+#   - Exits are 100% the EXISTING stack. This function only ever calls
+#     place_trade() with a normal calc_sl_target() stop, then steps away —
+#     no new exit logic anywhere. ATR trail, PCT trail, hard stop, dollar
+#     circuit breaker, VWAP cross, momentum fade, EOD close, hard time stop,
+#     T+5 confirmation all apply completely unchanged, because monitor_open_trades()
+#     doesn't branch on setup_type/strategy — verified by reading it before
+#     writing this function, not assumed.
+#   - CHOPPY trades at HALF size (explicit user decision) — the thinnest,
+#     least-robust-under-the-EOD-retest evidence of the five regimes.
+#   - Sunset review: Sep 5 2026 (one month), per CONSTITUTION.md governance
+#     (hypothesis + auto-scoring + sunset date for every new rule).
+
+REGIME_STRATEGY_MAP = {
+    'STRONG':   {'name': 'ADX_TREND',      'side': 'LONG',  'size_mult': 1.0},
+    'NORMAL':   {'name': 'ADX_TREND',      'side': 'LONG',  'size_mult': 1.0},
+    'WEAK':     {'name': 'ADX_TREND',      'side': 'SHORT', 'size_mult': 1.0},
+    'CAUTIOUS': {'name': 'KELTNER_REVERT', 'side': 'SHORT', 'size_mult': 1.0},
+    'CHOPPY':   {'name': 'RSI_REVERT',     'side': 'SHORT', 'size_mult': 0.5},
+}
+
+def _regime_adaptive_signal_fires(strategy_name, side, sig):
+    """True if this symbol's live signal matches today's regime-strategy rule.
+    Mirrors the exact backtested entry conditions in research_full_suite_regime.py."""
+    if strategy_name == 'ADX_TREND':
+        adx = sig.get('adx')
+        if adx is None or adx <= 25:
+            return False
+        return sig.get('chg_5d_up') if side == 'LONG' else sig.get('chg_5d_down')
+    if strategy_name == 'KELTNER_REVERT':
+        return sig.get('above_keltner_upper') if side == 'SHORT' else sig.get('below_keltner_lower')
+    if strategy_name == 'RSI_REVERT':
+        rsi = sig.get('rsi')
+        if rsi is None:
+            return False
+        return rsi > 70 if side == 'SHORT' else rsi < 30
+    return False
+
+
+def _scan_regime_adaptive(regime, open_trades):
+    """Entry scanner for the regime-adaptive suite — see module comment above
+    REGIME_STRATEGY_MAP for full design rationale. Returns entries made this cycle."""
+    global daily_bull_count, daily_bear_count, traded_today
+
+    cfg = REGIME_STRATEGY_MAP.get(regime)
+    if not cfg:
+        return []
+    strategy_name, side, size_mult = cfg['name'], cfg['side'], cfg['size_mult']
+    setup_tag = f"REGIME_{strategy_name}"
+
+    scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    entries    = []
+    attempted  = 0
+
+    for symbol in scan_order:
+        if symbol in traded_today:
+            continue
+        if any(t['symbol'] == symbol for t in open_trades):
+            continue
+        if len(open_trades) + len(entries) + attempted >= MAX_OPEN_TRADES:
+            break
+
+        try:
+            sig = get_intraday_signals(symbol)
+            if sig is None:
+                continue
+            price = sig['price']
+            if price < 5 or price > 800:
+                continue
+            if not _regime_adaptive_signal_fires(strategy_name, side, sig):
+                continue
+
+            sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
+            sector   = get_symbol_sector(symbol)
+            deployed = get_deployed_capital()
+            capital  = get_position_capital('A', False, deployed) * size_mult
+            if capital < 100:
+                continue
+            # Side-conditional risk-per-share, matching the existing bull (price-sl)
+            # and bear (sl-price) scanners exactly — SL sits on opposite sides of
+            # price depending on direction, so this cannot be a single formula.
+            risk_per_share = round((price - sl) if side == 'LONG' else (sl - price), 4)
+            atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
+            shares         = max(1, min(int(capital / price), atr_shares))
+
+            log(f"  📊 REGIME {regime}/{strategy_name} {side} {symbol} ${price} | "
+                f"ADX {sig.get('adx')} | RSI {sig['rsi']} | size {size_mult}x")
+
+            attempted += 1
+            trade_id = place_trade(
+                symbol, price, shares, sl, target,
+                setup_tag, 'A',
+                rsi=sig['rsi'], vol_ratio=sig['vol_ratio'],
+                confidence=int(sig.get('adx') or 50), sector=sector,
+                side=side,
+            )
+            if trade_id:
+                traded_today.add(symbol)
+                save_traded_today()
+                open_positions[symbol] = trade_id
+                first_bar_strong_trades[trade_id] = False
+                if side == 'LONG':
+                    daily_bull_count += 1
+                else:
+                    daily_bear_count += 1
+                entries.append({'symbol': symbol, 'price': price, 'shares': shares,
+                                'sl': sl, 'target': target, 'side': side})
+                _l3_pending[trade_id] = {
+                    'sym': symbol, 'entry_time': datetime.now(ET),
+                    'entry_price': price, 'direction': side,
+                }
+        except Exception as e:
+            log(f"  Regime-adaptive error {symbol}: {e}")
+
+    if entries:
+        lines = [f"📊 REGIME-ADAPTIVE — {regime}/{strategy_name} {side} — {len(entries)} entries (size {size_mult}x)"]
+        for e in entries:
+            lines.append(f"  {e['symbol']} {e['side']} x{e['shares']} @ ${e['price']} SL ${e['sl']}")
+        send_telegram('\n'.join(lines))
+
+    return entries
+
 
 def _scan_catalyst_override(open_trades):
     """

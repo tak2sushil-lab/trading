@@ -21,38 +21,44 @@ Last updated: Aug 3 2026 (night)
 
 **Read this first for "what's the status."** The sections below this one are a
 chronological log (useful for "why did we do X"); this one is always current for
-"what's shipped, what's running, what's still open." Last refreshed: Aug 3 2026 (night).
+"what's shipped, what's running, what's still open." Last refreshed: Aug 5 2026.
 
-**Shipped and live tonight:**
+**Shipped and live:**
+- ✅ Regime-Adaptive Suite (equity) — second entry path, picks strategy+direction by
+  regime instead of always trading momentum, NOT gated by Book Health, shares the
+  existing exit stack unmodified. Live paper trial running now. Sunset **Sep 5 2026**.
+- ✅ Equity reversion shadow book — `REVERSION_LONG` candidates logging, log-only,
+  zero live capital. Sunset review **Sep 3 2026** (~20 trading days needed).
 - ✅ Spread Toll Gate (options liquidity decider) — replaced the rule that blocked
   37/37 candidates since Jul 22. Sunset review **Sep 3 2026**.
-- ✅ Book Pulse — options book-level Greeks + concentration on the dashboard.
+- ✅ Book Pulse — options book-level Greeks + concentration, now inside the Options
+  Positions card itself (moved off System Health Aug 4 to de-dupe).
 - ✅ T3a_NEAR options alert tier (80%-to-target, INFO, once/day).
 - ✅ Daily option chain snapshots — collector + launchd job running, held positions only.
-- ✅ Equity reversion shadow book — `REVERSION_LONG` candidates logging now, log-only,
-  zero live capital. Sunset review **Sep 3 2026** (~20 trading days needed).
+- ✅ HMM regime shadow logger (futures) — EOD daily, log-only, 508-day history
+  backfilled. Live-computable (gating-capable) version still not built.
 - ✅ `futures/close_all_now.sh` — the only sanctioned way to manually flatten futures.
+- ✅ Dashboard: mobile horizontal-scroll bug fixed, web app manifest added (Safari
+  "Add to Home Screen" now gives a real standalone-app feel on iOS).
 
 **Active research threads (not wired into anything live):**
-- 🔬 HMM regime classifier (futures) — correctly flagged the Jun 18 2026 misclassified-
-  TRENDING case, but inconclusive in aggregate at the current 3-state config. Needs
-  iteration (feature/component tuning) before it's a real candidate. Not scheduled.
-- 🔬 Sector-conditioned reversion — materials/mining favored reversion, tech favored
-  momentum in the 2yr equity sweep. User wants to pursue. Blocked on the reversion
-  shadow book (above) accumulating enough rows — natural cut once the Sep 3 review
-  lands, not before.
+- 🔬 Book Health graded/asymmetric-confirm redesign — graded sizing tested and
+  REJECTED (binary holds up better once tested across window lengths); asymmetric
+  "2-day confirm ON, instant OFF" showed a real, if thin (n=1 transition), edge —
+  proposed, not shipped, awaiting decision.
+- 🔬 Sector-conditioned reversion — blocked on the reversion shadow book (above)
+  accumulating enough rows — natural cut once the Sep 3 review lands.
 
 **Known gaps, not yet started:**
-- ⬜ Dashboard: no dedicated Options view yet — current state is incremental data
-  added to the existing System Health row + Options Positions table, not the
-  "Bloomberg terminal" experience from the Aug 3 ideation doc (strike ladder,
-  theta-decay chart). Explicitly sequenced AFTER strategy work per user request
-  (Aug 3) — next up.
-- ⬜ IV-rank-from-own-chain-history (now unblocked by the chain snapshot collector,
-  just not built).
-- ⬜ Real-money IBKR funding gap: `IBKR_FLOOR=$5,000` is undersized for the system's
+- ⬜ Dashboard visibility for the Regime-Adaptive Suite (new setup_type tags,
+  today's active regime/strategy, separate P&L) — next up.
+- ⬜ `equity_replay.py` doesn't yet cover `_scan_regime_adaptive()` — it calls the
+  underlying decision pieces directly, not full `run_scan()`. Live trial is the
+  validation for now; close this parity gap before trusting replay checks here.
+- ⬜ Options: strike ladder / theta-decay chart (needs more days of chain snapshots).
+- ⬜ IV-rank-from-own-chain-history (unblocked by the snapshot collector, not built).
+- ⬜ Real-money IBKR funding gap: `IBKR_FLOOR=$5,000` undersized for the system's
   own 2-contract cap at current live margin (~$8,750 to hold size with zero buffer).
-  Flagged, not revisited.
 
 **Full detail on all of the above:** `docs/IDEATION_2026-08-03_strategy_and_options_dashboard_review.md`,
 `analysis_pending` memory, and the dated log entries below.
@@ -1247,6 +1253,57 @@ Services restarted + verified: options_trader, watchman, dashboard. Smoke-tested
 log path (calc dict → opt_calc_log round-trip). First live test of the gate = next market
 open — watch the funnel line on the dashboard: if 0 calcs still, the block is upstream
 (triggers/book health), not liquidity.
+
+---
+
+## Aug 5 2026 — Regime-Adaptive Suite SHIPPED to equity (live paper trial)
+
+**Context:** multi-day thread starting from a YouTube review (Aug 3) through a fully
+validated research trail (see `analysis_pending` memory sections -6 through -2) —
+2yr backtest → 3yr re-confirm (4/5 regimes identical winner) → re-tested under the
+REAL exit constraint this system enforces (EOD close / `MAX_HOLD_DAYS=1`, not the
+original 10-day-hold assumption) → user-approved wiring, capital/sizing decided
+explicitly, full code read-through done before writing anything, signal logic
+unit-tested before shipping.
+
+**What it is:** a second, independent equity entry path — `_scan_regime_adaptive()`
+in `auto_trader.py` — that picks strategy AND direction from today's Weather Report
+reading instead of always trading momentum:
+
+| Regime | Strategy | Direction | Size |
+|---|---|---|---|
+| STRONG | ADX Trend (ADX>25 + 5d price confirm) | LONG | full |
+| NORMAL | ADX Trend | LONG | full |
+| WEAK | ADX Trend | SHORT | full |
+| CAUTIOUS | Keltner Revert (price > EMA20+2×ATR) | SHORT | full |
+| CHOPPY | RSI Revert (RSI>70) | SHORT | **half** (thinnest backtest evidence) |
+
+**Explicit design decisions (so nobody has to reverse-engineer them later):**
+- **Not gated by `book_is_on()`.** This is the whole point — it trades through
+  periods the Book Health Selector has the LONG/SHORT books shut down, using a
+  different signal. Whether that's actually good is exactly what this trial answers.
+- **Shares the existing $10,000 / `MAX_OPEN_TRADES=5` pool** (`get_position_capital`/
+  `get_deployed_capital`) — user's explicit call Aug 5, not a separate allocation.
+- **Exits are 100% unmodified.** New trades get a normal `calc_sl_target()` stop via
+  `place_trade()`, then `monitor_open_trades()` — ATR trail, PCT trail, hard stop,
+  dollar circuit breaker, VWAP cross, momentum fade, EOD close, hard time stop, T+5
+  confirmation — takes over exactly as it does for every other equity trade, because
+  none of it branches on setup_type. Verified by reading the function, not assumed.
+- Trades tagged `setup_type='REGIME_ADX_TREND'` / `'REGIME_KELTNER_REVERT'` /
+  `'REGIME_RSI_REVERT'` — cleanly separable from LONG/SHORT book P&L and from Book
+  Health's own measurement, so this trial can't contaminate either.
+- **Known gap, not yet closed:** `equity_replay.py` calls the underlying decision
+  pieces (`get_regime`, `get_intraday_signals`, `grade_setup`, `book_is_on`, ...)
+  directly rather than the full `run_scan()` orchestration, so it does **not** yet
+  include `_scan_regime_adaptive()` — the live paper trial itself is the validation
+  for now. Close this gap before trusting `equity_replay.py` parity checks for this
+  path specifically.
+- **Sunset review: Sep 5 2026** (one month), per CONSTITUTION.md governance.
+- **Dashboard visibility not yet built** — next step, not done in this session.
+
+Restarted autotrader same session, verified clean startup. First real test is the
+next trading day this qualifies on — watch the Telegram `📊 REGIME-ADAPTIVE` alerts
+and the `REGIME_*` setup_type tags in `trades` to confirm it's firing as designed.
 
 ---
 

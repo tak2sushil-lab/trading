@@ -70,6 +70,7 @@ for all six types interchangeably. When speaking, pick the type word above.
 | **Gap Zone vol tier** | FVG vol tier in `grade_setup` | Gate | Fair-value-gap plays need price-scaled volume (2.0×/3.5×/5.0× by price band). |
 | **Exit Stack** | 13 mechanisms, priority-ordered | Exit rules | See CLAUDE.md table — keep calling individual rules by their existing names. |
 | **Equity Night School** | `learner.py` via `nightly_learning()` 23:00 ET inside autotrader | Learner | Adjusts RSI/volume/momentum/sector/earnings weight multipliers + sector grades from closed trades. The ONLY writer of strategy weights and sector grades. |
+| **Regime-Adaptive Suite** | `_scan_regime_adaptive()`, `REGIME_STRATEGY_MAP`, `setup_type='REGIME_*'` | Entry module (live Aug 5 2026) | Trades a different strategy+direction per Weather Report reading (STRONG/NORMAL→ADX Trend LONG, WEAK→ADX Trend SHORT, CAUTIOUS→Keltner Revert SHORT, CHOPPY→RSI Revert SHORT half-size) instead of always trading momentum. Deliberately NOT gated by Book Health Selector — shares its capital/slot pool. Exits are the same Exit Stack, unmodified. Sunset review Sep 5 2026. |
 
 ## 5. Options
 
