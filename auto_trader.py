@@ -3525,6 +3525,14 @@ def _scan_regime_adaptive(regime, open_trades):
             continue
         if any(t['symbol'] == symbol for t in open_trades):
             continue
+        # Aug 5 2026 fix: this scanner increments daily_bull_count/daily_bear_count
+        # below but never checked either cap before entering — every other equity
+        # scanner in this file does (see _scan_and_enter/_scan_and_enter_bear/
+        # _scan_catalyst_override). Confirmed live Aug 5: Bear hit 26/20 same day.
+        if side == 'LONG' and daily_bull_count >= MAX_DAILY_BULL_TRADES:
+            break
+        if side == 'SHORT' and daily_bear_count >= MAX_DAILY_BEAR_TRADES:
+            break
         if len(open_trades) + len(entries) + attempted >= MAX_OPEN_TRADES:
             break
 

@@ -296,16 +296,32 @@ def load_bars(
 
     where = " AND ".join(clauses)
     sql   = f"SELECT ts_utc,open,high,low,close,volume FROM bars_5m WHERE {where} ORDER BY ts_utc"
-    df = pd.read_sql_query(sql, conn, params=params, parse_dates=["ts_utc"])
+    # NOT parse_dates= here: the ts_utc column has two coexisting string formats
+    # ('2024-01-02T14:30:00' from the original DataBento backfill vs
+    # '2026-05-28 13:30:00+00:00' from the daily incremental collector, which
+    # overlap in the DB rather than cutting over cleanly). read_sql_query's
+    # parse_dates infers ONE format from a sample and silently turns every
+    # minority-format row into NaT -- which then gets invisibly dropped by any
+    # downstream date filter (confirmed: 8,580/55,482 rows for one symbol,
+    # truncating real data at the format boundary with zero error or warning).
+    # format='mixed' parses each value independently instead of inferring once.
+    df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
 
     if df.empty:
         return df
 
-    df["ts_utc"] = pd.to_datetime(df["ts_utc"], utc=True)
+    df["ts_utc"] = pd.to_datetime(df["ts_utc"], utc=True, format='mixed')
     df = df.set_index("ts_utc")
     df.index = df.index.tz_convert(ET)
     df.index.name = "datetime_et"
+    # Same two-format overlap as above also produced genuine duplicate rows for
+    # the same real 5-min bar with DIFFERING OHLCV values (confirmed: 4,914 for
+    # one symbol -- two collection sources disagreeing, not just a formatting
+    # difference). keep='last' matches the dedup convention equity_replay.py
+    # already uses for its own SPY/QQQ merge (assume the later-written row is
+    # the more current/authoritative pass).
+    df = df[~df.index.duplicated(keep='last')]
     return df
 
 

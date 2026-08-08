@@ -1,29 +1,45 @@
 #!/usr/bin/env python
 """
 equity_replay.py — bar-level equity replay that calls LIVE auto_trader functions.
-Built Jul 18 2026 (weekend redesign, user-approved). Replaces stale sim_today.py as
-the equity validator (Constitution Art. 4: sim must match the machine).
+Built Jul 18 2026. Rebuilt Aug 5 2026 (v2): v1 hand-reimplemented a subset of the
+entry/exit logic and only hit ~88% decision parity, with zero coverage of
+_scan_regime_adaptive() (shipped Aug 5) at all. v2 instead mirrors run_scan()'s own
+routing (auto_trader.py:3215-3427) and calls the REAL orchestration functions
+directly under a frozen clock — _scan_regime_adaptive, _scan_and_enter,
+_scan_and_enter_bear, _scan_catalyst_override, monitor_open_trades — so the decision
+chain is 100% live code end to end, not an approximation of it.
 
-How it works (same pattern as the futures FakeDatetime replays):
-  - Freezes auto_trader's clock per 5-min bar (FakeDatetime/FakeDate monkey-patch)
-  - Serves stored bars (market_data.db bars_5m + a yfinance daily/SPY cache) through
-    auto_trader's own fetch points (yf.Ticker, get_ib_daily, _bridge_df, get_live_price)
-  - Decision chain is 100%% LIVE CODE: get_regime → get_intraday_signals → grade_setup
-    → _check_layer2_fitness → book_is_on → get_position_capital
-  - Exit engine replays the live stack: 5%% stop, -$150 breaker, L3 T+5 probation
-    (hard-fail/flat/confirm — mirrors monitor_open_trades), partial at +5%%, BE +2.5%%,
-    VWAP cross, no-move timer (240/300 DNA), ATR trail (1.0×/1.5× DNA), PCT trail,
-    5m-bar trail at +3%%, EOD 15:45.
+How it works:
+  - Freezes auto_trader's (and database.py's, separately) clock per 5-min bar
+    (FakeDatetime/FakeDate monkey-patch)
+  - Serves stored bars (market_data.db bars_5m, DataBento-backed 2024-01-02+ for
+    234/241 universe symbols + SPY/QQQ/IWM/MDY/sector ETFs; VIX has no path to real
+    intraday history on any dataset this account can reach, so it's a flat-within-
+    day proxy from real yfinance daily closes — vix_val threshold checks work,
+    vix_rising never fires, stated permanent v1 gap) through auto_trader's own
+    fetch points (yf.Ticker/yf.download, get_ib_daily, _bridge_df, get_live_price)
+  - place_trade() replaced by FillSimulator (instant 100% fill, real DB write via
+    the real log_trade_entry — no bridge order, no polling)
+  - monitor_open_trades()'s bridge calls neutralized (requests shim, empty
+    get_ibkr_positions — routes every exit through the real DB-only-close branch)
+  - get_daily_pnl() re-implemented against the replay DB with the SIMULATED date
+    substituted in (SQLite's date('now') can't be monkeypatched from Python)
+  - A dedicated _replay_trades.db (never the real trades.db) via a process-wide
+    sqlite3.connect guard — required because several auto_trader.py write sites do
+    `import sqlite3` INSIDE the function body, which an attribute-patch can't reach
 
-v1 known gaps (documented, not hidden): no catalyst flag (is_catalyst=False — catalyst
-override/sympathy/pre-market modules not replayed), earnings distance stubbed to 999
-(live had real calendar), sector_strength/key_levels empty (neutral scoring), afternoon/
-recycled-slot gates not enforced, momentum-fade + regime-flip exits skipped.
+Known, accepted v1 gaps (documented, not hidden): no catalyst/sympathy/pre-market
+scanning (catalyst_priority stays empty all replay — is_catalyst is correctly False
+throughout, matching that gap), _check_layer2_fitness fails open (SKIP/HALF-only
+gate, makes replay slightly more permissive than live, not a comparison bias),
+book_is_on() reads the REAL production scan_log (correct — but BOOK_HEALTH_RESET_DATE
+2026-07-22 means it's unconditionally True/cold-start for virtually this whole
+2024-2026 window), session_pnl is realized-only (no live unrealized P&L feed).
 Use --parity DATE to quantify decision divergence vs that day's live scan_log.
 
 Usage:
-  venv/bin/python equity_replay.py --start 2026-07-06 --end 2026-07-17
-  venv/bin/python equity_replay.py --parity 2026-07-17
+  venv/bin/python equity_replay.py --start 2024-01-02 --end 2026-08-04
+  venv/bin/python equity_replay.py --parity 2026-08-04
   venv/bin/python equity_replay.py --start ... --end ... --no-book-health   # A/B
 """
 import argparse, os, sqlite3, sys, warnings
@@ -62,10 +78,45 @@ at.date     = FakeDate
 # ── Data layer ───────────────────────────────────────────────────────────────
 _bars5, _daily = {}, {}
 
+# Regime/breadth inputs get_regime() needs that live outside FULL_UNIVERSE — must be
+# preloaded regardless of which symbol list the caller passes in.
+_REGIME_INPUT_SYMS = ['SPY', 'QQQ'] + sorted(set(at.SECTOR_ETF_MAP.values()))
+_VIX_SYM = '^VIX'
+# IWM/MDY feed get_regime()'s breadth check (auto_trader.py _bridge_df('IWM'/'MDY', ...)).
+_BREADTH_SYMS = ['IWM', 'MDY']
+
+def _synth_5min_from_daily(sym):
+    """No real intraday history available (VIX: not on any DataBento dataset this
+    account can reach — confirmed via metadata.list_datasets(), no CBOE index feed).
+    Flat-within-day proxy from free, unlimited yfinance daily closes: keeps absolute-
+    level threshold checks (vix_val > 28 etc) meaningful, but vix_rising (30-min
+    trend) can never fire — stated v1 fidelity gap, not hidden."""
+    try:
+        d = _real_yf.Ticker(sym).history(period='max', interval='1d', auto_adjust=False)
+        if not len(d):
+            return
+        if d.index.tz is None:
+            d.index = d.index.tz_localize(ET)
+        else:
+            d.index = d.index.tz_convert(ET)
+        _daily[sym] = d
+        rows = []
+        for day, close in d['Close'].items():
+            day = day.date()
+            for t in pd.date_range(f'{day} 09:30', f'{day} 16:00', freq='5min', tz=ET):
+                rows.append({'ts': t, 'Open': close, 'High': close, 'Low': close,
+                             'Close': close, 'Volume': 0})
+        if rows:
+            df = pd.DataFrame(rows).set_index('ts')
+            _bars5[sym] = df
+    except Exception:
+        pass
+
 def preload(symbols, start, end):
     """5-min bars from market_data.db; daily bars via one yfinance batch call."""
     pad = (pd.Timestamp(start) - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
-    for s in symbols:
+    all_syms = list(dict.fromkeys(list(symbols) + _REGIME_INPUT_SYMS + _BREADTH_SYMS))
+    for s in all_syms:
         try:
             df = load_bars(s, start=pad, end=end)
             if df is not None and len(df):
@@ -73,8 +124,22 @@ def preload(symbols, start, end):
                 _bars5[s] = df
         except Exception:
             pass
+    # get_intraday_signals() requires >=20 daily bars BEFORE the simulated date
+    # (auto_trader.py:997: `len(df1d) < 20 -> return None`). yfinance's `period=`
+    # is relative to the REAL wall clock, not the replay window — for any replay
+    # date more than a few months in the past, a period='6mo' fetch silently
+    # returns bars entirely AFTER the simulated date, so every symbol's daily
+    # history looks empty and get_intraday_signals returns None for everyone,
+    # every day (confirmed: this is why the Aug 5 2026 H1-2025 smoke test showed
+    # zero trades across all 125 days — not a quiet market, a broken data fetch).
+    # Anchor to the actual replay window instead, with a ~45-calendar-day pad
+    # before `start` (>=20 trading days needs ~28-30 calendar days; 45 is safe
+    # margin for holidays/weekends) so the >=20-bar requirement is met even on
+    # day 1 of the replay.
+    daily_pad_start = (pd.Timestamp(start) - pd.Timedelta(days=45)).strftime('%Y-%m-%d')
+    daily_end       = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
     need_daily = list(_bars5) + ['SPY', 'QQQ']
-    dl = _real_yf.download(need_daily, period='6mo', interval='1d',
+    dl = _real_yf.download(need_daily, start=daily_pad_start, end=daily_end, interval='1d',
                            group_by='ticker', auto_adjust=False,
                            threads=True, progress=False)
     for s in need_daily:
@@ -84,15 +149,24 @@ def preload(symbols, start, end):
                 _daily[s] = d
         except Exception:
             pass
-    # SPY/QQQ 5-min via yfinance (only 60d available — fine for recent windows)
+    # SPY/QQQ 5-min: merge (not overwrite) a yfinance 60-day tail onto the DataBento
+    # DB history — market_data.db's SPY series currently stops ~2mo short of "now",
+    # and QQQ needs to exist in _bars5 at all before this tail can extend it.
     for s in ('SPY', 'QQQ'):
         try:
             d = _real_yf.Ticker(s).history(period='60d', interval='5m')
             if len(d):
                 d.index = d.index.tz_convert(ET)
-                _bars5[s] = d
+                existing = _bars5.get(s)
+                if existing is not None and len(existing):
+                    merged = pd.concat([existing, d])
+                    merged = merged[~merged.index.duplicated(keep='last')].sort_index()
+                    _bars5[s] = merged
+                else:
+                    _bars5[s] = d
         except Exception:
             pass
+    _synth_5min_from_daily(_VIX_SYM)
 
 def bars5_upto(sym, days=5):
     df = _bars5.get(sym)
@@ -124,20 +198,84 @@ def daily_upto(sym):
     return hist
 
 # ── Patch auto_trader's fetch points ─────────────────────────────────────────
+def _parse_period_days(period):
+    period = (period or '').strip()
+    if period.endswith('d'):
+        try:
+            return int(period[:-1])
+        except ValueError:
+            return None
+    if period.endswith('mo'):
+        try:
+            return int(period[:-2]) * 30
+        except ValueError:
+            return None
+    if period == 'max':
+        return None
+    return None
+
 class _FakeTicker:
     def __init__(self, sym): self.sym = sym
     def history(self, period='5d', interval='5m', **kw):
-        if 'm' in interval:
-            return bars5_upto(self.sym, days=int(period.rstrip('d') or 5))
-        return daily_upto(self.sym)
+        if interval.endswith('m'):
+            days = _parse_period_days(period) or 5
+            b = bars5_upto(self.sym, days=days)
+            if interval == '15m' and len(b):
+                # get_intraday_signals's MTF alignment check (auto_trader.py:1221)
+                # requests real 15-min bars — the 5-min cache mislabeled as 15m
+                # would silently feed the wrong bar size into that comparison.
+                b = b.resample('15min').agg({'Open': 'first', 'High': 'max',
+                                             'Low': 'min', 'Close': 'last',
+                                             'Volume': 'sum'}).dropna()
+            return b
+        d = daily_upto(self.sym)
+        days = _parse_period_days(period)
+        if days is not None and len(d):
+            cutoff = FakeDatetime._now.date() - pd.Timedelta(days=days)
+            d = d[d.index.date >= cutoff]
+        return d
 
 class _FakeYF:
     Ticker = _FakeTicker
 
+    @staticmethod
+    def download(tickers, period='2d', interval='1d', group_by='column', **kw):
+        """Mirrors yf.download(tickers, period=, interval='1d', ...)'s default
+        (group_by='column') shape: 2-level column MultiIndex (field, ticker).
+        Only used by update_sector_strength(), which only reads ['Close'] —
+        other fields are populated for shape-compatibility, not accuracy."""
+        if isinstance(tickers, str):
+            tickers = tickers.split()
+        days = _parse_period_days(period) or 2
+        cutoff = FakeDatetime._now.date() - pd.Timedelta(days=days)
+        cols = {}
+        for t in tickers:
+            d = daily_upto(t)
+            if len(d):
+                d = d[d.index.date >= cutoff]
+            for field in ('Open', 'High', 'Low', 'Close', 'Volume'):
+                cols[(field, t)] = d[field] if (len(d) and field in d.columns) else pd.Series(dtype=float)
+        if not cols:
+            return pd.DataFrame()
+        out = pd.concat(cols, axis=1)
+        out.columns = pd.MultiIndex.from_tuples(out.columns)
+        return out
+
 at.yf             = _FakeYF
 at.get_ib_daily   = lambda symbol, duration='60 D': daily_upto(symbol)
 at.get_ib_intraday = lambda symbol, duration='5 D', bar_size='5 mins': bars5_upto(symbol)
-at._bridge_df     = lambda symbol, duration='1 D', bar_size='5 mins': bars5_upto(symbol, days=1)
+def _fake_bridge_df(symbol, duration='1 D', bar_size='5 mins'):
+    # get_regime()'s breadth check asks for '1 day' bars specifically to get
+    # yesterday's close (auto_trader.py:832-833: iwm_daily/mdy_daily) — routing
+    # that to intraday bars (as this used to do, ignoring bar_size entirely)
+    # made iwm_prev/mdy_prev resolve to TODAY's own latest price, so
+    # breadth_weak/broad_advance computed a near-zero delta every time and
+    # never contributed to any regime read. Route daily requests to daily_upto.
+    if 'day' in bar_size:
+        return daily_upto(symbol)
+    return bars5_upto(symbol, days=1)
+
+at._bridge_df     = _fake_bridge_df
 at.get_live_price = lambda symbol: (float(bars5_upto(symbol, 1)['Close'].iloc[-1])
                                     if len(bars5_upto(symbol, 1)) else None)
 at.get_days_to_earnings = lambda symbol: 999           # v1 stub — see header
@@ -149,162 +287,253 @@ _quiet = [True]
 _orig_log = at.log
 at.log = lambda m: (None if _quiet[0] else _orig_log(m))
 
+# ── Process isolation ────────────────────────────────────────────────────────
+# database.py has its own `from datetime import datetime, date` (a separate binding
+# from auto_trader's) — log_trade_entry/log_trade_exit would stamp real wall-clock
+# dates onto replay rows unless patched too.
+import database as _database
+_database.datetime = FakeDatetime
+_database.date     = FakeDate
+at.save_traded_today = lambda: None   # writes the real traded_today.json otherwise —
+                                       # the live bot's daily-dedup state, not ours to touch
+at.load_traded_today = lambda: set()
+
+# Suffix (env-configurable) so two replay processes never collide on the same
+# DB file — e.g. running run_old_design/run_new_design as separate parallel
+# processes (research_fish_finder_weather_advisory.py) would otherwise both
+# delete-and-recreate the SAME _replay_trades.db, corrupting whichever run
+# loses the race. Each process picks its own suffix via REPLAY_DB_SUFFIX.
+REPLAY_DB_PATH = os.path.join(ROOT, f'_replay_trades{os.environ.get("REPLAY_DB_SUFFIX", "")}.db')
+_REAL_CONNECT = sqlite3.connect
+
+def _install_sqlite_guard():
+    """auto_trader.py has 8 call sites that do `import sqlite3 as _sq...` INSIDE the
+    function body (lines 2025, 2226, 3764, 3801, 4181, 4456, 4995, 5050) — these
+    re-resolve against sys.modules['sqlite3'] at call time, so an `at.sqlite3 = shim`
+    attribute patch would not intercept them. Patching sqlite3.connect itself (the
+    shared module every one of those imports resolves to) is the only fix that
+    reaches all of them, plus database.get_connection()'s DB_PATH-based connect.
+    Redirects any 'trades.db' path to a replay-local DB; 'market_data.db' (the real
+    historical source) passes through unchanged. The --parity mode's read against
+    the REAL production trades.db must use _REAL_CONNECT directly, not this guard."""
+    def _guarded_connect(path, *a, **kw):
+        if os.path.basename(str(path)) == 'trades.db':
+            path = REPLAY_DB_PATH
+        return _REAL_CONNECT(path, *a, **kw)
+    sqlite3.connect = _guarded_connect
+    _database.DB_PATH = REPLAY_DB_PATH
+
+def _remove_sqlite_guard():
+    sqlite3.connect = _REAL_CONNECT
+
+class sqlite_guard:
+    """Context manager so the process-wide patch can't leak into a longer-lived
+    process later (e.g. if this ever gets embedded in an automated job) — for a
+    plain `python equity_replay.py` run this is moot (process exits either way),
+    but costs nothing to build defensively from the start."""
+    def __enter__(self):
+        if os.path.exists(REPLAY_DB_PATH):
+            os.remove(REPLAY_DB_PATH)
+        _install_sqlite_guard()
+        _database.init_db()
+        return self
+    def __exit__(self, *exc):
+        _remove_sqlite_guard()
+        return False
+
+# ── FillSimulator: replaces place_trade() ───────────────────────────────────
+# place_trade() (auto_trader.py:1913-2045) unconditionally does a real bridge order
+# POST, polls order status up to 8x with time.sleep(2) (16+ sec/entry — intractable
+# over a multi-year replay), and writes DB rows. Keep its CONTRACT real (every caller
+# branches on `if trade_id:`) while replacing its IMPLEMENTATION with an instant,
+# 100%-fill simulator — same "monkeypatch, don't reimplement" pattern already used
+# for get_ib_daily/_bridge_df elsewhere in this file.
+class FillSimulator:
+    def fill(self, symbol, price, shares, sl, target, strategy, grade,
+              rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG',
+              limit_price=None, outside_rth=False):
+        trade_id = at.log_trade_entry(
+            symbol=symbol, entry_price=price, shares=shares,
+            target_price=target, stop_price=sl, setup_type=strategy,
+            rsi=rsi, volume_ratio=vol_ratio, sector=sector,
+            earnings_days=999, confidence=confidence, order_id='REPLAY',
+            side=side,
+        )
+        if trade_id:
+            at.trade_entry_times[trade_id] = at.datetime.now(ET)
+        return trade_id
+
+at.place_trade = FillSimulator().fill
+
+# ── Neutralize monitor_open_trades()'s live side effects ────────────────────
+# Otherwise this runs FULLY REAL — its stop/trail/no-move/momentum-fade/EOD/L3
+# stack is exactly what the old hand-rolled replay loop was a lossy approximation
+# of. Two live-effect points need neutralizing:
+class _FakeRequests:
+    """.post() no-ops for bridge order submission (partial-exit-at-1R,
+    auto_trader.py:2218-2221; full-close, :2371-2374). .get() returns a fake
+    empty portfolio for /portfolio checks; anything else raises so the many
+    existing try/except wrappers around these calls (e.g. 1928, 2239, 2382)
+    degrade gracefully instead of silently doing the wrong thing."""
+    class _Resp:
+        def __init__(self, json_body): self._json = json_body
+        def json(self): return self._json
+        status_code = 200
+    @staticmethod
+    def post(url, *a, **kw):
+        return _FakeRequests._Resp({})
+    @staticmethod
+    def get(url, *a, **kw):
+        if url.rstrip('/').endswith('/portfolio'):
+            return _FakeRequests._Resp([])
+        raise ConnectionError('replay: no live bridge')
+
+at.requests = _FakeRequests
+at.get_ibkr_positions = lambda: {}   # real exit code already has a DB-only-close
+                                      # branch when ibkr_qty<=0 (auto_trader.py:2354-2360)
+                                      # — an empty dict routes every exit through it correctly
+
+# ── get_daily_pnl(): SQLite's date('now') can't be monkeypatched from Python —
+# it always reads the real wall clock, silently no-opping the daily-loss-brake and
+# profit-target gates during replay. Re-query the (now correctly redirected +
+# date-patched) replay DB with the SIMULATED date substituted in explicitly.
+def _replay_get_daily_pnl():
+    today_str = at.date.today().isoformat()
+    conn = _REAL_CONNECT(_database.DB_PATH)
+    row = conn.execute(
+        """SELECT SUM(pnl), COUNT(*), SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END)
+           FROM trades WHERE entry_date=? AND status IN ('WIN','LOSS')
+           AND setup_type != 'RECONCILED'""", (today_str,)).fetchone()
+    conn.close()
+    return {'pnl': round(row[0] or 0, 2), 'trades': row[1] or 0, 'wins': row[2] or 0}
+
+at.get_daily_pnl = _replay_get_daily_pnl
+
+# _scan_and_enter/_scan_and_enter_bear call time.sleep(2) after each successful
+# entry (paced pacing for live order submission / the background chart-check
+# thread — already stubbed instant above). Harmless live, but 2s x possibly
+# thousands of entries over a multi-year replay adds up. Shim only auto_trader's
+# own `time` reference (not the real global time module) so nothing else in the
+# process is affected.
+import time as _real_time
+class _FakeTime:
+    def __getattr__(self, name):
+        return getattr(_real_time, name)
+    @staticmethod
+    def sleep(secs): pass
+at.time = _FakeTime()
+
 # ── Replay engine ────────────────────────────────────────────────────────────
-def spy_chg_now():
-    d = _daily.get('SPY')
-    intra = bars5_upto('SPY', 1)
-    if d is None or not len(intra):
-        return 0.0
-    today = FakeDatetime._now.date()
-    prev = d[d.index.date < today]['Close']
-    if not len(prev):
-        return 0.0
-    return (float(intra['Close'].iloc[-1]) - float(prev.iloc[-1])) / float(prev.iloc[-1]) * 100
+# (spy_chg is now sourced directly from at.get_regime()'s own return tuple, passed
+# straight into _scan_and_enter/_scan_and_enter_bear like live does — no separate
+# helper needed.)
 
-def replay_day(day, use_book_health=True, parity_rows=None):
-    trades, open_tr = [], []
-    day_ts = pd.Timestamp(day)
-    universe = [s for s in at.FULL_UNIVERSE if s in _bars5]
-    at._book_health_cache = {'date': None, 'LONG': None, 'SHORT': None}
-    daily_count = 0
-    traded = set()
+def _trading_days(start, end):
+    """Ground truth of 'market was open' — real SPY 5-min bar dates present in the
+    preload cache. NOT US_HOLIDAYS_2026 (that list is 2026-only, silently wrong for
+    2024/2025 — harmless there only because no bar data exists on those days either,
+    so nothing would fire regardless)."""
+    df = _bars5.get('SPY')
+    if df is None or not len(df):
+        return []
+    dates = sorted(set(df.index.date))
+    return [d for d in dates if str(start) <= str(d) <= str(end)]
 
-    times = pd.date_range(f'{day} 09:35', f'{day} 15:55', freq='5min', tz=ET)
-    for ts in times:
-        set_now(ts.to_pydatetime())
-        t = ts.time()
+def replay_run(start, end):
+    """Replaces replay_day(). Mirrors run_scan()'s routing (auto_trader.py:3215-3427)
+    — every branch body is a call to a REAL at.* function, not a reimplementation.
+    The gateway/reconcile block at the top of run_scan() is deliberately skipped
+    (network-only, N/A in replay — _entries_allowed is implicitly always True here).
+    Positions persist across simulated days via at.get_open_trades(), exactly as
+    live — no force-flatten between days; monitor_open_trades()'s own EOD/
+    MAX_HOLD_DAYS logic closes them for real, when it should."""
+    days = _trading_days(start, end)
+    if not days:
+        print('No trading days (no SPY bars) in range.')
+        return []
 
-        # ── monitor open trades every bar ────────────────────────────────
-        for tr in list(open_tr):
-            b = bars5_upto(tr['sym'], 1)
-            b = b[b.index.date == day_ts.date()]
-            if not len(b):
-                continue
-            price = float(b['Close'].iloc[-1])
-            tr['peak'] = max(tr['peak'], price)
-            tr['bars'] += 1
-            pnl_pct = (price - tr['entry']) / tr['entry'] * 100
-            pnl_usd = (price - tr['entry']) * tr['shares']
-            reason = None
-            # L3 probation (T+5 ≈ 1 bar after entry bar)
-            if tr['bars'] == 1:
-                if pnl_pct < -2.0:
-                    tr['sl'] = tr['entry']; tr['l3'] = 'HARD_FAIL'
-                elif pnl_pct < 0.5:
-                    tr['sl'] = max(tr['sl'], tr['entry']); tr['l3'] = 'FLAT'
+    daily_summaries = []
+    for day in days:
+        set_now(ET.localize(_dt.datetime.combine(day, _dt.time(0, 1))))
+        at.reset_daily_state()
+
+        times = pd.date_range(f'{day} 09:35', f'{day} 15:55', freq='5min', tz=ET)
+        for ts in times:
+            set_now(ts.to_pydatetime())
+
+            at.update_sector_strength()
+            regime, spy_chg, vix, extra = at.get_regime()
+
+            at.regime_history.append(regime)
+            if len(at.regime_history) > 6:
+                at.regime_history.pop(0)
+            confirmed_scans = 0
+            for _r in reversed(at.regime_history):
+                if _r == regime:
+                    confirmed_scans += 1
                 else:
-                    tr['l3'] = 'CONFIRM'
-            if price <= tr['sl']:
-                reason = 'stop'
-            elif pnl_usd <= -at.MAX_LOSS_PER_TRADE:
-                reason = 'circuit_breaker'
-            if reason is None and not tr['partial'] and pnl_pct >= 5.0:
-                pnl_half = (price - tr['entry']) * (tr['shares'] // 2 or 1)
-                tr['locked'] += pnl_half
-                tr['shares'] -= (tr['shares'] // 2 or 1)
-                tr['partial'] = True
-            if reason is None and pnl_pct >= 2.5:
-                tr['sl'] = max(tr['sl'], tr['entry'])
-            vwap_b = b[b['Close'].notna()]
-            vwap = float((vwap_b['Close'] * vwap_b['Volume']).sum() /
-                         max(vwap_b['Volume'].sum(), 1))
-            if reason is None and pnl_pct > 0.5 and price < vwap:
-                reason = 'vwap_cross'
-            dna = at.get_dna_cluster(tr['sym'])
-            if reason is None:
-                nm_min = 300 if dna == 'INSTITUTIONAL' else 240
-                if tr['bars'] * 5 >= nm_min and -0.3 <= pnl_pct <= 2.0:
-                    reason = 'no_move'
-            atr = tr['atr']
-            trail_mult = 1.0 if dna == 'HIGH_VOL' else 1.5
-            if reason is None and atr and (tr['peak'] - tr['entry']) >= atr:
-                tsl = tr['peak'] - trail_mult * atr
-                tr['sl'] = max(tr['sl'], tsl)
-                if price <= tr['sl']:
-                    reason = 'atr_trail'
-            if reason is None and (tr['peak'] - tr['entry']) / tr['entry'] * 100 >= 1.5:
-                tsl = tr['peak'] * (1 - 0.005)
-                tr['sl'] = max(tr['sl'], tsl)
-                if price <= tr['sl']:
-                    reason = 'pct_trail'
-            if reason is None and pnl_pct >= 3.0 and len(b) >= 3:
-                two_low = float(b['Low'].iloc[-3:-1].min())
-                tr['sl'] = max(tr['sl'], two_low)
-                if price <= tr['sl']:
-                    reason = 'bar_trail'
-            if reason is None and t >= _dt.time(15, 45):
-                reason = 'eod'
-            if reason:
-                pnl = (price - tr['entry']) * tr['shares'] + tr['locked']
-                trades.append({**tr, 'exit': price, 'reason': reason, 'pnl': pnl,
-                               'exit_time': str(t)[:5]})
-                open_tr.remove(tr)
+                    break
 
-        # ── entries at live cadence, live gates ──────────────────────────
-        if not (at.is_entry_window() if hasattr(at, 'is_entry_window') else True):
-            continue
-        if t < _dt.time(10, 0) or t >= _dt.time(15, 0):
-            continue
-        if len(open_tr) >= at.MAX_OPEN_TRADES or daily_count >= 20:
-            continue
-        regime = at.get_regime()
-        if use_book_health and not at.book_is_on('LONG'):
-            continue
-        schg = spy_chg_now()
-        for sym in universe:
-            if sym in traded or len(open_tr) >= at.MAX_OPEN_TRADES:
-                continue
-            b = bars5_upto(sym, 1)
-            if not len(b) or b.index[-1].date() != day_ts.date():
-                continue
-            sig = at.get_intraday_signals(sym, spy_chg=schg)
-            if not sig:
-                continue
-            price = sig['price']
-            sl, target, _risk, _reward, rr = at.calc_sl_target(sym, price, side='LONG')
-            grade, reasons, score = at.grade_setup(sig, regime, sl, target, price,
-                                                   rr, symbol=sym, is_catalyst=False)
-            if parity_rows is not None:
-                parity_rows.append({'ts': str(t)[:5], 'symbol': sym, 'grade': grade,
-                                    'score': score, 'reason': reasons[0] if reasons else ''})
-            if grade not in ('A+', 'A'):
-                continue
-            l2 = at._check_layer2_fitness(sym, 'LONG', price, is_catalyst=False)
-            if isinstance(l2, tuple):
-                l2_ok, l2_half = l2[0], (len(l2) > 2 and l2[2] == 'HALF')
+            if at.is_market_open() and at.spy_open_price is None:
+                spy_bar = bars5_upto('SPY', 1)
+                spy_bar = spy_bar[spy_bar.index.date == day]
+                if len(spy_bar):
+                    at.spy_open_price = round(float(spy_bar['Open'].iloc[0]), 2)
+
+            spy_above_open = True
+            if at.spy_open_price:
+                spy_now_bar = bars5_upto('SPY', 1)
+                if len(spy_now_bar):
+                    spy_above_open = float(spy_now_bar['Close'].iloc[-1]) >= at.spy_open_price * 0.998
+
+            # session_pnl: realized (from the now-correctly-redirected replay DB) +
+            # unrealized (always 0 here — _FakeRequests./portfolio returns [], so
+            # this is a stated realized-only approximation, applies identically
+            # regardless of which design is under test, not a comparison bias).
+            daily = at.get_daily_pnl()
+            portfolio_snap = at.requests.get(f"{at.BRIDGE}/portfolio").json()
+            unrealized_now = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio_snap
+                                 if (p.get('qty') or 0) != 0)
+            session_pnl = daily['pnl'] + unrealized_now
+
+            open_trades = at.get_open_trades()
+            if at.is_entry_window() and not at.is_trading_blocked()[0]:
+                at._scan_regime_adaptive(regime, open_trades)
+                open_trades = at.get_open_trades()
+
+            if not at.is_entry_window():
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif at.is_trading_blocked()[0]:
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif regime == 'CHOPPY':
+                at._scan_catalyst_override(open_trades)
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif regime == 'WEAK':
+                at._scan_catalyst_override(open_trades)
+                if confirmed_scans < 3:
+                    at.monitor_open_trades(regime, confirmed_scans)
+                else:
+                    at._scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
+            elif not spy_above_open:
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif len(open_trades) >= at.MAX_OPEN_TRADES:
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif at.daily_bull_count >= at.MAX_DAILY_BULL_TRADES:
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif session_pnl >= at.DAILY_PROFIT_TARGET:
+                at.monitor_open_trades(regime, confirmed_scans)
+            elif confirmed_scans < at.MIN_REGIME_SCANS:
+                at.monitor_open_trades(regime, confirmed_scans)
             else:
-                l2_ok, l2_half = bool(l2), False
-            if not l2_ok:
-                continue
-            cap = at.get_position_capital(grade, False, sum(x['entry'] * x['shares'] for x in open_tr))
-            if l2_half:
-                cap *= 0.5
-            shares = int(cap / price)
-            if shares < 1:
-                continue
-            atr_v = None
-            try:
-                dl = daily_upto(sym)
-                tr_ = pd.concat([dl['High'] - dl['Low'],
-                                 (dl['High'] - dl['Close'].shift()).abs(),
-                                 (dl['Low'] - dl['Close'].shift()).abs()], axis=1).max(axis=1)
-                atr_v = float(tr_.rolling(14).mean().iloc[-1])
-            except Exception:
-                pass
-            open_tr.append({'sym': sym, 'entry': price, 'shares': shares, 'sl': sl,
-                            'grade': grade, 'score': score, 'time': str(t)[:5],
-                            'peak': price, 'bars': 0, 'partial': False, 'locked': 0.0,
-                            'atr': atr_v, 'l3': None})
-            traded.add(sym)
-            daily_count += 1
+                at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
-    for tr in open_tr:   # safety net
-        b = bars5_upto(tr['sym'], 1)
-        price = float(b['Close'].iloc[-1]) if len(b) else tr['entry']
-        trades.append({**tr, 'exit': price, 'reason': 'eod_force',
-                       'pnl': (price - tr['entry']) * tr['shares'] + tr['locked'],
-                       'exit_time': '16:00'})
-    return trades
+        day_pnl = at.get_daily_pnl()
+        n_open = len(at.get_open_trades())
+        print(f"{day}  bull={at.daily_bull_count} bear={at.daily_bear_count}  "
+              f"day_pnl=${day_pnl['pnl']:+,.0f} ({day_pnl['trades']}t, {day_pnl['wins']}w)  open_at_eod={n_open}")
+        daily_summaries.append({'date': str(day), **day_pnl, 'open_at_eod': n_open})
+
+    return daily_summaries
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
@@ -312,49 +541,53 @@ def main():
     ap.add_argument('--start'); ap.add_argument('--end')
     ap.add_argument('--parity', help='decision-parity check vs scan_log for one date')
     ap.add_argument('--no-book-health', action='store_true')
-    ap.add_argument('--detail', action='store_true')
     a = ap.parse_args()
 
     start = a.parity or a.start
     end   = a.parity or a.end
-    days  = [d.date() for d in pd.bdate_range(start, end)
-             if d.date() not in at.US_HOLIDAYS_2026]
-    set_now(ET.localize(_dt.datetime.combine(days[0], _dt.time(9, 35))))
+
+    set_now(ET.localize(_dt.datetime.combine(_dt.date.fromisoformat(start), _dt.time(9, 35))))
     print(f'preloading bars for {len(at.FULL_UNIVERSE)} symbols…')
-    preload(at.FULL_UNIVERSE, str(days[0]), str(days[-1] + _dt.timedelta(days=1)))
+    preload(at.FULL_UNIVERSE, start, str(pd.Timestamp(end) + pd.Timedelta(days=1)))
     print(f'  {len(_bars5)} symbols with 5-min bars, {len(_daily)} with daily')
 
-    all_trades = []
-    parity_rows = [] if a.parity else None
-    for d in days:
-        trs = replay_day(str(d), use_book_health=not a.no_book_health and not a.parity,
-                         parity_rows=parity_rows)
-        pnl = sum(t['pnl'] for t in trs)
-        print(f'{d}  {len(trs)}t  ${pnl:+,.0f}' + (
-            '   ' + ' | '.join(f"{t['sym']} {t['grade']} {t['time']}→{t['exit_time']} "
-                               f"${t['pnl']:+.0f} {t['reason']}" for t in trs)
-            if a.detail and trs else ''))
-        all_trades += trs
+    _orig_book_is_on = at.book_is_on
+    if a.no_book_health:
+        at.book_is_on = lambda direction: True
 
-    n = len(all_trades)
-    wins = sum(1 for t in all_trades if t['pnl'] > 0)
-    print('─' * 60)
-    print(f'Trades: {n} | WR: {wins}/{n} = {wins / n * 100:.1f}%' if n else 'Trades: 0')
-    print(f'Total P&L: ${sum(t["pnl"] for t in all_trades):+,.0f}')
+    try:
+        with sqlite_guard():
+            summaries = replay_run(start, end)
 
-    if a.parity:
-        con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
-        live = con.execute(
-            "select symbol, grade, count(*) from scan_log where scan_date=? "
-            "and direction='LONG' group by 1,2", (a.parity,)).fetchall()
-        con.close()
-        live_syms = {(r[0], r[1]) for r in live}
-        sim_syms  = {(r['symbol'], r['grade']) for r in parity_rows}
-        both = live_syms & sim_syms
-        print(f'\nPARITY vs scan_log {a.parity} (LONG, symbol+grade pairs):')
-        print(f'  live pairs={len(live_syms)}  sim pairs={len(sim_syms)}  overlap={len(both)}')
-        print(f'  sim-only: {sorted(sim_syms - live_syms)[:10]}')
-        print(f'  live-only: {sorted(live_syms - sim_syms)[:10]}')
+            n     = sum(s['trades'] for s in summaries)
+            wins  = sum(s['wins'] for s in summaries)
+            total = sum(s['pnl'] for s in summaries)
+            print('─' * 60)
+            print(f'Trades: {n} | WR: {wins}/{n} = {wins / n * 100:.1f}%' if n else 'Trades: 0')
+            print(f'Total P&L: ${total:+,.0f}')
+
+            if a.parity:
+                sim_con = _REAL_CONNECT(REPLAY_DB_PATH)
+                sim = sim_con.execute(
+                    "select symbol, grade, count(*) from scan_log where scan_date=? "
+                    "and direction='LONG' group by 1,2", (a.parity,)).fetchall()
+                sim_con.close()
+                live_con = _REAL_CONNECT(os.path.join(ROOT, 'trades.db'))
+                live = live_con.execute(
+                    "select symbol, grade, count(*) from scan_log where scan_date=? "
+                    "and direction='LONG' group by 1,2", (a.parity,)).fetchall()
+                live_con.close()
+                live_syms = {(r[0], r[1]) for r in live}
+                sim_syms  = {(r[0], r[1]) for r in sim}
+                both = live_syms & sim_syms
+                print(f'\nPARITY vs scan_log {a.parity} (LONG, symbol+grade pairs):')
+                print(f'  live pairs={len(live_syms)}  sim pairs={len(sim_syms)}  overlap={len(both)}')
+                denom = len(live_syms | sim_syms)
+                print(f'  jaccard overlap = {len(both)}/{denom} = {len(both)/denom*100:.1f}%' if denom else '')
+                print(f'  sim-only: {sorted(sim_syms - live_syms)[:10]}')
+                print(f'  live-only: {sorted(live_syms - sim_syms)[:10]}')
+    finally:
+        at.book_is_on = _orig_book_is_on
 
 if __name__ == '__main__':
     main()

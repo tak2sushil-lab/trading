@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Aug 3 2026 (night)
+Last updated: Aug 7 2026
 
 ---
 
@@ -21,20 +21,37 @@ Last updated: Aug 3 2026 (night)
 
 **Read this first for "what's the status."** The sections below this one are a
 chronological log (useful for "why did we do X"); this one is always current for
-"what's shipped, what's running, what's still open." Last refreshed: Aug 5 2026.
+"what's shipped, what's running, what's still open." Last refreshed: Aug 7 2026.
 
-**⚠️ NEXT SESSION PRIORITY (user flagged Aug 5, do not lose this):** wire
-`_scan_regime_adaptive()` into `equity_replay.py`. It currently calls the underlying
-decision pieces (`get_regime`, `get_intraday_signals`, `grade_setup`, `book_is_on`,
-...) directly rather than the full `run_scan()` orchestration, so the Regime-Adaptive
-Suite shipped tonight has **zero replay/parity coverage** right now — the live paper
-trial is the only validation that exists for it. Close this before trusting any
-replay-based check of this path, and ideally before the Sep 5 sunset review needs one.
+**⚠️ NEXT SESSION PRIORITY:** investigate why the Fish Finder/Weather Advisory equity
+regime redesign (Aug 6-7, see dated section below) beats the live design over the full
+2024–2026 history (+$2,361 vs +$458) but **loses to it in both genuinely out-of-sample
+periods** (H2 2025, 2026 YTD) — the edge is entirely back-loaded into 2024/H1 2025. Not
+validated enough to wire; do not skip to implementation if this resurfaces. Also: the
+`BUY <SYM>` manual Telegram command has a confirmed live bug (auto_trader.py:2729) — it
+unconditionally opens a new LONG regardless of an existing position, found live Aug 7
+during a real SOUN incident. `SELL <SYM>`/`CLOSEALL` are correct (they check side).
+Not fixed yet.
 
 **Shipped and live:**
 - ✅ Regime-Adaptive Suite (equity) — second entry path, picks strategy+direction by
   regime instead of always trading momentum, NOT gated by Book Health, shares the
   existing exit stack unmodified. Live paper trial running now. Sunset **Sep 5 2026**.
+  Aug 5 daily-trade-cap bug fixed same day (`_scan_regime_adaptive` never checked
+  `MAX_DAILY_BULL/BEAR_TRADES`, confirmed live: Bear hit 26/20 one day) — closed.
+- ✅ `equity_replay.py` v2 rebuild (Aug 6 2026) — now calls auto_trader.py's REAL live
+  functions (`_scan_and_enter`, `_scan_and_enter_bear`, `_scan_catalyst_override`,
+  `_scan_regime_adaptive`, `monitor_open_trades`) under a frozen clock, not a hand
+  approximation. v1 was ~88% parity and had zero coverage of `_scan_regime_adaptive`;
+  v2 verified EXACT match at baseline settings. Supersedes v1 and stale `sim_today.py`
+  as the equity backtest tool going forward. Closes the equity_replay TODO from Aug 5.
+- ✅ `collect_bars.load_bars()` timestamp bug fixed (Aug 7 2026) — `bars_5m.ts_utc` has
+  two coexisting string formats (original DataBento backfill vs daily incremental
+  collector, overlapping rather than cutting over cleanly ~May 2026); pandas silently
+  turned the minority format into NaT (~9% of rows for a spot-checked symbol) plus
+  ~9% genuine duplicate bars with conflicting OHLCV from the two sources. Fixed with
+  `format='mixed'` parsing + `keep='last'` dedup. Affects ANY code calling
+  `load_bars`/`load_multi` across that boundary, not just backtest research.
 - ✅ Equity reversion shadow book — `REVERSION_LONG` candidates logging, log-only,
   zero live capital. Sunset review **Sep 3 2026** (~20 trading days needed).
 - ✅ Spread Toll Gate (options liquidity decider) — replaced the rule that blocked
@@ -50,6 +67,20 @@ replay-based check of this path, and ideally before the Sep 5 sunset review need
   "Add to Home Screen" now gives a real standalone-app feel on iOS).
 
 **Active research threads (not wired into anything live):**
+- 🔬 Fish Finder / Weather Advisory (equity regime redesign, Aug 6-7 2026) — per-symbol
+  entry selection (test ADX_TREND/KELTNER_REVERT/RSI_REVERT per symbol using its own
+  signals, "Fish Finder") + market regime demoted from hard router to soft threshold
+  modifier ("Weather Advisory": universe-breadth or correlation gate on ADX_TREND only,
+  tuned RSI_REVERT SHORT threshold 70→75). Beats live design full-history (+$2,361 vs
+  +$458, 2024–2026 YTD) but **loses OOS in H2 2025 (+$112 vs +$531) and 2026 YTD (-$647
+  vs +$453)** — see NEXT SESSION PRIORITY above. `KELTNER_REVERT`'s standalone
+  degradation across every variant tested remains unexplained (band-distance and
+  breadth both tested as hypotheses, neither held up). Code:
+  `research_fish_finder_weather_advisory.py` (new file, self-contained, does not touch
+  live `REGIME_STRATEGY_MAP`/`_regime_adaptive_signal_fires`). Original partial-exit /
+  "big fish vs small fish" idea that started this whole thread is still unbuilt — see
+  that section's design (redirect to the existing `monitor_open_trades` partial-exit-
+  at-1R mechanism, currently hardcoded off for regime-adaptive trades, not new logic).
 - 🔬 Book Health graded/asymmetric-confirm redesign — graded sizing tested and
   REJECTED (binary holds up better once tested across window lengths); asymmetric
   "2-day confirm ON, instant OFF" showed a real, if thin (n=1 transition), edge —
@@ -58,11 +89,9 @@ replay-based check of this path, and ideally before the Sep 5 sunset review need
   accumulating enough rows — natural cut once the Sep 3 review lands.
 
 **Known gaps, not yet started:**
+- ⬜ `BUY <SYM>` manual Telegram command bug (see NEXT SESSION PRIORITY above) — not fixed.
 - ⬜ Dashboard visibility for the Regime-Adaptive Suite (new setup_type tags,
   today's active regime/strategy, separate P&L) — next up.
-- ⬜ `equity_replay.py` doesn't yet cover `_scan_regime_adaptive()` — it calls the
-  underlying decision pieces directly, not full `run_scan()`. Live trial is the
-  validation for now; close this parity gap before trusting replay checks here.
 - ⬜ Options: strike ladder / theta-decay chart (needs more days of chain snapshots).
 - ⬜ IV-rank-from-own-chain-history (unblocked by the snapshot collector, not built).
 - ⬜ Real-money IBKR funding gap: `IBKR_FLOOR=$5,000` undersized for the system's
@@ -1312,6 +1341,148 @@ reading instead of always trading momentum:
 Restarted autotrader same session, verified clean startup. First real test is the
 next trading day this qualifies on — watch the Telegram `📊 REGIME-ADAPTIVE` alerts
 and the `REGIME_*` setup_type tags in `trades` to confirm it's firing as designed.
+
+---
+
+## Aug 6-7 2026 — Fish Finder / Weather Advisory equity regime redesign (research only, NOT wired) + two real infra bug fixes
+
+Started from user tracking the Aug 5 Regime-Adaptive Suite's rough first live day.
+**Daily-trade-cap bug found and fixed same session**: `_scan_regime_adaptive()`
+increments `daily_bull_count`/`daily_bear_count` but never checked either against
+`MAX_DAILY_BULL/BEAR_TRADES` before entering (every other equity scanner does) —
+confirmed live: Bear hit 26/20 the same day. One-line fix, shipped, restarted.
+
+**The redesign idea (ideation → validated architecture change, not yet trustworthy
+enough to ship):** today's live `REGIME_STRATEGY_MAP` lets ONE market-wide regime
+(SPY/QQQ/VIX rule stack) pick ONE strategy template for all 241 symbols at once.
+Renamed for clarity mid-session (user asked for analogies): **Fish Finder** = test
+every symbol against all three templates (`ADX_TREND`/`KELTNER_REVERT`/`RSI_REVERT`)
+using its own live signals, not gated by which one template the market regime
+selected. **Weather Advisory** = the regime label demoted from hard router to a soft
+threshold modifier. Built as fully separate research code —
+`research_fish_finder_weather_advisory.py` — never touches live
+`REGIME_STRATEGY_MAP`/`_regime_adaptive_signal_fires`.
+
+**Infra had to be fixed before any of this could be trusted (both are real, standalone
+fixes, not specific to this research):**
+1. `equity_replay.py` rebuilt to v2 — v1 hand-approximated auto_trader.py's logic
+   (~88% parity, zero coverage of `_scan_regime_adaptive` at all, the priority flagged
+   at the end of the Aug 5 session above). v2 mirrors `run_scan()`'s own routing and
+   calls the REAL live functions (`_scan_and_enter`, `_scan_and_enter_bear`,
+   `_scan_catalyst_override`, `_scan_regime_adaptive`, `monitor_open_trades`) under a
+   frozen clock (`FakeDatetime`/`FakeDate`, patches `database.py`'s separate datetime
+   binding too). New `FillSimulator` replaces `place_trade()` (instant fill, real DB
+   write via real `log_trade_entry`, no bridge order/polling). A process-wide sqlite
+   guard (`REPLAY_DB_PATH`, env-configurable `REPLAY_DB_SUFFIX` for parallel runs)
+   redirects all `trades.db` writes to an isolated replay DB — required because 8
+   call sites in auto_trader.py do `import sqlite3` INSIDE the function body, which an
+   attribute-patch can't intercept. Verified: baseline-equivalence checkpoint (new
+   harness restricted to the live-selected template only) reproduced live's real
+   entries EXACTLY. Known accepted v1-style gaps carried forward: `_check_layer2_fitness`
+   fails open, `book_is_on()` reads real production `scan_log` (correctly — but
+   `BOOK_HEALTH_RESET_DATE=2026-07-22` means it's unconditionally cold-start-ON for
+   virtually this entire 2024-2026 backtest window), VIX has no real intraday data on
+   any DataBento dataset this account can reach (confirmed via `list_datasets()`) so
+   it's a flat-daily-value proxy — `vix_val` threshold checks work, `vix_rising` never
+   fires. Supersedes both v1 and the already-stale `sim_today.py` as the equity
+   backtest tool going forward.
+2. `collect_bars.load_bars()` had a real data-integrity bug, found because the
+   overnight full-history run showed 5 positions stuck open with ZERO trades for 8+
+   straight days starting exactly when DataBento-backfill-era data met daily-collector-
+   era data (~May 2026). Root cause: `bars_5m.ts_utc` has two coexisting string formats
+   ('2024-01-02T14:30:00' vs '2026-05-28 13:30:00+00:00') that overlap rather than
+   cutting over cleanly — `pd.read_sql_query(..., parse_dates=[...])` infers one format
+   from the majority sample and silently turns the minority format into NaT (confirmed:
+   8,580/55,482 rows for one symbol), which then gets invisibly dropped by any date
+   filter (`bars5_upto`'s 1-day lookback returned 0 rows past the boundary → `get_live_price`
+   → `None` → `monitor_open_trades` silently `continue`s past the position forever,
+   including skipping the unconditional EOD-close-for-shorts check). Same overlap also
+   produced ~4,900 genuine duplicate bars with CONFLICTING OHLCV from the two sources.
+   Fixed: explicit `format='mixed'` parse + `keep='last'` dedup. **Affects any code
+   calling `load_bars`/`load_multi` across that date boundary, not just this
+   research** — worth remembering next time something inexplicably goes quiet on a
+   backtest spanning mid-2026.
+
+**Research trail (all on real 5-min DataBento bars via the v2 harness, not synthetic):**
+- Data-driven parameter checks using ALREADY-LOGGED trade data (no reruns needed): RSI_REVERT's
+  SHORT threshold (live: 70) showed a clean, monotonic, large-n cumulative-P&L peak at
+  **75** (+$61 vs +$8 at 70, n=270) — LONG threshold (30) showed no such pattern, left
+  alone. `ADX_TREND`'s per-symbol ADX magnitude showed NO clean threshold pattern
+  (ruling out "just raise the ADX bar" as a fix).
+- Regime-quality dig (motivated by "is our regime detector missing dimensions a pro
+  system would have?"): found a REAL bug — `equity_replay.py`'s `_bridge_df` patch
+  ignored `bar_size`, so the live breadth check (IWM/MDY vs SPY) computed a near-zero,
+  meaningless delta in every backtest to that point. Fixed. Then tested two NEW
+  candidate dimensions against real logged `ADX_TREND` trades (reusing cached bars, no
+  new backtest run): **universe breadth** (% of the 241-symbol universe green
+  intraday) and **universe correlation** (mean pairwise correlation, 60-symbol sample,
+  trailing 20 daily returns) both showed a strong TAIL effect — extreme values (very
+  high breadth OR very high correlation) were where `ADX_TREND` lost most of its
+  money, moderate/low values were fine. Correlation's direction was the OPPOSITE of
+  the original hypothesis (low correlation = idiosyncratic, real stock-specific moves
+  = good for trend; high correlation = herd/panic moves = bad and prone to snap back)
+  — a genuine reversal of the initial guess, confirmed by data.
+- Old design (live, unmodified) vs new design ladder, H1 2025 (6mo): unrestricted Fish
+  Finder alone was WORSE than live (-$1,721 vs OLD's -$626) — but with a real,
+  actionable split underneath: `RSI_REVERT` flipped from -$432 to +$86 (freed from
+  CHOPPY-only gating, competes on conviction instead), `ADX_TREND` got much worse
+  (-$991, no market-wide trend backdrop requirement anymore). Categorical hybrid gate
+  (`ADX_TREND` restricted to STRONG/NORMAL/WEAK, matching live's own regime map) got to
+  -$1,186. **Breadth gate (`ADX_TREND` blocked above 60% universe breadth) alone: -$773.
+  Correlation gate (blocked above 0.35) alone: +$145 — first profitable variant, and
+  better than breadth alone.** Correlation + tuned RSI-75 together: **+$803**, the
+  H1-2025 winner. `KELTNER_REVERT` degraded in every variant tested (both alone and
+  combined) and its root cause is UNRESOLVED — band-distance-past-Keltner-band and
+  breadth-sensitivity were both tested as hypotheses against real logged trades,
+  neither explained it.
+- **Full-history verdict (2024-01-02 → 2026-08-06, correlation35+RSI75 vs live,
+  ground-truth DB totals — the harness's own printed running total had a second bug,
+  see below): NEW +$2,361.32 (20,861 trades) vs OLD +$458.10 (14,994 trades) —
+  NEW wins in aggregate, but the split by period is the real finding:**
+
+| Period | OLD | NEW | NEW − OLD |
+|---|---|---|---|
+| 2024 | +$322.78 | +$1,888.07 | +$1,565 |
+| H1 2025 (tuning window) | -$848.35 | +$1,007.76 | +$1,856 |
+| H2 2025 (OOS) | +$530.56 | +$112.42 | **-$418** |
+| 2026 YTD (OOS) | +$453.11 | -$646.93 | **-$1,100** |
+
+  **NEW's entire edge is back-loaded into 2024/H1 2025 — it LOSES to the live design in
+  both genuinely out-of-sample periods.** Exactly the failure mode a real OOS check
+  exists to catch. Not validated enough to wire. Next session priority: understand WHY
+  performance flipped in the last ~13 months before considering this further — see
+  Active Work Board.
+- **Second harness bug found via this same run**: `_run_replay()`'s printed "Total
+  P&L" summed each day's `get_daily_pnl()` snapshot, which filters `entry_date=<that
+  day>` — so any trade held overnight (entered day N, exited day N+k) was invisible to
+  BOTH day N's snapshot (still OPEN when taken) and day N+k's (only counts trades that
+  ENTERED that day). Confirmed: 54 multi-day-held trades worth +$2,500.87 were
+  completely uncounted by the old summary math on the full-history NEW run (printed
+  "-$140", true DB total was +$2,361.32) — same bug affected OLD's printed total too
+  (-$624 printed vs +$458.10 true). Fixed: `_run_replay()` now queries the replay DB
+  directly for the grand total instead of accumulating from daily snapshots.
+  Interesting side-note surfaced by the fix: those 54 multi-day trades averaged
+  +$46/trade vs ~breakeven for the mass of same-day trades — consistent with the
+  original "let winners run" idea that started this whole thread (see below).
+
+**Original idea, still not built:** the whole redesign thread started from asking how
+to bank small profits on ordinary days while letting a real runner ride on a big day.
+Answer landed on: don't build new logic — `monitor_open_trades()` already has a
+partial-exit-at-1R mechanism (banks 50% at +5%, moves stop, lets the rest ride), it's
+just hardcoded off for regime-adaptive trades (`first_bar_strong_trades[trade_id] =
+False`, always) and calibrated for a wider move than these trades typically show.
+Redirect + recalibrate threshold, don't rebuild. Not implemented yet.
+
+**Also found live, same session (real, unrelated bug):** `BUY <SYM>` Telegram command
+(`auto_trader.py:2729`) unconditionally opens a new manual LONG regardless of an
+existing position — confirmed during a real SOUN incident (user's BUY-to-cover attempt
+opened a new long instead of closing the short; the short had actually already closed
+via its own automated trailing stop moments earlier — a race condition between manual
+action and live automation, not the BUY bug directly, but the BUY bug is why "cover"
+doesn't work at all right now). `SELL <SYM>`/`CLOSEALL` are correct — they check
+`is_short` from the actual open position and reverse direction accordingly. Manually
+reconciled SOUN back to flat same session (verified against live IBKR portfolio, not
+just DB). Not fixed yet — flagged on Active Work Board.
 
 ---
 
