@@ -1654,6 +1654,66 @@ user questions investigated with real data:**
 
 ---
 
+## Aug 8 2026 (late night) — Exit-side psychology: stall-recycling backtest + Thesis Check LLM observer + Chart Gate finally wired
+
+User spent a week watching every trade live (equity + futures) and noticed a specific
+pattern: cutting winners early on gut feel (0.75-1.5% "good enough, free the capital"),
+but NOT cutting losers early — deferring to the system, and regretting it in hindsight.
+Asked whether an LLM should be "in the loop" to formalize this kind of judgment. Answer
+split into three genuinely different questions, not one:
+
+**1. Early winner-cutting — NOT built, the data already argues against it.** The Jul 25
+futures give-back research already tested this exact idea and found every faster-exit
+variant LOSES money (+$4,340 → -$264 for "exit the minute it reverses") — give-back is
+the entry fee for the rare huge trend that pays for every small loser. Told the user
+directly rather than build something the existing evidence contradicts.
+
+**2. Stall-based capital recycling — backtested (real bar data, not live), validated,
+QUEUED behind Fish Finder's Sep 8 review, not shipped.** Different question from #1: not
+"is this trade good," but "has this trade earned the right to keep holding capital."
+Joined all 20,711 Fish Finder combo trades (full 2024-2026) against real 5-min bars to
+check unrealized P&L at the 30/60-min mark post-entry. Result, n=11,520+:
+**a trade that's barely positive (0-0.5%) 30 minutes after entry goes on to LOSE money
+90% of the time** (eventual WR 10.5%). Banking at the 30-min stalled mark beats holding
+to the actual exit by $15,639 across the sample (bank $9,059 vs actual -$6,580). 60-min
+checkpoint shows the same pattern, slightly stronger in dollars. **Distinct from and not
+contradicted by #1**: #1 is about proven winners giving back gains; this is about trades
+that never showed real strength in the first place — "let a real winner run" and "a
+trade still flat after 30min hasn't earned more time" are both true simultaneously. More
+robust than the Aug 8 WEAK-gate finding earlier tonight because it doesn't depend on what
+the freed capital does next — holding this specific position further loses even if the
+alternative is just cash. Not shipped live — queued deliberately to avoid confounding
+Fish Finder's own clean observation window with a second simultaneous behavior change.
+
+**3. Early loss judgment — Thesis Check, SHIPPED live tonight, LOG MODE only.** Equity
+had no analog to futures' thesis-invalidation exit (2-of-4 signal vote cutting losers
+before the hard stop) — it leaned on the fixed 5% stop and little else for longs. Built
+`_thesis_check_position()`: on any OPEN LOSING position (≤-0.5%, throttled to once per
+15min/trade so it doesn't spam the 30s monitor loop), Claude vision reads the live 5m
+chart and logs INTACT or BREAKING vs the original entry thesis. Same instrument-first
+doctrine as everything else in this system — does NOT touch the trade, scored Fridays
+4:36pm (`thesis_check_weekly_review()`) against real outcomes before graduation is even
+discussed. See GLOSSARY.md.
+
+**Bonus, found in the process: Chart Gate was dead code.** `_chart_alignment_check()` was
+fully built (1h/5m chart + Claude vision + a weekly review job) but had ZERO call sites
+anywhere in `auto_trader.py` — never once ran, zero data ever accumulated, since whenever
+it was originally built. Wired into `_scan_and_enter()` right after a successful LONG
+entry (background thread, log-only, matches its original design). **Testing it live for
+the first time immediately found a real bug**: `_generate_chart_b64()` passed
+`addplot=None` to `mplfinance.plot()` whenever there was no VWAP overlay (the 1h chart
+never gets one) — mplfinance's validator rejects `None` outright and crashes. Fixed:
+omit the `addplot` kwarg entirely instead of passing `None`. This bug would have silently
+killed every 1h-chart call since Chart Gate was written; nobody could have known without
+actually running it, which is exactly the point of wiring log-only observers early rather
+than leaving them built-but-dormant.
+
+**Both #3 and the Chart Gate fix are live now** (log-only, zero behavioral change, no
+confound with Fish Finder's observation window) — first real data expected within days,
+scored weekly. #2 stays backtested-only, queued for after Sep 8.
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

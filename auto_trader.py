@@ -2085,6 +2085,9 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             pnl_pct = (price - entry) / entry * 100
             pnl_usd = (price - entry) * shares
 
+        # Thesis Check (Aug 8 2026) — LOG MODE only, see its own docstring.
+        _maybe_thesis_check(tid, sym, side, entry, price, pnl_pct, trade.get('setup_type'))
+
         # ── Layer 3: T+5 confirmation (fires once, ~5 min after entry) ──────
         # HARD_FAIL (<-2%): move stop to entry → triggers fast exit on next 30s cycle
         # FLAT (±0.5%):     tighten stop to break-even → cap intraday loss at $0
@@ -2457,9 +2460,15 @@ def _generate_chart_b64(df, title, vwap_series=None):
         if vwap_series is not None and len(vwap_series) == len(df):
             ap.append(mpf.make_addplot(vwap_series, color='blue', width=1.2, label='VWAP'))
         buf = io.BytesIO()
-        mpf.plot(df, type='candle', style='charles', title=title,
-                 volume=True, addplot=ap if ap else None,
-                 figsize=(10, 6), savefig=dict(fname=buf, format='png', dpi=100))
+        # Aug 8 2026 fix: mplfinance's addplot validator rejects addplot=None
+        # outright (raises) — must omit the kwarg entirely when there's no
+        # overlay, not pass None. Found live the first time Chart Gate/Thesis
+        # Check ever actually ran (was dead code before today).
+        plot_kwargs = dict(type='candle', style='charles', title=title, volume=True,
+                           figsize=(10, 6), savefig=dict(fname=buf, format='png', dpi=100))
+        if ap:
+            plot_kwargs['addplot'] = ap
+        mpf.plot(df, **plot_kwargs)
         buf.seek(0)
         return base64.b64encode(buf.read()).decode('utf-8')
     except Exception as e:
@@ -2527,6 +2536,137 @@ def _chart_alignment_check(sym, entry_price, sl, strategy):
         log(f"  [CHART GATE LOG] {sym} | 5m quality: {answer_5m}")
     except Exception as e:
         log(f"Chart alignment check error {sym}: {e}")
+
+
+# ─────────────────────────────────────────────────────────
+# THESIS CHECK (Aug 8 2026) — LLM early loss-invalidation observer
+# ─────────────────────────────────────────────────────────
+# Motivated by a direct user observation, not speculation: watching trades
+# live for a week, the user noticed cutting winners early on gut feel (a
+# separate question — see CLAUDE.md, that instinct is NOT backed by the data)
+# but NOT cutting losers early, deferring to the system, and regretting it in
+# hindsight. Equity has no early-loss judgment mechanism analogous to
+# futures' "thesis invalidation" exit (2-of-4 signal vote) — it leans on the
+# fixed 5% stop and little else. This is that mechanism's equity/LLM
+# counterpart: same category as Chart Gate (Claude vision on a 5m chart),
+# LOG MODE ONLY, does not touch the trade, matches this codebase's own
+# instrument-first-gate-later doctrine (CONSTITUTION.md). Scored via
+# thesis_check_weekly_review(), same pattern as chart_gate_weekly_review().
+#
+# Throttled to LOSING positions only, checked at most once every 15 minutes
+# per trade — an unthrottled per-30s-monitor-cycle call would be both
+# wasteful (little changes in 30s) and expensive at scale.
+THESIS_CHECK_MIN_INTERVAL_MIN = 15
+THESIS_CHECK_MIN_LOSS_PCT     = -0.5   # only check when meaningfully underwater, not noise
+_thesis_check_last_run        = {}     # trade_id -> datetime of last check
+
+def _thesis_check_position(trade_id, sym, side, entry_price, current_price, pnl_pct, setup_type):
+    """LOG MODE: ask Claude whether a currently-LOSING open position's original
+    thesis still looks intact given price action since entry. Does NOT touch
+    the trade — pure background observer, same pattern as
+    _chart_alignment_check. Runs in a background thread — zero latency
+    impact on the monitor loop."""
+    try:
+        df5 = yf.Ticker(sym).history(period='1d', interval='5m')
+        if df5.empty or len(df5) < 3:
+            return
+        df5 = df5.copy()
+        df5['typical'] = (df5['High'] + df5['Low'] + df5['Close']) / 3
+        vwap = (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum()
+        b64 = _generate_chart_b64(df5[['Open', 'High', 'Low', 'Close', 'Volume']],
+                                  f'{sym} 5m intraday — open {side}', vwap_series=vwap)
+        if not b64:
+            return
+        prompt = (f"You are a technical trading analyst reviewing an OPEN, currently LOSING "
+                  f"{side} position. Entered {sym} at ${entry_price:.2f} on a {setup_type} signal, "
+                  f"now at ${current_price:.2f} ({pnl_pct:+.2f}%). This is the 5-minute intraday "
+                  f"chart with VWAP. Does the original {side} thesis still look intact given price "
+                  f"action since entry, or does this look like it is breaking down? "
+                  f"Answer INTACT or BREAKING on the first line, then one sentence of reasoning.")
+        answer = _claude_analyse_image(b64, prompt)
+        breaking = 'BREAKING' in (answer or '').upper()
+        log(f"  [THESIS CHECK LOG] {sym} #{trade_id} | {'⚠️ BREAKING' if breaking else '✅ INTACT'} | "
+            f"{pnl_pct:+.2f}% | {answer}")
+    except Exception as e:
+        log(f"Thesis check error {sym}: {e}")
+
+
+def _maybe_thesis_check(trade_id, sym, side, entry_price, current_price, pnl_pct, setup_type):
+    """Throttle gate for _thesis_check_position — losing positions only, at
+    most once every THESIS_CHECK_MIN_INTERVAL_MIN minutes per trade. Called
+    from monitor_open_trades() every cycle; cheap to call, does nothing most
+    of the time."""
+    if pnl_pct >= THESIS_CHECK_MIN_LOSS_PCT:
+        return
+    now  = datetime.now(ET)
+    last = _thesis_check_last_run.get(trade_id)
+    if last and (now - last).total_seconds() < THESIS_CHECK_MIN_INTERVAL_MIN * 60:
+        return
+    _thesis_check_last_run[trade_id] = now
+    threading.Thread(target=_thesis_check_position,
+                      args=(trade_id, sym, side, entry_price, current_price, pnl_pct, setup_type),
+                      daemon=True).start()
+
+
+def thesis_check_weekly_review():
+    """Every Friday 4:35pm — parse THESIS CHECK LOG lines, cross-ref DB
+    outcomes, send Telegram checkpoint. Mirrors chart_gate_weekly_review()
+    exactly — same evidence bar before either could ever graduate from
+    log-only to an actual gate."""
+    if date.today() in US_HOLIDAYS_2026:
+        return
+    try:
+        log_file = os.path.join(_DIR, 'logs', 'auto_trader.log')
+        if not os.path.exists(log_file):
+            return
+        breaking_calls, intact_calls = [], []
+        with open(log_file, 'r') as f:
+            for line in f:
+                if '[THESIS CHECK LOG]' not in line:
+                    continue
+                try:
+                    parts = line.split('[THESIS CHECK LOG]')[1].strip()
+                    sym_and_id = parts.split('|')[0].strip()
+                    sym = sym_and_id.split('#')[0].strip()
+                    breaking = 'BREAKING' in parts
+                    reason = parts.split('|')[-1].strip() if '|' in parts else ''
+                    (breaking_calls if breaking else intact_calls).append((sym, reason))
+                except Exception:
+                    continue
+
+        total = len(breaking_calls) + len(intact_calls)
+        if total == 0:
+            send_telegram("🧠 Thesis Check Weekly Review\nNo checks logged this week — no losing positions triggered one, or none yet wired in long enough.")
+            return
+
+        # Cross-ref BREAKING calls with DB outcomes — did the position that
+        # got flagged actually go on to lose more, matching the warning?
+        conn = __import__('sqlite3').connect(os.path.join(_DIR, 'trades.db'))
+        c = conn.cursor()
+        breaking_outcomes = []
+        for sym, reason in breaking_calls:
+            c.execute('''SELECT status, pnl FROM trades
+                         WHERE symbol=? AND setup_type NOT IN ('MANUAL','RECONCILED')
+                         AND status IN ('WIN','LOSS')
+                         ORDER BY id DESC LIMIT 1''', (sym,))
+            row = c.fetchone()
+            outcome = f"{row[0]} ${row[1]:+.2f}" if row else "open/unknown"
+            breaking_outcomes.append(f"  ⚠️ {sym}: {outcome} — {reason[:60]}")
+        conn.close()
+
+        confirmed_loss_count = sum(1 for s in breaking_outcomes if 'LOSS' in s)
+        lines = [
+            f"🧠 Thesis Check Weekly Review | {datetime.now(ET).strftime('%b %d')}",
+            f"Total checks: {total} | BREAKING: {len(breaking_calls)} | INTACT: {len(intact_calls)}",
+            "",
+            f"BREAKING calls that ended in a real loss: {confirmed_loss_count}/{len(breaking_calls)}"
+            if breaking_calls else "No BREAKING calls this week.",
+        ]
+        lines.extend(breaking_outcomes[:10])
+        send_telegram('\n'.join(lines))
+    except Exception as e:
+        log(f"Thesis check weekly review error: {e}")
+
 
 # ─────────────────────────────────────────────────────────
 # TELEGRAM COMMAND HANDLER
@@ -4344,6 +4484,11 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
                 'sym': sym, 'entry_time': datetime.now(ET),
                 'entry_price': price, 'direction': 'LONG',
             }
+            # Chart Gate (Aug 8 2026 fix — was defined but never called, zero data
+            # accumulated since it was built). LOG MODE only, background thread,
+            # zero latency impact — see _chart_alignment_check docstring.
+            threading.Thread(target=_chart_alignment_check,
+                              args=(sym, price, pick['sl'], strategy), daemon=True).start()
             # Update scan_log: mark this candidate as entered and link trade_id
             # SQLite doesn't support ORDER BY/LIMIT in UPDATE directly — use subquery
             try:
@@ -5270,6 +5415,7 @@ if __name__ == '__main__':
     sched.add_job(morning_voice_summary,  'cron',     day_of_week='mon-fri', hour=9,  minute=0)
     sched.add_job(evening_summary,        'cron',     day_of_week='mon-fri', hour=16, minute=30)
     sched.add_job(chart_gate_weekly_review, 'cron',   day_of_week='fri',     hour=16, minute=35)
+    sched.add_job(thesis_check_weekly_review, 'cron', day_of_week='fri',     hour=16, minute=36)
     sched.add_job(nightly_learning,       'cron',     day_of_week='mon-fri', hour=23, minute=0)
     sched.add_job(reset_daily_state,      'cron',                            hour=0,  minute=1)
     sched.add_job(poll_telegram_commands, 'interval', seconds=15)
