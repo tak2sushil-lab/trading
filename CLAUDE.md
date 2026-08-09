@@ -38,6 +38,25 @@ WEAK-regime decay separately. Also still open: the `BUY <SYM>` manual Telegram c
 position, found live Aug 7 during a real SOUN incident. `SELL <SYM>`/`CLOSEALL` are
 correct (they check side). Not fixed yet.
 
+**⚠️ STAGED PLAN (user-set Aug 8 2026, confirmed same night — do not forget or skip
+stages). No automation set up for this — user explicitly wants it documented, not a
+proactive scheduled check-in. Only resurfaces when the user brings it up next.**
+1. **Next few days:** monitor Fish Finder live entries + confirm Chart Gate/Thesis Check
+   are actually logging correctly in real live conditions (not just the manual test calls
+   from Aug 8) — check `[CHART GATE LOG]` and `[THESIS CHECK LOG]` lines are appearing,
+   the Friday weekly reviews fire, no silent failures.
+2. **If (1) looks healthy, wire stall-based capital recycling within days — CONFIRMED,
+   supersedes the original Aug 8 recommendation.** User explicitly chose speed over
+   clean attribution: accepted the risk of two simultaneous live behavior changes
+   (Fish Finder + recycling) confounding one observation window, rather than waiting for
+   the full Sep 8 Fish Finder review. When this is picked back up: re-read the Aug 8
+   backtest section below (90% of stalled 0-0.5% trades eventually lose, banking early
+   beat holding by $15,639/11,520 trades) before wiring, and pick an actual threshold
+   (time-in-trade + %-band) — none was chosen yet, only the finding was validated.
+3. **After (1) and (2): let everything run in pure observe mode for ~2 weeks** to
+   accumulate enough Chart Gate / Thesis Check data for the weekly reviews to say
+   something statistically real, not just "did it run."
+
 **Shipped and live:**
 - ✅ Regime-Adaptive Suite (equity) — **redesigned Aug 8 2026, see dated section below.**
   Internal engine replaced: was one Weather Report reading picking one strategy for all
