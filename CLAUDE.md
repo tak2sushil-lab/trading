@@ -21,24 +21,37 @@ Last updated: Aug 7 2026
 
 **Read this first for "what's the status."** The sections below this one are a
 chronological log (useful for "why did we do X"); this one is always current for
-"what's shipped, what's running, what's still open." Last refreshed: Aug 7 2026.
+"what's shipped, what's running, what's still open." Last refreshed: Aug 8 2026.
 
-**⚠️ NEXT SESSION PRIORITY:** investigate why the Fish Finder/Weather Advisory equity
-regime redesign (Aug 6-7, see dated section below) beats the live design over the full
-2024–2026 history (+$2,361 vs +$458) but **loses to it in both genuinely out-of-sample
-periods** (H2 2025, 2026 YTD) — the edge is entirely back-loaded into 2024/H1 2025. Not
-validated enough to wire; do not skip to implementation if this resurfaces. Also: the
-`BUY <SYM>` manual Telegram command has a confirmed live bug (auto_trader.py:2729) — it
-unconditionally opens a new LONG regardless of an existing position, found live Aug 7
-during a real SOUN incident. `SELL <SYM>`/`CLOSEALL` are correct (they check side).
-Not fixed yet.
+**⚠️ NEXT SESSION PRIORITY:** watch the first live days of the Fish Finder redesign
+(wired Aug 8, see dated section below) — confirm `FISHFINDER_*` trades are flowing,
+Bite Check/Crowd Gauge are firing sanely, and the dashboard Fish Finder card renders.
+`KELTNER_CONVICTION=2.0` is explicitly PROVISIONAL (known to cost some good ADX_TREND
+trades in 2024's backtest) — retune against live trade data once enough accumulates,
+don't treat it as settled. A post-wiring 15-day retrospective (last real trading days,
+see dated section below) found OLD would have beaten Fish Finder in that specific
+window (+$280 vs +$130), driven by unrestricted `ADX_TREND` eligibility diluting trade
+quality — same pattern that hurt H1-2025 in the full-history check. Candidate fix not
+yet tried: re-add `--hybrid`-style eligibility restriction now that Bite Check handles
+WEAK-regime decay separately. Also still open: the `BUY <SYM>` manual Telegram command bug
+(auto_trader.py:2729) — unconditionally opens a new LONG regardless of an existing
+position, found live Aug 7 during a real SOUN incident. `SELL <SYM>`/`CLOSEALL` are
+correct (they check side). Not fixed yet.
 
 **Shipped and live:**
-- ✅ Regime-Adaptive Suite (equity) — second entry path, picks strategy+direction by
-  regime instead of always trading momentum, NOT gated by Book Health, shares the
-  existing exit stack unmodified. Live paper trial running now. Sunset **Sep 5 2026**.
-  Aug 5 daily-trade-cap bug fixed same day (`_scan_regime_adaptive` never checked
-  `MAX_DAILY_BULL/BEAR_TRADES`, confirmed live: Bear hit 26/20 one day) — closed.
+- ✅ Regime-Adaptive Suite (equity) — **redesigned Aug 8 2026, see dated section below.**
+  Internal engine replaced: was one Weather Report reading picking one strategy for all
+  241 symbols (`REGIME_STRATEGY_MAP`); now Fish Finder tests every symbol against all 3
+  templates on its own signals every scan, plus 3 fixes (Crowd Gauge, Bite Check, Fair
+  Cast) diagnosed from the redesign's own OOS failures. `setup_type` now `FISHFINDER_*`
+  (was `REGIME_*`). Beats the OLD design in all 4 backtested historical periods for the
+  first time in this investigation ($3,942 vs $458 full-history 2024-2026) — but every
+  number comes from the same tape used to find the fixes; this live paper trial is the
+  actual out-of-sample test. NOT gated by Book Health, shares the existing exit stack
+  unmodified. Sunset review **Sep 8 2026**. Rollback point: `git tag
+  checkpoint-2026-08-08-pre-fishfinder-wiring`. Full research trail: dated Aug 6-8
+  sections below, `analysis_pending` memory. Original Aug 5 daily-trade-cap bug (fixed
+  same day it was found) carried forward unchanged into the new engine.
 - ✅ `equity_replay.py` v2 rebuild (Aug 6 2026) — now calls auto_trader.py's REAL live
   functions (`_scan_and_enter`, `_scan_and_enter_bear`, `_scan_catalyst_override`,
   `_scan_regime_adaptive`, `monitor_open_trades`) under a frozen clock, not a hand
@@ -67,20 +80,6 @@ Not fixed yet.
   "Add to Home Screen" now gives a real standalone-app feel on iOS).
 
 **Active research threads (not wired into anything live):**
-- 🔬 Fish Finder / Weather Advisory (equity regime redesign, Aug 6-7 2026) — per-symbol
-  entry selection (test ADX_TREND/KELTNER_REVERT/RSI_REVERT per symbol using its own
-  signals, "Fish Finder") + market regime demoted from hard router to soft threshold
-  modifier ("Weather Advisory": universe-breadth or correlation gate on ADX_TREND only,
-  tuned RSI_REVERT SHORT threshold 70→75). Beats live design full-history (+$2,361 vs
-  +$458, 2024–2026 YTD) but **loses OOS in H2 2025 (+$112 vs +$531) and 2026 YTD (-$647
-  vs +$453)** — see NEXT SESSION PRIORITY above. `KELTNER_REVERT`'s standalone
-  degradation across every variant tested remains unexplained (band-distance and
-  breadth both tested as hypotheses, neither held up). Code:
-  `research_fish_finder_weather_advisory.py` (new file, self-contained, does not touch
-  live `REGIME_STRATEGY_MAP`/`_regime_adaptive_signal_fires`). Original partial-exit /
-  "big fish vs small fish" idea that started this whole thread is still unbuilt — see
-  that section's design (redirect to the existing `monitor_open_trades` partial-exit-
-  at-1R mechanism, currently hardcoded off for regime-adaptive trades, not new logic).
 - 🔬 Book Health graded/asymmetric-confirm redesign — graded sizing tested and
   REJECTED (binary holds up better once tested across window lengths); asymmetric
   "2-day confirm ON, instant OFF" showed a real, if thin (n=1 transition), edge —
@@ -90,8 +89,13 @@ Not fixed yet.
 
 **Known gaps, not yet started:**
 - ⬜ `BUY <SYM>` manual Telegram command bug (see NEXT SESSION PRIORITY above) — not fixed.
-- ⬜ Dashboard visibility for the Regime-Adaptive Suite (new setup_type tags,
-  today's active regime/strategy, separate P&L) — next up.
+- ⬜ Fish Finder dashboard card (gate states, per-template funnel, P&L split by
+  `FISHFINDER_*`) — being built this session, check Active Work Board next refresh.
+- ⬜ Regime-Adaptive Suite's "big fish vs small fish" partial-exit idea (predates the
+  Aug 8 redesign, still applies) — don't build new logic, redirect to the existing
+  `monitor_open_trades` partial-exit-at-1R mechanism, currently hardcoded off for
+  Fish Finder trades (`first_bar_strong_trades[trade_id] = False`, always) and
+  calibrated for a wider move than these trades typically show.
 - ⬜ Options: strike ladder / theta-decay chart (needs more days of chain snapshots).
 - ⬜ IV-rank-from-own-chain-history (unblocked by the snapshot collector, not built).
 - ⬜ Real-money IBKR funding gap: `IBKR_FLOOR=$5,000` undersized for the system's
@@ -1483,6 +1487,170 @@ doesn't work at all right now). `SELL <SYM>`/`CLOSEALL` are correct — they che
 `is_short` from the actual open position and reverse direction accordingly. Manually
 reconciled SOUN back to flat same session (verified against live IBKR portfolio, not
 just DB). Not fixed yet — flagged on Active Work Board.
+
+---
+
+## Aug 8 2026 — Fish Finder wired live (replaces Aug 5 single-template Regime-Adaptive Suite)
+
+**Hypothesis:** the Aug 6-7 finding — Fish Finder beat the live design full-history but
+lost in both OOS periods (H2 2025, 2026 YTD) — had two distinct, real, fixable root
+causes rather than being an unfit idea. If both could be diagnosed and fixed (not
+curve-fit) and the fixed version beat the live design across the FULL history including
+the periods it used to lose, it would be a legitimate replacement candidate for a live
+paper trial — the missing piece being genuine out-of-sample data, which no amount of
+further backtesting against 2024-2026 can manufacture.
+
+**Investigation (same session, extending Aug 6-7's work):**
+- **2026 YTD failure, root-caused:** joined every `FISHFINDER_ADX_TREND` trade to its
+  real entry-time regime (reusing cached SPY/QQQ/IWM/MDY bars, no new backtest needed).
+  Ruled out the obvious suspect first — adding `--hybrid` (restrict `ADX_TREND` to
+  STRONG/NORMAL/WEAK) would NOT have fixed it, since 89% of 2026's loss (-$546.75 of
+  -$615.81) sat *inside* those already-live-eligible regimes. Real driver: WEAK-regime
+  `ADX_TREND` alone lost -$813.91/1,133 trades in 2026 — bigger than the category's
+  entire net loss — both LONG and SHORT simultaneously unprofitable, spread across 5 of
+  7 months (not one bad day). Confirmed the SAME degradation exists in the currently-
+  live (pre-redesign) design's own WEAK-regime SHORT `ADX_TREND` (-$191/816 trades,
+  2026) — this was never Fish-Finder-specific, just newly exposed by it.
+- **H2 2025 failure, root-caused:** unrelated mechanism. Live only ever fires
+  `KELTNER_REVERT` SHORT, only in CAUTIOUS regime (+$215/143 trades, H2 2025). Under
+  Fish Finder the SAME CAUTIOUS-regime opportunity set collapsed to just 11-35 trades
+  per period (as low as 11.8% of what live captures on identical days) — traced to
+  Keltner's conviction score being a hardcoded flat 1.0 while `ADX_TREND`/`RSI_REVERT`
+  scale continuously; ADX's own winning-trade conviction distribution sits almost
+  exactly on that 1.0 (median 1.00, IQR 0.47-1.67, n=15,276) — a real coin-flip loss in
+  3-way tie-breaks, not a landslide, but enough to starve Keltner out of its own best
+  regime.
+- **Two candidate fixes tested and REJECTED before landing on what shipped:**
+  (1) scaling Keltner's conviction by real ATR band-distance — ~0 correlation to P&L in
+  every period, full 3,393-trade history; this is a tie-break FREQUENCY problem, not a
+  quality-ranking problem. (2) A trailing-P&L health gate on Keltner overall (the same
+  mechanism that fixed the WEAK-ADX problem) — noisy, non-monotonic across window
+  sizes, mostly worse than baseline; ADX's problem was a genuine multi-month signal
+  decay (well-suited to a trailing-window gate), Keltner's was a selection-rate
+  problem (not suited to one). Also rejected: regime-eligibility exclusion for Keltner
+  (CHOPPY looked bad only in H2 2025, was Keltner's *best* regime in 2024/H1-2025/2026 —
+  same aggregate-hides-the-period trap flagged repeatedly in this file's history).
+- **What shipped instead:** **Bite Check** — a trailing 7-trading-day P&L gate scoped
+  specifically to WEAK-regime `ADX_TREND` (not the whole book, not all of Keltner).
+  Window chosen from a real plateau (5-9 days all worked in a post-hoc sweep), not a
+  single cherry-picked number. **Fair Cast** — raised `KELTNER_CONVICTION` 1.0→2.0
+  (beats ~82% of ADX's own conviction distribution) so Keltner stops losing ties it
+  should often win. Both combined with the two pieces already in the Aug 6-7 combo:
+  **Crowd Gauge** (correlation gate, 0.35, unchanged) and the RSI-75 retune.
+- **Validation — full 2024-2026 backtest, all 4 periods, real scanner-integrated reruns
+  (not post-hoc trade removal):**
+
+| Period | OLD (live) | Baseline Fish Finder | +Bite Check only | +Bite Check +Fair Cast (shipped) |
+|---|---|---|---|---|
+| 2024 | +$323 | +$1,888 | +$2,018 | +$1,293 |
+| H1 2025 | -$848 | +$1,008 | +$349 | +$387 |
+| H2 2025 | +$531 | +$112 | +$357 | +$1,171 |
+| 2026 YTD | +$453 | -$647 | +$1,154 | +$1,092 |
+| **Total** | +$458 | +$2,361 | +$3,878 | **+$3,942** |
+
+  Beats OLD in **all 4 periods** for the first time in this whole investigation. Two
+  honest surprises found by checking every period instead of trusting totals (same
+  discipline this file has flagged repeatedly for *other* research, now caught in our
+  own): Bite Check alone REGRESSED H1-2025 by -$658.83 despite never touching that
+  period's `ADX_TREND` logic directly — traced to a side effect, not a bug: blocking
+  WEAK-regime `ADX_TREND` frees `MAX_OPEN_TRADES` slots, and in H1-2025 those slots got
+  filled by +352 extra Keltner trades and +357 extra RSI trades that were markedly
+  lower quality than what those templates normally get (the SAME mechanism helped in
+  2026 and H2-2025 — the redistribution's sign is genuinely period-dependent, not a
+  free lunch). Separately, adding Fair Cast on top cost 2024 -$725 vs Bite-Check-alone
+  — Keltner winning more ties now steals some *good* `ADX_TREND` trades too, not just
+  idle ones it lost fairly (~$2/trade average quality of what got displaced vs ~$0.04
+  from the extra Keltner volume that replaced it). Net effect across all periods still
+  strongly positive; both surprises are why `KELTNER_CONVICTION=2.0` is flagged
+  PROVISIONAL rather than final.
+
+**Decision (user-directed):** wire it — replace the Aug 5 design outright (not run in
+parallel off the shared capital pool, which would make results uninterpretable), since
+paper capital + a real, mechanistically-diagnosed, full-history-validated edge is
+exactly the situation forward paper trading is for. Every number above comes from the
+same 2024-2026 tape used to find the fixes — no genuine blind data has touched this yet.
+This live trial IS that missing test, not a formality.
+
+**Shipped same session:**
+- `regime_at_entry` column added to `trades` table (idempotent ALTER, `database.py`) +
+  `set_regime_at_entry()`/`get_weak_regime_adx_history()` helpers — makes Bite Check
+  DB-backed instead of an in-memory list, so it survives autotrader restarts correctly
+  (an in-memory version would have silently cold-started on every restart, which is NOT
+  the thing that was backtested — a single continuous process).
+- `equity_replay.py`'s parity coverage for `_scan_regime_adaptive` — checked, already
+  closed by the Aug 6-7 v2 rebuild (confirmed: `equity_replay.py:501` already calls
+  `at._scan_regime_adaptive()` through the real orchestration path; the CLAUDE.md note
+  calling this an open gap was stale, predating that rebuild landing).
+- Crowd Gauge's live cost — timed at 2.1s for a real 61-symbol `yf.download()` call;
+  designed as a once-per-calendar-day cached computation (correlation is a daily-
+  frequency signal, no reason to recompute every 5-min scan), so the "scan cycle must
+  stay under 5 min" constraint was never actually at risk once built this way.
+- `auto_trader.py`: `REGIME_STRATEGY_MAP`/`_regime_adaptive_signal_fires` replaced by
+  `_fishfinder_candidates()`/`_fishfinder_resolve_tie()`/`_crowd_gauge_correlation()`/
+  `_bite_check_ok()`; `_scan_regime_adaptive()` rewritten around them, same function
+  signature (no equity_replay.py changes needed). `setup_type` now `FISHFINDER_*`.
+- `GLOSSARY.md` updated: Fish Finder / Crowd Gauge / Bite Check / Fair Cast rows added,
+  Regime-Adaptive Suite row updated to point at the new engine.
+- Savepoint: `git tag checkpoint-2026-08-08-pre-fishfinder-wiring` (commit `c600ee4`,
+  which also bundled this week's already-tested prior fixes — collect_bars timestamp
+  bug, equity_replay v2, the Aug 5 daily-cap fix — that were sitting uncommitted).
+  Rollback: `git reset --hard checkpoint-2026-08-08-pre-fishfinder-wiring`.
+
+**Still open, not done this session:** Fish Finder dashboard card (gate states,
+per-template funnel, P&L split) — next. Restart + live verification — next.
+
+**Post-wiring bug sweep (same night) — two rounds, one real bug found and fixed, plus two
+user questions investigated with real data:**
+- Round 1 (fresh re-read + empirical testing, not just reading): all new DB functions
+  (`set_regime_at_entry`, `get_weak_regime_adx_history`, the two `log_fishfinder_*`
+  upserts) tested with real writes/reads including the no-lookahead boundary condition.
+  Ran the actual wired code through `equity_replay.py` directly (not the research
+  script's separate scanner — the real `_scan_regime_adaptive` as now written) for two
+  short smoke windows (Aug 3-5 2026, Feb 2-4 2026 for WEAK-regime coverage) — confirmed
+  end to end: `FISHFINDER_*` trades write correctly, every trade gets `regime_at_entry`
+  tagged (verified 100% coverage, zero gaps), `fishfinder_gate_log` populates correctly
+  including the WEAK-regime-only Bite Check path. Zero errors either run.
+- Round 2 (line-by-line cross-check vs the validated research script): found and fixed
+  one real discrepancy — `_crowd_gauge_correlation()` used pandas' pairwise `.corr()`,
+  which handles missing data differently per symbol-pair than the validated script's
+  min-length-aligned `np.corrcoef()` approach. Could disagree right at the 0.35
+  threshold. Fixed to match the validated algorithm exactly. Everything else (constants,
+  gate ordering, tie-break logic, capital/sizing calc) confirmed identical or a verified
+  no-op simplification (breadth gate and regime-eligibility restriction were never
+  active in the tested combo, so correctly omitted from the live port).
+- **User caught a real question, investigated with actual trade data:** confirmed
+  `MAX_DAILY_BULL/BEAR_TRADES=20` is NOT currently being exceeded — the only overage in
+  the last 15 days was Aug 5's 26 SHORT trades, which is the exact already-documented
+  incident (fixed same day, mid-day). Aug 6 and Aug 7 (the actual last trading day) both
+  correctly respect the cap; Aug 7 hit exactly 20/20 both sides, which is the cap
+  working as intended on a busy day, not a violation.
+- **15-day retrospective (user-requested, reused already-computed backtest data — no
+  new heavy compute needed):** last 15 real trading days (Jul 20 – Aug 7 2026), OLD
+  design (what actually ran) vs Fish Finder combo backtested on the identical window:
+  **OLD +$279.59 (293 trades) beats Fish Finder +$129.65 (530 trades)** — not the
+  direction anyone would hope for right after wiring. Driven almost entirely by
+  `ADX_TREND`: OLD +$434.62/177 trades vs Fish Finder +$112.48/336 trades — unrestricted
+  regime eligibility (no `--hybrid`, matching what was validated) nearly doubled trade
+  count and diluted quality badly in this specific window. `KELTNER_REVERT` (Fair Cast)
+  and `RSI_REVERT` (tuned threshold) both looked healthy in the same window (Keltner
+  captured 125 trades vs OLD's 4, held P&L roughly even at 30x the sample; RSI flipped
+  from -$68.76 to +$33.30). Read honestly, not spun: this is a genuine data point, not a
+  verdict — a 15-day window is exactly where variance dominates, and this window isn't
+  one of the four multi-month periods actually validated against. But the `ADX_TREND`
+  dilution effect from unrestricted eligibility is a real, recurring pattern (also hurt
+  H1-2025 in the earlier full-history check) worth watching as live data accumulates —
+  candidate: revisit whether `--hybrid` (restrict `ADX_TREND` to STRONG/NORMAL/WEAK, the
+  regimes live's original design used) should be added back, now that Bite Check handles
+  the WEAK-regime-specific decay separately from the eligibility question.
+- **WFA (walk-forward analysis) — NOT done, and not really reconstructable for these
+  specific fixes.** Bite Check and Fair Cast were reverse-engineered by looking directly
+  at the 2026/H2-2025 failures — there's no unseen slice of 2024-2026 left to walk
+  forward into with this same tape; a WFA-shaped split now would just re-test on data
+  already used to design the fix. Real forward-looking validation from here is live
+  paper trading (genuinely unseen data), not more backtesting against 2024-2026. A
+  cheaper partial substitute floated but not yet done: refit `BITE_CHECK_WINDOW`/
+  `KELTNER_CONVICTION` using ONLY 2024 data, check if those independently-derived values
+  still hold on 2025-2026 unchanged — tests parameter robustness, not full blindness.
 
 ---
 

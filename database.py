@@ -60,6 +60,29 @@ def init_db():
         c.execute('ALTER TABLE trades ADD COLUMN hod_at_entry REAL')
     except Exception:
         pass  # column already exists
+    # Add regime_at_entry (Aug 8 2026, Fish Finder redesign) — the Weather
+    # Report reading at the moment of entry. Exists specifically so Bite Check
+    # (the WEAK-regime FISHFINDER_ADX_TREND trailing health gate) can
+    # reconstruct its trailing window from real DB history on every check,
+    # instead of an in-memory list that would silently reset on every
+    # autotrader restart. Written once at entry, never updated.
+    try:
+        c.execute('ALTER TABLE trades ADD COLUMN regime_at_entry TEXT')
+    except Exception:
+        pass  # column already exists
+
+    # ── Fish Finder gate log (Aug 8 2026) ──────────────────
+    # One row per calendar day, written by auto_trader.py's _crowd_gauge_correlation()/
+    # _bite_check_ok() the first time each computes that day. Exists so the dashboard
+    # (a SEPARATE process — cannot see autotrader's in-memory gate caches) can show
+    # today's real gate state instead of silently showing nothing/stale data.
+    c.execute('''CREATE TABLE IF NOT EXISTS fishfinder_gate_log (
+        date              TEXT PRIMARY KEY,
+        crowd_gauge_corr  REAL,
+        crowd_gauge_state TEXT,
+        bite_check_state  TEXT,
+        computed_at       TEXT
+    )''')
 
     # ── Strategy weights — updated by learner ─────────────
     c.execute('''CREATE TABLE IF NOT EXISTS strategy_weights (
@@ -676,6 +699,64 @@ def update_trade_shares(trade_id, new_shares):
     c.execute('UPDATE trades SET shares=? WHERE id=?', (new_shares, trade_id))
     conn.commit()
     conn.close()
+
+def set_regime_at_entry(trade_id, regime):
+    """Tags a trade with the Weather Report reading at entry. Written once
+    right after place_trade() succeeds — see regime_at_entry column comment
+    in init_db(). Durable (DB write, not in-memory) so Bite Check survives
+    autotrader restarts."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('UPDATE trades SET regime_at_entry=? WHERE id=?', (regime, trade_id))
+    conn.commit()
+    conn.close()
+
+def log_fishfinder_crowd_gauge(date_str, corr, state):
+    """Persists today's Crowd Gauge reading — dashboard-visible source of
+    truth, since the dashboard is a separate process from autotrader and
+    can't see its in-memory cache. Upserts (called at most once/day live,
+    but idempotent if called again)."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''INSERT INTO fishfinder_gate_log (date, crowd_gauge_corr, crowd_gauge_state, computed_at)
+        VALUES (?,?,?,datetime('now'))
+        ON CONFLICT(date) DO UPDATE SET
+            crowd_gauge_corr=excluded.crowd_gauge_corr,
+            crowd_gauge_state=excluded.crowd_gauge_state,
+            computed_at=excluded.computed_at''',
+        (date_str, corr, state))
+    conn.commit()
+    conn.close()
+
+def log_fishfinder_bite_check(date_str, state):
+    """Persists today's Bite Check state — same rationale as
+    log_fishfinder_crowd_gauge()."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute('''INSERT INTO fishfinder_gate_log (date, bite_check_state, computed_at)
+        VALUES (?,?,datetime('now'))
+        ON CONFLICT(date) DO UPDATE SET
+            bite_check_state=excluded.bite_check_state,
+            computed_at=excluded.computed_at''',
+        (date_str, state))
+    conn.commit()
+    conn.close()
+
+def get_weak_regime_adx_history(before_date):
+    """All CLOSED FISHFINDER_ADX_TREND trades entered while regime was WEAK,
+    with exit_date strictly before `before_date` (no lookahead) — the raw
+    material Bite Check's trailing-window health check sums over. Returns
+    list of (exit_date, pnl) tuples."""
+    conn = get_connection()
+    c    = conn.cursor()
+    c.execute(
+        "SELECT exit_date, pnl FROM trades WHERE setup_type='FISHFINDER_ADX_TREND' "
+        "AND regime_at_entry='WEAK' AND status IN ('WIN','LOSS') AND exit_date < ? "
+        "ORDER BY exit_date", (before_date,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 def get_trade_entry_date(trade_id):
     conn = get_connection()

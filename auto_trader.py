@@ -29,6 +29,8 @@ from database import (
     update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades,
     get_strategy_weights, get_today_entry_counts,
     get_sector_grade, log_scan_candidate, enrich_scan_log,
+    set_regime_at_entry, get_weak_regime_adx_history,
+    log_fishfinder_crowd_gauge, log_fishfinder_bite_check,
 )
 from catalyst_detector import run_catalyst_scan
 from learner import run_learning_cycle
@@ -3450,92 +3452,236 @@ def get_position_capital(grade, is_catalyst, deployed, first_bar_strong=False):
 
 
 # ─────────────────────────────────────────────────────────
-# REGIME-ADAPTIVE STRATEGY SUITE (Aug 5 2026)
+# REGIME-ADAPTIVE STRATEGY SUITE — Fish Finder engine (Aug 8 2026 redesign)
 # ─────────────────────────────────────────────────────────
-# Baseline: research_full_suite_regime.py (2yr) -> _3yr.py (3yr confirm,
-# same winners 4 of 5 regimes) -> _eod.py (re-tested under the REAL exit
-# constraint this system actually enforces, MAX_HOLD_DAYS=1/EOD close, since
-# the original 10-day-hold backtest doesn't reflect what gets captured live).
-# Full research trail + plain-English table: CLAUDE.md, analysis_pending memory.
+# Replaces the original Aug 5 2026 single-template design. Rollback point:
+# git tag checkpoint-2026-08-08-pre-fishfinder-wiring (git reset --hard to it
+# restores the exact prior REGIME_STRATEGY_MAP/_regime_adaptive_signal_fires
+# version verbatim).
 #
-# Design decisions, explicit, so a future reader doesn't have to reverse-engineer them:
-#   - Deliberately NOT gated by book_is_on(). This suite exists specifically to
-#     trade through periods the book-health gate has the existing LONG/SHORT
-#     books shut down, using a different (regime-conditioned) signal instead
-#     of the book's own trailing-drift history. Whether that's actually a good
-#     idea is the open question this live paper trial is designed to answer.
+# ORIGINAL DESIGN (Aug 5): one market-wide Weather Report reading picked ONE
+# strategy template for all 241 symbols at once. Lived as a paper trial;
+# diagnosing its own OOS failure modes (CLAUDE.md Aug 6-8 2026 sections,
+# analysis_pending memory) led to this redesign, not just a retune.
+#
+# FISH FINDER (this design): every symbol is tested against all 3 templates
+# every scan, using its OWN live signals — not gated by which one template
+# today's Weather Report happened to pick. When a symbol qualifies for more
+# than one template, the one with the highest CONVICTION (how far past its
+# own threshold it is) wins the trade.
+#
+# Three fixes, each root-caused against the full 2024-2026 backtest (not
+# curve-fit to one window):
+#   - CROWD GAUGE: an ADX_TREND (trend-following) pick is blocked if the
+#     whole 241-symbol universe is moving together above 0.35 mean pairwise
+#     correlation that day — a herd/panic move, not a real idiosyncratic
+#     trend. Daily-frequency signal, cached once per calendar day (not
+#     recomputed every 5-min scan).
+#   - BITE CHECK: ADX_TREND entries during WEAK-regime scans specifically
+#     pause whenever the trailing 7 TRADING DAYS of CLOSED WEAK-regime
+#     ADX_TREND trades have net-lost money. Diagnosed root cause: WEAK-
+#     regime ADX_TREND genuinely stopped working for most of 2026 YTD (both
+#     LONG and SHORT simultaneously unprofitable, 5 of 7 months) while
+#     staying fine in every other historical period — a real, live-checkable
+#     trailing signal decay, not a fixed "WEAK regimes are bad for trend
+#     calls" rule. DB-backed (regime_at_entry column, set_regime_at_entry())
+#     so this survives autotrader restarts — deliberately NOT an in-memory
+#     list, which would silently cold-start on every restart.
+#   - FAIR CAST: KELTNER_REVERT's conviction score was a hardcoded flat 1.0
+#     while ADX_TREND/RSI_REVERT scale continuously. Diagnosed as a real
+#     starvation bug: Keltner captured only 11.8% of the CAUTIOUS-regime
+#     trades the original design got on the SAME days, losing 3-way tie-
+#     breaks it should often win. Real ATR band-distance was tested as an
+#     alternative conviction proxy and REJECTED (~0 correlation to P&L in
+#     every period) — this is a tie-break FREQUENCY fix, not a quality-
+#     ranking fix. KELTNER_CONVICTION=2.0 beats ~82% of ADX_TREND's observed
+#     conviction distribution. PROVISIONAL: full-history combo testing found
+#     it also steals some genuinely good ADX_TREND trades in 2024
+#     specifically (a real, understood, unresolved interaction cost) — retune
+#     against live FISHFINDER_* trade data as it accumulates, do not treat
+#     2.0 as final.
+#   - RSI_REVERT's SHORT threshold raised 70->75 (data-backed retune, H1-2025
+#     bucket analysis).
+#
+# Full backtest trail (all 4 periods, 2024-01 to 2026-08, vs both the OLD
+# design and an unfixed Fish Finder baseline): CLAUDE.md Aug 8 2026 section,
+# analysis_pending memory. Headline: this design beats the OLD design in ALL
+# FOUR historical periods — first time that's been true anywhere in this
+# investigation ($3,942 vs OLD's $458, full history). But every number comes
+# from the SAME historical tape used to find the fixes — no genuine
+# out-of-sample data has touched this yet. This live paper trial IS that
+# missing out-of-sample test, not a formality.
+#
+# Design decisions carried over UNCHANGED from the Aug 5 design:
+#   - Deliberately NOT gated by book_is_on() — trades through periods the
+#     book-health gate has the LONG/SHORT books shut down.
 #   - Shares the existing $10,000 / MAX_OPEN_TRADES=5 pool via
-#     get_position_capital()/get_deployed_capital() — explicit user decision
-#     Aug 5 2026, not a separate allocation.
-#   - Exits are 100% the EXISTING stack. This function only ever calls
-#     place_trade() with a normal calc_sl_target() stop, then steps away —
-#     no new exit logic anywhere. ATR trail, PCT trail, hard stop, dollar
-#     circuit breaker, VWAP cross, momentum fade, EOD close, hard time stop,
-#     T+5 confirmation all apply completely unchanged, because monitor_open_trades()
-#     doesn't branch on setup_type/strategy — verified by reading it before
-#     writing this function, not assumed.
-#   - CHOPPY trades at HALF size (explicit user decision) — the thinnest,
-#     least-robust-under-the-EOD-retest evidence of the five regimes.
-#   - Sunset review: Sep 5 2026 (one month), per CONSTITUTION.md governance
-#     (hypothesis + auto-scoring + sunset date for every new rule).
+#     get_position_capital()/get_deployed_capital().
+#   - Exits are 100% the EXISTING stack — this function only ever calls
+#     place_trade() then steps away. No new exit logic anywhere.
+#
+# Sunset review: Sep 8 2026 (one month from this redesign), per
+# CONSTITUTION.md governance. Supersedes the original Aug 5 -> Sep 5 review.
 
-REGIME_STRATEGY_MAP = {
-    'STRONG':   {'name': 'ADX_TREND',      'side': 'LONG',  'size_mult': 1.0},
-    'NORMAL':   {'name': 'ADX_TREND',      'side': 'LONG',  'size_mult': 1.0},
-    'WEAK':     {'name': 'ADX_TREND',      'side': 'SHORT', 'size_mult': 1.0},
-    'CAUTIOUS': {'name': 'KELTNER_REVERT', 'side': 'SHORT', 'size_mult': 1.0},
-    'CHOPPY':   {'name': 'RSI_REVERT',     'side': 'SHORT', 'size_mult': 0.5},
-}
+FISHFINDER_THRESHOLDS = {'adx_min': 25, 'rsi_hi': 75, 'rsi_lo': 30}   # rsi_hi tuned 70->75, Aug 6 2026
 
-def _regime_adaptive_signal_fires(strategy_name, side, sig):
-    """True if this symbol's live signal matches today's regime-strategy rule.
-    Mirrors the exact backtested entry conditions in research_full_suite_regime.py."""
-    if strategy_name == 'ADX_TREND':
-        adx = sig.get('adx')
-        if adx is None or adx <= 25:
-            return False
-        return sig.get('chg_5d_up') if side == 'LONG' else sig.get('chg_5d_down')
-    if strategy_name == 'KELTNER_REVERT':
-        return sig.get('above_keltner_upper') if side == 'SHORT' else sig.get('below_keltner_lower')
-    if strategy_name == 'RSI_REVERT':
-        rsi = sig.get('rsi')
-        if rsi is None:
-            return False
-        return rsi > 70 if side == 'SHORT' else rsi < 30
-    return False
+ADX_CONVICTION_SCALE = 15.0
+RSI_CONVICTION_SCALE = 15.0
+KELTNER_CONVICTION   = 2.0     # Fair Cast — PROVISIONAL, see module comment above
+
+CROWD_GAUGE_CORR_MAX = 0.35    # ADX_TREND blocked above this universe correlation
+BITE_CHECK_WINDOW    = 7       # trading days trailing P&L window, WEAK-regime ADX_TREND only
+
+TIE_EPSILON          = 0.05
+TIE_PRIORITY         = {'ADX_TREND': 0, 'KELTNER_REVERT': 1, 'RSI_REVERT': 2}
+FISHFINDER_SIZE_MULT = {'ADX_TREND': 1.0, 'KELTNER_REVERT': 1.0, 'RSI_REVERT': 0.5}
+
+
+def _fishfinder_candidates(sig):
+    """Every (template, side, conviction) this symbol qualifies for right now,
+    on its own live signals. Condition shape identical to the original
+    _regime_adaptive_signal_fires (same field, same comparison per side) —
+    only difference is testing all 3 unconditionally instead of gating on
+    today's regime, and scoring conviction continuously instead of a boolean."""
+    out = []
+    adx = sig.get('adx')
+    if adx is not None and adx > FISHFINDER_THRESHOLDS['adx_min']:
+        if sig.get('chg_5d_up'):
+            out.append({'template': 'ADX_TREND', 'side': 'LONG',
+                       'conviction': (adx - FISHFINDER_THRESHOLDS['adx_min']) / ADX_CONVICTION_SCALE})
+        if sig.get('chg_5d_down'):
+            out.append({'template': 'ADX_TREND', 'side': 'SHORT',
+                       'conviction': (adx - FISHFINDER_THRESHOLDS['adx_min']) / ADX_CONVICTION_SCALE})
+    if sig.get('above_keltner_upper'):
+        out.append({'template': 'KELTNER_REVERT', 'side': 'SHORT', 'conviction': KELTNER_CONVICTION})
+    if sig.get('below_keltner_lower'):
+        out.append({'template': 'KELTNER_REVERT', 'side': 'LONG', 'conviction': KELTNER_CONVICTION})
+    rsi = sig.get('rsi')
+    if rsi is not None:
+        if rsi > FISHFINDER_THRESHOLDS['rsi_hi']:
+            out.append({'template': 'RSI_REVERT', 'side': 'SHORT',
+                       'conviction': (rsi - FISHFINDER_THRESHOLDS['rsi_hi']) / RSI_CONVICTION_SCALE})
+        if rsi < FISHFINDER_THRESHOLDS['rsi_lo']:
+            out.append({'template': 'RSI_REVERT', 'side': 'LONG',
+                       'conviction': (FISHFINDER_THRESHOLDS['rsi_lo'] - rsi) / RSI_CONVICTION_SCALE})
+    return out
+
+
+def _fishfinder_resolve_tie(candidates):
+    """Highest-conviction candidate wins; epsilon-ties fall back to a fixed
+    trend-first priority order (matches the original design's own STRONG/
+    NORMAL default bias)."""
+    if not candidates:
+        return None
+    ranked = sorted(candidates, key=lambda c: c['conviction'], reverse=True)
+    if len(ranked) > 1 and (ranked[0]['conviction'] - ranked[1]['conviction']) < TIE_EPSILON:
+        ranked.sort(key=lambda c: (TIE_PRIORITY.get(c['template'], 99), -c['conviction']))
+    return ranked[0]
+
+
+_crowd_gauge_cache = {}   # {date_str: corr_float_or_None} — one calc per calendar day
+
+def _crowd_gauge_correlation():
+    """Mean pairwise correlation of trailing 20 daily returns across a
+    ~60-symbol sample of FULL_UNIVERSE. Daily-frequency signal (uses only
+    completed daily bars) — cached once per calendar day, not recomputed
+    every 5-min scan. Fails open (None -> gate doesn't block) if uncomputable,
+    same convention as every other gate in this file."""
+    today_str = datetime.now(ET).strftime('%Y-%m-%d')
+    if today_str in _crowd_gauge_cache:
+        return _crowd_gauge_cache[today_str]
+    result = None
+    try:
+        # Matches research_fish_finder_weather_advisory.py's universe_correlation()
+        # algorithm exactly (min-length alignment + np.corrcoef), NOT pandas'
+        # pairwise .corr() — pairwise correlation uses different overlapping-data
+        # per pair and can disagree with the validated backtest math right at the
+        # 0.35 threshold. Same procedure, live data source instead of cached bars.
+        sample = FULL_UNIVERSE[::4]
+        raw = yf.download(sample, period='45d', interval='1d', progress=False,
+                          auto_adjust=True, threads=True)
+        closes = raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw
+        rets = {}
+        for s in sample:
+            if s not in closes.columns:
+                continue
+            r = closes[s].dropna().pct_change().dropna().values
+            if len(r) >= 15:   # window(20) - 5, same tolerance as the research script
+                rets[s] = r
+        if len(rets) >= 20:
+            minlen = min(len(v) for v in rets.values())
+            if minlen >= 5:
+                mat = np.array([v[-minlen:] for v in rets.values()])
+                corr = np.corrcoef(mat)
+                iu = np.triu_indices_from(corr, k=1)
+                vals = corr[iu]
+                vals = vals[~np.isnan(vals)]
+                if len(vals):
+                    result = float(np.mean(vals))
+    except Exception as e:
+        log(f"  Crowd Gauge correlation calc failed: {e}")
+    _crowd_gauge_cache[today_str] = result
+    state = 'BLOCKING' if (result is not None and result > CROWD_GAUGE_CORR_MAX) else 'OK'
+    try:
+        log_fishfinder_crowd_gauge(today_str, result, state)
+    except Exception:
+        pass   # dashboard visibility only — never block trading on a logging failure
+    return result
+
+
+_bite_check_cache = {}   # {date_str: bool} — one calc per calendar day
+
+def _bite_check_ok():
+    """True (WEAK-regime ADX_TREND entries allowed) unless the trailing
+    BITE_CHECK_WINDOW trading days of CLOSED FISHFINDER_ADX_TREND trades
+    tagged regime_at_entry='WEAK' have net-lost money. Cold-start ON if
+    fewer than BITE_CHECK_WINDOW distinct trading days of history exist yet.
+    Reads real DB history every call (get_weak_regime_adx_history) — NOT an
+    in-memory list — so this is correct immediately after a restart, cached
+    once per calendar day thereafter."""
+    today_str = datetime.now(ET).strftime('%Y-%m-%d')
+    if today_str in _bite_check_cache:
+        return _bite_check_cache[today_str]
+    result = True
+    try:
+        rows = get_weak_regime_adx_history(today_str)
+        if rows:
+            daily = {}
+            for exit_date, pnl in rows:
+                daily[exit_date] = daily.get(exit_date, 0.0) + (pnl or 0.0)
+            distinct_days = sorted(daily.keys())
+            if len(distinct_days) >= BITE_CHECK_WINDOW:
+                trailing = distinct_days[-BITE_CHECK_WINDOW:]
+                result = sum(daily[d] for d in trailing) > 0
+    except Exception as e:
+        log(f"  Bite Check calc failed: {e}")
+    _bite_check_cache[today_str] = result
+    try:
+        log_fishfinder_bite_check(today_str, 'ON' if result else 'OFF')
+    except Exception:
+        pass   # dashboard visibility only — never block trading on a logging failure
+    return result
 
 
 def _scan_regime_adaptive(regime, open_trades):
-    """Entry scanner for the regime-adaptive suite — see module comment above
-    REGIME_STRATEGY_MAP for full design rationale. Returns entries made this cycle."""
+    """Fish Finder entry scanner — see module comment above for full design
+    rationale and what changed from the original (Aug 5) single-template
+    design. Returns entries made this cycle."""
     global daily_bull_count, daily_bear_count, traded_today
 
-    cfg = REGIME_STRATEGY_MAP.get(regime)
-    if not cfg:
-        return []
-    strategy_name, side, size_mult = cfg['name'], cfg['side'], cfg['size_mult']
-    setup_tag = f"REGIME_{strategy_name}"
-
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
-    entries    = []
-    attempted  = 0
+    entries, attempted = [], []
+
+    corr    = _crowd_gauge_correlation()
+    bite_ok = _bite_check_ok() if regime == 'WEAK' else True
 
     for symbol in scan_order:
         if symbol in traded_today:
             continue
         if any(t['symbol'] == symbol for t in open_trades):
             continue
-        # Aug 5 2026 fix: this scanner increments daily_bull_count/daily_bear_count
-        # below but never checked either cap before entering — every other equity
-        # scanner in this file does (see _scan_and_enter/_scan_and_enter_bear/
-        # _scan_catalyst_override). Confirmed live Aug 5: Bear hit 26/20 same day.
-        if side == 'LONG' and daily_bull_count >= MAX_DAILY_BULL_TRADES:
+        if len(open_trades) + len(entries) + len(attempted) >= MAX_OPEN_TRADES:
             break
-        if side == 'SHORT' and daily_bear_count >= MAX_DAILY_BEAR_TRADES:
-            break
-        if len(open_trades) + len(entries) + attempted >= MAX_OPEN_TRADES:
-            break
-
         try:
             sig = get_intraday_signals(symbol)
             if sig is None:
@@ -3543,7 +3689,29 @@ def _scan_regime_adaptive(regime, open_trades):
             price = sig['price']
             if price < 5 or price > 800:
                 continue
-            if not _regime_adaptive_signal_fires(strategy_name, side, sig):
+
+            cands = _fishfinder_candidates(sig)
+            # Crowd Gauge: trend-calls only, fails open if uncomputable
+            if corr is not None and corr > CROWD_GAUGE_CORR_MAX:
+                cands = [c for c in cands if c['template'] != 'ADX_TREND']
+            winner = _fishfinder_resolve_tie(cands)
+            if winner is None:
+                continue
+            strategy_name, side = winner['template'], winner['side']
+            is_weak_adx = (regime == 'WEAK' and strategy_name == 'ADX_TREND')
+            if is_weak_adx and not bite_ok:
+                continue
+            size_mult = FISHFINDER_SIZE_MULT[strategy_name]
+            setup_tag = f"FISHFINDER_{strategy_name}"
+
+            # Because side is no longer fixed for the whole scan (a different
+            # symbol later might want the OTHER side), hitting one side's
+            # daily cap is a per-symbol `continue`, not a `break` — the old
+            # single-template design could `break` here since side never
+            # varied within a scan.
+            if side == 'LONG' and daily_bull_count >= MAX_DAILY_BULL_TRADES:
+                continue
+            if side == 'SHORT' and daily_bear_count >= MAX_DAILY_BEAR_TRADES:
                 continue
 
             sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
@@ -3559,10 +3727,10 @@ def _scan_regime_adaptive(regime, open_trades):
             atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
             shares         = max(1, min(int(capital / price), atr_shares))
 
-            log(f"  📊 REGIME {regime}/{strategy_name} {side} {symbol} ${price} | "
-                f"ADX {sig.get('adx')} | RSI {sig['rsi']} | size {size_mult}x")
+            log(f"  🐟 FISH FINDER {regime}/{strategy_name} {side} {symbol} ${price} | "
+                f"conviction {winner['conviction']:.2f} | ADX {sig.get('adx')} | RSI {sig['rsi']} | size {size_mult}x")
 
-            attempted += 1
+            attempted.append(symbol)
             trade_id = place_trade(
                 symbol, price, shares, sl, target,
                 setup_tag, 'A',
@@ -3571,6 +3739,7 @@ def _scan_regime_adaptive(regime, open_trades):
                 side=side,
             )
             if trade_id:
+                set_regime_at_entry(trade_id, regime)
                 traded_today.add(symbol)
                 save_traded_today()
                 open_positions[symbol] = trade_id
@@ -3586,10 +3755,10 @@ def _scan_regime_adaptive(regime, open_trades):
                     'entry_price': price, 'direction': side,
                 }
         except Exception as e:
-            log(f"  Regime-adaptive error {symbol}: {e}")
+            log(f"  Fish Finder error {symbol}: {e}")
 
     if entries:
-        lines = [f"📊 REGIME-ADAPTIVE — {regime}/{strategy_name} {side} — {len(entries)} entries (size {size_mult}x)"]
+        lines = [f"🐟 FISH FINDER — {regime} — {len(entries)} entries"]
         for e in entries:
             lines.append(f"  {e['symbol']} {e['side']} x{e['shares']} @ ${e['price']} SL ${e['sl']}")
         send_telegram('\n'.join(lines))

@@ -119,6 +119,7 @@ function renderSystemHealth(h) {
       <span class="health-label" title="A+ grade equity signals seen today, whether or not a trade was taken">Signals today</span>
       <span>A+ equity: ${f.eq_aplus_long ?? 0} long / ${f.eq_aplus_short ?? 0} short</span>
     </div>
+    ${renderFishFinderHealth(h.fishfinder)}
     <div class="health-row">
       <span class="health-label" title="MNQ signal funnel today: how many entries got through, and which gate rejected the rest">Futures funnel</span>
       ${enteredChip}
@@ -135,6 +136,51 @@ function renderSystemHealth(h) {
     </div>
     ${renderOptionsHealth(h.options)}
     ${renderFieldReport(h.field_report)}`;
+}
+
+// ── Fish Finder row inside SYSTEM HEALTH (Aug 8 2026 redesign) ──────────
+// Replaces the original single-template Regime-Adaptive Suite. Gate states
+// come from fishfinder_gate_log (written live by auto_trader.py) — NOT an
+// in-memory read, since the dashboard is a separate process from autotrader.
+function renderFishFinderHealth(ff) {
+  if (!ff) return '';
+  const cg = ff.crowd_gauge || {};
+  const bc = ff.bite_check || {};
+  const cgCls = cg.state === 'BLOCKING' ? 'neg' : (cg.state === 'OK' ? 'pos' : '');
+  const bcCls = bc.state === 'OFF' ? 'neg' : (bc.state === 'ON' ? 'pos' : '');
+  const f = ff.funnel || {};
+  const TEMPLATES = [
+    ['FISHFINDER_ADX_TREND', 'ADX Trend'],
+    ['FISHFINDER_KELTNER_REVERT', 'Keltner Revert'],
+    ['FISHFINDER_RSI_REVERT', 'RSI Revert'],
+  ];
+  const money = v => `${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(0)}`;
+  const funnelStr = bucket => {
+    if (!bucket) return '—';
+    const parts = TEMPLATES.map(([key, name]) => {
+      const x = bucket[key] || { n: 0, pnl: 0 };
+      return `${name} ${x.n}t ${money(x.pnl)}`;
+    });
+    return parts.join(' · ');
+  };
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Fish Finder: tests every symbol against all 3 templates (ADX Trend / Keltner Revert / RSI Revert) on its own signals every scan, instead of one market regime picking a single template for all 241 symbols. Replaced the original single-template design Aug 8 2026 — see GLOSSARY.md.">Fish Finder</span>
+      <span class="health-chip ${cgCls}" title="Crowd Gauge: blocks trend-calls when the ~60-symbol universe sample's correlation exceeds 0.35 (herd/panic move, not a real idiosyncratic trend). Daily-frequency, cached once/day.">Crowd Gauge ${cg.corr != null ? cg.corr : '—'} / ${cg.max ?? 0.35}</span>
+      <span class="health-chip ${bcCls}" title="Bite Check: pauses new WEAK-regime ADX Trend entries if the trailing 7 trading days of those trades have net-lost money. Only evaluated on WEAK-regime scans — shows N/A otherwise.">Bite Check ${bc.state || '—'}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-label" title="Per-template trade count and P&amp;L split, today / trailing 7d / trailing 30d">Fish Finder P&amp;L</span>
+      <span class="health-detail-inline">today: ${funnelStr(f.today)}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-label"></span>
+      <span class="health-detail-inline">7d: ${funnelStr(f['7d'])}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-label"></span>
+      <span class="health-detail-inline">30d: ${funnelStr(f['30d'])}</span>
+    </div>`;
 }
 
 // ── Field Report row (market_context.py — log-only pre-market brief) ────

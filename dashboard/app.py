@@ -888,6 +888,48 @@ def get_system_health():
             except Exception:
                 pass
             out['options'] = opt
+            # Fish Finder (Aug 8 2026 redesign) — gate states + per-template funnel
+            # + P&L split. Gate states read from fishfinder_gate_log (written live by
+            # auto_trader.py) rather than any in-memory cache — dashboard is a
+            # separate process and can't see autotrader's memory. Freshness-gated to
+            # today, same convention as book_greeks/field_report above.
+            ff = {}
+            try:
+                r = c.execute(
+                    """SELECT crowd_gauge_corr, crowd_gauge_state, bite_check_state
+                       FROM fishfinder_gate_log WHERE date=?""", (today,)).fetchone()
+                if r:
+                    ff['crowd_gauge'] = {'corr': round(r[0], 3) if r[0] is not None else None,
+                                         'max': 0.35,
+                                         'state': r[1] or 'NOT YET COMPUTED'}
+                    ff['bite_check'] = {'state': r[2] or 'N/A — not a WEAK-regime scan yet today',
+                                        'window_days': 7}
+                else:
+                    ff['crowd_gauge'] = {'corr': None, 'max': 0.35, 'state': 'NOT YET COMPUTED TODAY'}
+                    ff['bite_check'] = {'state': 'NOT YET COMPUTED TODAY', 'window_days': 7}
+            except Exception:
+                pass
+            try:
+                templates = ('FISHFINDER_ADX_TREND', 'FISHFINDER_KELTNER_REVERT', 'FISHFINDER_RSI_REVERT')
+                funnel = {}
+                for label, since_clause in (('today', "entry_date=?"),
+                                            ('7d', "entry_date>=date('now','-7 day')"),
+                                            ('30d', "entry_date>=date('now','-30 day')")):
+                    params = (today,) if label == 'today' else ()
+                    rows = c.execute(
+                        f"""SELECT setup_type, COUNT(*), ROUND(SUM(pnl),2)
+                            FROM trades WHERE setup_type IN ({','.join('?'*len(templates))})
+                              AND status IN ('WIN','LOSS') AND {since_clause}
+                            GROUP BY setup_type""",
+                        (*templates, *params)).fetchall()
+                    by_t = {t: {'n': 0, 'pnl': 0.0} for t in templates}
+                    for setup_type, n, pnl in rows:
+                        by_t[setup_type] = {'n': n, 'pnl': pnl or 0.0}
+                    funnel[label] = by_t
+                ff['funnel'] = funnel
+            except Exception:
+                pass
+            out['fishfinder'] = ff
             # Field Report (market_context.py) — log-only pre-market brief
             try:
                 r = c.execute(
