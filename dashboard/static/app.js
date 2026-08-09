@@ -63,8 +63,8 @@ function renderAll(d) {
   renderModeBadge(d.mode);
   renderServices(d.services);
   renderRegime(d.regime);
-  renderSessionPnl(d.eq_summary, d.opt_summary, d.fut_summary);
-  renderSummaryCards(d.eq_summary, d.opt_summary, d.fut_summary);
+  renderSessionPnl(d.eq_summary, d.opt_summary, d.fut_ibkr_summary, d.fut_tc_summary);
+  renderSummaryCards(d.eq_summary, d.opt_summary, d.fut_ibkr_summary, d.fut_tc_summary);
   renderPnlChart(d.pnl_by_book);
   renderScorecard(d.scorecard);
   renderEquityTable(d.equity_positions);
@@ -278,7 +278,7 @@ function renderRegime(regime) {
 }
 
 // ── Session P&L bar ────────────────────────────────────────
-function renderSessionPnl(eq, opt, fut) {
+function renderSessionPnl(eq, opt, futIbkr, futTc) {
   const bar = document.getElementById('session-pnl-bar');
   const fmt = (v, label) => {
     if (v === undefined || v === null) return '';
@@ -286,11 +286,11 @@ function renderSessionPnl(eq, opt, fut) {
     const sign = v >= 0 ? '+' : '';
     return `<span class="spnl-item"><span class="spnl-label">${label}</span><span class="${cls}">${sign}$${Math.abs(v).toFixed(0)}</span></span>`;
   };
-  bar.innerHTML = fmt(eq?.pnl, 'EQ') + fmt(opt?.pnl, 'OPT') + fmt(fut?.pnl, 'FUT');
+  bar.innerHTML = fmt(eq?.pnl, 'EQ') + fmt(opt?.pnl, 'OPT') + fmt(futIbkr?.pnl, 'FUT-IBKR') + fmt(futTc?.pnl, 'FUT-TC');
 }
 
 // ── Summary cards ──────────────────────────────────────────
-function renderSummaryCards(eq, opt, fut) {
+function renderSummaryCards(eq, opt, futIbkr, futTc) {
   const pnlClass = v => v > 0 ? 'pnl-pos' : (v < 0 ? 'pnl-neg' : 'pnl-zero');
   const sign = v => v >= 0 ? '+' : '';
   const fmt = v => v != null ? `<span class="${pnlClass(v)}">${sign(v)}$${Math.abs(v).toFixed(2)}</span>` : '<span class="pnl-zero">—</span>';
@@ -306,18 +306,25 @@ function renderSummaryCards(eq, opt, fut) {
   document.getElementById('opt-sub').textContent =
     `${opt?.open ?? 0} open  ·  Θ ${opt?.theta != null ? opt.theta.toFixed(0) : '—'}/day`;
 
-  // Futures
-  document.getElementById('fut-pnl').innerHTML = fmt(fut?.pnl);
-  document.getElementById('fut-sub').textContent =
-    `${fut?.trades ?? 0} closed today` +
-    (fut?.wr != null ? `  ·  ${fut.wr}% WR` : '');
+  // Futures — IBKR and TC kept separate (Aug 9 2026): two real accounts,
+  // different prop rules, each figure already includes its own NY + London leg.
+  document.getElementById('fut-ibkr-pnl').innerHTML = fmt(futIbkr?.pnl);
+  document.getElementById('fut-ibkr-sub').textContent =
+    `${futIbkr?.trades ?? 0} closed today` +
+    (futIbkr?.wr != null ? `  ·  ${futIbkr.wr}% WR` : '');
+
+  document.getElementById('fut-tc-pnl').innerHTML = fmt(futTc?.pnl);
+  document.getElementById('fut-tc-sub').textContent =
+    `${futTc?.trades ?? 0} closed today` +
+    (futTc?.wr != null ? `  ·  ${futTc.wr}% WR` : '');
 }
 
 // ── Daily P&L by system — stacked bars, last 15 sessions ──
 const BOOK_COLORS = {
-  equity:  { fill: 'rgba(63,185,80,0.65)',  border: '#3fb950' },   // green
-  options: { fill: 'rgba(163,113,247,0.65)', border: '#a371f7' },  // purple
-  futures: { fill: 'rgba(79,156,246,0.65)',  border: '#4f9cf6' },  // blue
+  equity:      { fill: 'rgba(63,185,80,0.65)',  border: '#3fb950' },   // green
+  options:     { fill: 'rgba(163,113,247,0.65)', border: '#a371f7' },  // purple
+  futures_ibkr:{ fill: 'rgba(79,156,246,0.65)',  border: '#4f9cf6' },  // blue
+  futures_tc:  { fill: 'rgba(227,179,65,0.65)',  border: '#e3b341' },  // gold
 };
 
 function renderPnlChart(history) {
@@ -325,9 +332,10 @@ function renderPnlChart(history) {
   const labels = history.map(d => d.date ? d.date.slice(5) : '');
   const mk = key => history.map(d => d[key] ?? 0);
   const series = [
-    { label: 'Equity',  key: 'equity'  },
-    { label: 'Options', key: 'options' },
-    { label: 'Futures', key: 'futures' },
+    { label: 'Equity',       key: 'equity'       },
+    { label: 'Options',      key: 'options'      },
+    { label: 'Futures IBKR', key: 'futures_ibkr' },
+    { label: 'Futures TC',   key: 'futures_tc'   },
   ];
 
   if (pnlChart) {
@@ -530,7 +538,7 @@ function renderFuturesTable(positions, session) {
   }
   el.innerHTML = `<table class="positions-table">
     <thead><tr>
-      <th>Symbol</th><th>Contract</th><th>Session</th><th>Side</th>
+      <th>Account</th><th>Symbol</th><th>Contract</th><th>Session</th><th>Side</th>
       <th>Contracts</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th>
       <th>Unreal P&amp;L</th><th>Status</th>
     </tr></thead>
@@ -538,6 +546,7 @@ function renderFuturesTable(positions, session) {
       const pnlCls = (p.unreal_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
       const sign   = (p.unreal_pnl || 0) >= 0 ? '+' : '';
       return `<tr>
+        <td><span class="account-badge ${(p.account_mode||'').toLowerCase()}">${p.account_mode||'—'}</span></td>
         <td><strong>${p.symbol||'—'}</strong></td>
         <td><small>${p.contract_month||'—'}</small></td>
         <td><small>${p.session||'—'}</small></td>
@@ -561,7 +570,10 @@ function renderSectors(sectors) {
   el.innerHTML = sectors.map(s => {
     const wr = s.wr_30d != null ? ` ${(s.wr_30d * 100).toFixed(0)}% WR` : '';
     const n  = s.trade_count ? ` (${s.trade_count}t)` : '';
-    return `<div class="sector-pill ${s.grade||'NEUTRAL'}" title="${s.sector}${wr}${n}">
+    const title = `${s.sector}${wr}${n} — refreshed nightly at 23:00 ET from the trailing `
+                + `30 days of closed trades (min 5 trades/sector), NOT intraday. This grade `
+                + `has been fixed since last night's run regardless of what's happened today.`;
+    return `<div class="sector-pill ${s.grade||'NEUTRAL'}" title="${title}">
       <span class="sname">${s.sector}</span>
       <span class="sgrade">${s.grade||'—'}</span>
     </div>`;

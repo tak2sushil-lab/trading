@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TriVega — Dashboard Glossary</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/png" href="/static/apple-touch-icon.png">
+</head>
+<body>
+
+<header id="app-header" class="header paper-mode">
+  <div class="header-left">
+    <div class="logo">
+      <svg viewBox="0 0 30 48" width="18" height="29" fill="none" style="display:inline-block;vertical-align:middle;margin-right:7px">
+        <line x1="8"  y1="12" x2="8"  y2="18" stroke="#f85149" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="8"  y1="16" x2="8"  y2="30" stroke="#f85149" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="15" y1="2"  x2="15" y2="47" stroke="#4f9cf6" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="22" y1="6"  x2="22" y2="12" stroke="#3fb950" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="22" y1="10" x2="22" y2="30" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="8"  y1="30" x2="22" y2="30" stroke="#4f9cf6" stroke-width="2.5" stroke-linecap="round"/>
+      </svg><span class="logo-name">TriVega</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <a href="/" class="glossary-back">← Back to dashboard</a>
+  </div>
+</header>
+
+<div class="main-content glossary-page">
+
+  <div class="card section glossary-intro">
+    <div class="section-title">HOW TO READ THIS DASHBOARD</div>
+    <p>Every term below appears somewhere on the live dashboard. Each row answers three things:
+    what it is (with an analogy — same ones GLOSSARY.md uses in the codebase), whether it can
+    currently <strong>decide</strong> anything (block a trade, size a trade, close a trade) or
+    only <strong>watches and logs</strong>, and where on the page you'll see it. Most new
+    instrumentation in this system starts as watch-only for weeks before it's ever allowed to
+    decide anything — that's deliberate, not unfinished work.</p>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">THE SIX WORD TYPES</div>
+    <p class="glossary-note">Every term on this page is exactly one of these. Knowing the type tells you what it's allowed to do.</p>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Type</th><th>Analogy</th><th>Can it act on its own?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Gate</strong></td><td>Bouncer at the door</td><td class="decides">Yes — can BLOCK a trade before it happens.</td></tr>
+        <tr><td><strong>Score</strong></td><td>Judge's scorecard</td><td class="watches">No — just a number. A gate reading the score is what acts.</td></tr>
+        <tr><td><strong>Exit rule</strong></td><td>Ejector seat</td><td class="decides">Yes — can CLOSE an open position.</td></tr>
+        <tr><td><strong>Auditor</strong></td><td>Referee reviewing tape</td><td class="watches">No — watches and scores after the fact, changes nothing live.</td></tr>
+        <tr><td><strong>Learner</strong></td><td>Night school</td><td class="decides">Yes — the only auditor-type that DOES change live behavior (adjusts weights/grades nightly).</td></tr>
+        <tr><td><strong>Shadow book</strong></td><td>Flight simulator</td><td class="watches">No — tracked on paper only, places zero real orders.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">TOP BAR &amp; STATUS STRIP</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>What you see</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Service pills</strong></td><td>Vital signs monitor</td>
+          <td>Is each launchd service currently loaded — bridge(s), gateway(s), autotrader,
+          futures traders, watchman, news engine, options trader, bar collectors. A red pill
+          means that process isn't running at all; it does NOT mean it's broken while running
+          (e.g. a stale broker connection inside a "loaded" bridge won't show red here).</td>
+          <td class="watches">Watches only — informational.</td></tr>
+        <tr><td><strong>Regime chip</strong></td><td>Today's forecast</td>
+          <td>Weather Report — today's market regime (NORMAL/STRONG/CAUTIOUS/WEAK/CHOPPY) from the
+          most recent scan. Routes which equity strategies are even eligible to fire.</td>
+          <td class="decides">Decides — gates equity entry eligibility live.</td></tr>
+        <tr><td><strong>Session P&amp;L bar</strong></td><td>Scoreboard</td>
+          <td>Today's realized P&amp;L per book (Equity / Options / Futures·IBKR / Futures·TC).
+          Realized only — doesn't include open unrealized P&amp;L.</td>
+          <td class="watches">Watches only — a readout, not a control.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">SYSTEM HEALTH — BOOKS &amp; FUNNELS</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Term</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Book Health Selector</strong> (Books row)</td><td>Hot-hand rule</td>
+          <td>Each direction (equity LONG/SHORT) trades only while its OWN trailing-10-day A+
+          signal drift is positive. Measures the signal's edge, not our execution. Cold-start
+          defaults ON until 4+ days / 30+ rows exist.</td>
+          <td class="decides">Decides — turns the whole book on/off.</td></tr>
+        <tr><td><strong>Signal funnel</strong> (Signals today / Futures funnel)</td><td>Scout's report</td>
+          <td>How many A+ candidates were seen today, how many became real trades, and which
+          gate rejected the rest. Pure count — doesn't judge whether the rejections were correct
+          (that's the Bouncer Report Card's job, run nightly, not shown live on this page).</td>
+          <td class="watches">Watches only — a readout of what the live gates already decided.</td></tr>
+        <tr><td><strong>Fish Finder</strong></td><td>Try every lure</td>
+          <td>Tests every symbol against all 3 regime templates (ADX Trend / Keltner Revert /
+          RSI Revert) every scan on its own signals, instead of one market-wide regime picking a
+          single template for all 241 symbols. Highest-conviction template per symbol wins.</td>
+          <td class="decides">Decides — this is a live entry module (`setup_type='FISHFINDER_*'`).</td></tr>
+        <tr><td><strong>Crowd Gauge</strong></td><td>Herd detector</td>
+          <td>Blocks an ADX Trend pick when the ~60-symbol universe sample's average pairwise
+          correlation exceeds 0.35 that day — a panic/herd move, not a real idiosyncratic trend.
+          Cached once/day (correlation is a daily-frequency signal).</td>
+          <td class="decides">Decides — a live gate inside Fish Finder.</td></tr>
+        <tr><td><strong>Bite Check</strong></td><td>Circuit breaker for one template</td>
+          <td>Pauses new WEAK-regime ADX Trend entries specifically if the trailing 7 trading
+          days of that exact combination net-lost money. DB-backed, survives restarts.</td>
+          <td class="decides">Decides — a live gate, scoped narrowly to WEAK-regime ADX Trend only.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">SYSTEM HEALTH — AUDITORS (the ones you asked about)</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Term</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Trade Cop</strong></td><td>Referee reviewing tape after the game</td>
+          <td>Nightly (`parity_check.py`, 22:45 ET): replays today's trading day through the
+          backtest engine and diffs its trades against what actually happened live. OK = they
+          agree. DIVERGENCE = the backtest and live code have drifted apart — usually means a
+          live code change wasn't mirrored into the sim, or a real production bug fired.</td>
+          <td class="watches"><strong>Watches only.</strong> It alerts (Telegram + this panel) —
+          nothing in the system reads its verdict to change a trade or fix the divergence
+          automatically. A human has to go read <code>logs/parity.log</code> and act.</td></tr>
+        <tr><td><strong>Mirror Book</strong></td><td>Flight simulator</td>
+          <td>A shadow strategy that fades (trades the opposite of) the Black Box Recorder
+          decoder's LONG signals. Currently profitable on paper (+pts shown here), but it has
+          placed literally zero real orders since it started — the constitution requires 30+
+          consecutive green days before "should this go live" is even discussed.</td>
+          <td class="watches"><strong>Watches only.</strong> Not wired to any live capital or
+          decision. Its P&amp;L here is 100% paper.</td></tr>
+        <tr><td><strong>Crest Watch</strong> <em>(futures)</em></td><td>Referee watching a winning position</td>
+          <td>On any OPEN, PROFITABLE futures position past a 100pt peak, Claude reads the live
+          5m chart and logs CONTINUE or REVERSAL_RISK — built directly from a review of manual
+          exit decisions that were right about reversal days but wrong about trend days.</td>
+          <td class="watches"><strong>Watches only (log mode).</strong> Does not touch the trade.
+          Scored weekly against real outcomes before graduation to an actual exit signal is even
+          considered.</td></tr>
+        <tr><td><strong>Chart Gate / Thesis Check</strong> <em>(equity)</em></td><td>Referee reviewing the entry / reviewing a loser</td>
+          <td>Chart Gate: on every LONG entry, Claude checks whether the 1h trend supports it.
+          Thesis Check: on any open LOSING position, Claude checks whether the original thesis
+          still looks intact. Both log-only, both scored Fridays.</td>
+          <td class="watches"><strong>Watches only (log mode).</strong> Same graduation bar as
+          Crest Watch.</td></tr>
+        <tr><td><strong>Field Report</strong></td><td>Morning briefing</td>
+          <td>Pre-market mechanical trend/levels (SPY/QQQ/MNQ) + one Claude call synthesizing
+          news into a stance (RISK_ON/NEUTRAL/RISK_OFF), 9:15am ET daily.</td>
+          <td class="watches"><strong>Watches only.</strong> No gate reads it. Scored after ~4
+          weeks; individual pieces may graduate to an event stand-down or sizing tilt, one at a
+          time, only if they earn it.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">SECTOR GRADES</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Term</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Sector grade pills</strong></td><td>Report card, issued once a day</td>
+          <td><strong>Refreshed nightly only (23:00 ET, "Equity Night School"), from the trailing
+          30 days of closed trades, minimum 5 trades per sector — NOT real-time or intraday.</strong>
+          Whatever grade you see at 10am is last night's calculation; nothing that happens
+          during today's session changes it until tonight's run. STRONG = +15pts to entry score,
+          WEAK = -20pts, NEUTRAL = no effect.</td>
+          <td class="decides">Decides — feeds equity entry scoring directly, but only updates
+          once per day.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">OPTIONS ROW</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Term</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Options Book Gate</strong></td><td>Mirror of the equity hot-hand rule</td>
+          <td>Options trade only in directions whose equity Book Health is ON. Both books
+          OFF → options intentionally flat.</td>
+          <td class="decides">Decides — gates whether any options trade can fire.</td></tr>
+        <tr><td><strong>Spread Toll Gate</strong></td><td>Toll booth, not a moneyness check</td>
+          <td>Blocks a spread candidate if the total two-leg bid-ask cost exceeds 12% of the
+          spread's width — a real tradability measure, not the old per-leg-vs-mid rule it
+          replaced (which measured moneyness and blocked 37/37 candidates in a row).</td>
+          <td class="decides">Decides — the liquidity gate on every options calculator run.</td></tr>
+        <tr><td><strong>Ghost Ledger</strong></td><td>"What if" scoreboard</td>
+          <td>Scores every options suggestion the system did NOT take — what would it have made
+          if we'd taken it? Filled in nightly.</td>
+          <td class="watches">Watches only — a learning signal, not a live decision.</td></tr>
+        <tr><td><strong>Book Pulse</strong></td><td>Portfolio-level vitals</td>
+          <td>Net delta / daily theta bleed / net vega across all open option legs, plus premium
+          concentration per symbol.</td>
+          <td class="watches">Watches only — informational, on the Options Positions card.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
+    <div class="section-title">FUTURES-SPECIFIC (not all visible on this page yet, but referenced in Telegram/logs)</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Term</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Trend Jury</strong></td><td>5-juror vote</td>
+          <td>5 independent signals vote on whether a trend is real before entry is allowed.</td>
+          <td class="decides">Decides — the primary futures entry gate.</td></tr>
+        <tr><td><strong>Weather-Aware Profit Locks</strong></td><td>Dress for today's weather</td>
+          <td>Break-even and trail distances chosen per regime — CHOPPY/QUIET lock in fast and
+          tight, TRENDING gets real room to run.</td>
+          <td class="decides">Decides — manages every open futures position's stop.</td></tr>
+        <tr><td><strong>Reversal Exit</strong></td><td>Ejector seat, tuned for give-back specifically</td>
+          <td>After a real peak (≥120pts): 2 consecutive adverse closed bars + ≥30% of the peak
+          given back → exit at market, let the entry engine re-enter if the setup still qualifies.</td>
+          <td class="decides">Decides — a live exit rule.</td></tr>
+        <tr><td><strong>Partial Scale-Out</strong></td><td>Bank half, let the rest ride</td>
+          <td>On 2-contract trades: bank 1 contract at +150pts, move the runner's stop to
+          breakeven.</td>
+          <td class="decides">Decides — a live exit rule (now active on TC too since the Aug 9
+          contract-sizing fix).</td></tr>
+        <tr><td><strong>Overnight Bias</strong></td><td>Read the room before opening</td>
+          <td>Classifies where price sits in its overnight range. A clear lean (≥0.85 or ≤0.20)
+          sets the day's allowed trade direction unless you override with FUT BIAS. The
+          "ambiguous zone" whole-day veto was REMOVED Jul 18 — now log-only.</td>
+          <td class="decides">Decides direction eligibility (when a clear lean exists) —
+          <span class="watches">but the old veto path is watch-only now.</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+</body>
+</html>

@@ -31,6 +31,15 @@ SERVICES = [
     ('options',      'com.sushil.trading.options_trader'),
     ('collect_bars', 'com.sushil.trading.collect_bars'),
     ('graphify',     'com.sushil.trading.graphify_watch'),
+    # Aug 9 2026: futures services were missing entirely from this row — a
+    # stopped futures_personal or futures_trader (TC) would have shown zero
+    # indication here, despite this session's entire focus being TC readiness.
+    ('gateway',      'com.sushil.trading.gateway'),          # IBKR TWS/Gateway (equity+options bridge depends on this)
+    ('futures_ibkr', 'com.sushil.trading.futures_personal'), # futures_trader.py — IBKR NY + London
+    ('tc_gateway',   'com.sushil.trading.tc_gateway'),        # TC's IB Gateway process (DUQ640500 stand-in, for now)
+    ('tc_bridge',    'com.sushil.trading.tc_bridge'),         # TC's port-8002 bridge (bridge.py/DUQ640500 until re-hooked to bridge_projectx.py)
+    ('futures_tc',   'com.sushil.trading.futures_trader'),   # tc_trader.py — TC NY + London
+    ('futures_bars', 'com.sushil.trading.futures_collect_bars'),
 ]
 
 # 2026 key macro dates — update annually
@@ -106,6 +115,24 @@ def _db():
     conn = sqlite3.connect(TRADES_DB)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _ensure_london_account_mode_column():
+    """Aug 9 2026: the dashboard now queries london_trades.account_mode (IBKR/TC
+    split). That column is added by futures/london_trader.py's init_db() on the
+    trader's next restart — but the dashboard is a separate process that may run
+    before that restart happens. Idempotent ALTER, same pattern as database.py,
+    so the dashboard doesn't 500 on a stale schema regardless of restart order."""
+    try:
+        conn = sqlite3.connect(TRADES_DB)
+        conn.execute("ALTER TABLE london_trades ADD COLUMN account_mode TEXT DEFAULT 'IBKR'")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # column already exists, or table doesn't exist yet
+
+
+_ensure_london_account_mode_column()
 
 
 # ── Bridge helpers ─────────────────────────────────────────────────────
@@ -410,16 +437,21 @@ def get_futures_positions():
             'setup_type':     row['setup_type'],
             'unreal_pnl':     unreal_pnl,
             'session':        session,
+            'account_mode':   row['account_mode'],
             'status':         'OK',
         })
     return result, session
 
 
 def get_today_summary():
+    """Aug 9 2026: futures split into fut_ibkr / fut_tc — two real, separate
+    accounts with different prop rules (DLL/MLL/consistency), each combining
+    its own NY + London P&L. Previously blended IBKR+TC together silently."""
     today = datetime.now(tz=ET).strftime('%Y-%m-%d')
-    eq  = {'pnl': 0, 'trades': 0, 'wins': 0, 'open': 0, 'wr': None}
-    opt = {'pnl': 0, 'trades': 0, 'open': 0, 'theta': 0, 'delta': 0}
-    fut = {'pnl': 0, 'trades': 0, 'wins': 0, 'wr': None}
+    eq      = {'pnl': 0, 'trades': 0, 'wins': 0, 'open': 0, 'wr': None}
+    opt     = {'pnl': 0, 'trades': 0, 'open': 0, 'theta': 0, 'delta': 0}
+    fut_ibkr = {'pnl': 0, 'trades': 0, 'wins': 0, 'wr': None}
+    fut_tc   = {'pnl': 0, 'trades': 0, 'wins': 0, 'wr': None}
 
     try:
         with _db() as c:
@@ -451,22 +483,25 @@ def get_today_summary():
             opt['pnl']    = round(sum(r['pnl'] or 0 for r in opt_closed), 2)
             opt['trades'] = len(opt_closed)
 
-            fut_rows = c.execute(
-                "SELECT pnl FROM futures_trades WHERE exit_date=? AND setup_type != 'RECONCILED'",
-                (today,)
-            ).fetchall()
-            lon_rows = c.execute(
-                "SELECT pnl FROM london_trades WHERE exit_date=?", (today,)
-            ).fetchall()
-            all_fut = list(fut_rows) + list(lon_rows)
-            fut['pnl']    = round(sum(r['pnl'] or 0 for r in all_fut), 2)
-            fut['trades'] = len(all_fut)
-            fut['wins']   = sum(1 for r in all_fut if (r['pnl'] or 0) > 0)
-            fut['wr']     = round(fut['wins'] / fut['trades'] * 100, 1) if fut['trades'] else None
+            for mode, bucket in (('IBKR', fut_ibkr), ('TC', fut_tc)):
+                ny_rows = c.execute(
+                    "SELECT pnl FROM futures_trades WHERE exit_date=? "
+                    "AND setup_type != 'RECONCILED' AND account_mode=?",
+                    (today, mode)
+                ).fetchall()
+                lon_rows = c.execute(
+                    "SELECT pnl FROM london_trades WHERE exit_date=? AND account_mode=?",
+                    (today, mode)
+                ).fetchall()
+                all_fut = list(ny_rows) + list(lon_rows)
+                bucket['pnl']    = round(sum(r['pnl'] or 0 for r in all_fut), 2)
+                bucket['trades'] = len(all_fut)
+                bucket['wins']   = sum(1 for r in all_fut if (r['pnl'] or 0) > 0)
+                bucket['wr']     = round(bucket['wins'] / bucket['trades'] * 100, 1) if bucket['trades'] else None
     except Exception:
         pass
 
-    return eq, opt, fut
+    return eq, opt, fut_ibkr, fut_tc
 
 
 def get_pnl_by_book(sessions=15):
@@ -491,46 +526,63 @@ def get_pnl_by_book(sessions=15):
                 "SELECT exit_date, SUM(exit_value - premium_paid) FROM options_trades "
                 "WHERE exit_date>=? AND exit_value IS NOT NULL GROUP BY exit_date",
                 (cutoff,)).fetchall(), 'options')
+            # Aug 9 2026: 'futures' split into futures_ibkr / futures_tc — each
+            # combines its own account's NY + London leg. Previously London had
+            # no account_mode filter and silently blended into the IBKR-only bar.
             add(c.execute(
                 "SELECT exit_date, SUM(pnl) FROM futures_trades "
                 "WHERE exit_date>=? AND setup_type!='RECONCILED' AND account_mode='IBKR' "
                 "GROUP BY exit_date",
-                (cutoff,)).fetchall(), 'futures')
+                (cutoff,)).fetchall(), 'futures_ibkr')
             add(c.execute(
                 "SELECT exit_date, SUM(pnl) FROM london_trades "
-                "WHERE exit_date>=? GROUP BY exit_date",
-                (cutoff,)).fetchall(), 'futures')
+                "WHERE exit_date>=? AND account_mode='IBKR' GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'futures_ibkr')
+            add(c.execute(
+                "SELECT exit_date, SUM(pnl) FROM futures_trades "
+                "WHERE exit_date>=? AND setup_type!='RECONCILED' AND account_mode='TC' "
+                "GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'futures_tc')
+            add(c.execute(
+                "SELECT exit_date, SUM(pnl) FROM london_trades "
+                "WHERE exit_date>=? AND account_mode='TC' GROUP BY exit_date",
+                (cutoff,)).fetchall(), 'futures_tc')
     except Exception:
         return []
 
     dates = sorted(daily.keys())[-sessions:]
     return [{
-        'date':    d,
-        'equity':  daily[d].get('equity'),
-        'options': daily[d].get('options'),
-        'futures': daily[d].get('futures'),
-        'total':   round(sum(v for v in daily[d].values() if v is not None), 2),
+        'date':         d,
+        'equity':       daily[d].get('equity'),
+        'options':      daily[d].get('options'),
+        'futures_ibkr': daily[d].get('futures_ibkr'),
+        'futures_tc':   daily[d].get('futures_tc'),
+        'total':        round(sum(v for v in daily[d].values() if v is not None), 2),
     } for d in dates]
 
 
 def get_scorecard(since_date=None, days=21):
     """Per-book aggregates over the chart window: trades, WR, P&L, avg,
-    best/worst day. Futures NY and London reported separately — they are
-    different strategies with different sessions."""
+    best/worst day. Futures NY and London reported separately (different
+    strategies, different sessions) AND by account (Aug 9 2026 — IBKR and TC
+    are two real, separate accounts with different prop rules; London now
+    trades on both, so it needs the same account split NY already had)."""
     cutoff = since_date or (datetime.now(tz=ET) - timedelta(days=days)).strftime('%Y-%m-%d')
     books = [
-        ('Equity',     "SELECT exit_date, pnl FROM trades "
-                       "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL"),
-        ('Options',    "SELECT exit_date, exit_value - premium_paid FROM options_trades "
-                       "WHERE exit_date>=? AND exit_value IS NOT NULL"),
-        ('Futures NY', "SELECT exit_date, pnl FROM futures_trades "
-                       "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
-                       "AND account_mode='IBKR'"),
-        ('London',     "SELECT exit_date, pnl FROM london_trades "
-                       "WHERE exit_date>=? AND pnl IS NOT NULL"),
-        ('TC eval',    "SELECT exit_date, pnl FROM futures_trades "
-                       "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
-                       "AND account_mode='TC'"),
+        ('Equity',        "SELECT exit_date, pnl FROM trades "
+                          "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL"),
+        ('Options',       "SELECT exit_date, exit_value - premium_paid FROM options_trades "
+                          "WHERE exit_date>=? AND exit_value IS NOT NULL"),
+        ('IBKR NY',       "SELECT exit_date, pnl FROM futures_trades "
+                          "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
+                          "AND account_mode='IBKR'"),
+        ('IBKR London',   "SELECT exit_date, pnl FROM london_trades "
+                          "WHERE exit_date>=? AND pnl IS NOT NULL AND account_mode='IBKR'"),
+        ('TC NY',         "SELECT exit_date, pnl FROM futures_trades "
+                          "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
+                          "AND account_mode='TC'"),
+        ('TC London',     "SELECT exit_date, pnl FROM london_trades "
+                          "WHERE exit_date>=? AND pnl IS NOT NULL AND account_mode='TC'"),
     ]
     out = []
     try:
@@ -993,6 +1045,15 @@ def logo_preview():
     return render_template('logo_preview.html')
 
 
+@app.route('/glossary')
+def glossary():
+    """Aug 9 2026 — user kept re-asking what Trade Cop/Mirror Book/sector-grade
+    refresh cadence/etc actually mean. Rather than re-explain each time, a
+    standing reference page sourced from the same terms GLOSSARY.md already
+    documents, reorganized by where they appear on the dashboard."""
+    return render_template('glossary.html')
+
+
 @app.route('/api/data')
 def api_data():
     bridge     = get_bridge_info()
@@ -1001,7 +1062,7 @@ def api_data():
     eq_pos     = get_equity_positions()
     opt_pos    = get_options_positions()
     fut_pos, session = get_futures_positions()
-    eq_sum, opt_sum, fut_sum = get_today_summary()
+    eq_sum, opt_sum, fut_ibkr_sum, fut_tc_sum = get_today_summary()
     pnl_books  = get_pnl_by_book(15)
     scorecard  = get_scorecard(since_date=pnl_books[0]['date'] if pnl_books else None)
     alerts     = get_alerts(eq_pos, opt_pos)
@@ -1028,7 +1089,8 @@ def api_data():
         'futures_positions': fut_pos,
         'eq_summary':   eq_sum,
         'opt_summary':  opt_sum,
-        'fut_summary':  fut_sum,
+        'fut_ibkr_summary': fut_ibkr_sum,
+        'fut_tc_summary':   fut_tc_sum,
         'pnl_by_book':  pnl_books,
         'scorecard':    scorecard,
         'alerts':       alerts,

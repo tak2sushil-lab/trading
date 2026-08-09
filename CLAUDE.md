@@ -1733,6 +1733,172 @@ scored weekly. #2 stays backtested-only, queued for after Sep 8.
 
 ---
 
+## Aug 9 2026 — TC prop-rules review + contract-sizing fix + London wired to TC + Crest Watch (futures LLM observer)
+
+**⚠️ NONE OF THIS IS LIVE YET — code changes only, no service restarted.** User is
+preparing to wire TS (TopStepX) to the platform and start a real $50K Combine evaluation
+next week; asked for a full review of TC vs IBKR parity plus prep work. Real TopStep $50K
+plan numbers confirmed via a screenshot of TopStep's own pricing page (not guessed):
+profit target $3,000, consistency 50%, Max Loss Limit (trailing) $2,000, Daily Loss Limit
+$1,000, contract limit 5 mini / 50 micro. Every number in `prop_rules.py` already matched
+except contract sizing, which had been hardcoded to 1 contract since account-open and
+never revisited.
+
+**① IBKR/TC code-parity audit (diffed function-by-function, not assumed from docs):**
+genuinely in sync as of commit `38803b0` (Jul 26) — Reversal Exit, Partial Scale-Out,
+regime-aware exit locks, PM_SHORT disable, Trend Jury/RVOL graduated floor, F1 fix, and
+the rebuilt `get_regime` all identical or intentionally mirrored. Two real gaps found and
+fixed:
+- `compute_overnight_bias()` (automated overnight-position classifier) existed only in
+  `futures_trader.py`. Ported to `tc_trader.py` verbatim (globals, `_OVN_*` thresholds,
+  the log-only `OVN_SKIP` gate, daily reset, `FUT BIAS` override reset). Not purely
+  cosmetic — `_daily_macro_bias` (auto-set LONG/SHORT when overnight position ≥0.85 or
+  ≤0.20) is a real directional gate in `grade_entry()`, TC was silently missing it.
+- TC's contract sizing was hardcoded to 1 via **two** stale mechanisms:
+  `prop_rules.get_max_contracts()`'s TC branch (`min(base_contracts, 1)`) and TC's own
+  `MAX_RISK_PER_TRADE=$100` (comment still said "50-tick stop" — the real stop is
+  200pts/800 ticks since Jul 8). **Fixed:** new `TC_TRADING_MAX_CONTRACTS = 2`
+  (prop_rules.py) — mirrors `IBKR_MAX_CONTRACTS`, chosen because a single worst-case
+  2-contract stop-out ($800) sits inside the $2,000 MLL and roughly at (not past) the
+  $700 soft DLL; user confirmed this cap over a larger one. Ported `calc_contracts_dynamic`
+  (RVOL/IB-range tiered sizing, + `had_loss_today`/`load_avg_volumes`/`calc_rvol_current`)
+  from `futures_trader.py` into `tc_trader.py` verbatim, wired into `place_trade()`
+  replacing the flat `calc_contracts()` (kept as dead code, same precedent as IBKR's own
+  unused `MAX_RISK_PER_TRADE`). This also auto-activates Partial Scale-Out on TC, which
+  was already fully wired but dormant at 1-contract sizing. `TC_MAX_CONTRACTS=50` (the
+  real platform ceiling) was already sitting in `prop_rules.py` but never wired to
+  anything — now documented as a disaster ceiling, not a trading size; kept unused on
+  purpose.
+
+**② London wired to TC — new architecture requirement, not a flag flip.** Investigated
+before touching anything: `london_trades` had no `account_mode` column (one IBKR instance
+only, ever), and `london_trader.py` never called `prop_rules.check_can_trade()` /
+`record_trade_pnl()` at all — a London loss was invisible to prop_rules' DLL/MLL tracking
+on **both** accounts. Low-cost gap for IBKR (soft/internal limits only); would have been a
+real compliance risk for TC (TopStep enforces the $1,000 DLL / $2,000 MLL account-wide,
+regardless of which session caused the loss). User confirmed: build this properly before
+the eval, not as a fast-follow. Shipped:
+- `london_trades` gets an idempotent `account_mode TEXT DEFAULT 'IBKR'` column (verified
+  the backfill against a real trades.db copy — all 55 existing rows correctly tagged
+  'IBKR', zero data loss).
+- `london_trader.py` now imports `ACCOUNT_MODE`/`check_can_trade`/`record_trade_pnl` from
+  `prop_rules`; every DB write tags `account_mode`, `get_london_daily_pnl()` filters by it
+  (previously would have blended IBKR+TC P&L once TC started writing — this fed a real
+  DLL gate, not just reporting). `place_london_trade()` now calls `check_can_trade()`
+  before submitting (approximates `unrealized_pnl=0` — doesn't see the NY session's own
+  open unrealized; the $300 `SOFT_STOP_BUFFER` absorbs that imprecision). `_log_exit()`
+  now calls `record_trade_pnl()` on every close — this is the load-bearing fix, it's what
+  makes DLL/MLL genuinely shared between NY and London on the same account.
+- **London's own strategy logic, champion params, and position-sizing formula were NOT
+  touched** — deliberately, per the standing no-mid-run-tinkering rule. `MAX_CONTRACTS=2`
+  in `london_trader.py` already happened to match the new TC cap, so no sizing-math
+  changes were needed to make it TC-safe.
+- `tc_trader.py` gets the same `LONDON_ENABLED = True` + scheduler-job pattern as
+  `futures_trader.py` (IB 3-4am, entries 4-8am ET, 15s monitor). `london_trader.py`
+  resolves its own `BRIDGE`/`ACCOUNT_MODE` from whichever process's env it's threaded
+  into (`FUTURES_BRIDGE_URL`/`FUTURES_ACCOUNT_MODE`), same pattern as everything else in
+  this file.
+- **Known gap, not fixed this session:** `parity_check.py`, `expectancy_ledger.py`, and
+  `dashboard/app.py`'s London queries are not yet `account_mode`-filtered — once TC starts
+  writing rows, those reports will blend IBKR+TC numbers. Reporting-only, not a live-
+  trading-correctness risk (unlike the two fixes above) — flagged, not urgent, fix before
+  trusting those specific reports once TC London has real trades.
+
+**③ Crest Watch — new LLM in-trade observer, LOG MODE only.** See `futures/thesis_check.py`
++ GLOSSARY.md. Built from a real 2-week review of IBKR manual `FUT CLOSE` decisions
+(Jul 26–Aug 9): 7 distinct manual-close events, 4 premature (Aug 3, Aug 4 — genuine trend
+days, 128-322pt of further favorable move left on the table with near-zero pullback), 3
+correct (Aug 4 last one, both Aug 6 — a genuine reversal day, 58-219pt of give-back
+avoided). Net: the misses cost more than the catches saved. Reframed the ask from
+"exit timing" to "trend-vs-reversal classification for the day" — the same problem
+flagged unsolved twice before (Jul 7/8: RVOL, ADX, IB-range, VWAP-cross-count all tried,
+all failed). On any OPEN, PROFITABLE position past a 100pt peak (matches Reversal Exit's
+own `REV_EXIT_PEAK_MIN_PTS` floor so the two are judged on the same population), checked
+at most every 15min/trade, Claude vision reads the 5m chart and logs CONTINUE or
+REVERSAL_RISK to a new `futures_thesis_check` table. Does not touch the trade. Shared
+module (`futures/thesis_check.py`), used by both traders, account-isolated. Weekly review
+Fridays 4:40pm cross-refs verdicts against real exit prices. Same instrument-first
+doctrine as equity's Thesis Check/Chart Gate — graduation to an actual gate only after
+real data shows it beats what Reversal Exit's fixed thresholds already do.
+
+**Before the eval starts:** restart `futures_personal` (IBKR — picks up Crest Watch) and
+`futures_trader` (TC — picks up all of the above) via `launchctl kickstart -k`, verify
+clean startup in logs (no import errors — `futures/thesis_check.py` pulls in `anthropic`
++ `mplfinance`, both already used by equity so should be present in venv, but confirm),
+confirm the `🇬🇧 London session ENABLED (TC)` Telegram message arrives, and watch the
+first TC scan for the new `calc_contracts_dynamic` sizing (contracts should show up to 2,
+not stuck at 1) and the overnight-bias log line before trusting any of this live. This
+touches a real account with a real evaluation fee — do not skip the smoke-test day.
+
+**Dashboard split IBKR/TC (same session, follow-up ask).** `get_today_summary()`,
+`get_pnl_by_book()`, and `get_scorecard()` in `dashboard/app.py` all previously blended
+IBKR and TC together in at least one place (today-summary blended both NY sessions
+outright; the 15-day chart's London leg had no account filter; the scorecard's 'London'
+row blended both). All three now report IBKR and TC separately, each figure combining
+that account's own NY + London leg — matches the summary cards (now 4: Equity/Options/
+Futures·IBKR/Futures·TC), the 15-day stacked chart (`futures_ibkr`/`futures_tc` series),
+and the scorecard (`IBKR NY`/`IBKR London`/`TC NY`/`TC London`, 4 rows instead of 3).
+Open-positions table gets an Account column. Corrected a misconception while explaining
+this: IBKR and TC are **not** "true copies except DLL/MLL" — Elephant Trade is IBKR-only
+by design (never ran on TC), `MAX_DAILY_TRADES` is 5 (IBKR) vs 2 (TC, TopStep's
+consistency rule), and the prop-rule *shape* differs beyond the raw numbers (TC has a
+real trailing MLL + hard DLL + profit target + consistency check; IBKR has none of
+those, just soft internal limits). Entry/exit trading logic itself is genuinely
+identical. Dashboard restarted + verified (HTTP 302 to login, clean startup). The
+`account_mode` column added to `london_trades` this session is now live on the real
+`trades.db` (dashboard's own idempotent-ALTER safety net ran it independently of the
+trader restarts, so the dashboard doesn't depend on restart order) — confirmed via
+direct query: all 55 pre-existing rows correctly backfilled `'IBKR'`, zero data loss.
+**Known gap still open:** `parity_check.py` and `expectancy_ledger.py`'s London queries
+are still unfiltered by `account_mode` — same flagged item as above, not dashboard-facing
+so lower priority, fix before trusting those specific reports once TC London has trades.
+
+**`futures/bridge_projectx.py` built (same session) — TopStepX/ProjectX Gateway bridge,
+NOT wired in.** User confirmed TC has been running against a second **IBKR** paper
+account (DUQ640500, port 8002, via ordinary `bridge.py`) as a stand-in this whole time —
+no real TopStep connection has ever existed. Prior research (closed before choosing
+TopStep) had already identified the real path: `tc_trader.py`'s own header comment named
+`bridge_projectx.py ←→ TopStepX / ProjectX API [to build]`. Built it now per user's
+explicit ask ("build it, leave it dormant, re-hook once registered") — implements the
+exact same REST contract `tc_trader.py`/`london_trader.py` already call (`/futures/order`,
+`/futures/position`, `/futures/quote/{symbol}`, `/futures/cancel/{id}`,
+`/order/{id}/status`, `/history/futures/{symbol}`), translating to real ProjectX Gateway
+calls — endpoint schemas fetched directly from https://gateway.docs.projectx.com/
+(Auth/loginKey, Order/place, Order/cancel, Position/searchOpen, History/retrieveBars all
+confirmed with full schemas; Contract/available and order-status inference are marked
+UNVERIFIED in the file's own docstrings — confirm against the real Swagger UI once
+credentials exist, don't trust blindly). Reads `TOPSTEP_API_KEY`/`TOPSTEP_USERNAME`/
+`TOPSTEP_ACCOUNT_ID` from `.env-tc` — none of which exist there yet, so the service starts
+cleanly but reports `connected: false` until real credentials are added (verified: ran it
+standalone on port 8099, confirmed `GET /` and `/connected` both respond correctly in the
+"not configured" state). **`launch_futures_trader.sh`/`.env-tc` were NOT touched** — TC
+still points at the DUQ640500/bridge.py stand-in on port 8002; nothing about current live
+paper testing changed. Real-time quotes are a known gap (ProjectX's live feed is a SignalR
+WebSocket hub, not REST — `/futures/quote` currently proxies off the most recent historical
+bar instead, which is a materially worse quote than today's yfinance/IBKR path; fine for a
+dormant scaffold, build the real SignalR client before relying on it for live entries).
+**To go live:** add real credentials to `.env-tc`, smoke-test this file standalone first
+(confirm real account balance/positions read correctly), THEN re-point
+`launch_futures_trader.sh` at it and re-restart — do not skip the standalone smoke test.
+
+**Dashboard glossary page + service-row gap (same session).** User asked several "what does
+X mean / does it decide anything" dashboard questions and flagged re-asking them repeatedly.
+Two fixes: (1) new `/glossary` page (`dashboard/templates/glossary.html`, linked from the
+header) — reorganizes GLOSSARY.md's terms by where they appear on the dashboard, with the
+same analogy style, and an explicit "decides vs watches" column answering the recurring
+"does this auto-correct anything" question for Trade Cop (no — alerts only, human has to
+act), Mirror Book (no — 100% paper, zero live orders), Crest Watch/Chart Gate/Thesis Check
+(no — log-only). (2) Sector grades tooltip + section subtitle now state the real refresh
+cadence explicitly (nightly 23:00 ET from trailing 30 days, NOT intraday) — this was already
+true (`nightly_learning()`, unchanged), just not visible on the page itself before. (3) Found
+a real gap while auditing the top-left service-health row: `futures_personal` and
+`futures_trader` (TC) — the two services this entire session was about — weren't in the
+health-check list at all, alongside their gateways/bridges (`gateway`, `tc_gateway`,
+`tc_bridge`, `futures_collect_bars`). Added all 6. Dashboard restarted + verified (`/` and
+`/glossary` both 302-to-login as expected, service dict confirmed 13 entries).
+
+---
+
 ## Key Constants (auto_trader.py — do not change mid-run)
 
 | Constant | Value |

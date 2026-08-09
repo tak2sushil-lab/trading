@@ -163,7 +163,7 @@ html, body {
 .main-content { padding: 16px 20px; max-width: 1600px; margin: 0 auto; }
 
 /* ── SUMMARY CARDS ───────────────────────────────────────── */
-.summary-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.summary-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
 
@@ -262,6 +262,13 @@ html, body {
 
 .side-long  { color: var(--green-bright); font-weight: 600; }
 .side-short { color: var(--red-bright); font-weight: 600; }
+
+.account-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px;
+  border-radius: 3px; letter-spacing: 0.3px;
+}
+.account-badge.ibkr { color: var(--blue-bright); background: rgba(56,139,253,0.1); }
+.account-badge.tc   { color: #e3b341; background: rgba(163,113,32,0.12); }
 
 /* ── TWO-COLUMN LAYOUT ────────────────────────────────────── */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
@@ -432,3 +439,18 @@ html, body {
              font-size: 11px; color: #c9d1d9; background: rgba(255,255,255,0.06);
              border: 1px solid rgba(255,255,255,0.08); }
 .scorecard-table td, .scorecard-table th { white-space: nowrap; }
+
+/* ── Glossary page (Aug 9 2026) ──────────────────────────── */
+.glossary-back { color: var(--muted); text-decoration: none; font-size: 12px; }
+.glossary-back:hover { color: var(--text); }
+.glossary-page { max-width: 1100px; }
+.glossary-intro p, .glossary-note { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+.glossary-intro strong { color: var(--text); }
+.glossary-table { margin-top: 8px; }
+.glossary-table th { text-align: left; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; padding-bottom: 6px; }
+.glossary-table td { vertical-align: top; padding: 8px 10px 8px 0; font-size: 12px; line-height: 1.55; border-top: 1px solid var(--border); }
+.glossary-table tr:first-child td { border-top: none; }
+.glossary-table code { background: var(--border2); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.glossary-table .decides { color: var(--green-bright); }
+.glossary-table .watches { color: var(--muted); }
+.glossary-note-inline { font-size: 9px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; }

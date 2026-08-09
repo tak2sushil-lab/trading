@@ -41,6 +41,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from futures.gate_audit import log_block, log_enter
+from prop_rules import ACCOUNT_MODE, check_can_trade, record_trade_pnl
 
 # ── Instrument constants (MNQ) ────────────────────────────────────────────────
 
@@ -407,6 +408,14 @@ def init_db():
             stop_order_id TEXT
         )
     ''')
+    # account_mode isolation (Aug 9 2026) — added so a second London instance
+    # (TC) can share this table with IBKR's without blending P&L/positions.
+    # DEFAULT 'IBKR' backfills every pre-existing row correctly (this table
+    # only ever had one IBKR instance writing to it before today).
+    try:
+        conn.execute("ALTER TABLE london_trades ADD COLUMN account_mode TEXT DEFAULT 'IBKR'")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -419,14 +428,14 @@ def _log_entry(side: str, entry: float, sl: float, target: float,
     cur = conn.execute('''
         INSERT INTO london_trades
           (entry_date, entry_time, side, setup, entry, sl_init, sl_current,
-           target, contracts, ib_range, ib_close_pos, atr, ovn_pos, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')
+           target, contracts, ib_range, ib_close_pos, atr, ovn_pos, status, account_mode)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?)
     ''', (
         str(now_et.date()), now_et.strftime('%H:%M'),
         side, f'LON_{side[0]}_IB',
         entry, sl, sl, target, contracts,
         round(ib_range, 2), round(_ib_close_pos, 3),
-        round(atr, 2), round(_ovn_pos, 3),
+        round(atr, 2), round(_ovn_pos, 3), ACCOUNT_MODE,
     ))
     trade_id = cur.lastrowid
     conn.commit()
@@ -444,6 +453,16 @@ def _log_exit(trade_id: int, exit_price: float, reason: str, pnl: float):
     ''', (str(now_et.date()), now_et.strftime('%H:%M'), exit_price, round(pnl, 2), reason, trade_id))
     conn.commit()
     conn.close()
+    # Aug 9 2026: feed the shared prop_rules state (same DLL/MLL pool the NY
+    # session reads via check_can_trade()) — previously London's P&L was
+    # invisible to prop_rules entirely, on both accounts. For IBKR this only
+    # makes the existing soft DLL/cap London-aware (no hard external rule to
+    # violate). For TC this is load-bearing: TopStep enforces the real $1,000
+    # DLL / $2,000 MLL account-wide, regardless of which session caused it.
+    try:
+        record_trade_pnl(round(pnl, 2))   # pnl is already net of commission (see _pnl_usd)
+    except Exception as e:
+        log(f'record_trade_pnl failed: {e}')
 
 
 def _update_db_stop(trade_id: int, new_sl: float, stop_order_id: str = ''):
@@ -460,8 +479,8 @@ def get_london_daily_pnl() -> float:
     today = str(datetime.now(ET).date())
     conn  = sqlite3.connect(DB_PATH)
     row   = conn.execute(
-        "SELECT SUM(pnl) FROM london_trades WHERE exit_date=? AND status='CLOSED'",
-        (today,)
+        "SELECT SUM(pnl) FROM london_trades WHERE exit_date=? AND status='CLOSED' AND account_mode=?",
+        (today, ACCOUNT_MODE)
     ).fetchone()
     conn.close()
     return round(float(row[0] or 0), 2)
@@ -533,6 +552,17 @@ def place_london_trade(side: str, signal_price: float) -> bool:
     daily_pnl = get_london_daily_pnl()
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f'  BLOCKED: DLL hit (${daily_pnl:.0f})')
+        return False
+
+    # Shared account-level gate (Aug 9 2026) — same prop_rules.check_can_trade()
+    # the NY session uses, so a London loss counts against the SAME daily DLL /
+    # trailing MLL the account actually has (TopStep enforces this account-wide
+    # on TC, not per-session). Approximates unrealized_pnl=0 since London doesn't
+    # track the NY session's own open positions — the $300 soft-stop buffer in
+    # prop_rules absorbs that imprecision.
+    _allowed, _reason = check_can_trade(unrealized_pnl=0.0)
+    if not _allowed:
+        log(f'  BLOCKED by prop_rules: {_reason}')
         return False
 
     if not get_bridge_connected():

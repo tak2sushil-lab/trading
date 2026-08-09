@@ -53,6 +53,7 @@ from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: 
 from futures.hero_score import (  # noqa: E402  — Trend Jury (Jul 25 2026 alignment)
     score_entry_regime, contracts_from_regime_score, detect_regime, is_gold_score,
 )
+from futures import thesis_check as _thesis_check  # noqa: E402  — LLM in-trade observer (Aug 9 2026)
 
 # ── Risk constants ────────────────────────────────────────
 MAX_RISK_PER_TRADE   = 100.0   # $ max risk per trade (1 contract × 50-tick stop)
@@ -117,6 +118,13 @@ HARD_CLOSE      = (16, 0)   # 4:00pm ET = 3:00pm CT — force close (10 min befo
 SCAN_INTERVAL   = 60        # seconds between scans (1 min, faster than equity)
 MONITOR_INTERVAL = 15       # seconds between position checks
 
+LONDON_ENABLED = True   # wired Aug 9 2026 — see main() for scheduler jobs.
+                         # london_trader.py resolves BRIDGE/ACCOUNT_MODE from
+                         # this process's own env (FUTURES_BRIDGE_URL=8002,
+                         # FUTURES_ACCOUNT_MODE=TC) — same module, isolated by
+                         # account_mode-tagged rows in the shared london_trades
+                         # table. Plug/unplug: flip this + restart service.
+
 # ── Global state ──────────────────────────────────────────
 _active_contract_month = ''   # resolved daily; keeps get_bars() on same contract as live quote
 _last_regime          = 'NORMAL'
@@ -127,6 +135,7 @@ _session_low          = {}   # trade_id → session low
 _price_history        = {}   # trade_id → [prices]
 _partial_done         = {}   # trade_id → locked_pnl
 _rev_state            = {}   # trade_id → {'last_ts', 'adv_streak', 'prev_close'} (reversal exit)
+_avg_vol_by_time: dict = {}  # ported from futures_trader.py Aug 9 2026 — RVOL denominator for calc_contracts_dynamic
 _streak_regime        = None # F1: regime of the current consecutive-bar streak
 _streak_bar_ts        = None # F1: last completed 5-min bar that advanced the streak
 _day_regime           = None # 'TRENDING' | 'CHOPPY' | 'QUIET' — set at 10:30 IB formation
@@ -140,6 +149,10 @@ _pm_low               = None # pre-market IB low
 _pm_ib_set            = False
 _pm_ib_set_time       = None  # datetime when pm_ib was first captured this session
 _daily_macro_bias     = 'BOTH'  # 'LONG' | 'SHORT' | 'BOTH' — set via Telegram or Groq
+_overnight_bias       = 'BOTH'  # from overnight_position classifier (aligned with futures_trader.py Aug 9 2026)
+_overnight_skip_day   = False   # True if overnight_position in bad zone [0.20, 0.40)
+_overnight_position   = None    # float — 0=opened at overnight low, 1=overnight high
+_overnight_computed   = False   # True after first RTH-bar computation this session
 _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
@@ -149,6 +162,7 @@ _scheduler            = None
 _cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by run_monitor()
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, '..', 'trades.db')
+MKT_DB_PATH = os.path.join(_DIR, '..', 'market_data.db')
 
 # CME holiday calendar — NOT the same as NYSE. CME stays open on Juneteenth,
 # MLK Day, and Presidents Day.
@@ -377,6 +391,132 @@ def update_premarket_ib():
                 )
     except Exception as e:
         log(f"update_premarket_ib error: {e}")
+
+
+# ── Overnight position classifier (ported from futures_trader.py Aug 9 2026) ──
+# Thresholds match tc_champion v3.2 (data-validated, WFA 8/9 windows):
+#   [0.20, 0.40) = bad zone → skip day (18–36% WR, -$3,679 in 5yr backtest)
+#   >= 0.85      = TRENDING_UP  → LONG bias
+#   <= 0.20      = TRENDING_DOWN → SHORT bias
+# Whole-day veto REMOVED Jul 18 2026 (aligned with futures_trader.py) — the skip
+# zone is now log-only (OVN_SKIP gate_blocks row), it no longer blocks entries.
+# _daily_macro_bias auto-set from a clear overnight lean (>=0.85 / <=0.20) still
+# stands — that's a real directional gate, not the removed veto.
+
+_OVN_SKIP_LO  = 0.20
+_OVN_SKIP_HI  = 0.40
+_OVN_TREND_HI = 0.85
+_OVN_TREND_LO = 0.20
+_OVN_COMPRESS = 50.0   # pts — thin overnight, skip
+
+def compute_overnight_bias():
+    """
+    Compute overnight_position once per session (first RTH scan after 9:30am).
+    Reads 1-min bars from bridge, computes position within overnight range.
+    Sets _overnight_bias and _overnight_skip_day.
+    """
+    global _overnight_bias, _overnight_skip_day, _overnight_position
+    global _overnight_computed, _daily_macro_bias
+
+    if _overnight_computed:
+        return
+
+    try:
+        bars_1m = get_bars(bar_size_min=1, days=2)
+        if bars_1m.empty:
+            log("overnight_bias: no 1-min bars — defaulting BOTH")
+            _overnight_computed = True
+            return
+
+        today     = datetime.now(ET).date()
+        today_930 = ET.localize(datetime(today.year, today.month, today.day, 9, 30))
+
+        # Wait for first RTH bar (open price needed) — retry next scan if not yet available
+        rth_bars = bars_1m[bars_1m.index >= today_930]
+        if rth_bars.empty:
+            return
+
+        rth_open = float(rth_bars['open'].iloc[0])
+
+        # Overnight window: prev 4pm ET → today 9:30am ET (skip weekends + holidays)
+        prev_day = today - timedelta(days=1)
+        while prev_day.weekday() >= 5 or prev_day in CME_HOLIDAYS_2026:
+            prev_day -= timedelta(days=1)
+        prev_4pm   = ET.localize(datetime(prev_day.year, prev_day.month, prev_day.day, 16, 0))
+        night_bars = bars_1m[(bars_1m.index >= prev_4pm) & (bars_1m.index < today_930)]
+
+        _overnight_computed = True   # set before returns — don't retry on data issues
+
+        if len(night_bars) < 20:
+            log(f"overnight_bias: sparse overnight bars ({len(night_bars)}) — defaulting BOTH")
+            return
+
+        overnight_high  = float(night_bars['high'].max())
+        overnight_low   = float(night_bars['low'].min())
+        overnight_range = overnight_high - overnight_low
+
+        if overnight_range < _OVN_COMPRESS:
+            _overnight_skip_day = True
+            log(f"overnight_bias: COMPRESSION ({overnight_range:.0f}pt) — skip day")
+            send_telegram(
+                f"⚠️ Overnight COMPRESSION ({overnight_range:.0f}pt range)\n"
+                f"No entries today — thin session, IB breakouts unreliable.\n"
+                f"Override: FUT BIAS LONG or FUT BIAS SHORT"
+            )
+            return
+
+        pos = (rth_open - overnight_low) / overnight_range
+        pos = max(0.0, min(1.0, pos))
+        _overnight_position = round(pos, 3)
+
+        if _OVN_SKIP_LO <= pos < _OVN_SKIP_HI:
+            _overnight_skip_day = True
+            log(f"overnight_bias: bad zone pos={pos:.3f} — skip day")
+            send_telegram(
+                f"⚠️ Overnight bad zone (pos={pos:.2f})\n"
+                f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
+                f"No entries today — moderate bearish lean, low conviction IB setups.\n"
+                f"Override: FUT BIAS LONG or FUT BIAS SHORT"
+            )
+        elif pos >= _OVN_TREND_HI:
+            _overnight_bias = 'LONG'
+            if _daily_macro_bias == 'BOTH':   # only set if user hasn't overridden
+                _daily_macro_bias = 'LONG'
+            log(f"overnight_bias: TRENDING_UP pos={pos:.3f} → LONG")
+            send_telegram(
+                f"📊 Overnight → <b>LONG bias</b>\n"
+                f"Position: {pos:.2f} (bulls held overnight)\n"
+                f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
+                f"Override: FUT BIAS SHORT or FUT BIAS BOTH"
+            )
+        elif pos <= _OVN_TREND_LO:
+            _overnight_bias = 'SHORT'
+            if _daily_macro_bias == 'BOTH':
+                _daily_macro_bias = 'SHORT'
+            log(f"overnight_bias: TRENDING_DOWN pos={pos:.3f} → SHORT")
+            send_telegram(
+                f"📊 Overnight → <b>SHORT bias</b>\n"
+                f"Position: {pos:.2f} (bears held overnight)\n"
+                f"H={overnight_high:.0f}  L={overnight_low:.0f}  Range={overnight_range:.0f}pt\n"
+                f"Override: FUT BIAS LONG or FUT BIAS BOTH"
+            )
+            # OVN_POS Option A: overnight closed near its low (≤13%) → exhausted bears.
+            # Pre-market already showing bullish structure (mirrors futures_trader.py).
+            if pos <= 0.13 and _daily_macro_bias == 'SHORT':
+                _daily_macro_bias = 'BOTH'
+                log(f"OVN_POS Option A: pos={pos:.3f} ≤ 0.13 → exhausted bears → override to BOTH")
+                send_telegram(
+                    f"📊 OVN_POS Option A: bears exhausted (pos={pos:.2f})\n"
+                    f"SHORT bias → BOTH — LONGs now allowed (pre-market coiled)\n"
+                    f"Override: FUT BIAS SHORT to force SHORT-only"
+                )
+        else:
+            _overnight_bias = 'BOTH'
+            log(f"overnight_bias: NORMAL pos={pos:.3f} — both directions")
+
+    except Exception as e:
+        log(f"compute_overnight_bias error: {e}")
+        _overnight_computed = True   # don't loop on error
 
 
 # ── VWAP ──────────────────────────────────────────────────
@@ -800,8 +940,11 @@ def calc_sl_target(price: float, atr: float, side: str) -> tuple[float, float]:
 
 def calc_contracts(price: float, sl: float) -> int:
     """
-    Risk-based contract sizing.
-    contracts = floor(MAX_RISK / (stop_ticks × TICK_VALUE))
+    Risk-based contract sizing. LEGACY / UNUSED as of Aug 9 2026 — place_trade()
+    now calls calc_contracts_dynamic() instead (RVOL/IB-range tiers, matches
+    futures_trader.py). MAX_RISK_PER_TRADE is stale (written for a 50-tick stop;
+    BASE_STOP_PTS is 200pts/800 ticks now) — kept only for documentation
+    consistency, same as futures_trader.py's own dead MAX_RISK_PER_TRADE.
     """
     stop_pts   = abs(price - sl)
     stop_ticks = stop_pts / TICK_SIZE
@@ -813,6 +956,86 @@ def calc_contracts(price: float, sl: float) -> int:
     contracts = int(MAX_RISK_PER_TRADE / risk_per_c)
     contracts = max(1, min(contracts, get_max_contracts()))
     return contracts
+
+
+def had_loss_today() -> bool:
+    """True if any futures trade closed at a loss today (ET date). Ported from futures_trader.py Aug 9 2026."""
+    today = str(datetime.now(ET).date())
+    conn  = sqlite3.connect(DB_PATH)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM futures_trades "
+        "WHERE entry_date=? AND pnl < 0 AND status='CLOSED' AND account_mode=?",
+        (today, ACCOUNT_MODE),
+    ).fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def load_avg_volumes():
+    """Load per-time-slot average volume from market_data.db at startup (once).
+    Builds _avg_vol_by_time dict keyed by ET time string '%H:%M'.
+    Ported from futures_trader.py Aug 9 2026 — shared MNQ market data, same
+    baseline as IBKR's own instance (separate in-memory copy per process).
+    """
+    global _avg_vol_by_time
+    try:
+        conn = sqlite3.connect(MKT_DB_PATH)
+        cutoff = (datetime.now() - timedelta(days=550)).strftime('%Y-%m-%d')
+        df = pd.read_sql(
+            "SELECT ts_utc, volume FROM futures_bars_5m WHERE symbol='MNQ' AND ts_utc >= ?",
+            conn, params=[cutoff],
+        )
+        conn.close()
+        if df.empty:
+            log("RVOL: no bars found in market_data.db — RVOL scaling disabled")
+            return
+        df['ts'] = pd.to_datetime(df['ts_utc'], utc=True, format='ISO8601').dt.tz_convert(ET)
+        df['slot'] = df['ts'].dt.strftime('%H:%M')
+        _avg_vol_by_time = df.groupby('slot')['volume'].mean().to_dict()
+        log(f"RVOL: loaded avg_vol for {len(_avg_vol_by_time)} slots ({len(df):,} bars)")
+    except Exception as e:
+        log(f"RVOL: load_avg_volumes failed — {e}. RVOL scaling disabled.")
+
+
+def calc_rvol_current(df5: pd.DataFrame) -> float:
+    """Current bar's volume relative to historical average for this time slot.
+    Returns 1.0 (neutral) if data unavailable. Ported from futures_trader.py Aug 9 2026.
+    """
+    if df5.empty or not _avg_vol_by_time:
+        return 1.0
+    slot = df5.index[-1].strftime('%H:%M')
+    avg  = _avg_vol_by_time.get(slot, 0)
+    if avg <= 0:
+        return 1.0
+    return float(df5['volume'].iloc[-1]) / avg
+
+
+def calc_contracts_dynamic(price: float, sl: float,
+                            rvol: float, ib_range: float) -> int:
+    """
+    RVOL-based contract scaling. Ported verbatim from futures_trader.py Aug 9
+    2026, hard cap swapped to TC's own get_max_contracts() (TC_TRADING_MAX_CONTRACTS=2).
+    Base = 1.
+
+    Tiers (additive):
+      rvol ≥ 2×  → +1  (elevated participation)
+      rvol ≥ 3×  → +1  (strong institutional interest)
+      rvol ≥ 4×  → +1  (exceptional — capped by prop_rules anyway)
+      ib_range ≥ 150pts → +1  (wide IB = structural range worth sizing into)
+      had_loss_today     → -1  (capital protection after first hit)
+    """
+    n = 1
+    if rvol >= 2.0:
+        n += 1
+    if rvol >= 3.0:
+        n += 1
+    if rvol >= 4.0:
+        n += 1
+    if ib_range >= 150.0:
+        n += 1
+    if had_loss_today():
+        n -= 1
+    return max(1, min(n, get_max_contracts(n)))
 
 
 # ── Database helpers ──────────────────────────────────────
@@ -1047,7 +1270,9 @@ def place_trade(side: str, sig: dict, regime: str,
     df5        = get_bars()
     atr        = calc_atr(df5) if not df5.empty else 10.0
     sl, target = calc_sl_target(price, atr, side)
-    contracts  = calc_contracts(price, sl)
+    rvol       = calc_rvol_current(df5)
+    ib_range   = calc_ib_range_today(df5)
+    contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range)
 
     rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
     # Use small tolerance to avoid floating-point false rejects at exactly MIN_RR
@@ -1194,6 +1419,13 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
         peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)
 
+        # LLM in-trade observer (log-only, Aug 9 2026) — see futures/thesis_check.py
+        try:
+            _thesis_check.maybe_check(tid, ACCOUNT_MODE, SYMBOL, side, entry, price,
+                                       pnl_pts, peak_pts, df5, log)
+        except Exception:
+            pass
+
         _rp = EXIT_PARAMS_BY_REGIME.get(_day_regime or 'CHOPPY', EXIT_PARAMS_BY_REGIME['CHOPPY'])
         _be_pts, _be_frac      = _rp['be_pts'], _rp['be_frac']
         _wide_pts, _wide_gap   = _rp['wide_pts'], _rp['wide_gap']
@@ -1224,8 +1456,9 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 _update_backup_stop(trade, sl)
                 log(f"  {SYMBOL}{'SHORT' if is_short else ''}: trail({_tight_gap:.0f}, {_day_regime}) → {sl} (+{pnl_pts:.0f}pts)")
 
-        # ── Partial scale-out (aligned Jul 25 2026 — dormant while TC sizing
-        # yields 1 contract; fires only on 2-contract trades) ──
+        # ── Partial scale-out (aligned Jul 25 2026 — was dormant while TC
+        # sizing was hardcoded to 1 contract; reactivated Aug 9 2026 by the
+        # calc_contracts_dynamic fix, now fires on genuine 2-contract trades) ──
         if (contracts >= 2 and not _partial_done.get(tid)
                 and pnl_pts >= PARTIAL_TAKE_PTS):
             _pp = _bridge_get('/futures/position')
@@ -1510,6 +1743,9 @@ def run_scan():
         update_orb(df5)
         update_premarket_ib()   # sets pm_high/pm_low from 8:30–9:30am bars
 
+    # Overnight position classifier — compute once after RTH opens (first scan with bars)
+    compute_overnight_bias()
+
     # Regime — pass pre-fetched bars to avoid a second bridge call
     regime = get_regime(df5)
     _regime_scan_counts[regime] = _regime_scan_counts.get(regime, 0) + 1   # daily tally (logging only)
@@ -1614,6 +1850,14 @@ def run_scan():
             remaining = int(300 - elapsed)
             log(f"pm_ib hold — {remaining}s remaining. Send FUT BIAS LONG/SHORT if needed.")
             return
+
+    # ── Overnight skip zone gate (log-only, aligned with futures_trader.py) ──
+    # Whole-day veto REMOVED Jul 18 2026 on the IBKR side — mirrored here, never
+    # blocks entries; kept under the 'OVN_SKIP' gate name so gate_audit scores it.
+    if _overnight_skip_day and _daily_macro_bias == 'BOTH':
+        log(f"Overnight skip zone (pos={_overnight_position}) — INFO ONLY (veto removed), trading continues")
+        try: log_block('TC', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={_overnight_position}', price, session)
+        except Exception: pass
 
     # ── Entry gates ALIGNED with futures_trader.py (Jul 25 2026) ─────────────
     # A+-only + Trend Jury (hero gate) + Volume Pulse (RVOL, graduated floor
@@ -1746,6 +1990,7 @@ def reset_daily_state():
     global _regime_scan_counts, _session_high, _session_low
     global _price_history, _partial_done, _peak_daily_pnl, _daily_pnl
     global _pm_high, _pm_low, _pm_ib_set, _pm_ib_set_time, _daily_macro_bias
+    global _overnight_bias, _overnight_skip_day, _overnight_position, _overnight_computed
 
     _orb_high = _orb_low = None
     _orb_set  = False
@@ -1753,6 +1998,10 @@ def reset_daily_state():
     _pm_ib_set      = False
     _pm_ib_set_time = None
     _daily_macro_bias = 'BOTH'
+    _overnight_bias     = 'BOTH'
+    _overnight_skip_day = False
+    _overnight_position = None
+    _overnight_computed = False
     _confirmed_scans  = 0
     _regime_scan_counts = {'STRONG': 0, 'NORMAL': 0, 'WEAK': 0}
     _session_high = {}
@@ -1889,28 +2138,35 @@ def poll_telegram_commands():
                         f"now {live:.2f} | uPnL ${upnl:+.0f} | risk ${risk:.0f}"
                     )
                 pos_str = '\n'.join(pos_lines) if pos_lines else '  No open positions'
+                ovn_str = (f"skip({_overnight_position})" if _overnight_skip_day
+                           else f"pos={_overnight_position}" if _overnight_position is not None
+                           else "pending")
                 send_telegram(
                     f"{format_prop_status()}\n"
                     f"MNQ: {price}  Bias: {_daily_macro_bias}  Session: {get_session()}\n"
+                    f"Overnight: {ovn_str}\n"
                     f"Positions ({len(open_trades)}):\n{pos_str}"
                 )
             elif 'FUT BIAS LONG' in msg:
-                _daily_macro_bias = 'LONG'
+                _daily_macro_bias   = 'LONG'
+                _overnight_skip_day = False   # user override — allow entries despite skip zone
                 send_telegram(
-                    f"✅ Macro bias set: LONG\n"
+                    f"✅ Macro bias set: LONG (overnight skip overridden)\n"
                     f"System will only take LONG entries today.\n"
                     f"PM High: {_pm_high}  (target for pm_break signal)"
                 )
             elif 'FUT BIAS SHORT' in msg:
-                _daily_macro_bias = 'SHORT'
+                _daily_macro_bias   = 'SHORT'
+                _overnight_skip_day = False
                 send_telegram(
-                    f"✅ Macro bias set: SHORT\n"
+                    f"✅ Macro bias set: SHORT (overnight skip overridden)\n"
                     f"System will only take SHORT entries today.\n"
                     f"PM Low: {_pm_low}  (target for pm_break signal)"
                 )
             elif 'FUT BIAS BOTH' in msg:
-                _daily_macro_bias = 'BOTH'
-                send_telegram("✅ Macro bias cleared — trading both directions.")
+                _daily_macro_bias   = 'BOTH'
+                _overnight_skip_day = False
+                send_telegram("✅ Macro bias cleared — overnight filter disabled for today.")
             elif 'FUT CLOSE' in msg:
                 _force_close_all()
             elif 'STATUS ALL' in msg:
@@ -2050,11 +2306,31 @@ def main():
         prop_save(_state)
     send_telegram(f"⚡ TriVega Futures · Online\n{format_prop_status()}")
 
+    load_avg_volumes()   # build RVOL denominator for calc_contracts_dynamic (non-blocking; graceful if missing)
+    _thesis_check.init_db()
+
     _scheduler = BackgroundScheduler(timezone=ET)
 
     # Core loops
     _scheduler.add_job(run_scan,     'interval', seconds=SCAN_INTERVAL,    id='scan')
     _scheduler.add_job(run_monitor,  'interval', seconds=MONITOR_INTERVAL, id='monitor')
+
+    # London session (plug/unplug via LONDON_ENABLED above) — mirrors futures_trader.py
+    if LONDON_ENABLED:
+        from futures import london_trader as _lt
+        _lt.init_db()
+        _scheduler.add_job(
+            _lt.run_scan, 'cron',
+            hour='3-8', minute='*',
+            id='london_scan', max_instances=1, misfire_grace_time=30,
+        )
+        _scheduler.add_job(
+            _lt.run_monitor, 'interval',
+            seconds=15,
+            id='london_monitor', max_instances=1,
+        )
+        log('London session ENABLED — IB 3am–4am ET, entries 4am–8am ET')
+        send_telegram('🇬🇧 London session ENABLED (TC)')
 
     # Telegram command polling
     _scheduler.add_job(poll_telegram_commands, 'interval', seconds=10, id='telegram')
@@ -2069,6 +2345,10 @@ def main():
     _scheduler.add_job(eod_snapshot, 'cron',
                        day_of_week='mon-fri', hour=16, minute=10,
                        timezone=ET, id='eod_snapshot')
+    _scheduler.add_job(
+        lambda: _thesis_check.weekly_review(send_telegram, log, ACCOUNT_MODE),
+        'cron', day_of_week='fri', hour=16, minute=40, timezone=ET, id='thesis_check_review',
+    )
 
     _scheduler.start()
     log("Scheduler started. Press Ctrl+C to stop.")

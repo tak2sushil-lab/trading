@@ -35,13 +35,26 @@ FUTURES_TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 # 'IBKR' = Personal IBKR capital ($2K floor, soft DLL only, no trailing MLL)
 ACCOUNT_MODE = os.getenv('FUTURES_ACCOUNT_MODE', 'TC')
 
-# ── TopStepX $50K TC constants ────────────────────────────────────────────────
+# ── TopStepX $50K TC constants (confirmed against TopStep's own $50K plan
+# page Aug 9 2026 — screenshot cross-checked: profit target $3,000, consistency
+# 50%, Max Loss Limit $2,000, Daily Loss Limit $1,000, contract limit 5 mini /
+# 50 micro. Every number below already matched what TopStep publishes except
+# contract sizing, which had never been revisited since account-open — see
+# TC_TRADING_MAX_CONTRACTS.) ───────────────────────────────────────────────────
 TC_PROFIT_TARGET    = 3_000.0   # pass condition
-TC_MLL_AMOUNT       = 2_000.0   # trailing max loss limit
-TC_DLL_AMOUNT       = 1_000.0   # daily loss limit
+TC_MLL_AMOUNT       = 2_000.0   # trailing max loss limit ("Max Loss Limit / One Rule")
+TC_DLL_AMOUNT       = 1_000.0   # daily loss limit ("Responsible Trading Advantage" DLL)
 TC_CONSISTENCY_MAX  = 0.50      # best day ≤ 50% of total profit
 TC_DAILY_CAP        = 1_200.0   # our soft daily cap ($300 buffer under $1,500 ceiling)
-TC_MAX_CONTRACTS    = 50        # IBKR platform limit for $50K account (micro)
+TC_MAX_CONTRACTS    = 50        # TopStep's PLATFORM ceiling for $50K (micro) — a disaster
+                                 # limit, not a trading size. NOT used for position sizing;
+                                 # see TC_TRADING_MAX_CONTRACTS below for what we actually trade.
+TC_TRADING_MAX_CONTRACTS = 2    # our own risk-managed cap (Aug 9 2026) — mirrors
+                                 # IBKR_MAX_CONTRACTS. At BASE_STOP_PTS=200, a single
+                                 # worst-case 2-contract stop-out risks $800 — inside the
+                                 # $2,000 trailing MLL and roughly at (not past) the $700
+                                 # soft DLL. Was hardcoded to 1 since account-open; never
+                                 # revisited. Raise only after live data shows headroom.
 
 # ── TopStepX XFA constants ────────────────────────────────────────────────────
 XFA_STARTING_BALANCE = 0.0
@@ -186,7 +199,7 @@ def get_max_contracts(base_contracts: int = 1) -> int:
         return min(base_contracts, IBKR_MAX_CONTRACTS)
 
     if mode == 'TC':
-        return min(base_contracts, 1)
+        return min(base_contracts, TC_TRADING_MAX_CONTRACTS)
 
     # XFA: scale with balance
     balance = state['balance']

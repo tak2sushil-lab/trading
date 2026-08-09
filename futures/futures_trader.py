@@ -54,6 +54,7 @@ from portfolio_status import format_all as _portfolio_all
 from futures.hero_score import (
     score_entry_regime, contracts_from_regime_score, detect_regime, is_gold_score,
 )
+from futures import thesis_check as _thesis_check  # LLM in-trade observer (Aug 9 2026)
 
 # ── Telegram ──────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv('FUTURES_TELEGRAM_TOKEN')
@@ -1695,6 +1696,13 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
         peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)   # best favorable excursion so far
 
+        # LLM in-trade observer (log-only, Aug 9 2026) — see futures/thesis_check.py
+        try:
+            _thesis_check.maybe_check(tid, ACCOUNT_MODE, SYMBOL, side, entry, price,
+                                       pnl_pts, peak_pts, df5, log)
+        except Exception:
+            pass
+
         # Regime-aware exit params (Jul 8 2026) — see EXIT_PARAMS_BY_REGIME
         # above for rationale/backtest numbers/known limitation.
         _rp = EXIT_PARAMS_BY_REGIME.get(_day_regime or 'CHOPPY', EXIT_PARAMS_BY_REGIME['CHOPPY'])
@@ -2486,7 +2494,7 @@ def run_scan():
         # 'OVN_SKIP' gate name so the Bouncer Report Card keeps scoring it on
         # identical footing pre/post removal.
         log(f"Overnight skip zone (pos={_overnight_position}) — INFO ONLY (veto removed Jul 18), trading continues")
-        try: log_block('IBKR', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={_overnight_position:.3f}', price, session)
+        try: log_block('IBKR', 'MNQ', 'BOTH', 'OVN_SKIP', f'pos={_overnight_position}', price, session)
         except Exception: pass
 
     # ── Hero gate (Phase 5 regime-aware scoring) ─────────────────────────────
@@ -2909,6 +2917,7 @@ def main():
             log(f"  Startup: marked trade {_t['id']} ({_t.get('symbol')}) as orphaned (was OPEN from {_t['entry_date']})")
 
     load_avg_volumes()   # build RVOL denominator (non-blocking; graceful if missing)
+    _thesis_check.init_db()
 
     prop_load()
     # Reconcile ibkr_state from DB on every startup — restarts mid-day cause drift.
@@ -2973,6 +2982,10 @@ def main():
     _scheduler.add_job(eod_snapshot, 'cron',
                        day_of_week='mon-fri', hour=16, minute=10,
                        timezone=ET, id='eod_snapshot')
+    _scheduler.add_job(
+        lambda: _thesis_check.weekly_review(send_telegram, log, ACCOUNT_MODE),
+        'cron', day_of_week='fri', hour=16, minute=40, timezone=ET, id='thesis_check_review',
+    )
 
     _scheduler.start()
     log("Scheduler started. Press Ctrl+C to stop.")

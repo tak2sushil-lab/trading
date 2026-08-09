@@ -39,6 +39,7 @@
     </div>
   </div>
   <div class="header-right">
+    <a href="/glossary" class="glossary-back" title="What does each card/term on this dashboard mean?">Glossary</a>
     <span class="refresh-dot" id="refresh-dot" title="Auto-refreshes every 30s">●</span>
     <span class="refresh-time" id="last-refresh">Loading…</span>
     <span class="mode-badge" id="mode-badge">PAPER</span>
@@ -71,10 +72,15 @@
         <div class="card-pnl" id="opt-pnl">—</div>
         <div class="card-sub" id="opt-sub">—</div>
       </div>
-      <div class="card summary-card" id="card-futures">
-        <div class="card-label">FUTURES</div>
-        <div class="card-pnl" id="fut-pnl">—</div>
-        <div class="card-sub" id="fut-sub">—</div>
+      <div class="card summary-card" id="card-futures-ibkr">
+        <div class="card-label">FUTURES · IBKR</div>
+        <div class="card-pnl" id="fut-ibkr-pnl">—</div>
+        <div class="card-sub" id="fut-ibkr-sub">—</div>
+      </div>
+      <div class="card summary-card" id="card-futures-tc">
+        <div class="card-label">FUTURES · TC</div>
+        <div class="card-pnl" id="fut-tc-pnl">—</div>
+        <div class="card-sub" id="fut-tc-sub">—</div>
       </div>
     </div>
 
@@ -136,7 +142,7 @@
 
     <!-- Sector grades -->
     <div class="card section">
-      <div class="section-title">SECTOR GRADES</div>
+      <div class="section-title" title="Refreshed nightly at 23:00 ET from the trailing 30 days of closed trades — not intraday. See Glossary for the full explanation.">SECTOR GRADES <span class="glossary-note-inline">(nightly refresh — not live)</span></div>
       <div id="sector-grid" class="sector-grid"></div>
     </div>
 
