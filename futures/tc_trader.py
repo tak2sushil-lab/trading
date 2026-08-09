@@ -61,7 +61,14 @@ MAX_DAILY_LOSS       = DLL_SOFT      # $700 TC soft DLL (hard limit $1K — stay
 DAILY_PROFIT_TARGET  = TC_DAILY_CAP  # $1,200 — TC consistency cap (50% rule buffer)
 MIN_RR               = 2.0     # minimum reward:risk ratio
 MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
-MAX_DAILY_TRADES     = 2       # total trade entries per day (matches tc_champion.json)
+MAX_DAILY_TRADES     = 5       # raised from 2 Aug 9 2026 to match IBKR — the TC_DAILY_CAP
+                                # ($1,200, ≤40% of the $3K target) and check_can_trade()'s
+                                # consistency check (50% of total_profit, active once
+                                # total_profit>=$1,200) are both trade-count-independent
+                                # $-based backstops, so this cap was never the thing actually
+                                # protecting the account; it was just leaving upside on the
+                                # table on winning days. User-directed, reasoned from the real
+                                # gate code, not backtested against TC's exact sizing yet.
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
 MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and live price at order time
 

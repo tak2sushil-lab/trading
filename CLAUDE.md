@@ -1897,6 +1897,31 @@ health-check list at all, alongside their gateways/bridges (`gateway`, `tc_gatew
 `tc_bridge`, `futures_collect_bars`). Added all 6. Dashboard restarted + verified (`/` and
 `/glossary` both 302-to-login as expected, service dict confirmed 13 entries).
 
+**Same night, two-round bug sweep + go-live:** found + fixed a real bug (pre-existing in
+`futures_trader.py`, ported into `tc_trader.py` today): `log_block(..., f'pos={_overnight_position:.3f}',
+...)` crashes with `TypeError` when `_overnight_position` is `None` — the COMPRESSION overnight-
+day path never sets it before returning. Silently swallowed by the surrounding
+`try/except: pass`, so no crash ever surfaced — just a permanent gap in `gate_blocks` OVN_SKIP
+scoring on every compression day, in both files, since `compute_overnight_bias` was written.
+Fixed in both. Also found: both underlying IB Gateway processes (`gateway`, `tc_gateway`) were
+down going into tonight's restart — unrelated to code, would have silently blocked the whole
+London session. Restarted, confirmed both bridges connected (DU9952463, DUQ640500), then
+restarted `futures_personal`/`futures_trader` with everything live. Committed + pushed
+(`a6fd51a`).
+
+**TC `MAX_DAILY_TRADES` raised 2→5, same night, follow-up.** User asked precisely whether TC
+checks the consistency rule and whether it "stops/exits" on violation. Confirmed from
+`prop_rules.check_can_trade()`: yes it checks (only once `total_profit>=TC_DAILY_CAP=$1,200`
+cumulative — skipped before that), but it only **blocks new entries**, never closes an open
+position — that's a real correction, not just a confirmation. The code's own reasoning (already
+in a comment) is why raising to 5 is safe even before the consistency check activates:
+`TC_DAILY_CAP` ($1,200) is a separate, always-active gate that already caps any single day at
+≤40% of the $3,000 target — under the 50% consistency bar by construction, independent of trade
+count. `MAX_DAILY_TRADES` was never the thing protecting the account; it was only capping
+upside. Shipped same night, TC restarted again, clean startup verified. Not backtested against
+TC's exact 2-contract sizing/sequencing — reasoned from the real gate code, not from historical
+replay; revisit with real TC data once enough accumulates.
+
 ---
 
 ## Key Constants (auto_trader.py — do not change mid-run)
