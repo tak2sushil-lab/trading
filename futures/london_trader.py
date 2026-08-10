@@ -727,25 +727,26 @@ def _monitor_position_locked(df: pd.DataFrame):
     # or futures_trader/TC) it's threaded into.
     try:
         _peak_pts = (peak - entry) if not is_short else (entry - peak)
-        _be_pts    = p_atr * BE_ATR_MULT
-        _wide_pts  = p_atr * TRAIL_WIDE_ATR
-        _tight_pts = p_atr * TRAIL_TIGHT_ATR
-        if pnl_pts >= _tight_pts:
-            _trail_tier = 'tight_trail'
-        elif pnl_pts >= _wide_pts:
-            _trail_tier = 'wide_trail'
-        elif pos['be_done'] or pnl_pts >= _be_pts:
-            _trail_tier = 'be_lock'
-        else:
-            _trail_tier = 'none'
-        _lon_context = {
-            'atr_pts':        round(p_atr, 1),
-            'overnight_bias': round(_ovn_pos, 2) if _ovn_pos is not None and _ovn_pos >= 0 else 'unknown',
-            'ib_range':       round(pos.get('ib_range'), 1) if pos.get('ib_range') is not None else 'unknown',
-        }
-        _thesis_check.maybe_check(pos['id'], ACCOUNT_MODE, 'LONDON', SYMBOL, pos['side'],
-                                   entry, price, pnl_pts, _peak_pts,
-                                   abs(price - sl), _trail_tier, _lon_context, log)
+        if pnl_pts > 0 and _peak_pts >= _thesis_check.MIN_PEAK_PTS:
+            _be_pts    = p_atr * BE_ATR_MULT
+            _wide_pts  = p_atr * TRAIL_WIDE_ATR
+            _tight_pts = p_atr * TRAIL_TIGHT_ATR
+            if pnl_pts >= _tight_pts:
+                _trail_tier = 'tight_trail'
+            elif pnl_pts >= _wide_pts:
+                _trail_tier = 'wide_trail'
+            elif pos['be_done'] or pnl_pts >= _be_pts:
+                _trail_tier = 'be_lock'
+            else:
+                _trail_tier = 'none'
+            _lon_context = {
+                'atr_pts':        round(p_atr, 1),
+                'overnight_bias': round(_ovn_pos, 2) if _ovn_pos is not None and _ovn_pos >= 0 else 'unknown',
+                'ib_range':       round(pos.get('ib_range'), 1) if pos.get('ib_range') is not None else 'unknown',
+            }
+            _thesis_check.maybe_check(pos['id'], ACCOUNT_MODE, 'LONDON', SYMBOL, pos['side'],
+                                       entry, price, pnl_pts, _peak_pts,
+                                       abs(price - sl), _trail_tier, _lon_context, log)
     except Exception as _e:
         log(f"  Crest Watch context error (London trade {pos['id']}): {_e}")
 

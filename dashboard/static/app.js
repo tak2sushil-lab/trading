@@ -540,7 +540,7 @@ function renderFuturesTable(positions, session) {
     <thead><tr>
       <th>Account</th><th>Symbol</th><th>Contract</th><th>Session</th><th>Side</th>
       <th>Contracts</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th>
-      <th>Unreal P&amp;L</th><th>Status</th>
+      <th>Unreal P&amp;L</th><th>Status</th><th>Crest Watch</th>
     </tr></thead>
     <tbody>${positions.map(p => {
       const pnlCls = (p.unreal_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
@@ -558,9 +558,21 @@ function renderFuturesTable(positions, session) {
         <td>${p.target_price != null ? p.target_price.toFixed(2) : '—'}</td>
         <td class="${pnlCls}">${p.unreal_pnl != null ? `${sign}$${Math.abs(p.unreal_pnl).toFixed(2)}` : '—'}</td>
         <td><span class="status-badge ${p.status||'OK'}">${p.status||'OK'}</span></td>
+        <td>${renderCrestBadge(p.crest_watch)}</td>
       </tr>`;
     }).join('')}</tbody>
   </table>`;
+}
+
+function renderCrestBadge(cw) {
+  if (!cw || cw.risk_score == null) {
+    return `<span class="crest-badge none" title="No check yet — fires once a position peaks 100+pts profitable">not yet checked</span>`;
+  }
+  const tier = cw.risk_score >= 55 ? 'high' : 'low';
+  const streakNote = cw.streak > 1 ? ` ×${cw.streak}` : '';
+  const time = cw.checked_at ? cw.checked_at.slice(11, 16) : '';
+  const title = `${cw.reasoning || ''}${time ? ` (as of ${time})` : ''}`.replace(/"/g, '&quot;');
+  return `<span class="crest-badge ${tier}" title="${title}">risk ${cw.risk_score}${streakNote}</span>`;
 }
 
 // ── Sector grades ─────────────────────────────────────────

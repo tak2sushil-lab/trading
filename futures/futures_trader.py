@@ -1708,23 +1708,27 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         # the same structured state the exit logic above already computed
         # this cycle; no chart image involved.
         try:
-            if pnl_pts >= _tight_pts:
-                _trail_tier = 'tight_trail'
-            elif pnl_pts >= _wide_pts:
-                _trail_tier = 'wide_trail'
-            elif pnl_pts >= _be_pts:
-                _trail_tier = 'be_lock'
-            else:
-                _trail_tier = 'none'
-            _stop_dist = abs(price - sl)
-            _tc_context = {
-                'regime':        _day_regime or 'unknown',
-                'rvol':          round(calc_session_rvol(df5), 2) if df5 is not None and not df5.empty else None,
-                'rsi':           round(calc_rsi(df5['close']), 1) if df5 is not None and not df5.empty else None,
-                'price_vs_vwap': ('above' if vwap_now and price > vwap_now else 'below') if vwap_now else 'unknown',
-            }
-            _thesis_check.maybe_check(tid, ACCOUNT_MODE, 'NY', SYMBOL, side, entry, price,
-                                       pnl_pts, peak_pts, _stop_dist, _trail_tier, _tc_context, log)
+            # Cheap eligibility pre-check before doing any RVOL/RSI work — most
+            # cycles won't qualify (not yet profitable, or under the peak floor,
+            # or throttled), no reason to recompute indicators for those.
+            if pnl_pts > 0 and peak_pts >= _thesis_check.MIN_PEAK_PTS:
+                if pnl_pts >= _tight_pts:
+                    _trail_tier = 'tight_trail'
+                elif pnl_pts >= _wide_pts:
+                    _trail_tier = 'wide_trail'
+                elif pnl_pts >= _be_pts:
+                    _trail_tier = 'be_lock'
+                else:
+                    _trail_tier = 'none'
+                _stop_dist = abs(price - sl)
+                _tc_context = {
+                    'regime':        _day_regime or 'unknown',
+                    'rvol':          round(calc_session_rvol(df5), 2) if df5 is not None and not df5.empty else None,
+                    'rsi':           round(calc_rsi(df5['close']), 1) if df5 is not None and not df5.empty else None,
+                    'price_vs_vwap': ('above' if vwap_now and price > vwap_now else 'below') if vwap_now else 'unknown',
+                }
+                _thesis_check.maybe_check(tid, ACCOUNT_MODE, 'NY', SYMBOL, side, entry, price,
+                                           pnl_pts, peak_pts, _stop_dist, _trail_tier, _tc_context, log)
         except Exception as _e:
             log(f"  Crest Watch context error (trade {tid}): {_e}")
 

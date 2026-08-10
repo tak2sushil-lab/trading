@@ -382,22 +382,52 @@ def get_futures_positions():
     normal broker accounting, but it hides that each trade can carry its own
     stop/target and would only partially exit at a given price level. Fixed
     Jul 7 2026 to match the equity/options views, which already do this.
+
+    Aug 9 2026 (Crest Watch dashboard sweep): two fixes bundled in.
+    (1) This previously queried futures_trades only — any OPEN london_trades
+    row was invisible here (it only ever showed up in the recent-activity
+    feed, never in the open-positions table). Now unions both, each row
+    stamped with its OWN session ('NY' / 'LONDON') rather than every row
+    getting relabeled with whatever the CURRENT wall-clock hour happens to
+    be — that was harmless before (only NY rows existed here, and the
+    dashboard is mostly glanced at during NY hours anyway) but was never
+    actually correct. (2) Added the latest Crest Watch reading per position
+    (risk_score/streak/reasoning) — most rows will show "not yet checked"
+    since it only fires past a 100pt peak, that's expected, not a bug.
     """
     now_et  = datetime.now(tz=ET)
     h       = now_et.hour
     session = 'LONDON' if 3 <= h < 9 else ('NY' if 9 <= h < 16 else 'OFF')
 
-    rows = []
+    ny_rows, london_rows, crest = [], [], {}
     try:
         with _db() as c:
-            rows = c.execute("""
+            ny_rows = c.execute("""
                 SELECT id, symbol, contract, entry_date, entry_time, entry_price,
                        contracts, side, target_price, stop_price, setup_type,
-                       session as trade_session, account_mode
+                       account_mode
                 FROM futures_trades
                 WHERE status = 'OPEN'
                 ORDER BY entry_time DESC
             """).fetchall()
+            london_rows = c.execute("""
+                SELECT id, entry_date, entry_time, entry, contracts, side,
+                       target, sl_current, setup, account_mode
+                FROM london_trades
+                WHERE status = 'OPEN'
+                ORDER BY entry_time DESC
+            """).fetchall()
+            # Latest scored (risk_score IS NOT NULL — skip failed-check rows)
+            # Crest Watch reading per (session, trade_id). One query, not N+1.
+            crows = c.execute("""
+                SELECT trade_id, session, risk_score, streak, verdict, reasoning, checked_at
+                FROM futures_thesis_check
+                WHERE risk_score IS NOT NULL AND id IN (
+                    SELECT MAX(id) FROM futures_thesis_check
+                    WHERE risk_score IS NOT NULL GROUP BY trade_id, session
+                )
+            """).fetchall()
+            crest = {(r['session'], r['trade_id']): r for r in crows}
     except Exception:
         pass
 
@@ -408,20 +438,25 @@ def get_futures_positions():
         'TC':   {p.get('symbol'): p.get('market_price') for p in live_tc},
     }
 
+    def _crest_watch(sess, trade_id):
+        r = crest.get((sess, trade_id))
+        if not r:
+            return None
+        return {'risk_score': r['risk_score'], 'streak': r['streak'] or 1,
+                'verdict': r['verdict'], 'reasoning': r['reasoning'],
+                'checked_at': r['checked_at']}
+
+    def _unreal(ep, mp, qty, is_short):
+        if mp is None or not ep:
+            return None  # bridge down/reconnecting — render "---", not misleading $0
+        pnl_pts = (ep - mp) if is_short else (mp - ep)
+        return round(pnl_pts / TICK_SIZE * TICK_VALUE * qty, 2)
+
     result = []
-    for row in rows:
-        sym    = row['symbol']
-        ep     = row['entry_price'] or 0
-        qty    = row['contracts'] or 1
+    for row in ny_rows:
+        sym, ep, qty = row['symbol'], row['entry_price'] or 0, row['contracts'] or 1
         is_short = row['side'] == 'SHORT'
-        mp     = price_maps.get(row['account_mode'], {}).get(sym)
-
-        if mp is not None and ep:
-            pnl_pts = (ep - mp) if is_short else (mp - ep)
-            unreal_pnl = round(pnl_pts / TICK_SIZE * TICK_VALUE * qty, 2)
-        else:
-            unreal_pnl = None  # bridge down/reconnecting — render "---", not misleading $0
-
+        mp = price_maps.get(row['account_mode'], {}).get(sym)
         result.append({
             'id':             row['id'],
             'symbol':         sym,
@@ -435,11 +470,37 @@ def get_futures_positions():
             'target_price':   row['target_price'],
             'stop_price':     row['stop_price'],
             'setup_type':     row['setup_type'],
-            'unreal_pnl':     unreal_pnl,
-            'session':        session,
+            'unreal_pnl':     _unreal(ep, mp, qty, is_short),
+            'session':        'NY',
             'account_mode':   row['account_mode'],
             'status':         'OK',
+            'crest_watch':    _crest_watch('NY', row['id']),
         })
+    for row in london_rows:
+        sym, ep, qty = 'MNQ', row['entry'] or 0, row['contracts'] or 1
+        is_short = row['side'] == 'SHORT'
+        mp = price_maps.get(row['account_mode'], {}).get(sym)
+        result.append({
+            'id':             row['id'],
+            'symbol':         sym,
+            'contract_month': None,
+            'entry_date':     row['entry_date'],
+            'entry_time':     row['entry_time'],
+            'side':           row['side'],
+            'qty':            qty,
+            'entry_price':    ep,
+            'market_price':   mp,
+            'target_price':   row['target'],
+            'stop_price':     row['sl_current'],
+            'setup_type':     row['setup'],
+            'unreal_pnl':     _unreal(ep, mp, qty, is_short),
+            'session':        'LONDON',
+            'account_mode':   row['account_mode'],
+            'status':         'OK',
+            'crest_watch':    _crest_watch('LONDON', row['id']),
+        })
+
+    result.sort(key=lambda r: (r['entry_date'] or '', r['entry_time'] or ''), reverse=True)
     return result, session
 
 

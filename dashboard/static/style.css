@@ -270,6 +270,14 @@ html, body {
 .account-badge.ibkr { color: var(--blue-bright); background: rgba(56,139,253,0.1); }
 .account-badge.tc   { color: #e3b341; background: rgba(163,113,32,0.12); }
 
+.crest-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px;
+  border-radius: 3px; letter-spacing: 0.3px; cursor: default;
+}
+.crest-badge.none { color: var(--muted); background: rgba(255,255,255,0.03); font-weight: 500; }
+.crest-badge.low  { color: var(--green-bright); background: rgba(63,185,80,0.1); }
+.crest-badge.high { color: var(--red-bright); background: rgba(248,81,73,0.12); }
+
 /* ── TWO-COLUMN LAYOUT ────────────────────────────────────── */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
 
