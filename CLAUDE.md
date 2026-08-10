@@ -1934,6 +1934,23 @@ compiled clean, both traders restarted, both bridges verified connected. Still m
 closed (weekend) — first real Crest Watch data starts once a position both accounts hold
 peaks ≥100pts profitable during a live NY or London session.
 
+**Same night, follow-up: dashboard column + bug sweep (commit `0135edd`).** Added a
+Crest Watch column to the futures open-positions table (latest risk_score/streak/
+reasoning per position, "not yet checked" until one fires) — required fixing a real,
+pre-existing, unrelated gap first: `get_futures_positions()` only ever queried
+`futures_trades`, so any OPEN `london_trades` row was invisible in that table (only
+ever showed up in the recent-activity feed). Now unions both, each row tagged with its
+OWN session instead of being relabeled with the current wall-clock hour. Verified via
+direct function calls + a temporary fake open position/Crest Watch row (cleaned up
+after). Bug sweep on the wiring itself found one real (minor) issue: the RVOL/RSI/
+context-building block ran on every monitor tick for every open trade regardless of
+whether the position was even eligible for a check — only the throttle timer inside
+`thesis_check.py` gated the actual API call. Added an eligibility pre-check at all
+three call sites referencing the module's own `MIN_PEAK_PTS` constant, so cheap
+indicator work only happens when a check could actually fire. All three services
+(`futures_personal`, `futures_trader`, `dashboard`) restarted post-fix, verified clean,
+bridges reconnected, `git status` clean.
+
 **Dashboard split IBKR/TC (same session, follow-up ask).** `get_today_summary()`,
 `get_pnl_by_book()`, and `get_scorecard()` in `dashboard/app.py` all previously blended
 IBKR and TC together in at least one place (today-summary blended both NY sessions
