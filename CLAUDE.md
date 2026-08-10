@@ -1846,7 +1846,93 @@ the logging fix), verified clean startup both times (no import errors, London en
 RVOL loaded), both bridges reconnected (`DU9952463` paper / `DUQ640500` LIVE). Market
 closed (Sunday night, weekend guard active) — zero `futures_thesis_check` rows yet, first
 real data starts once a position peaks ≥100pts profitable during a live session.
-**Not yet committed** — `futures/thesis_check.py` has an uncommitted 2-line diff.
+Committed `91e64a4`.
+
+**Crest Watch redesigned same night (design review with user, before any data had
+accumulated — 0 rows logged, zero migration cost).** Chart-vision dropped entirely —
+`mplfinance`/image generation removed from this file. Rationale (debated with user
+first, see the session, not re-derived here): a vision model reading candlestick pixels
+is strictly worse at the numeric judgments (momentum, distance-to-level, volume regime)
+than the indicators this codebase already computes precisely every cycle: institutional
+practice is to feed engineered/structured features to a model and reserve the LLM for
+genuinely qualitative synthesis text can't reduce to a number — not to have it re-derive
+what ADX/RVOL already compute better from a picture.
+
+**What changed:**
+- **Input:** text-only structured snapshot built from state the exit logic already
+  computed that cycle — NY passes `regime` (`_day_regime`), `rvol` (`calc_session_rvol`),
+  `rsi` (`calc_rsi`), `price_vs_vwap`; London passes `atr_pts`, `overnight_bias` (`_ovn_pos`),
+  `ib_range` (now also stored on the in-memory `_position` dict, wasn't before). Both pass
+  `stop_distance_pts` and an `active trail tier` label (`be_lock`/`wide_trail`/`tight_trail`/
+  `none`, derived from the same tier thresholds the trail-update code uses). No chart image
+  is generated or sent — cheaper and faster per call, one fewer dependency in this file.
+- **Output:** `output_config`/`json_schema` structured call (same pattern as
+  `market_context.py`'s Field Report) returns `{risk_score: 0-100, reasoning}` instead of
+  a binary CONTINUE/REVERSAL_RISK label — replaces a switch with a dial. Legacy verdict
+  label still derived (`risk_score >= RISK_SCORE_ALERT_THRESHOLD=55`, **PROVISIONAL**,
+  untuned) for readable logs and weekly-review scoring continuity.
+- **Persistence required:** DB-backed (not in-memory) per-trade streak counter — same
+  restart-survives-correctly lesson already learned once for Bite Check (Aug 8) — mirrors
+  Reversal Exit's own "2 consecutive confirmations before acting" pattern rather than
+  trusting a single point-in-time read.
+- **Full receipt kept:** `raw_response` (complete JSON, not just a trimmed sentence) +
+  `model_version` (captured from `resp.model`, not hardcoded) — this call can't be
+  cheaply re-run against historical market state later, so whatever isn't logged now is
+  gone for good.
+- **Field Report folded in, logged separately, not blended:** today's `market_brief`
+  stance + one-line thesis added to the prompt and stored in their own columns
+  (`field_report_stance`/`field_report_thesis`) — NOT merged into `risk_score` itself, so
+  it can be judged independently later. Deliberate caution: this codebase already found
+  once that a raw sentiment signal can run backwards (options' HIGH-BULL-conviction was a
+  *fade* signal, Jul 18 audit) — a new qualitative ingredient earns trust from scored
+  data, it isn't assumed to have it. Soft-fails to `None` if today's brief hasn't run yet
+  (weekends, pre-9:15am) — never blocks a check.
+- **Errors are loud now, with a real reason, not just present:** `_ask_claude` returns a
+  specific error string per failure mode (`anthropic.RateLimitError` → `'rate limited'`,
+  `APIStatusError` → `'api {code}'`, `APIConnectionError`, malformed JSON, missing key) —
+  logged AND written to the DB (`error` column) rather than only logged, so a week of
+  silent failures is countable, not just visible in a log grep.
+- **Wired to all four books, one shared module:** `futures_trader.py` (IBKR NY) and
+  `tc_trader.py` (TC NY) each build their own NY-shaped context dict; `london_trader.py`
+  got a new `thesis_check` import + call inside `_monitor_position_locked` — since that
+  module resolves `ACCOUNT_MODE` from whichever process threads it in, wiring it once
+  there covers **both** IBKR-London and TC-London automatically. `session` column
+  (`'NY'`/`'LONDON'`) added so a future join always picks the right trade-id table —
+  NY trade_ids come from `futures_trades`, London's from `london_trades`, two separate
+  autoincrement id spaces that must never be joined without it.
+- **`weekly_review()` rewritten** to branch per session (separate `futures_trades`/
+  `london_trades` join), report per-session check counts + REVERSAL_RISK counts +
+  streak≥2 subset, and score accuracy against real exit price using the risk-score-
+  derived verdict. NY and London have different signal profiles — blending them would
+  hide which one the signal actually works for, if either does.
+
+**Two real bugs caught by testing before trusting this for a week, not just reading the
+code:** (1) forgot `session` in the idempotent-ALTER column list on the first pass —
+caught immediately by a schema-inspection smoke test, fixed before it ever ran live.
+(2) the JSON-schema call 400'd on first real API call — `minimum`/`maximum` constraints
+on an integer property aren't supported by this API's `json_schema` output format
+(confirmed live, not documented anywhere obvious); removed the constraint, kept the
+0-100 range enforced by the prompt text, added a defensive `max(0, min(100, ...))` clamp
+in code in case the model ignores it. Full smoke test after both fixes: real API call,
+verified DB row (all columns populated correctly), verified streak increments 1→2 on a
+second same-direction call for the same fake trade_id, test rows deleted after.
+
+**Deliberately NOT wired into any backtest/sim harness** (`sim_replay.py`,
+`london_v2_sim.py`, `equity_replay.py`) — a decision, not a gap, documented in
+`thesis_check.py`'s own module docstring so a future session doesn't "discover" and
+re-litigate it: (1) it makes zero trading decisions, so CONSTITUTION.md's "sim must
+match live" parity requirement — which exists to keep *decision-affecting* logic honest
+— doesn't apply here. (2) a live model call can't be backtested the way a quant signal
+can: not free, not instant, not reproducible (model behavior next month won't match
+today's), so replaying it against 2024-2026 bars would manufacture false precision
+rather than real validation. Same treatment equity's Chart Gate/Thesis Check already
+got. If this ever graduates toward gating a real decision, the validation path is more
+weeks of live-scored data, not a backtest.
+
+All 4 files (`thesis_check.py`, `futures_trader.py`, `tc_trader.py`, `london_trader.py`)
+compiled clean, both traders restarted, both bridges verified connected. Still market-
+closed (weekend) — first real Crest Watch data starts once a position both accounts hold
+peaks ≥100pts profitable during a live NY or London session.
 
 **Dashboard split IBKR/TC (same session, follow-up ask).** `get_today_summary()`,
 `get_pnl_by_book()`, and `get_scorecard()` in `dashboard/app.py` all previously blended

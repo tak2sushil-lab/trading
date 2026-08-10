@@ -1426,17 +1426,35 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
         peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)
 
-        # LLM in-trade observer (log-only, Aug 9 2026) — see futures/thesis_check.py
-        try:
-            _thesis_check.maybe_check(tid, ACCOUNT_MODE, SYMBOL, side, entry, price,
-                                       pnl_pts, peak_pts, df5, log)
-        except Exception:
-            pass
-
         _rp = EXIT_PARAMS_BY_REGIME.get(_day_regime or 'CHOPPY', EXIT_PARAMS_BY_REGIME['CHOPPY'])
         _be_pts, _be_frac      = _rp['be_pts'], _rp['be_frac']
         _wide_pts, _wide_gap   = _rp['wide_pts'], _rp['wide_gap']
         _tight_pts, _tight_gap = _rp['tight_pts'], _rp['tight_gap']
+
+        # Crest Watch — LLM in-trade reversal-risk observer (log-only, Aug 9
+        # 2026, redesigned same night — see futures/thesis_check.py). Reads
+        # the same structured state the exit logic above already computed
+        # this cycle; no chart image involved.
+        try:
+            if pnl_pts >= _tight_pts:
+                _trail_tier = 'tight_trail'
+            elif pnl_pts >= _wide_pts:
+                _trail_tier = 'wide_trail'
+            elif pnl_pts >= _be_pts:
+                _trail_tier = 'be_lock'
+            else:
+                _trail_tier = 'none'
+            _stop_dist = abs(price - sl)
+            _tc_context = {
+                'regime':        _day_regime or 'unknown',
+                'rvol':          round(calc_session_rvol(df5), 2) if df5 is not None and not df5.empty else None,
+                'rsi':           round(calc_rsi(df5['close']), 1) if df5 is not None and not df5.empty else None,
+                'price_vs_vwap': ('above' if vwap_now and price > vwap_now else 'below') if vwap_now else 'unknown',
+            }
+            _thesis_check.maybe_check(tid, ACCOUNT_MODE, 'NY', SYMBOL, side, entry, price,
+                                       pnl_pts, peak_pts, _stop_dist, _trail_tier, _tc_context, log)
+        except Exception as _e:
+            log(f"  Crest Watch context error (trade {tid}): {_e}")
 
         # Tier 1: proportional lock-in — protect _be_frac of the peak move
         if pnl_pts >= _be_pts:
