@@ -119,6 +119,8 @@ def _run_check(trade_id, account_mode, symbol, side, entry_price, current_price,
     try:
         b64 = _chart_b64(df5, f'{symbol} 5m — open {side} ({account_mode})')
         if not b64:
+            log_fn(f"  [FUTURES THESIS CHECK] {symbol} #{trade_id} ({account_mode}) "
+                   f"SKIPPED — chart render failed")
             return
         prompt = (
             f"You are a technical trading analyst reviewing an OPEN, currently "
@@ -131,6 +133,8 @@ def _run_check(trade_id, account_mode, symbol, side, entry_price, current_price,
         )
         answer = _ask_claude(b64, prompt)
         if not answer:
+            log_fn(f"  [FUTURES THESIS CHECK] {symbol} #{trade_id} ({account_mode}) "
+                   f"SKIPPED — Claude call failed/empty")
             return
         verdict   = 'REVERSAL_RISK' if 'REVERSAL_RISK' in answer.upper() else 'CONTINUE'
         reasoning = answer.split('\n', 1)[1].strip() if '\n' in answer else answer

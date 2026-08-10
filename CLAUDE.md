@@ -1830,6 +1830,24 @@ first TC scan for the new `calc_contracts_dynamic` sizing (contracts should show
 not stuck at 1) and the overnight-bias log line before trusting any of this live. This
 touches a real account with a real evaluation fee — do not skip the smoke-test day.
 
+**Restart actually done Aug 9 2026, late night (follow-up session, log audit).** Found
+both processes were still on pre-session code: `futures_personal` had been running since
+17:02, three minutes *before* commit `a6fd51a` (17:05) landed — zero Crest Watch, zero
+contract-sizing fix, nothing from today. `futures_trader` (TC) had been restarted at
+18:32 (after `a6fd51a`, so it had Crest Watch) but *before* `463680f` (18:35, the
+`MAX_DAILY_TRADES` 2→5 raise) — running with the stale cap. Also found and fixed a real
+gap while auditing `thesis_check.py` before trusting it for a week of unattended data
+collection: `_chart_b64()`/`_ask_claude()` swallow their own exceptions and return
+`None`, and `_run_check()` silently `return`ed on either — an API hiccup, rate limit, or
+render failure would vanish with zero trace, indistinguishable from "no trade qualified"
+at the Friday review. Added a `[FUTURES THESIS CHECK] ... SKIPPED — <reason>` log line on
+both failure paths. Both traders restarted twice (once for the day's backlog, once for
+the logging fix), verified clean startup both times (no import errors, London enabled,
+RVOL loaded), both bridges reconnected (`DU9952463` paper / `DUQ640500` LIVE). Market
+closed (Sunday night, weekend guard active) — zero `futures_thesis_check` rows yet, first
+real data starts once a position peaks ≥100pts profitable during a live session.
+**Not yet committed** — `futures/thesis_check.py` has an uncommitted 2-line diff.
+
 **Dashboard split IBKR/TC (same session, follow-up ask).** `get_today_summary()`,
 `get_pnl_by_book()`, and `get_scorecard()` in `dashboard/app.py` all previously blended
 IBKR and TC together in at least one place (today-summary blended both NY sessions
