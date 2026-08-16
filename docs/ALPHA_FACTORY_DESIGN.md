@@ -74,8 +74,10 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 ## 5. Current results (Aug 15 2026, 2.5yr, market-neutral)
 | Engine | Verdict | Note |
 |---|---|---|
-| **Wave Rider** (momentum_wild) | **PASS ✅** | OOS alpha +0.54% / +0.49%, t=6.7, walk-forward **13/13**, robust 100% |
+| **Wave Rider** (momentum_wild) | **PASS ✅ (Roster)** | OOS alpha +0.54% / +0.49%, t=6.7, walk-forward **13/13**, robust 100% |
 | **Bargain Hunter** (meanrev_mid) | **FAIL ❌** | uncorrelated (−0.02) & positive OOS, but **fails robustness** (67% of neighbors) — correctly held back |
+| **Cross-Sectional Reversal** (bench) | **PASS ✅ (bench)** | market-neutral long-short; OOS +0.61% / +0.85%, t=3.0, robust 100%, **corr to Wave Rider −0.13**. `factory/research/xsec_prototype.py`. Not yet integrated (see §9). |
+| **Cross-Sectional Momentum** (bench) | **FAIL ❌** | best config looked great (OOS1 +2.4%) but **44% robustness** — an overfit spike; gate rejected it |
 
 **The Roster today has ONE engine.** Fleet (Wave Rider only), honest market-neutral basis:
 **+134% / 2.6y, CAGR +38%, Sharpe 1.21, MaxDD −24%** (raw, incl. bull tide: Sharpe ~1.8-2.4).
@@ -99,7 +101,20 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 4. If it PASSES → it auto-joins the fleet. If it FAILS → back to the bench. Nothing else changes.
 
 ## 9. Roadmap (phased, one validated brick at a time)
-- **Now:** Wave Rider is the one proven engine. This factory replaces the ad-hoc equity research.
-- **Next hunt = the GAP:** a **market-neutral / cross-sectional** engine (long strongest, short weakest) — inherently tide-canceling, so it works bull *or* bear. That is the real bear-season answer (the throttle isn't).
-- **Then:** conviction sizing (lag-tolerant), an LLM-as-feature experiment (news → number → backtested), and the live Lookout (monitor live vs backtest, retire on decay).
-- **Retirement queue (live code, not yet cut):** Fish Finder and the equity bear book (`BEAR_MOMENTUM`) both failed the honest tests — flagged for retirement when Wave Rider graduates to live paper. Not removed yet (still running).
+- **Done:** Wave Rider (Roster). Factory built + tested. **Engine #2 found on the bench:**
+  **Cross-Sectional Reversal** PASSED the honest gate — market-neutral, uncorrelated (−0.13) to
+  Wave Rider. It is the bear-season diversifier we were hunting (the throttle wasn't).
+- **Integrate Cross-Sectional Reversal (next build):** requires a small framework generalization —
+  it's a *long-short basket* engine (ranks the whole universe daily), not an event-based directional
+  one, so it needs (a) a `universe_daily` data product and (b) a `CrossSectionalEngine` base that
+  emits per-day long+short legs. The per-leg alpha machinery already handles LONG/SHORT correctly.
+  **Honest caveats before treating it as tradable:** (1) it's a *breadth* strategy — many small
+  long+short positions rebalanced daily — which fits a scaled market-neutral **sleeve**, not a
+  5-slot $10k account; (2) it **requires shorting** (borrow availability/cost on small-cap recent
+  winners is a real friction retail can't ignore). So it validates the *process* and points at what
+  a larger book would run; its practical deployment differs from long-only Wave Rider.
+- **Then:** conviction sizing (lag-tolerant), an LLM-as-feature experiment (news → number →
+  backtested), and the live Lookout (monitor live vs backtest, retire on decay).
+- **Retirement queue (live code, not yet cut):** Fish Finder and the equity bear book
+  (`BEAR_MOMENTUM`) both failed the honest tests — flagged for retirement when Wave Rider graduates
+  to live paper. Not removed yet (still running).

@@ -150,6 +150,7 @@ Full design + diagram: `docs/ALPHA_FACTORY_DESIGN.md`. Judged on smoothness (Sha
 | **Engine** | a boat / fishing method | `factory/engines.py`, `Engine` | one strategy that emits trade tickets. |
 | **Wave Rider** | rides the momentum wave | `momentum_wild` | buy WILD stocks that popped up, hold 3d. **PASSED** the Proving Ground (only Roster engine). |
 | **Bargain Hunter** | buys the dip | `meanrev_mid` | buy MID stocks that fell. **FAILED** (fragile) — documented candidate, not trading. |
+| **Cross-Sectional Reversal** | back the laggards vs the leaders | `factory/research/xsec_prototype.py` | long the biggest 3-day losers / short the biggest 3-day winners, hold 5d. Market-neutral (long+short cancels the Tide). **PASSED the gate on the bench** (OOS +0.61/+0.85%, uncorrelated −0.13 to Wave Rider) — engine #2, awaiting framework integration. Caveats: breadth + shorting frictions → a scaled sleeve, not a $10k engine. |
 | **The Proving Ground** | sea-trials | `factory/qc_dyno.py` | the QC gate: 7 honest checks (OOS alpha, walk-forward, robustness, uncorrelated, cost…). |
 | **The Roster** | the fleet that made the cut | — | the library of validated engines. |
 | **The Captain** | decides sail per boat | `factory/risk_brain.py` | portfolio construction — info-ratio weights + the Tide Gauge. |
