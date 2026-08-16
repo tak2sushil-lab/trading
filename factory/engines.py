@@ -59,7 +59,8 @@ class PEADGap(Engine):
         return events[(events["direction"] == "UP") & (events["gap"] >= 5.0)]
 
 
-from factory.xsec import XSectionalReversal, XSectionalLowVol, OvernightDrift   # noqa: E402
+from factory.xsec import (XSectionalReversal, XSectionalLowVol,   # noqa: E402
+                          OvernightDrift, OvernightConsistency)
 
 # Registry — the factory floor. Add a class here and it flows through the whole pipeline.
 # (Whiplash / xsec_st_reversal was hunted Aug 16 and DISCARDED — dead in every regime,
@@ -71,6 +72,7 @@ REGISTRY = {
     "xsec_lowvol": XSectionalLowVol,     # Steady Hand   — market-neutral sleeve, failed (bull); bear-hedge candidate
     "pead_gap": PEADGap,                 # Earnings Drift — event/position-length, tested Aug 15
     "xsec_overnight": OvernightDrift,      # Night Shift  — overnight-drift persistence (Aug 16), bench-watch
+    "xsec_overnight_consist": OvernightConsistency,  # Clockwork — Night Shift v2, consistency signal (Aug 16)
 }
 
 

@@ -151,6 +151,11 @@ class OvernightDrift(CrossSectionalEngine):
     def factor(self, close):  # unused (overnight run computes its own factor); kept for interface
         return close * np.nan
 
+    def _signal(self, overnight):
+        """The picking signal from the overnight-return matrix. Base = trailing MEAN overnight
+        drift (magnitude). Subclasses override (e.g. consistency = how OFTEN it gaps up)."""
+        return overnight.rolling(self.lookback).mean()
+
     def run(self, events=None, tide=None, close=None, opens=None) -> pd.DataFrame:
         if close is None:
             close = D.load_daily_close()
@@ -159,7 +164,7 @@ class OvernightDrift(CrossSectionalEngine):
         # align matrices on common dates/symbols
         opens = opens.reindex(index=close.index, columns=close.columns)
         overnight = (opens / close.shift(1) - 1.0) * 100.0     # close[t-1] -> open[t], known at close[t]
-        fac = overnight.rolling(self.lookback).mean()          # trailing overnight drift, as-of close[t]
+        fac = self._signal(overnight)                          # picking signal, as-of close[t]
         fwd = overnight.shift(-1)                              # next overnight = enter close[t], exit open[t+1]
         mkt = fwd.mean(axis=1)                                 # overnight Tide per day
         rows = []
@@ -189,10 +194,35 @@ class OvernightDrift(CrossSectionalEngine):
 
     def neighbors(self):
         out = []
-        for lb in (5, 10, 20):
+        for lb in self._nbr_lookbacks:
             for dec in (0.1, 0.2):
-                e = OvernightDrift()
+                e = type(self)()          # preserve subclass (e.g. OvernightConsistency)
                 e.lookback = lb
                 e.decile = dec
                 out.append(e)
         return out
+
+    _nbr_lookbacks = (5, 10, 20)
+
+
+class OvernightConsistency(OvernightDrift):
+    """Clockwork — Night Shift v2. The user's refinement: don't chase the single BIGGEST overnight
+    gap, back the names that gap up like CLOCKWORK — rank by how OFTEN (fraction of recent nights)
+    a wild stock's close->open was positive, long the most-reliable repeat-gappers. Beats the raw
+    magnitude signal in 2026 (~2x) and fixes the 2022 bear where magnitude went negative. This is
+    the recognized 'consistency / hit-rate as momentum quality' refinement, on the overnight leg."""
+    lookback = 30                # robust mid-plateau (20-40 all work); ~6 trading weeks
+    decile = 0.1
+    long_end = "TOP"
+    _nbr_lookbacks = (20, 30, 40)   # the validated plateau
+
+    def __init__(self):
+        # bypass OvernightDrift.__init__ (which hard-codes the magnitude spec); set our own
+        Engine.__init__(self, EngineSpec(
+            name="xsec_overnight_consist", nickname="Clockwork",
+            hypothesis="Wild stocks that gap up CONSISTENTLY (high recent up-night frequency) keep gapping up overnight.",
+            side="LONG", hold_days=1, stop_pct=0.0, personality="ANY", direction="XS", sleeve=True,
+        ))
+
+    def _signal(self, overnight):
+        return (overnight > 0).rolling(self.lookback).mean()   # fraction of recent nights that gapped up

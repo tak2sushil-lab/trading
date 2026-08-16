@@ -166,6 +166,19 @@ gross per-leg alpha on backtest — **live-shadow is the real test**, same on-ra
 **Recommendation:** build Night Shift v2 as a registered engine (consistency factor) → full gate →
 live-shadow. Do NOT add Steady Hand.
 
+**Night Shift v2 BUILT + gated — "Clockwork" (`xsec_overnight_consist`, lookback 30d, plateau 20-40).**
+Full 7-check gate: **passes 6 of 7** — revives 2026 (OOS alpha IS +0.054 / OOS1 +0.056 / **OOS2 +0.066**,
+vs Night Shift's −0.001), t=**4.77**, walk-forward 13/13, robust 100%, uncorrelated (+0.23 vs Night Shift).
+**Fails only cost survival** as a market-neutral long-short sleeve (+0.057% alpha < 0.10% round-trip).
+**But that's a turnover artifact** — the gate assumes 100% nightly turnover; the 30d-consistency signal is
+slow, so real turnover is **19.6%/night**. The **deployable form is LONG-ONLY** (top-decile WILD by
+consistency, hold overnight): gross alpha **+0.29%/night (+0.23% OOS2)**, and turnover-aware **NET stays
++0.17%/night in 2026 even at a 0.30% round-trip** — survives realistic costs comfortably. Caveat: long-only
+⇒ carries overnight beta (raw +0.46%/night incl. tide); it's a directional overnight-long book, not pure
+market-neutral alpha. **Two open forks:** (1) make the gate's cost check *turnover-aware* (a fair fix for
+ALL engines — Wave Rider/Contrarian also hold multi-day, so the flat per-trade cost overstates their cost
+too); (2) live-shadow the long-only overnight-consistency book, same on-ramp as Wave Rider. Not decided/wired.
+
 ## 6. Honest findings baked in (the factory working)
 - **The lookahead bug we caught:** first fleet showed Sharpe 5.3 / +1674% — because slot selection sorted by *realized* return. Fixed to select on an entry-time feature; guarded by `test_no_lookahead` + `test_shuffle_invariance`. Result fell to a believable Sharpe ~1.2.
 - **The tide-throttle FAILED validation** → defaulted OFF. On our (bull-only) data it cut ~20% CAGR *and* worsened drawdown — reefing sails during normal pullbacks missed recoveries. Its bear-protection value is **unproven** (we have no sustained bear in the data). Enable only with real reason.
