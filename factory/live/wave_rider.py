@@ -299,7 +299,10 @@ def monitor():
             continue
         if MODE == "LIVE":
             ok, fill, _ = place_paper_order(t["symbol"], t["shares"], "SELL")
-            if ok and fill:
+            if not ok:   # never mark CLOSED unless the SELL actually confirmed a fill (USAR lesson)
+                log(f"exit for {t['symbol']} NOT confirmed filled — leaving OPEN, retry next fire")
+                continue
+            if fill:
                 price = fill
         record_exit(t["id"], price, reason)
 

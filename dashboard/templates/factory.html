@@ -230,7 +230,7 @@
     <div class="section-title">CLOCKWORK — LIVE PAPER (overnight book · Night Shift v2)
       {% if f.ovn.mode=='LIVE' %}<span class="pill livebadge">LIVE ORDERS</span>{% else %}<span class="pill shadowbadge">SHADOW · no orders</span>{% endif %}
     </div>
-    <p class="subtle">Roster engine #3: near the close, rank WILD stocks by how <b>consistently</b> they've gapped up (fraction of the last 30 nights positive), buy the top ~10, hold overnight, sell at the open. Passes the gate at 19% turnover; long-only so it carries overnight beta. Shadow = records intended trades, places no orders.</p>
+    <p class="subtle"><b>Directional overnight book on live-shadow</b> (not a market-neutral Roster engine — it fails the gate's cost check once you charge a full round-trip every night, which an overnight book always pays). Near the close, rank WILD stocks by how <b>consistently</b> they've gapped up (last 30 nights), buy the top ~10, hold overnight, sell at the open. It carries overnight beta, so its RAW return is positive at realistic costs; the forward shadow test measures real net-of-fills. Shadow = records intended trades, places no orders.</p>
 
     {% if f.ovn.scan %}
     <div style="margin:6px 0 10px">

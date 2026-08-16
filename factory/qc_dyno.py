@@ -118,17 +118,19 @@ def evaluate(engine: Engine, events: pd.DataFrame, tide: pd.DataFrame,
     sc.checks["walk-forward"] = (wf_frac >= MIN_WF_POS, f"{pos}/{wins} windows positive ({wf_frac:.0%}, need ≥{MIN_WF_POS:.0%})")
 
     # 4. Cost survival — alpha minus round-trip friction still positive.
-    # Turnover-aware: a SLEEVE re-forms daily but a slow signal keeps most names, so you only
-    # pay the spread on the FRACTION that actually changes. A flat per-trade cost overstates the
-    # bill for any multi-day holder. Slot engines = one round-trip per discrete trade → full cost.
-    if engine.spec.sleeve:
+    # Turnover-aware, but ONLY for a sleeve that HOLDS a position continuously while it stays
+    # selected (a multi-day hold): a slow signal keeps most names, so you pay the spread just on
+    # the FRACTION that changes. A 1-day/overnight book does NOT hold continuously — it goes flat
+    # between every period (you must be out intraday), so it round-trips FULLY each period and the
+    # flat per-trade cost is correct. Slot engines = one round-trip per discrete trade → full cost.
+    if engine.spec.sleeve and engine.spec.hold_days >= 2:
         turn = _turnover(trades)
         cost = COST_DRAG * turn
         sc.stats["turnover"] = turn
         cost_txt = f"cost {COST_DRAG}×{turn:.0%} turnover = {cost:.3f}%"
     else:
         cost = COST_DRAG
-        cost_txt = f"cost {COST_DRAG}"
+        cost_txt = f"cost {COST_DRAG} (full round-trip — no continuous hold)" if engine.spec.sleeve else f"cost {COST_DRAG}"
     net = a.mean() - cost
     sc.stats["alpha_net"] = net
     sc.checks["cost survival"] = (net > 0, f"alpha {a.mean():+.3f}% − {cost_txt} = {net:+.3f}%")

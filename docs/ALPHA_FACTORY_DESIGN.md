@@ -76,7 +76,7 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 |---|---|---|
 | **Wave Rider** (momentum_wild) | **PASS ✅ Roster · LIVE-shadow** | slot-based momentum; OOS alpha +0.54/+0.49%, t=6.7, walk-forward **13/13**, robust 100%. Running live-paper in SHADOW (see §10). |
 | **Contrarian** (xsec_reversal) | **PASS ✅ Roster** | market-neutral long-short *sleeve*; OOS +0.30/+0.36% (per-leg), t=3.9, robust 100%, **corr to Wave Rider −0.13** — the diversifier. Fully integrated. |
-| **Clockwork** (xsec_overnight_consist) | **PASS ✅ Roster · LIVE-shadow** | Night Shift v2 — long WILD names by 30d up-night *consistency*, hold overnight. OOS revived (OOS2 +0.066), t=4.77, WF 13/13, uncorrelated. Passes cost under the turnover-aware model (19%/night). Long-only deployable form nets +0.17%/night in 2026 @0.30% RT. Live-paper SHADOW via `factory/live/overnight.py`. (Aug 16 2026.) |
+| **Clockwork** (xsec_overnight_consist) | **FAIL ❌ (cost) — directional, LIVE-shadow** | Night Shift v2 — long WILD names by 30d up-night *consistency*, hold overnight. Passes 6/7 (OOS2 +0.066, t=4.77, WF 13/13, uncorrelated) but **fails cost as a market-neutral sleeve**: an overnight book goes flat intraday → **full round-trip every night**, and its thin +0.057% alpha doesn't clear 0.10% RT. (The turnover-aware discount does NOT apply — see §5d bug-sweep.) It is NOT a market-neutral roster engine. It IS a **directional long-only overnight book** whose RAW net return (carries overnight beta) is positive at realistic costs; on live-shadow via `factory/live/overnight.py` to get real net-of-fills data. Skill (alpha) after full nightly cost is marginal — the forward test decides. (Aug 16 2026.) |
 | **Bargain Hunter** (meanrev_mid) | **FAIL ❌** | uncorrelated & positive OOS, but **fails robustness** (67%) — held back |
 | **Steady Hand** (xsec_lowvol) | **FAIL ❌** | engine-#3 candidate (betting-against-beta). Alpha **−1.1%**, robustness 0% — the low-vol anomaly is *inverted* in this high-beta bull tape. Gate rejected. |
 | Cross-Sectional Momentum (bench) | **FAIL ❌** | best config looked great (OOS1 +2.4%) but **44% robustness** — an overfit spike |
@@ -177,9 +177,12 @@ slow, so real turnover is **19.6%/night**. The **deployable form is LONG-ONLY** 
 consistency, hold overnight): gross alpha **+0.29%/night (+0.23% OOS2)**, and turnover-aware **NET stays
 +0.17%/night in 2026 even at a 0.30% round-trip** — survives realistic costs comfortably. Caveat: long-only
 ⇒ carries overnight beta (raw +0.46%/night incl. tide); it's a directional overnight-long book, not pure
-market-neutral alpha. **Both forks SHIPPED Aug 16 2026:** (1) **turnover-aware cost gate** (`qc_dyno._turnover`) — sleeve cost =
-`COST_DRAG × turnover`; Clockwork now PASSES (net +0.038% market-neutral), Contrarian repriced (49%
-turnover), Wave Rider (slot) unchanged. Roster = **3 engines**. (2) **`factory/live/overnight.py` (Clockwork
+market-neutral alpha. **Both forks SHIPPED Aug 16 2026** (cost model CORRECTED same day in the bug sweep — see below): (1)
+**turnover-aware cost gate** (`qc_dyno._turnover`) — a *continuous-hold* sleeve (hold ≥ 2 days) pays the
+spread only on the fraction of names that changes: Contrarian repriced (49% turnover, still PASS), Wave
+Rider (slot) unchanged. **Bug sweep correction:** the discount does NOT apply to a 1-night overnight book
+(Clockwork), which goes flat intraday and round-trips FULLY each night → full cost → Clockwork **fails the
+market-neutral gate** (its original honest verdict). **Roster = 2** (Wave Rider + Contrarian). (2) **`factory/live/overnight.py` (Clockwork
 live-paper trader)** — ranks WILD by fresh 30d up-night consistency near the close, buys top 10 equal-weight,
 sells at the open; DB `overnight_trades`/`overnight_scan_log`, launchd `com.sushil.trading.clockwork`,
 **SHADOW default**, run-lock, self-gates close/open windows. Dry-scan verified (sane picks: CC 73%, CLF/NWL/P
