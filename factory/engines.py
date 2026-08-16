@@ -60,7 +60,7 @@ class PEADGap(Engine):
 
 
 from factory.xsec import (XSectionalReversal, XSectionalLowVol,   # noqa: E402
-                          OvernightDrift, OvernightConsistency)
+                          OvernightDrift, OvernightConsistency, RiskAdjMomentum)
 
 # Registry — the factory floor. Add a class here and it flows through the whole pipeline.
 # (Whiplash / xsec_st_reversal was hunted Aug 16 and DISCARDED — dead in every regime,
@@ -73,6 +73,7 @@ REGISTRY = {
     "pead_gap": PEADGap,                 # Earnings Drift — event/position-length, tested Aug 15
     "xsec_overnight": OvernightDrift,      # Night Shift  — overnight-drift persistence (Aug 16), bench-watch
     "xsec_overnight_consist": OvernightConsistency,  # Clockwork — Night Shift v2, consistency signal (Aug 16)
+    "xsec_riskadj_mom": RiskAdjMomentum,   # Smooth Sailing — engine-#4 hunt, risk-adjusted momentum (Aug 16)
 }
 
 

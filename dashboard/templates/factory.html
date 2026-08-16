@@ -32,6 +32,17 @@
     .subtle { color:#8b949e; font-size:11px; }
     .shadowbadge { background:#3a2e10; color:#e3b341; border:1px solid #9e7b1f; }
     .livebadge { background:#10391f; color:#3fb950; border:1px solid #2ea043; }
+    .dry-lane { border:1px solid #30363d; border-left:3px solid var(--acc); border-radius:8px;
+                padding:9px 11px; margin-bottom:11px; background:#0d1117; }
+    .dry-head { font-weight:700; font-size:13px; color:#e6edf3; margin-bottom:8px; }
+    .dry-head .tag { font-size:10.5px; color:#8b949e; font-weight:400; margin-left:6px; }
+    .dry-flow { display:flex; flex-wrap:wrap; gap:5px; align-items:stretch; }
+    .lstep { flex:1 1 128px; min-width:118px; background:#0f141b; border:1px solid #24292f;
+             border-radius:6px; padding:6px 8px; }
+    .lstep .lk { font-size:9px; letter-spacing:.6px; color:var(--acc); font-weight:700; }
+    .lstep .lv { font-size:10.5px; color:#c9d1d9; line-height:1.32; margin-top:3px; }
+    .lstep.alpha { background:#10261a; border-color:#2ea043; }
+    .lstep.alpha .lk { color:#3fb950; }
   </style>
 </head>
 <body>
@@ -81,6 +92,49 @@
       <div class="fbox"><div class="fnum">⑦ WATCH</div><div class="fname">The Lookout</div><div class="fana">crow's-nest</div><div class="fdesc">live vs backtest; DRIFT + DECAY alarms</div></div>
     </div>
     <div class="loop">↺ FAIL at the gate → back to the bench &nbsp;·&nbsp; the Lookout's <b>decay alarm</b> retires a rotting engine and feeds the lesson back to Hunting</div>
+  </div>
+
+  <!-- HOW AN ENGINE FIRES -->
+  <div class="card section">
+    <div class="section-title">HOW AN ENGINE FIRES — one trade, signal to exit</div>
+    <p class="subtle" style="margin-bottom:12px">Every engine speaks the SAME language: it defines ONE rule (<b>select</b>), then the framework runs the identical maths — realised outcome minus the <b>Tide</b> (market drift) = <b>alpha</b> (skill). Here is a single worked trade through each of the three Roster engines.</p>
+
+    <div class="dry-lane" style="--acc:#4f9cf6">
+      <div class="dry-head">🌊 Wave Rider <span class="tag">slot · momentum · 3-day hold · LIVE-shadow</span></div>
+      <div class="dry-flow">
+        <div class="lstep"><div class="lk">① SIGNAL</div><div class="lv">10:00 ET — TSLA is <b>+4.2%</b> vs yesterday, holding above its opening VWAP</div></div>
+        <div class="lstep"><div class="lk">② SELECT</div><div class="lv">it's a <b>WILD</b> stock making an <b>UP</b> move ≥3% → qualifies</div></div>
+        <div class="lstep"><div class="lk">③ ENTER</div><div class="lv">buy 1 of 5 slots: 8 sh @ $250 (~$2k), stop $230 (−8%)</div></div>
+        <div class="lstep"><div class="lk">④ HOLD</div><div class="lv">3 business days — the crowd keeps arriving</div></div>
+        <div class="lstep"><div class="lk">⑤ EXIT</div><div class="lv">day-3 close: sell @ <b>$265</b> (+6.0%)</div></div>
+        <div class="lstep alpha"><div class="lk">✓ ALPHA</div><div class="lv">+6.0% − Tide +1.2% = <b>+4.8% skill</b></div></div>
+      </div>
+    </div>
+
+    <div class="dry-lane" style="--acc:#8957e5">
+      <div class="dry-head">↩️ Contrarian <span class="tag">sleeve · reversal · 5-day hold · market-neutral</span></div>
+      <div class="dry-flow">
+        <div class="lstep"><div class="lk">① SIGNAL</div><div class="lv">rank all ~290 names by their last <b>3 days</b> of return</div></div>
+        <div class="lstep"><div class="lk">② SELECT</div><div class="lv"><b>LONG</b> the worst loser (SYM −13%), <b>SHORT</b> the best winner (XYZ +16%)</div></div>
+        <div class="lstep"><div class="lk">③ ENTER</div><div class="lv">a balanced basket — small equal weights on both legs</div></div>
+        <div class="lstep"><div class="lk">④ HOLD</div><div class="lv">5 business days — the rubber band snaps back</div></div>
+        <div class="lstep"><div class="lk">⑤ EXIT</div><div class="lv">loser bounces +3%, winner fades −1%</div></div>
+        <div class="lstep alpha"><div class="lk">✓ ALPHA</div><div class="lv">both legs beat the Tide; market move <b>cancels</b> (pays bull or bear)</div></div>
+      </div>
+    </div>
+
+    <div class="dry-lane" style="--acc:#e3b341">
+      <div class="dry-head">🌙 Clockwork <span class="tag">overnight book · consistency · 1 night · LIVE-shadow</span></div>
+      <div class="dry-flow">
+        <div class="lstep"><div class="lk">① SIGNAL</div><div class="lv">15:50 ET — rank WILD names by <b>30-day up-night consistency</b></div></div>
+        <div class="lstep"><div class="lk">② SELECT</div><div class="lv">CC gapped up <b>73%</b> of the last 30 nights → top of the list</div></div>
+        <div class="lstep"><div class="lk">③ ENTER</div><div class="lv">buy at the close: 83 sh @ $12.00 (~$1k, 1 of 10)</div></div>
+        <div class="lstep"><div class="lk">④ HOLD</div><div class="lv">overnight — the money made while you sleep</div></div>
+        <div class="lstep"><div class="lk">⑤ EXIT</div><div class="lv">next open: sell @ <b>$12.18</b> (+1.5%)</div></div>
+        <div class="lstep alpha"><div class="lk">✓ ALPHA</div><div class="lv">+1.5% − overnight Tide +0.4% = <b>+1.1% skill</b></div></div>
+      </div>
+    </div>
+    <p class="subtle" style="margin-top:4px">Illustrative numbers. The key point: three different edges, one identical honesty test — <b>outcome − Tide = alpha</b> — so no engine can flatter itself.</p>
   </div>
 
   <!-- ROSTER / ENGINES -->

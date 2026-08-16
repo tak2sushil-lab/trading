@@ -226,3 +226,36 @@ class OvernightConsistency(OvernightDrift):
 
     def _signal(self, overnight):
         return (overnight > 0).rolling(self.lookback).mean()   # fraction of recent nights that gapped up
+
+
+class RiskAdjMomentum(CrossSectionalEngine):
+    """Smooth Sailing — engine-#4 hunt (a defensive-flavored, longer-horizon diversifier). Rank by
+    trailing 60d RISK-ADJUSTED return (mean daily return / its volatility — a per-stock Sharpe), long
+    the smooth steady risers, short the choppy/falling names, hold ~10d. Unlike raw momentum it avoids
+    the fragile high-vol names, and unlike low-vol it still participates in uptrends. Longer horizon
+    than Wave Rider (3d) and Contrarian (5d), so it may add diversification even in the momentum family."""
+    lookback = 60
+    decile = 0.1
+    long_end = "TOP"
+
+    def __init__(self):
+        super().__init__(EngineSpec(
+            name="xsec_riskadj_mom", nickname="Smooth Sailing",
+            hypothesis="Stocks in smooth, low-volatility uptrends keep outperforming choppy/falling ones.",
+            side="LONG", hold_days=10, stop_pct=0.0, personality="ANY", direction="XS", sleeve=True,
+        ))
+
+    def factor(self, close):
+        ret = close.pct_change()
+        mean = ret.rolling(self.lookback).mean()
+        vol = ret.rolling(self.lookback).std()
+        return mean / vol.replace(0, np.nan)          # trailing per-stock Sharpe (risk-adjusted trend)
+
+    def neighbors(self):
+        out = []
+        for lb in (30, 60, 90):
+            for h in (5, 10, 15):
+                e = RiskAdjMomentum(); e.lookback = lb
+                e.spec = replace(self.spec, hold_days=h)
+                out.append(e)
+        return out
