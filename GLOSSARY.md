@@ -159,7 +159,9 @@ Full design + diagram: `docs/ALPHA_FACTORY_DESIGN.md`. Judged on smoothness (Sha
 | **The Fill Desk** | the harbour | `factory/execution.py` | discrete-slot portfolio sim → equity curve, Sharpe, drawdown. |
 | **The Lookout** | crow's-nest storm-watch | `factory/live/lookout.py` | watches live/shadow vs backtest; sounds DRIFT + DECAY alarms. Read-only. |
 
-**Retirement queue (flagged by the factory's honest tests; live code NOT yet cut):** **Fish Finder**
-(`FISHFINDER_*`) and the equity **bear book** (`BEAR_MOMENTUM`, `_scan_and_enter_bear`) both fail the
-market-neutral tests — scheduled for retirement when **Wave Rider** graduates to live paper. Until
-then they remain live and their glossary rows above stand.
+**RETIRED Aug 15 2026 (done, not queued):** **Fish Finder** (`FISHFINDER_*` / `_scan_regime_adaptive`)
+and the equity **bear book** (`BEAR_MOMENTUM` / `_scan_and_enter_bear`) — both failed every Alpha
+Factory market-neutral test; Fish Finder also bled ~$780/mo live. Disabled in `auto_trader.py`
+(`FISH_FINDER_ENABLED=False`; WEAK-regime bear branch now catalyst-override + monitor only). Code
+kept as reference (revertible). **Wave Rider** (§8 above) is the validated live replacement. Their
+§4 rows above are historical — the modules exist but no longer trade.

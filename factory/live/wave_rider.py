@@ -63,6 +63,25 @@ def init_db():
         shares INTEGER, stop_price REAL, exit_on_date TEXT,
         status TEXT DEFAULT 'OPEN', exit_date TEXT, exit_time TEXT, exit_price REAL,
         pnl REAL, pnl_pct REAL, exit_reason TEXT, mode TEXT, day_chg REAL, order_id TEXT)""")
+    # scan-visibility: one SUMMARY row (the funnel) + one CANDIDATE row per qualifier, per cycle
+    c.execute("""CREATE TABLE IF NOT EXISTS wave_scan_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, scan_ts TEXT, kind TEXT,
+        symbol TEXT, day_chg REAL, ext_vwap REAL, verdict TEXT, detail TEXT)""")
+    c.commit(); c.close()
+
+
+def record_scan(funnel: dict, candidates: list):
+    """Persist the scan funnel + each qualifying candidate's verdict, for dashboard visibility."""
+    import json
+    ts = (now_et() if ET else dt.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    c = sqlite3.connect(DB)
+    c.execute("INSERT INTO wave_scan_log(scan_ts,kind,symbol,verdict,detail) VALUES(?,?,?,?,?)",
+              (ts, "SUMMARY", None, "SCAN", json.dumps(funnel)))
+    for sym, sig, verdict in candidates:
+        c.execute("INSERT INTO wave_scan_log(scan_ts,kind,symbol,day_chg,ext_vwap,verdict,detail) VALUES(?,?,?,?,?,?,?)",
+                  (ts, "CANDIDATE", sym, round(sig["day_chg"], 2), round(sig["ext_vwap"], 2), verdict, None))
+    # keep the log bounded (last ~3000 rows)
+    c.execute("DELETE FROM wave_scan_log WHERE id < (SELECT MAX(id)-3000 FROM wave_scan_log)")
     c.commit(); c.close()
 
 
@@ -209,23 +228,34 @@ def place_paper_order(sym, shares, side) -> tuple[bool, float, str | None]:
 def scan_and_enter():
     held = open_symbols()
     free = SLOTS - len(held)
+    funnel = {"scanned": 0, "held_already": 0, "no_signal": 0, "below_move": 0,
+              "below_vwap": 0, "earnings": 0, "qualified": 0, "entered": 0,
+              "slots_free": free, "mode": MODE}
     if free <= 0:
-        return
-    picks = []
+        record_scan(funnel, [])
+        log("slots full — no entries this cycle"); return
+    candidates = []
     for sym in wild_universe():
         if sym in held:
-            continue
+            funnel["held_already"] += 1; continue
+        funnel["scanned"] += 1
         sig = live_signal(sym)
-        if not qualifies(sig):
-            continue
+        if sig is None:
+            funnel["no_signal"] += 1; continue
+        if sig["day_chg"] < MOVE_MIN or not (PRICE_LO <= sig["price"] <= PRICE_HI):
+            funnel["below_move"] += 1; continue
+        if sig["ext_vwap"] < 0:                       # not holding above opening VWAP
+            funnel["below_vwap"] += 1; continue
         dte = days_to_earnings(sym)
         if dte is not None and 0 <= dte <= EARNINGS_BLOCK_DAYS:
-            log(f"skip {sym}: earnings in {dte}d")
-            continue
-        picks.append((sym, sig))
-    # priority: biggest mover first (entry-time, causal)
-    picks.sort(key=lambda x: -x[1]["day_chg"])
-    for sym, sig in picks[:free]:
+            funnel["earnings"] += 1; continue
+        funnel["qualified"] += 1
+        candidates.append((sym, sig))
+    candidates.sort(key=lambda x: -x[1]["day_chg"])   # biggest mover first (entry-time, causal)
+    logged = []
+    for i, (sym, sig) in enumerate(candidates):
+        if i >= free:
+            logged.append((sym, sig, "QUALIFIED_NO_SLOT")); continue
         price = sig["price"]
         shares = max(1, int(PER_SLOT / price))
         stop = round(price * (1 - STOP_PCT / 100), 2)
@@ -233,12 +263,16 @@ def scan_and_enter():
         if MODE == "LIVE":
             ok, fill, oid = place_paper_order(sym, shares, "BUY")
             if not ok:
-                log(f"entry not filled {sym} — skipping"); continue
+                logged.append((sym, sig, "ORDER_FAILED")); continue
             price = fill or price
             record_entry(sym, price, shares, round(price * (1 - STOP_PCT / 100), 2), exit_on, sig["day_chg"], oid)
-        else:  # SHADOW
+        else:  # SHADOW — no order, just record + mark to live prices
             record_entry(sym, price, shares, stop, exit_on, sig["day_chg"])
+        funnel["entered"] += 1
+        logged.append((sym, sig, "ENTERED"))
         log(f"ENTER {sym} x{shares} @ ${price:.2f} (+{sig['day_chg']:.1f}%) stop ${stop} exit_on {exit_on}")
+    record_scan(funnel, logged)
+    log(f"scan funnel: {funnel['scanned']} scanned → {funnel['qualified']} qualified → {funnel['entered']} entered")
 
 
 # ─────────────────────────── monitor + exit ───────────────────────────

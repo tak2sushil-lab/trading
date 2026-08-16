@@ -3504,7 +3504,12 @@ def run_scan():
     # the same MAX_OPEN_TRADES/$10K pool, so open_trades is refreshed right
     # after — everything below this point must see the true, current count,
     # not a stale pre-regime-adaptive snapshot.
-    if _entries_allowed and is_entry_window() and not is_trading_blocked()[0]:
+    # RETIRED Aug 15 2026 — Fish Finder (FISHFINDER_*) failed every Alpha Factory test (negative
+    # market-neutral alpha OOS) and bled ~$780/mo live. Replaced by Wave Rider
+    # (factory/live/wave_rider.py), now live-paper in SHADOW. Code kept as reference; revert by
+    # setting FISH_FINDER_ENABLED=True. See docs/ALPHA_FACTORY_DESIGN.md retirement queue.
+    FISH_FINDER_ENABLED = False
+    if FISH_FINDER_ENABLED and _entries_allowed and is_entry_window() and not is_trading_blocked()[0]:
         _scan_regime_adaptive(regime, open_trades)
         open_trades = get_open_trades()
 
@@ -3529,9 +3534,13 @@ def run_scan():
             _scan_catalyst_override(open_trades)
             exits = monitor_open_trades(regime, confirmed_scans)
         else:
-            log(f"WEAK market — routing to bear strategy (short scan); checking catalyst overrides")
+            # RETIRED Aug 15 2026 — equity bear book (BEAR_MOMENTUM / _scan_and_enter_bear) failed
+            # the Alpha Factory's honest tests (down-movers bounce; no robust short edge in any
+            # regime/period). WEAK regime is now catalyst-overrides + monitor only. Revert: restore
+            # the _scan_and_enter_bear call. See docs/ALPHA_FACTORY_DESIGN.md retirement queue.
+            log(f"WEAK market — bear book RETIRED (Aug 15 2026); catalyst overrides + monitor only")
             _scan_catalyst_override(open_trades)
-            exits = _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
+            exits = monitor_open_trades(regime, confirmed_scans)
     elif not spy_above_open:
         log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
         exits = monitor_open_trades(regime, confirmed_scans)

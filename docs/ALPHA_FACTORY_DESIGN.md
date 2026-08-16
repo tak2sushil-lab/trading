@@ -112,9 +112,19 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
   5-slot $10k engine. The immediately tradable path at $10k stays long-only **Wave Rider**.
 - **Next builds:** blend the sleeve's curve into the slot fleet's combined equity; conviction sizing
   (lag-tolerant); an LLM-as-feature experiment (news → number → backtested); keep hunting engine #3.
-- **Retirement queue (live code, not yet cut):** Fish Finder and the equity bear book
-  (`BEAR_MOMENTUM`) both failed the honest tests — flagged for retirement when Wave Rider graduates
-  from shadow to live paper. Not removed yet (still running).
+- **RETIRED Aug 15 2026 (done):** Fish Finder (`FISHFINDER_*`) and the equity bear book
+  (`BEAR_MOMENTUM`) both failed the honest tests — **disabled in `auto_trader.py`**
+  (`FISH_FINDER_ENABLED=False`; WEAK-regime bear branch → catalyst-override + monitor only). Code
+  kept as reference, revertible. Wave Rider (live-shadow) is the replacement. Surfaced on the
+  dashboard `/factory` page.
+
+## 12. Dashboard visibility (`/factory` page)
+`dashboard/app.py` `get_factory_state()` + `templates/factory.html` render: the **architecture
+diagram**, the **engine roster** (pass/fail + scorecards from `factory/cache/factory_snapshot.json`),
+the **fleet** result, and **Wave Rider live** — mode, open/closed trades, and the **scan funnel**
+(scanned → rejected-reasons → qualified → entered, from the `wave_scan_log` table) so the assembly
+is visibly *running*, not sitting out. Refresh the snapshot after engine changes:
+`venv/bin/python -m factory.snapshot`. New tables this build: `wave_trades`, `wave_scan_log`.
 
 ## 10. The Live Layer (`factory/live/`)
 | Piece | Analogy | What it does |

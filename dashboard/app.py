@@ -297,7 +297,10 @@ def get_options_positions():
 
     live_map = {}
     for p in (_bridge('/portfolio/options') or []):
-        live_map[p.get('symbol', '')] = p
+        sym = p.get('symbol', '')
+        agg = live_map.setdefault(sym, {'marketValue': 0.0, 'unrealizedPnL': 0.0})
+        agg['marketValue'] += p.get('marketValue') or 0.0
+        agg['unrealizedPnL'] += p.get('unrealizedPnL') or 0.0
 
     now_et = datetime.now(tz=ET)
 
@@ -1113,6 +1116,51 @@ def glossary():
     standing reference page sourced from the same terms GLOSSARY.md already
     documents, reorganized by where they appear on the dashboard."""
     return render_template('glossary.html')
+
+
+def get_factory_state():
+    """Alpha Factory visibility (Aug 15 2026): the snapshot (roster/fleet/scorecards from
+    factory/cache/factory_snapshot.json) + live Wave Rider state (wave_trades) + the scan funnel
+    (wave_scan_log) so the /factory page shows what the factory IS and what it's DOING."""
+    import json
+    state = {"snapshot": None, "open": [], "closed": [], "closed_summary": None,
+             "scan": None, "candidates": [], "mode": "SHADOW"}
+    try:
+        with open(os.path.join(BASE_DIR, 'factory', 'cache', 'factory_snapshot.json')) as fh:
+            state["snapshot"] = json.load(fh)
+    except Exception:
+        pass
+    try:
+        conn = sqlite3.connect(TRADES_DB); conn.row_factory = sqlite3.Row
+        state["open"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM wave_trades WHERE status='OPEN' ORDER BY entry_date DESC")]
+        state["closed"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM wave_trades WHERE status='CLOSED' ORDER BY exit_date DESC, id DESC LIMIT 15")]
+        row = conn.execute("SELECT scan_ts, detail FROM wave_scan_log WHERE kind='SUMMARY' "
+                           "ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            state["scan"] = {"ts": row["scan_ts"], "funnel": json.loads(row["detail"])}
+            state["candidates"] = [dict(r) for r in conn.execute(
+                "SELECT symbol, day_chg, ext_vwap, verdict FROM wave_scan_log "
+                "WHERE kind='CANDIDATE' AND scan_ts=? ORDER BY day_chg DESC", (row["scan_ts"],))]
+        m = conn.execute("SELECT mode FROM wave_trades ORDER BY id DESC LIMIT 1").fetchone()
+        if m:
+            state["mode"] = m["mode"]
+        conn.close()
+    except Exception:
+        pass
+    if state["closed"]:
+        pnls = [c["pnl"] or 0 for c in state["closed"]]
+        state["closed_summary"] = {"n": len(pnls), "pnl": round(sum(pnls), 2),
+                                   "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
+    return state
+
+
+@app.route('/factory')
+def factory():
+    """The Alpha Factory — architecture diagram + live Roster/fleet/Wave-Rider state.
+    See docs/ALPHA_FACTORY_DESIGN.md."""
+    return render_template('factory.html', f=get_factory_state())
 
 
 @app.route('/api/data')
