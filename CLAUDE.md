@@ -2470,3 +2470,64 @@ DECOMMISSIONED. Full trail: `docs/ALPHA_FACTORY_DESIGN.md`, `alpha-factory` + `e
 + `equity-regime-diagnosis-aug14` memories. Savepoints: git tags `checkpoint-2026-08-15-alpha-factory-v1`/
 `-v2`/`-factory-dashboard`. PARKED Sun Aug 16, resume Mon Aug 17 (free 2022 bear stress-test + watch Wave
 Rider's first shadow scan + branch-merge decision).
+
+---
+
+## Aug 16 2026 — Options challenged to the ground: NO own edge → freeze + "Turbo" design (factory→options bridge)
+
+User asked to challenge the whole options system: mechanism works (takes/exits trades) but
+candidate selection loses. **Deep-dive (scored all 2,089 `opt_calc_log` rows vs the
+underlying's real forward path, yfinance daily — same proxy as the Jul 18 audit): options has
+NO tape-independent selection edge.** Every apparent edge (verdict gate, IV routing, news
+conviction, signal_count) dissolves when the month is held constant — it was May's
+momentum-beta + composition (469 of 498 all-time ENTERs were in May; ENTER term −23% in June).
+Bull hit-breakeven decayed 90→74→28→25% May→Aug on UNCHANGED logic = long momentum-beta that
+died after May (same disease as [[equity-regime-diagnosis-aug14]]). Two mechanically-real
+survivors: time-to-breakeven median 15-27d (theta eats debit spreads before direction pays),
+and IV rank <25 reliably bad every month. **Groq/Llama is NOT gone** (GROQ_KEY set,
+news_engine.py runs 70B→8B→Haiku) — it was decoupled from trading on Jul 19 (Ghost Ledger
+only). Lifetime closed options P&L −$4,502; realized post-rebuild is bear-puts-win /
+bull-debit-loses, matching the Jul 18 audit.
+
+**SHIPPED (operational, user-approved): equity-echo entry freeze.** `EQUITY_ECHO_FROZEN=True`
+(durable code constant, NOT the transient `_paused` — survives restarts) gates both auto-entry
+paths (`_check_equity_scan_triggers` + `scalp_scan_loop`). Watchman EXITS untouched (the 4 open
+positions #24-27 run normal exits); news→Ghost-Ledger logging untouched. Reversible. Restarted
++ verified.
+
+**DESIGN written for approval (NOT built): `docs/OPTIONS_FACTORY_BRIDGE_DESIGN_2026-08-16.md`
+— "Turbo".** Options rebuilt as a leverage/structure execution transform on a
+Factory-VALIDATED engine (Wave Rider = first client; Contrarian is a sleeve, not option-able),
+NOT a signal source. Core = **Edge-Budget gate** (the options `MIN_RR` that was missing:
+E_move ≥ (BE_move+Carry)×MARGIN) + IV-routing rule (SKIP<25 / debit-call-spread 25-65 /
+bull-put-credit >65) + 2-4wk DTE for the 3-day hold + max-loss sized to the engine's $160/slot
+risk + exit mirrors the engine. LEAP reserved for a future long-horizon engine. Ships
+SHADOW-on-shadow first (`options_shadow` table, mark to live chain), scored on **leverage
+premium net of carry** vs holding shares — design explicitly allows the honest conclusion
+"options adds nothing to a +0.5%-alpha engine." Equity-echo + news retired as direction.
+
+**TURBO BUILT + LIVE-SHADOW (same session).** `factory/live/turbo.py` + `options_shadow` table
++ launchd `com.sushil.trading.turbo` (SHADOW, 5-min, mirrors wave_rider; loaded + verified clean,
+0 tickets — Wave Rider's first shadow picks land Monday). Turbo plans an options structure on each
+Wave Rider `wave_trades` ticket, marks to live chain, scores **leverage-premium vs shares**.
+**Edge-Budget gate upgraded** from the doc's crude "median move clears breakeven" to **convex
+expected value**: reprice the real structure (BS `engine._bs_spread_vals`) at day-3 across Wave
+Rider's 6,481 real WILD `cl3` outcomes (8% stop modeled); gate = EV/risk ≥ 0.10 + IV≥25.
+Validated at build: discriminates (cheap-IV OTM debit +18% PASS vs rich-IV ATM +2% SKIP); the
+IV>65 credit route is NEGATIVE-EV on a momentum engine (wrong convexity — gate refuses it). Design
+doc §4 updated. Nothing places orders (SHADOW). **Monday: watch `logs/turbo.log`.**
+
+**VALIDATION DONE Aug 16 (both asks):** EQUITY SIZING **sound** (risk-based dual cap
+`shares=min(capital/price, MAX_LOSS_PER_TRADE/risk_per_share)`, side-correct, all 4 paths).
+OPTIONS CALCULATORS **math correct** (debit/credit/scalp/LEAP formulas verified; live arithmetic
+re-check Monday since calcs hard-abort w/o IV rank = bridge). OPTIONS SIZING **redesigned** (user
+call): `_auto_qty_calc` now sizes on true MAX-LOSS to a single number
+`OPTIONS_MAX_LOSS_PER_TRADE = 10% of pool = $500` = both sizing target AND per-trade cap, for
+debit (premium) AND credit (margin); **credit spreads now auto-size** (were stuck at 1×);
+per-trade risk cut $1200→$500. Bug fixed: debit/credit calc **key inconsistency**
+(`max_loss_$` vs `max_loss`) that bit turbo.py. options_trader restarted, unit-tested. Full trail:
+[[options-edge-dive-aug16]]. Turbo dashboard card also built on /factory (picks + strike ladder).
+
+**NEXT (options) BUILD/VALIDATION:** design doc §10 (own-strike EV-max v2, extend
+`collect_chain_snapshots.py` for shadow marks) + the two validation asks above. See
+[[options-edge-dive-aug16]].

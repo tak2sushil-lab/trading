@@ -98,7 +98,16 @@ MID_CAP_UNIVERSE = {
     'COIN', 'AXON', 'HOOD', 'SMCI', 'RKLB',
     'IONQ', 'CELH', 'AFRM', 'SOFI', 'HIMS', 'MARA',
 }
-AUTO_QTY_TARGET = 1200   # target dollars per options position (auto-qty scales to this)
+AUTO_QTY_TARGET = 1200   # (superseded Aug 16 2026 by OPTIONS_MAX_LOSS_PER_TRADE below — kept for
+                         # reference/history; _auto_qty_calc now sizes to the risk cap, not this)
+
+# Per-trade MAX-LOSS budget (Aug 16 2026) — sizing target AND hard cap in ONE number, applied
+# identically to debit spreads (max loss = premium) and credit spreads (max loss = width − credit).
+# Gives options the per-trade risk discipline equity already has (MAX_LOSS_PER_TRADE). At 10% of a
+# $5,000 pool = $500/trade (vs the old $1,200 ≈ 24%). Change the % to resize the whole book.
+OPTIONS_MAX_LOSS_PCT       = float(os.getenv('OPTIONS_MAX_LOSS_PCT', '10'))   # % of pool per trade
+OPTIONS_MAX_LOSS_PER_TRADE = round(OPTIONS_TOTAL_CAPITAL * OPTIONS_MAX_LOSS_PCT / 100, 2)
+AUTO_QTY_MAX_CONTRACTS     = 5   # hard contract ceiling regardless of the dollar budget
 
 # Mirrors auto_trader.py HIGH_VOL_SYMBOLS (equity DNA cluster, re-run quarterly via
 # dna_analysis.py). Duplicated here instead of imported — auto_trader.py pulls in
@@ -169,6 +178,20 @@ US_HOLIDAYS_2026 = frozenset({
     (2026,  7,  3), (2026,  9,  7), (2026, 11, 26),
     (2026, 12, 25),
 })
+
+# ── Equity-echo entry freeze (Aug 16 2026) ───────────────────────────────────
+# Deep-dive (scored all 2,089 opt_calc_log rows vs forward path) proved the
+# equity-A+ echo path has NO tape-independent edge — apparent wins were May's
+# momentum-beta + composition; bull hitBE decayed 90→74→28→25% May→Aug with
+# unchanged logic. Standing down NEW automated options entries (both the equity
+# A+ spread trigger and the OPT_SCALP engine) until options is rebuilt as a
+# factory-validated execution layer. DURABLE by design (a code constant, not the
+# transient _paused runtime flag, which resets on every service restart — a trap
+# this codebase has hit repeatedly). Watchman EXITS are unaffected (separate
+# service): the 4 open positions run their normal exit stack. News→Ghost-Ledger
+# calc logging is unaffected (not an entry path — keeps scoring). Reversible:
+# flip to False. See options-edge-dive-aug16 memory.
+EQUITY_ECHO_FROZEN = True
 
 # ── Global state ──────────────────────────────────────────────────────────────
 _paused          = False
@@ -1009,32 +1032,55 @@ def run_leap_calculator(symbol: str, qty: int = 1) -> dict:
 
 def _auto_qty_calc(calc: dict) -> dict:
     """
-    Scale qty so total position cost targets AUTO_QTY_TARGET.
-    Only applies when the original calc was run at qty=1 (prevents double-scaling).
-    Modifies calc in place and returns it.
+    Scale qty so total MAX LOSS (capital at risk) targets OPTIONS_MAX_LOSS_PER_TRADE — which is
+    also the hard per-trade risk cap. Sizes on the true risk, so it works identically for:
+      • debit spreads / LEAP / scalp — max loss = premium paid (max_loss_$ / net_debit_$)
+      • credit spreads               — max loss = width − credit (max_loss, no _$ suffix)
+    Only applies when the original calc was run at qty=1 (prevents double-scaling). In place.
+    (Aug 16 2026: replaces the old AUTO_QTY_TARGET premium-sizing that (a) ignored credit spreads
+    entirely and (b) had no per-trade risk cap. Credit calcs keyed max_loss without the _$ suffix,
+    so the old net_debit_$ path silently skipped them — now handled explicitly.)
     """
     if calc.get('qty', 1) != 1:
         return calc
-    cost_per = calc.get('net_debit_$') or 0
-    if cost_per <= 0:
+
+    is_credit = calc.get('strategy', '') in ('BULL_PUT_CREDIT', 'BEAR_CALL_CREDIT')
+    # per-contract MAX LOSS in dollars (the sizing basis AND the cap basis for both structures)
+    if is_credit:
+        ml_per = calc.get('max_loss') or 0                              # (width − credit) × 100
+    else:
+        ml_per = calc.get('max_loss_$') or calc.get('net_debit_$') or 0  # premium paid
+    if ml_per <= 0:
         return calc
-    auto_qty = max(1, min(5, int(AUTO_QTY_TARGET / cost_per)))
+
+    auto_qty = max(1, min(AUTO_QTY_MAX_CONTRACTS, int(OPTIONS_MAX_LOSS_PER_TRADE / ml_per)))
     if auto_qty == 1:
+        # Still note it when a single contract already exceeds the cap (expensive spread) — the
+        # max(1,…) floor means we never place zero, so this is the one way the cap can be exceeded.
+        if ml_per > OPTIONS_MAX_LOSS_PER_TRADE:
+            calc['_auto_qty_note'] = (f"1× contract — ${ml_per:.0f} max-loss already exceeds the "
+                                      f"${OPTIONS_MAX_LOSS_PER_TRADE:.0f} cap (expensive spread)")
         return calc
 
     calc['qty'] = auto_qty
-    calc['net_debit_$']  = round(calc['net_debit'] * 100 * auto_qty, 2)
-    if calc.get('max_profit_$') is not None:
-        calc['max_profit_$'] = round((calc.get('max_profit_$') or 0) * auto_qty, 2)
-    if calc.get('max_loss_$') is not None:
-        calc['max_loss_$']   = round(calc['net_debit'] * 100 * auto_qty, 2)
+    if is_credit:
+        if calc.get('max_loss') is not None:
+            calc['max_loss']     = round(ml_per * auto_qty, 2)
+        if calc.get('max_profit') is not None:
+            calc['max_profit']   = round((calc.get('max_profit') or 0) * auto_qty, 2)
+        if calc.get('premium_paid') is not None:
+            calc['premium_paid'] = round((calc.get('premium_paid') or 0) * auto_qty, 2)
+    else:
+        calc['net_debit_$']  = round(calc['net_debit'] * 100 * auto_qty, 2)
+        if calc.get('max_profit_$') is not None:
+            calc['max_profit_$'] = round((calc.get('max_profit_$') or 0) * auto_qty, 2)
+        if calc.get('max_loss_$') is not None:
+            calc['max_loss_$']   = round(calc['net_debit'] * 100 * auto_qty, 2)
     if isinstance(calc.get('trade'), dict):
         calc['trade']['qty'] = auto_qty
-    total_ev = (calc.get('mc_ev') or {}).get('ev_dollar')
-    total_ev_str = f"MC EV ${total_ev * auto_qty:+.0f} total" if total_ev is not None else ""
     calc['_auto_qty_note'] = (
-        f"Auto {auto_qty}× contracts (${cost_per:.0f}/contract → "
-        f"${calc['net_debit_$']:.0f} total{', ' + total_ev_str if total_ev_str else ''})"
+        f"Auto {auto_qty}× contracts (${ml_per:.0f} max-loss/contract → "
+        f"${ml_per * auto_qty:.0f} at risk, cap ${OPTIONS_MAX_LOSS_PER_TRADE:.0f})"
     )
     return calc
 
@@ -3448,6 +3494,9 @@ def scalp_scan_loop():
     if _paused:
         return
 
+    if EQUITY_ECHO_FROZEN:   # Aug 16 2026 stand-down — no edge, see module header
+        return
+
     # Book Health gate (Jul 18 2026): scalps are bullish ATM calls — only trade
     # them when the equity LONG book is healthy. Silent (checked every cycle).
     if not _book_health_on('LONG'):
@@ -4682,6 +4731,9 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
     global _proactive_cooldown
 
     if _paused:
+        return False
+
+    if EQUITY_ECHO_FROZEN:   # Aug 16 2026 stand-down — no edge, see module header
         return False
 
     cs = capital_status()

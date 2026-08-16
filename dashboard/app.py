@@ -1079,6 +1079,40 @@ def glossary():
     return render_template('glossary.html')
 
 
+def _turbo_ladder(pick):
+    """Live strike ladder around a Turbo structure's strikes (best-effort, yfinance).
+    Returns rows near the held legs so the /factory page shows exactly what Turbo picked."""
+    try:
+        import sys as _sys
+        _op = os.path.join(BASE_DIR, 'options')
+        if _op not in _sys.path:
+            _sys.path.insert(0, _op)
+        from options_trader import _yf_option_chain
+        right = 'P' if pick.get('kind') == 'CREDIT_PUT' else 'C'
+        df = _yf_option_chain(pick['symbol'], pick['expiry'], right)
+        if df is None or len(df) == 0:
+            return []
+        held = {float(pick['long_strike']), float(pick['short_strike'])}
+        lo, hi = min(held) * 0.90, max(held) * 1.10
+        sub = df[(df['strike'] >= lo) & (df['strike'] <= hi)].sort_values('strike')
+        rows = []
+        for _, r in sub.iterrows():
+            k = float(r['strike'])
+            rows.append({
+                'strike': k,
+                'bid':  round(float(r.get('bid') or 0), 2),
+                'ask':  round(float(r.get('ask') or 0), 2),
+                'last': round(float(r.get('lastPrice') or 0), 2),
+                'iv':   round(float(r.get('impliedVolatility') or 0) * 100),
+                'vol':  int(r.get('volume') or 0),
+                'oi':   int(r.get('openInterest') or 0),
+                'held': k in held,
+            })
+        return rows
+    except Exception:
+        return []
+
+
 def get_factory_state():
     """Alpha Factory visibility (Aug 15 2026): the snapshot (roster/fleet/scorecards from
     factory/cache/factory_snapshot.json) + live Wave Rider state (wave_trades) + the scan funnel
@@ -1139,6 +1173,31 @@ def get_factory_state():
             pnls = [c["pnl"] or 0 for c in cl]
             state["ovn"]["summary"] = {"n": len(pnls), "pnl": round(sum(pnls), 2),
                                        "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
+    except Exception:
+        pass
+    # Turbo — the options execution layer on Wave Rider (options_shadow). Shows what Turbo
+    # WOULD trade (structure + strike ladder) and what it rejected + why (the Edge-Budget gate).
+    state["turbo"] = {"open": [], "skipped": [], "closed": [], "mode": "SHADOW", "summary": None}
+    try:
+        conn = sqlite3.connect(TRADES_DB); conn.row_factory = sqlite3.Row
+        state["turbo"]["open"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM options_shadow WHERE status='OPEN' ORDER BY planned_at DESC")]
+        state["turbo"]["skipped"] = [dict(r) for r in conn.execute(
+            "SELECT symbol, strategy, iv_rank, ev_roi, gate_reason, planned_at FROM options_shadow "
+            "WHERE status='SKIPPED' ORDER BY id DESC LIMIT 8")]
+        state["turbo"]["closed"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM options_shadow WHERE status='CLOSED' ORDER BY exit_date DESC, id DESC LIMIT 10")]
+        m = conn.execute("SELECT mode FROM options_shadow ORDER BY id DESC LIMIT 1").fetchone()
+        if m:
+            state["turbo"]["mode"] = m["mode"]
+        conn.close()
+        cl = state["turbo"]["closed"]
+        if cl:
+            lps = [c["leverage_premium"] for c in cl if c.get("leverage_premium") is not None]
+            state["turbo"]["summary"] = {"n": len(cl),
+                "avg_lev": round(sum(lps) / len(lps), 1) if lps else None}
+        for pick in state["turbo"]["open"]:
+            pick["ladder"] = _turbo_ladder(pick)
     except Exception:
         pass
     return state

@@ -158,6 +158,7 @@ Full design + diagram: `docs/ALPHA_FACTORY_DESIGN.md`. Judged on smoothness (Sha
 | **The Tide Gauge** | reef sails when tide goes out | `RiskBrain.throttle` | slow bear-exposure cut. **OFF by default — failed validation** (hurt on bull-only data). |
 | **The Fill Desk** | the harbour | `factory/execution.py` | discrete-slot portfolio sim → equity curve, Sharpe, drawdown. |
 | **The Lookout** | crow's-nest storm-watch | `factory/live/lookout.py` | watches live/shadow vs backtest; sounds DRIFT + DECAY alarms. Read-only. |
+| **Turbo** | turbocharger on a proven engine | `factory/live/turbo.py`; table `options_shadow`; launchd `com.sushil.trading.turbo` | the Fill Desk's OPTIONS execution path — takes a Roster engine's proven signal (first client: Wave Rider) and expresses it as a leveraged, defined-risk options structure, but ONLY when the structure's **expected value over the engine's real 3-day outcome distribution** clears its carry (Edge-Budget gate: EV/risk ≥ 0.10 + IV≥25). Turbo a healthy engine → more power; turbo a weak one → blown gasket (the old equity-echo options book, −$4,502). **LIVE-SHADOW** (`TURBO_MODE=SHADOW`, places NO orders); scored on leverage-premium vs shares. Built Aug 16 2026. |
 
 **RETIRED Aug 15 2026 (done, not queued):** **Fish Finder** (`FISHFINDER_*` / `_scan_regime_adaptive`)
 and the equity **bear book** (`BEAR_MOMENTUM` / `_scan_and_enter_bear`) — both failed every Alpha

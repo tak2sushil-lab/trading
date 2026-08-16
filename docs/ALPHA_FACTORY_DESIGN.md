@@ -29,25 +29,35 @@ process, in code, judged on **smoothness (Sharpe), not peak return.**
    anomaly catalog,            build a prototype     7 checks on the SAILING (alpha), never
    event triggers,     ─idea─▶ engine on 2.5yr  ─▶   the raw return:
    cross-sectional,           of tape                  OOS alpha · significance · walk-forward
-   structure, LLM copilot                              · cost survival · robustness ·
+   structure, LLM copilot     (MANY engines)           · cost survival · robustness ·
         ▲                                               uncorrelated · direction
         │ new hypotheses                          PASS ✓│        │✗ FAIL → back to bench
         │                          ┌───────────────────▼──┐
-        │                          │ ④ THE ROSTER          │  validated engines only
-        │                          │   (alpha library)     │
-        │                          └───────────┬───────────┘
+        │                          │ ④ THE ROSTER          │  validated engines only —
+        │                          │   (alpha library)     │  Wave Rider (slot), Contrarian
+        │                          └───────────┬───────────┘  (sleeve), + future engines…
         │                          ┌───────────▼───────────┐
         │                          │ ⑤ THE CAPTAIN         │  weights by edge/risk,
         │                          │   (risk_brain.py)     │  tide-throttle, drawdown budget
         │                          └───────────┬───────────┘
-        │                          ┌───────────▼───────────┐
-        │                          │ ⑥ THE FILL DESK       │  discrete slots, costs →
-        │                          │   (execution.py)      │  equity curve, Sharpe, MaxDD
-        │                          └───────────┬───────────┘
-        │        decay alarm       ┌───────────▼───────────┐
-        └──────────◀───────────────│ ⑦ THE LOOKOUT (live)  │  live vs backtest; retire decayed
-                                    └───────────────────────┘
+        │                          ┌───────────▼───────────┐   HOW a proven voyage is run:
+        │                          │ ⑥ THE FILL DESK       │──▶ (a) SHARES  → equity curve
+        │                          │   (execution.py)      │       (execution.py / wave_rider)
+        │                          └────┬──────────────────┘──▶ (b) TURBO ⚡ → OPTIONS
+        │                               │                          leverage/structure on the
+        │                               │                          SAME proven signal — only if
+        │        ┌──────────────────────┘                          the move pays the carry
+        │        │                  ┌────────────────────────┐     (factory/live/turbo.py →
+        │        │ decay alarm      │ ⑦ THE LOOKOUT (live)   │      options_shadow · Edge-Budget
+        └────────◀──────────────────│  live vs backtest;      │      gate · IV routing)
+                                    │  retire decayed engines │
+                                    └────────────────────────┘
 ```
+**Options is NOT a separate strategy — it is execution path (b) at the Fill Desk.** The
+Roster/Proving-Ground/Captain machinery is shared; Turbo just takes a *validated* engine's
+signal and expresses it as a leveraged, defined-risk options structure instead of shares.
+It never picks direction and never runs on an unvalidated engine. Full design:
+`docs/OPTIONS_FACTORY_BRIDGE_DESIGN_2026-08-16.md`.
 Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **event table** (every
 ≥3% morning mover with 15-day forward price paths) once, cached to `factory/cache/`.
 
