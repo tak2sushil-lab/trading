@@ -28,8 +28,11 @@ class CrossSectionalEngine(Engine):
     def factor(self, close: pd.DataFrame) -> pd.DataFrame:
         raise NotImplementedError
 
-    def run(self, events=None, tide=None) -> pd.DataFrame:
-        close = D.load_daily_close()
+    def run(self, events=None, tide=None, close=None) -> pd.DataFrame:
+        # `close` can be injected (e.g. a 2022-23 bear matrix from bear_test.py); default =
+        # the factory's 2024-26 cache. Everything downstream is regime-agnostic.
+        if close is None:
+            close = D.load_daily_close()
         hold = self.spec.hold_days
         fac = self.factor(close)
         fwd = (close.shift(-hold) / close - 1.0) * 100.0     # forward hold-day return
@@ -105,3 +108,91 @@ class XSectionalLowVol(CrossSectionalEngine):
     def factor(self, close):
         ret = close.pct_change()
         return ret.rolling(self.lookback).std() * 100.0   # trailing realised volatility
+
+
+class ShortTermReversal(CrossSectionalEngine):
+    """Whiplash — DISCARDED Aug 16 2026 (unregistered; kept for reference/revertibility).
+    Dead in this universe (IS alpha −0.05%, t=−0.25) and negative in every bear-test regime.
+    Classic 1-day cross-sectional reversal (Jegadeesh 1990): yesterday's biggest
+    losers bounce, yesterday's biggest winners give back — over a SINGLE day. Different horizon
+    from Contrarian (which ranks a 3-day move and holds 5d), so it may diversify even within the
+    reversal family. High turnover → the cost check is the one to watch."""
+    lookback = 1
+    long_end = "BOTTOM"   # long yesterday's losers, short yesterday's winners
+
+    def __init__(self):
+        super().__init__(EngineSpec(
+            name="xsec_st_reversal", nickname="Whiplash",
+            hypothesis="Single-day extreme moves overshoot and snap back the very next day.",
+            side="LONG", hold_days=1, stop_pct=0.0, personality="ANY", direction="XS", sleeve=True,
+        ))
+
+    def factor(self, close):
+        return (close / close.shift(self.lookback) - 1.0) * 100.0   # yesterday's return
+
+
+class OvernightDrift(CrossSectionalEngine):
+    """Night Shift. Cross-sectional overnight momentum (Lou-Polk-Skouras 'A Tug of War', 2019):
+    overnight (close->open) returns PERSIST — names with strong recent overnight drift keep
+    earning it — while the intraday session tends to reverse. Enter at today's close, exit at
+    tomorrow's open (a single overnight hold), long the strong-overnight names / short the weak.
+    Needs the open matrix as well as close; its own run() computes close->open returns."""
+    lookback = 10
+    decile = 0.1
+    long_end = "TOP"      # long the persistent overnight-winners, short the overnight-losers
+
+    def __init__(self):
+        super().__init__(EngineSpec(
+            name="xsec_overnight", nickname="Night Shift",
+            hypothesis="Overnight (close-to-open) returns persist cross-sectionally while the intraday leg reverses.",
+            side="LONG", hold_days=1, stop_pct=0.0, personality="ANY", direction="XS", sleeve=True,
+        ))
+
+    def factor(self, close):  # unused (overnight run computes its own factor); kept for interface
+        return close * np.nan
+
+    def run(self, events=None, tide=None, close=None, opens=None) -> pd.DataFrame:
+        if close is None:
+            close = D.load_daily_close()
+        if opens is None:
+            opens = D.load_daily_open()
+        # align matrices on common dates/symbols
+        opens = opens.reindex(index=close.index, columns=close.columns)
+        overnight = (opens / close.shift(1) - 1.0) * 100.0     # close[t-1] -> open[t], known at close[t]
+        fac = overnight.rolling(self.lookback).mean()          # trailing overnight drift, as-of close[t]
+        fwd = overnight.shift(-1)                              # next overnight = enter close[t], exit open[t+1]
+        mkt = fwd.mean(axis=1)                                 # overnight Tide per day
+        rows = []
+        idx = close.index
+        for i in range(len(idx)):
+            f = fac.iloc[i]; r = fwd.iloc[i]
+            ok = f.notna() & r.notna()
+            if ok.sum() < 30:
+                continue
+            f = f[ok]; r = r[ok]
+            n = max(int(len(f) * self.decile), 5)
+            order = f.sort_values()
+            bottom, top = order.index[:n], order.index[-n:]
+            longs = top if self.long_end == "TOP" else bottom
+            shorts = bottom if self.long_end == "TOP" else top
+            t = float(mkt.iloc[i]); day = idx[i]
+            for s in longs:
+                rows.append((day, s, "LONG", float(f[s]), float(r[s]), t, float(r[s]) - t))
+            for s in shorts:
+                rows.append((day, s, "SHORT", float(f[s]), -float(r[s]), t, t - float(r[s])))
+        df = pd.DataFrame(rows, columns=["date", "symbol", "side", "day_chg", "ret", "tide", "alpha"])
+        df["engine"] = self.spec.name
+        df["cluster"] = "ANY"
+        df["hold_days"] = 1
+        df["stopped"] = 0
+        return df[TRADE_COLUMNS].dropna(subset=["ret", "tide", "alpha"])
+
+    def neighbors(self):
+        out = []
+        for lb in (5, 10, 20):
+            for dec in (0.1, 0.2):
+                e = OvernightDrift()
+                e.lookback = lb
+                e.decile = dec
+                out.append(e)
+        return out

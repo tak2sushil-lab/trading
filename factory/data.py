@@ -150,19 +150,20 @@ def period_of(dates: pd.Series) -> pd.Series:
     return np.where(dates < IS_END, "IS", np.where(dates < OOS1_END, "OOS1", "OOS2"))
 
 
-def load_daily_close(force: bool = False) -> pd.DataFrame:
-    """Wide (date x symbol) daily RTH-close matrix — the raw material for cross-sectional
-    (whole-universe ranking) engines. Cached to factory/cache/daily_close.csv."""
-    p = os.path.join(CACHE, "daily_close.csv")
+def _daily_price_matrix(which: str, force: bool = False) -> pd.DataFrame:
+    """Wide (date x symbol) daily RTH matrix for `which` in {'close','open'} — the raw material
+    for cross-sectional (whole-universe ranking) engines. Cached per field."""
+    p = os.path.join(CACHE, f"daily_{which}.csv")
     if os.path.exists(p) and not force:
         return pd.read_csv(p, parse_dates=["date"]).set_index("date")
     import sqlite3
     m = sqlite3.connect("/Users/sushil/trading/market_data.db")
     syms = [r[0] for r in m.execute("SELECT DISTINCT symbol FROM bars_5m ORDER BY symbol")]
+    agg = "last" if which == "close" else "first"
     cols = {}
     for i, s in enumerate(syms):
         if i % 60 == 0:
-            print(f"  daily-close {i}/{len(syms)}", flush=True)
+            print(f"  daily-{which} {i}/{len(syms)}", flush=True)
         try:
             df = load_bars(s, start="2024-01-01", end="2026-09-15")
         except Exception:
@@ -171,12 +172,23 @@ def load_daily_close(force: bool = False) -> pd.DataFrame:
             continue
         d = df.between_time("09:30", "15:59").copy()
         d["date"] = d.index.date
-        cols[s] = d.groupby("date")["close"].last()
+        cols[s] = getattr(d.groupby("date")[which], agg)()
     mat = pd.DataFrame(cols)
     mat.index = pd.to_datetime(mat.index); mat = mat.sort_index(); mat.index.name = "date"
     os.makedirs(CACHE, exist_ok=True)
     mat.to_csv(p)
     return mat
+
+
+def load_daily_close(force: bool = False) -> pd.DataFrame:
+    """Wide (date x symbol) daily RTH-close matrix. Cached to factory/cache/daily_close.csv."""
+    return _daily_price_matrix("close", force=force)
+
+
+def load_daily_open(force: bool = False) -> pd.DataFrame:
+    """Wide (date x symbol) daily RTH-open matrix (first 5-min bar of the session).
+    Raw material for the overnight (close->open) cross-sectional engine."""
+    return _daily_price_matrix("open", force=force)
 
 
 if __name__ == "__main__":

@@ -80,11 +80,57 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 | **Steady Hand** (xsec_lowvol) | **FAIL ❌** | engine-#3 candidate (betting-against-beta). Alpha **−1.1%**, robustness 0% — the low-vol anomaly is *inverted* in this high-beta bull tape. Gate rejected. |
 | Cross-Sectional Momentum (bench) | **FAIL ❌** | best config looked great (OOS1 +2.4%) but **44% robustness** — an overfit spike |
 | **Earnings Drift** (pead_gap) | **FAIL ❌** | PEAD via a **gap proxy** (earnings_calendar is empty, so a big overnight gap ≥5% stands in for an earnings surprise). Textbook overfit: strong in-sample (+1.3%) but **negative both OOS** (−0.96% / −0.54%), t=1.0. Notably walk-forward (85%) *and* robustness (100%) **passed** — the OOS-alpha + significance checks are what caught it. A good illustration of why the gate has 7 layers, not 1. A *true* earnings-surprise PEAD is untested (no earnings data). |
+| **Whiplash** (xsec_st_reversal) | **DISCARDED ❌** | 1-day cross-sectional reversal (Jegadeesh 1990). Dead in this universe (IS −0.05%, t=−0.25, WF 38%) AND negative in every bear-test regime. **Unregistered** Aug 16 (class kept in `xsec.py` for reference). |
+| **Night Shift** (xsec_overnight) | **FAIL ❌ — bench WATCH** | Overnight-drift persistence (Lou-Polk-Skouras "A Tug of War"). Passes 6 of 7 checks (t=2.53, WF 13/13, robust 100%, cost-survive, uncorrelated); fails **only** OOS alpha (2026 decayed to ≈0). **Structural refinement found — LONG × WILD clears the bar (OOS2 +0.092%, t=2.80) and is uncorrelated (+0.009 vs Wave Rider)** → see §5b. Top bench-watch candidate; register+full-gate before promotion. (Added Aug 16 2026.) |
 
 **The Roster now holds TWO uncorrelated engines** (Wave Rider + Contrarian, corr −0.13) — a directional momentum boat and a market-neutral long-short boat. Slot fleet (Wave Rider), skill-only: **+232%/2.6y, Sharpe 1.8, MaxDD −14%** (inflated — see §7). Contrarian sleeve: +0.36%/leg, t=3.9, pays bull or bear.
 
 **The Roster today has ONE engine.** Fleet (Wave Rider only), honest market-neutral basis:
 **+134% / 2.6y, CAGR +38%, Sharpe 1.21, MaxDD −24%** (raw, incl. bull tide: Sharpe ~1.8-2.4).
+
+## 5b. Bear stress-test (Aug 16 2026 — FREE, yfinance daily, no Databento spent)
+`factory/bear_test.py` — the factory's 2.5yr backend is one regime (2024-26 high-beta bull); this
+pulls daily OHLC (2017-2024, yfinance) and re-scores every DAILY engine on market-neutral alpha
+across **three independent bears + a recovery**. Names that didn't exist then are absent
+(survivorship worsens going back: 238 names in 2018 → 285 in 2022). Cache: `factory/cache/bear_*.csv`.
+Run: `venv/bin/python -m factory.bear_test`.
+
+| Engine | 2018 Q4 (−20%) | 2020 COVID (−34%) | 2022 bear (−19%) | 2023 recovery | Read |
+|---|---|---|---|---|---|
+| **Contrarian** (reversal, Roster) | **+0.46% t=3.1 ✅** | **+1.77% t=5.7 ✅** | **+0.25% t=2.9 ✅** | −0.17% ❌ | **Positive & significant in all 3 bears** (spectacular in the COVID whipsaw), loses only the smooth momentum recovery. A genuine crisis-alpha engine — its −0.13 corr to Wave Rider is *the regime hedge*. |
+| **Steady Hand** (low-vol, gate-FAIL) | **+0.26% t=1.9 ✅** | **+0.54% t=1.9 ✅** | **+0.57% t=6.8 ✅** | −0.89% ❌ | Clean defensive signature: **positive in all 3 bears, negative in every rally** (incl. 2020's post-March ramp, −0.95%). The gate rejection was *bull-specific*, not "junk". Best **bear-hedge / engine-#3 candidate** — now n=3 bears, all positive. |
+| **Night Shift** (overnight) | −0.01% flat | +0.31% t=3.8 ✅ | −0.02% flat | +0.13% t=4.4 ✅ | Small, mostly-positive, **never really negative** micro-edge. Not a hedge; a low-variance diversifier. See LONG×WILD refinement below. |
+| **Wave Rider** *(daily proxy)* | **−0.81% t=−3.3 ❌** | +0.34% ⚠ | +0.04% flat | +0.29% t=2.2 ✅ | Long-momentum **can lose real alpha in a sharp momentum-crash bear** (2018 Q4), flat in 2022 — it *needs* a hedge. *Proxy caveat below.* |
+
+**Findings that matter:**
+1. **The engines have clean, complementary REGIME signatures** across 3 bears + 2 recoveries: Wave Rider (momentum) pays in rallies / hurts-or-flat in bears; Contrarian & low-vol pay in bears / lose in rallies. This is a real **all-weather set forming on the regime axis** — the diversification that's actually validating is regime, not time-horizon.
+2. **Low-vol (Steady Hand) is the missing defensive leg — now n=3 bears, all positive.** Much stronger than the "n=1" caveat from the first pass. Still fails an *always-on* gate (it bleeds in bulls), so its deployment question is "how to hold a defensive factor without market-timing" (a fleet-blend / small-always-on tradeoff, not a regime switch). **Top engine-#3 candidate**, pending a fleet-blend Sharpe test.
+3. **Databento verdict: hold the $59.** Free daily bears answered the regime question. Wave Rider's *daily proxy* is the only thing a 5-min pull would sharpen (2018 Q4 −0.81% may be proxy-pessimistic — entry at close, no intraday VWAP-hold filter). Spend only if we build a regime-paired fleet and need Wave Rider's *real* intraday bear drawdown for sizing. Treat proxy bear numbers as directional.
+
+**Night Shift deployability (answering "is there a condition where it's usable"):** yes — a **structural**
+cut, not a regime-timed one. Decomposed by leg×personality: the edge lives in **LONG × WILD** (buy the
+highest-overnight-drift wild names) — clears the standalone gate bar (OOS1 +0.82%, OOS2 +0.092%, t=2.80),
+holds in 4 of 5 out-of-regime windows (2022 mildly soft), and is **genuinely uncorrelated (+0.009 vs Wave
+Rider, +0.20 vs Contrarian)** — a real diversifier, not a Wave Rider clone. Caveat: slice-derived (found
+by cutting the same tape), OOS2 is thin, and a tradable version is long-biased overnight (net beta) unless
+paired. Status: **top bench-WATCH candidate**, register + full-gate + live-track before any promotion.
+(SHORT × CALM looked great in-sample, t=4.7, but failed out-of-regime — slice-fitting, dropped.)
+
+## 5c. Day-horizon (intraday) probe — why there's no intraday engine (Aug 16 2026)
+User observation (correct): live trades routinely peaked +0.5-1.5% intraday, then gave it back by the
+close. Quantified on 4,974 WILD up-mover event-days from our 5-min bars (`scratchpad/day_probe.py`):
+- **The give-back is real and huge:** mean intraday peak **+3.30%**, mean EOD close **+0.10%**. 76% hit
+  +1%; of those, **87% closed >0.5% below their peak and 37% closed negative.** The opportunity is there.
+- **But naive intraday profit-taking makes it WORSE, not better.** "Bank at +X% else hold to EOD" loses
+  vs holding at every threshold (+0.10% EOD → **−0.05 to −0.08%** banking at +0.5/1/1.5/2%). It caps the
+  right-tail runners (mean peak +3.3% *is* those runners) while keeping every loser. This is the **third
+  independent confirmation** of the give-back law (futures Jul 25, equity Aug 8, now equity intraday).
+- **Verdict:** the intraday horizon on our mover signal has **~zero edge** (+0.10% before costs = negative
+  after) — it confirms the Aug 14 swing finding rather than opening a new engine. A standalone intraday
+  day-engine is **not supported by the data.** The right response to the give-back pain is the **Aug 8
+  stall-recycling exit** (bank the trades still flat at 30min — they lose 90% of the time), which is an
+  *exit refinement to Wave Rider*, not a new sleeve. Horizon coverage below swing is provided by **overnight
+  (Night Shift)**, not intraday.
 
 ## 6. Honest findings baked in (the factory working)
 - **The lookahead bug we caught:** first fleet showed Sharpe 5.3 / +1674% — because slot selection sorted by *realized* return. Fixed to select on an entry-time feature; guarded by `test_no_lookahead` + `test_shuffle_invariance`. Result fell to a believable Sharpe ~1.2.
@@ -150,5 +196,6 @@ venv/bin/python -m factory.run validate            # scorecards for all engines
 venv/bin/python -m factory.research.xsec_prototype # cross-sectional bench prototypes
 venv/bin/python -m factory.live.wave_rider --dryscan 2026-08-14   # prove pick logic on a past day
 venv/bin/python -m factory.live.lookout            # live-vs-backtest monitor
+venv/bin/python -m factory.bear_test               # FREE 2022-23 bear stress-test (yfinance daily)
 venv/bin/python -m factory.tests.test_factory      # full test suite
 ```
