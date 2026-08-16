@@ -23,20 +23,24 @@ Last updated: Aug 7 2026
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Aug 8 2026.
 
-**⚠️ NEXT SESSION PRIORITY:** watch the first live days of the Fish Finder redesign
-(wired Aug 8, see dated section below) — confirm `FISHFINDER_*` trades are flowing,
-Bite Check/Crowd Gauge are firing sanely, and the dashboard Fish Finder card renders.
-`KELTNER_CONVICTION=2.0` is explicitly PROVISIONAL (known to cost some good ADX_TREND
-trades in 2024's backtest) — retune against live trade data once enough accumulates,
-don't treat it as settled. A post-wiring 15-day retrospective (last real trading days,
-see dated section below) found OLD would have beaten Fish Finder in that specific
-window (+$280 vs +$130), driven by unrestricted `ADX_TREND` eligibility diluting trade
-quality — same pattern that hurt H1-2025 in the full-history check. Candidate fix not
-yet tried: re-add `--hybrid`-style eligibility restriction now that Bite Check handles
-WEAK-regime decay separately. Also still open: the `BUY <SYM>` manual Telegram command bug
-(auto_trader.py:2729) — unconditionally opens a new LONG regardless of an existing
-position, found live Aug 7 during a real SOUN incident. `SELL <SYM>`/`CLOSEALL` are
-correct (they check side). Not fixed yet.
+**⚠️ NEXT SESSION PRIORITY (rewritten Aug 16 2026 — MAJOR PIVOT; read the `alpha-factory` memory first):**
+The equity system pivoted to an **Alpha Factory** — an offline engine-discovery/validation system
+(`factory/`, branch `alpha-factory`; live services run from this working tree). Full design +
+architecture diagram: `docs/ALPHA_FACTORY_DESIGN.md`; dashboard `/factory` page.
+**Fish Finder (`FISHFINDER_*`/`_scan_regime_adaptive`) + the equity bear book (`BEAR_MOMENTUM`/
+`_scan_and_enter_bear`) are DECOMMISSIONED** (`FISH_FINDER_ENABLED=False` in auto_trader.py; both
+failed every factory market-neutral test, Fish Finder bled ~$780/mo; code kept, revertible). The
+dated Aug 6-8 Fish Finder sections below are now HISTORICAL. Two uncorrelated Roster engines validated
+on 2.5yr: **Wave Rider** (momentum·wild, 3-day swing — now LIVE-PAPER in SHADOW via
+`com.sushil.trading.wave_rider`, `wave_trades`/`wave_scan_log` tables) + **Contrarian** (market-neutral
+cross-sectional reversal, a sleeve). Rejected by the gate: Bargain Hunter, low-vol, PEAD, XS-momentum,
+the tide-throttle. Live equity right now = old LONG/SHORT momentum + catalyst books (Book Health ON),
+with Wave Rider shadowing as the intended replacement.
+**⏸ PARKED Sun Aug 16 — resume Mon Aug 17:** (1) run the FREE 2022 bear stress-test (yfinance DAILY,
+no Databento) — do our edges survive a bear? more data does NOT rescue failed engines, it stress-tests
+the 2 passers. (2) watch Wave Rider's first live shadow scan (`logs/wave_rider.log` + /factory funnel).
+(3) decide: merge `alpha-factory`→main or keep on branch. Still open (pre-pivot): `BUY <SYM>` Telegram
+bug (auto_trader.py:2729) opens a new LONG regardless of existing position — not fixed.
 
 **⚠️ STAGED PLAN (user-set Aug 8 2026, confirmed same night — do not forget or skip
 stages). No automation set up for this — user explicitly wants it documented, not a
@@ -1096,6 +1100,29 @@ block into the new table. **Verified live**: restarted watchman, confirmed via
 `logs/watchman.log` it read the block from the DB (not a reset in-memory set) and correctly
 skipped trade #19 on the next EOD run. Re-read the full modified `_auto_close_position`
 end to end once more per request — no further issues found on this pass.
+
+---
+
+## Aug 10 2026 — Options resumed live (book reset window fully fresh) + dashboard multi-leg P&L bug fixed
+
+Both equity books flipped back ON (LONG +0.45%/10d/927 rows, SHORT +0.71%/5d/249 rows — the
+Jul 21 `BOOK_HEALTH_RESET_DATE=2026-07-22` window is now fully fresh), which unlocked options'
+trigger source. First real options entries since the reset: PLTR OPT_SCALP (1x $177.50C 8/21,
+$633 debit), JOBY bull spread (5x $10/$11C 9/18, $125 debit), XLE bull spread (5x $61/$62.50C
+9/18, $265 debit) — all cleared the Aug 3 Spread Toll Gate comfortably (liq_cost_pct 5-10% vs
+12% max). FTNT also got an ENTER verdict but never filled after 4 order attempts — gave up
+cleanly, no retry storm, no phantom position (unlike the Jul 20 USAR incident).
+
+**Bug found + fixed same session (commit pending):** `get_options_positions()` in
+`dashboard/app.py` built `live_map` keyed by symbol from the raw bridge position list — for a
+multi-leg spread (2 rows per symbol, one per leg), the dict overwrite meant only the LAST leg's
+`unrealizedPnL`/`marketValue` survived, silently dropping the other leg. XLE showed +$172 on the
+dashboard when the true net-of-both-legs P&L was near flat; JOBY showed +$25 when it was
+actually -$36. Different bug from the Aug 3 `exit_value - net_debit` fix (that was closed-trade
+logging; this is live open-position display) but same root cause shape: code assumed one leg per
+symbol. Fixed by summing `marketValue`/`unrealizedPnL` across all legs sharing a symbol instead
+of overwriting. Single-leg positions (LEAP, scalp) unaffected. Verified via direct function call
+post-fix (XLE -$3.28, JOBY -$33.75 — both now sane). Dashboard restarted, HTTP 302 (healthy).
 
 ---
 
@@ -2426,3 +2453,20 @@ All 6 phases complete + OPT_SCALP live. Paper trading active.
 ## Mac Gotcha
 
 `pyobjc-framework-EventKit` conflicts with ib_async — do NOT reinstall this package.
+
+---
+
+## Aug 15-16 2026 — Alpha Factory pivot (branch `alpha-factory`) — see NEXT SESSION PRIORITY (top of file)
+
+Multi-day pivot from single-strategy tinkering to a **factory** that manufactures / validates / retires
+edges — judged on Sharpe not peak return, everything scored on market-neutral ALPHA so nothing passes by
+riding the bull tide. Built `factory/` (contracts → data → engines → Proving Ground gate → Captain →
+Fill Desk → Lookout) + a live layer (`factory/live/wave_rider.py` shadow trader, `lookout.py`) + dashboard
+`/factory` page (architecture diagram + live Roster/fleet/scan-funnel). Two uncorrelated Roster engines
+validated on 2.5yr: Wave Rider (momentum·wild, live-paper SHADOW) + Contrarian (market-neutral reversal,
+sleeve). Gate honestly rejected 5 (Bargain Hunter, low-vol, PEAD/Earnings-Drift, XS-momentum, tide-throttle)
+and caught a fatal lookahead bug (Sharpe 5.3→1.2) via property tests. Fish Finder + equity bear book
+DECOMMISSIONED. Full trail: `docs/ALPHA_FACTORY_DESIGN.md`, `alpha-factory` + `equity-swing-edge-found-aug14`
++ `equity-regime-diagnosis-aug14` memories. Savepoints: git tags `checkpoint-2026-08-15-alpha-factory-v1`/
+`-v2`/`-factory-dashboard`. PARKED Sun Aug 16, resume Mon Aug 17 (free 2022 bear stress-test + watch Wave
+Rider's first shadow scan + branch-merge decision).
