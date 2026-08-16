@@ -1114,6 +1114,33 @@ def get_factory_state():
         pnls = [c["pnl"] or 0 for c in state["closed"]]
         state["closed_summary"] = {"n": len(pnls), "pnl": round(sum(pnls), 2),
                                    "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
+    # Clockwork overnight book (Night Shift v2) — the consistency-ranked overnight trader
+    state["ovn"] = {"open": [], "closed": [], "scan": None, "candidates": [],
+                    "mode": "SHADOW", "summary": None}
+    try:
+        conn = sqlite3.connect(TRADES_DB); conn.row_factory = sqlite3.Row
+        state["ovn"]["open"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM overnight_trades WHERE status='OPEN' ORDER BY entry_date DESC")]
+        state["ovn"]["closed"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM overnight_trades WHERE status='CLOSED' ORDER BY exit_date DESC, id DESC LIMIT 15")]
+        row = conn.execute("SELECT scan_ts, detail FROM overnight_scan_log WHERE kind='SUMMARY' "
+                           "ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            state["ovn"]["scan"] = {"ts": row["scan_ts"], "funnel": json.loads(row["detail"])}
+            state["ovn"]["candidates"] = [dict(r) for r in conn.execute(
+                "SELECT symbol, consistency, verdict FROM overnight_scan_log "
+                "WHERE kind='CANDIDATE' AND scan_ts=? ORDER BY consistency DESC", (row["scan_ts"],))]
+        m = conn.execute("SELECT mode FROM overnight_trades ORDER BY id DESC LIMIT 1").fetchone()
+        if m:
+            state["ovn"]["mode"] = m["mode"]
+        conn.close()
+        cl = state["ovn"]["closed"]
+        if cl:
+            pnls = [c["pnl"] or 0 for c in cl]
+            state["ovn"]["summary"] = {"n": len(pnls), "pnl": round(sum(pnls), 2),
+                                       "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
+    except Exception:
+        pass
     return state
 
 

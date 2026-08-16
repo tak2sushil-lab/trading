@@ -56,6 +56,19 @@ def _daily_alpha(trades: pd.DataFrame) -> pd.Series:
     return trades.groupby("date")["alpha"].mean()
 
 
+def _turnover(trades: pd.DataFrame) -> float:
+    """Average fraction of (symbol, side) positions that are NEW vs the prior trading day.
+    ~0 = a sticky book you barely touch; ~1 = you replace everything every day. This is what
+    the spread actually gets charged on for a daily-reforming sleeve."""
+    by_day = (trades.sort_values("date").groupby("date")
+              .apply(lambda d: set(zip(d["symbol"], d["side"])), include_groups=False))
+    days = list(by_day)
+    if len(days) < 2:
+        return 1.0
+    ch = [len(days[i] - days[i - 1]) / len(days[i]) for i in range(1, len(days)) if days[i]]
+    return float(np.mean(ch)) if ch else 1.0
+
+
 def evaluate(engine: Engine, events: pd.DataFrame, tide: pd.DataFrame,
              roster_alpha: dict[str, pd.Series] | None = None) -> Scorecard:
     """Run the full gauntlet. `roster_alpha` maps existing-engine-name -> its daily alpha
@@ -104,10 +117,21 @@ def evaluate(engine: Engine, events: pd.DataFrame, tide: pd.DataFrame,
     sc.stats["wf_frac"] = wf_frac
     sc.checks["walk-forward"] = (wf_frac >= MIN_WF_POS, f"{pos}/{wins} windows positive ({wf_frac:.0%}, need ≥{MIN_WF_POS:.0%})")
 
-    # 4. Cost survival — alpha minus round-trip friction still positive
-    net = a.mean() - COST_DRAG
+    # 4. Cost survival — alpha minus round-trip friction still positive.
+    # Turnover-aware: a SLEEVE re-forms daily but a slow signal keeps most names, so you only
+    # pay the spread on the FRACTION that actually changes. A flat per-trade cost overstates the
+    # bill for any multi-day holder. Slot engines = one round-trip per discrete trade → full cost.
+    if engine.spec.sleeve:
+        turn = _turnover(trades)
+        cost = COST_DRAG * turn
+        sc.stats["turnover"] = turn
+        cost_txt = f"cost {COST_DRAG}×{turn:.0%} turnover = {cost:.3f}%"
+    else:
+        cost = COST_DRAG
+        cost_txt = f"cost {COST_DRAG}"
+    net = a.mean() - cost
     sc.stats["alpha_net"] = net
-    sc.checks["cost survival"] = (net > 0, f"alpha {a.mean():+.3f}% − cost {COST_DRAG} = {net:+.3f}%")
+    sc.checks["cost survival"] = (net > 0, f"alpha {a.mean():+.3f}% − {cost_txt} = {net:+.3f}%")
 
     # 5. Robustness — neighboring params still positive overall (plateau, not spike).
     # Each engine defines its OWN neighbours (event engines vary hold/stop; cross-sectional

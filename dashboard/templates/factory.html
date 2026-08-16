@@ -57,7 +57,7 @@
 
   <div class="card section">
     <div class="section-title">THE ALPHA FACTORY</div>
-    <p class="glossary-note">A machine that keeps <b>building trading edges, testing each honestly, sailing the ones that pass, and scrapping the ones that rot.</b> We don't bet on a strategy (they decay) — we bet on the <i>process</i>. Judged on smoothness, not peak return. Places <b>no live orders</b> except Wave Rider (below), which is in shadow.
+    <p class="glossary-note">A machine that keeps <b>building trading edges, testing each honestly, sailing the ones that pass, and scrapping the ones that rot.</b> We don't bet on a strategy (they decay) — we bet on the <i>process</i>. Judged on smoothness, not peak return. Places <b>no live orders</b> except the live-paper engines below (Wave Rider + Clockwork), currently in shadow.
     {% if f.snapshot %}<br><span class="subtle">Snapshot generated {{ f.snapshot.generated }} · {{ f.snapshot.data.events }} events over {{ f.snapshot.data.universe }} stocks · {{ f.snapshot.data.start }} → {{ f.snapshot.data.end }}</span>{% endif %}</p>
   </div>
 
@@ -169,6 +169,46 @@
     </table>
     {% elif not f.open %}
     <p class="subtle">No trades yet — begins at the next market open in shadow mode.</p>
+    {% endif %}
+  </div>
+
+  <div class="card section">
+    <div class="section-title">CLOCKWORK — LIVE PAPER (overnight book · Night Shift v2)
+      {% if f.ovn.mode=='LIVE' %}<span class="pill livebadge">LIVE ORDERS</span>{% else %}<span class="pill shadowbadge">SHADOW · no orders</span>{% endif %}
+    </div>
+    <p class="subtle">Roster engine #3: near the close, rank WILD stocks by how <b>consistently</b> they've gapped up (fraction of the last 30 nights positive), buy the top ~10, hold overnight, sell at the open. Passes the gate at 19% turnover; long-only so it carries overnight beta. Shadow = records intended trades, places no orders.</p>
+
+    {% if f.ovn.scan %}
+    <div style="margin:6px 0 10px">
+      <div style="font-size:11px;color:#8b949e;margin-bottom:4px">LATEST CLOSE-SCAN — {{ f.ovn.scan.ts }}</div>
+      <span class="kpi"><b>{{ f.ovn.scan.funnel.wild_scanned }}</b><span>WILD ranked</span></span>
+      <span class="kpi"><b>{{ f.ovn.scan.funnel.top_n }}</b><span>target</span></span>
+      <span class="kpi"><b>{{ f.ovn.scan.funnel.entered }}</b><span>entered</span></span>
+    </div>
+    {% if f.ovn.candidates %}
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>Up-night consistency</th><th>Verdict</th></tr></thead>
+      <tbody>{% for c in f.ovn.candidates %}<tr><td>{{ c.symbol }}</td><td>{{ (c.consistency*100)|round|int }}%</td><td>{% if c.verdict=='ENTERED' %}<span class="pill pass">ENTERED</span>{% else %}<span class="subtle">{{ c.verdict }}</span>{% endif %}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+    {% else %}
+    <p class="subtle">No scan yet — Clockwork self-gates to the close window (~15:50 ET) for entry and the open (~9:35 ET) for exit. Its first shadow scan runs at Monday's close.</p>
+    {% endif %}
+
+    {% if f.ovn.open %}
+    <div style="font-size:11px;color:#8b949e;margin:10px 0 4px">HELD OVERNIGHT ({{ f.ovn.open|length }})</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>Entry</th><th>Shares</th><th>Consistency</th></tr></thead>
+      <tbody>{% for p in f.ovn.open %}<tr><td>{{ p.symbol }}</td><td>${{ p.entry_price }}</td><td>{{ p.shares }}</td><td>{{ (p.consistency*100)|round|int }}%</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+
+    {% if f.ovn.summary %}
+    <div style="font-size:11px;color:#8b949e;margin:10px 0 4px">RECENT CLOSED ({{ f.ovn.summary.n }}) — P&amp;L ${{ f.ovn.summary.pnl }}, win {{ f.ovn.summary.win }}%</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>P&amp;L</th><th>%</th></tr></thead>
+      <tbody>{% for p in f.ovn.closed %}<tr><td>{{ p.symbol }}</td><td>${{ '%.2f'|format(p.pnl or 0) }}</td><td>{{ '%.1f'|format(p.pnl_pct or 0) }}%</td></tr>{% endfor %}</tbody>
+    </table>
     {% endif %}
   </div>
 
