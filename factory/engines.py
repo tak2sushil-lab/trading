@@ -42,10 +42,14 @@ class MeanRevMid(Engine):
         return events[(events["direction"] == "DOWN") & (events["cluster"] == "MID")]
 
 
+from factory.xsec import XSectionalReversal, XSectionalLowVol   # noqa: E402
+
 # Registry — the factory floor. Add a class here and it flows through the whole pipeline.
 REGISTRY = {
-    "momentum_wild": MomentumWild,
-    "meanrev_mid": MeanRevMid,
+    "momentum_wild": MomentumWild,      # Wave Rider   — slot-based, Roster
+    "meanrev_mid": MeanRevMid,          # Bargain Hunter — slot-based, failed
+    "xsec_reversal": XSectionalReversal, # Contrarian   — market-neutral sleeve, engine #2
+    "xsec_lowvol": XSectionalLowVol,     # Steady Hand  — market-neutral sleeve, engine #3 candidate
 }
 
 

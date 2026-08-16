@@ -107,10 +107,28 @@ def test_shuffle_invariance(ev, td):
           f"{base.trades} vs {shuf.trades}")
 
 
+def test_cross_sectional():
+    """Engine #2 type: cross-sectional produces the standard Trade table with long+short legs."""
+    from factory.xsec import XSectionalReversal
+    from factory.contracts import TRADE_COLUMNS
+    tr = XSectionalReversal().run()
+    check("xsec standard columns", list(tr.columns) == TRADE_COLUMNS, f"cols={list(tr.columns)[:3]}…")
+    check("xsec has long AND short legs", set(tr["side"]) == {"LONG", "SHORT"})
+    check("xsec alpha finite", bool(np.isfinite(tr["alpha"]).all()))
+
+
+def test_neighbors():
+    """Robustness generalises: both engine types expose their own param-variant neighbours."""
+    from factory.xsec import XSectionalReversal
+    check("event engine neighbours", len(E.MomentumWild().neighbors()) >= 5)
+    check("xsec engine neighbours", len(XSectionalReversal().neighbors()) >= 5)
+
+
 def main():
     print("── unit ──"); test_outcome_math(); test_alpha_math()
     print("── integration ──"); ev, td, pe = test_data_and_personality()
     test_proving_ground(ev, td)
+    print("── cross-sectional / framework generalisation ──"); test_cross_sectional(); test_neighbors()
     print("── property (no lookahead) ──"); test_no_lookahead(ev, td); test_shuffle_invariance(ev, td)
     print(f"\n{'ALL PASS ✅' if not _fails else 'FAILURES: ' + str(_fails)}")
     sys.exit(1 if _fails else 0)

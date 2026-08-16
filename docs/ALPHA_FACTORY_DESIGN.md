@@ -74,10 +74,13 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 ## 5. Current results (Aug 15 2026, 2.5yr, market-neutral)
 | Engine | Verdict | Note |
 |---|---|---|
-| **Wave Rider** (momentum_wild) | **PASS ✅ (Roster)** | OOS alpha +0.54% / +0.49%, t=6.7, walk-forward **13/13**, robust 100% |
-| **Bargain Hunter** (meanrev_mid) | **FAIL ❌** | uncorrelated (−0.02) & positive OOS, but **fails robustness** (67% of neighbors) — correctly held back |
-| **Cross-Sectional Reversal** (bench) | **PASS ✅ (bench)** | market-neutral long-short; OOS +0.61% / +0.85%, t=3.0, robust 100%, **corr to Wave Rider −0.13**. `factory/research/xsec_prototype.py`. Not yet integrated (see §9). |
-| **Cross-Sectional Momentum** (bench) | **FAIL ❌** | best config looked great (OOS1 +2.4%) but **44% robustness** — an overfit spike; gate rejected it |
+| **Wave Rider** (momentum_wild) | **PASS ✅ Roster · LIVE-shadow** | slot-based momentum; OOS alpha +0.54/+0.49%, t=6.7, walk-forward **13/13**, robust 100%. Running live-paper in SHADOW (see §10). |
+| **Contrarian** (xsec_reversal) | **PASS ✅ Roster** | market-neutral long-short *sleeve*; OOS +0.30/+0.36% (per-leg), t=3.9, robust 100%, **corr to Wave Rider −0.13** — the diversifier. Fully integrated. |
+| **Bargain Hunter** (meanrev_mid) | **FAIL ❌** | uncorrelated & positive OOS, but **fails robustness** (67%) — held back |
+| **Steady Hand** (xsec_lowvol) | **FAIL ❌** | engine-#3 candidate (betting-against-beta). Alpha **−1.1%**, robustness 0% — the low-vol anomaly is *inverted* in this high-beta bull tape. Gate rejected. |
+| Cross-Sectional Momentum (bench) | **FAIL ❌** | best config looked great (OOS1 +2.4%) but **44% robustness** — an overfit spike |
+
+**The Roster now holds TWO uncorrelated engines** (Wave Rider + Contrarian, corr −0.13) — a directional momentum boat and a market-neutral long-short boat. Slot fleet (Wave Rider), skill-only: **+232%/2.6y, Sharpe 1.8, MaxDD −14%** (inflated — see §7). Contrarian sleeve: +0.36%/leg, t=3.9, pays bull or bear.
 
 **The Roster today has ONE engine.** Fleet (Wave Rider only), honest market-neutral basis:
 **+134% / 2.6y, CAGR +38%, Sharpe 1.21, MaxDD −24%** (raw, incl. bull tide: Sharpe ~1.8-2.4).
@@ -101,20 +104,40 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 4. If it PASSES → it auto-joins the fleet. If it FAILS → back to the bench. Nothing else changes.
 
 ## 9. Roadmap (phased, one validated brick at a time)
-- **Done:** Wave Rider (Roster). Factory built + tested. **Engine #2 found on the bench:**
-  **Cross-Sectional Reversal** PASSED the honest gate — market-neutral, uncorrelated (−0.13) to
-  Wave Rider. It is the bear-season diversifier we were hunting (the throttle wasn't).
-- **Integrate Cross-Sectional Reversal (next build):** requires a small framework generalization —
-  it's a *long-short basket* engine (ranks the whole universe daily), not an event-based directional
-  one, so it needs (a) a `universe_daily` data product and (b) a `CrossSectionalEngine` base that
-  emits per-day long+short legs. The per-leg alpha machinery already handles LONG/SHORT correctly.
-  **Honest caveats before treating it as tradable:** (1) it's a *breadth* strategy — many small
-  long+short positions rebalanced daily — which fits a scaled market-neutral **sleeve**, not a
-  5-slot $10k account; (2) it **requires shorting** (borrow availability/cost on small-cap recent
-  winners is a real friction retail can't ignore). So it validates the *process* and points at what
-  a larger book would run; its practical deployment differs from long-only Wave Rider.
-- **Then:** conviction sizing (lag-tolerant), an LLM-as-feature experiment (news → number →
-  backtested), and the live Lookout (monitor live vs backtest, retire on decay).
+- **DONE:** Factory built + tested. **Two uncorrelated Roster engines** — Wave Rider (momentum,
+  slot) + Contrarian (reversal, market-neutral sleeve). Wave Rider **live-paper in SHADOW** (§10).
+  Live **Lookout** built. Engine-#3 candidate (low-vol) hunted → failed honestly.
+- **Contrarian tradability caveats (unchanged):** it's a *breadth* strategy needing many small
+  long+short positions + **shorting** (borrow frictions) → a scaled market-neutral **sleeve**, not a
+  5-slot $10k engine. The immediately tradable path at $10k stays long-only **Wave Rider**.
+- **Next builds:** blend the sleeve's curve into the slot fleet's combined equity; conviction sizing
+  (lag-tolerant); an LLM-as-feature experiment (news → number → backtested); keep hunting engine #3.
 - **Retirement queue (live code, not yet cut):** Fish Finder and the equity bear book
   (`BEAR_MOMENTUM`) both failed the honest tests — flagged for retirement when Wave Rider graduates
-  to live paper. Not removed yet (still running).
+  from shadow to live paper. Not removed yet (still running).
+
+## 10. The Live Layer (`factory/live/`)
+| Piece | Analogy | What it does |
+|---|---|---|
+| `wave_rider.py` | the boat, at sea | **LIVE-PAPER trader for Wave Rider.** Scans WILD ≥3% movers holding VWAP ~10:00, holds 3 business days, 8% stop, earnings-block. **MODE=SHADOW** (default): records intended trades + marks them to live prices, places **NO orders**. **MODE=LIVE**: real orders on the IBKR *paper* account. Stateless between runs (DB-backed `wave_trades`), launchd every 5 min, self-gates market hours, run-lock prevents overlap. |
+| `lookout.py` | the crow's-nest | Watches live/shadow results vs the backtest; sounds **DRIFT** (edge below band) / **DECAY** (recent window negative) alarms. Read-only. |
+
+**On-ramp (how Wave Rider goes truly live):**
+1. **SHADOW** (now) — launchd `com.sushil.trading.wave_rider` loaded, fires Mon 9:30+; zero account risk. Logs → `logs/wave_rider.log`, table `wave_trades`.
+2. Review a few days of shadow picks + `python -m factory.live.lookout`.
+3. Flip to paper orders: set `WAVE_RIDER_MODE=LIVE` in the plist → `launchctl kickstart -k …wave_rider`. **One env var.**
+4. ~4 weeks live-paper → the Lookout confirms it tracks the backtest → real-money conversation.
+
+**Verify Monday:** the bridge was IBKR-disconnected at build (weekend), so `live_signal`/order paths
+are logic-verified against the bridge contract but not yet exercised live. Watch the first
+`logs/wave_rider.log` entries Monday — confirm it logs real WILD picks (not silent) before any LIVE flip.
+
+## 11. Run-book
+```
+venv/bin/python -m factory.run all                 # validate every engine + sail the fleet
+venv/bin/python -m factory.run validate            # scorecards for all engines
+venv/bin/python -m factory.research.xsec_prototype # cross-sectional bench prototypes
+venv/bin/python -m factory.live.wave_rider --dryscan 2026-08-14   # prove pick logic on a past day
+venv/bin/python -m factory.live.lookout            # live-vs-backtest monitor
+venv/bin/python -m factory.tests.test_factory      # full test suite
+```

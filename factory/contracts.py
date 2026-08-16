@@ -14,7 +14,7 @@ Analogy map (see GLOSSARY.md §8):
   Personality = a stock's volatility class (CALM / MID / WILD)
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 import numpy as np
 import pandas as pd
@@ -31,6 +31,8 @@ class EngineSpec:
     stop_pct: float    # hard stop, positive number of %, e.g. 8.0
     personality: str   # which volatility class it fishes: CALM / MID / WILD / ANY
     direction: str     # which event pool: "UP" (movers up) or "DOWN" (movers down)
+    sleeve: bool = False  # True = market-neutral long-short basket (a capital sleeve, not
+                          # discrete slots). The Fill Desk treats sleeves as a return stream.
 
     def __str__(self) -> str:
         return (f"{self.nickname} [{self.name}] — {self.side} {self.direction}-movers, "
@@ -73,6 +75,21 @@ class Engine:
         """Return the subset of `events` this engine trades. `events` is the unified
         event table from data.build_dataset (one row per >=3% mover with forward paths)."""
         raise NotImplementedError
+
+    def neighbors(self) -> list["Engine"]:
+        """Param-variant engines for the robustness check (a plateau, not a spike).
+        Base = hold/stop neighbours borrowing the same selection. A different engine TYPE
+        (e.g. cross-sectional) overrides this to vary ITS own knobs."""
+        out = []
+        for dh in (-1, 0, 1):
+            for ds in (-2, 0, 2):
+                h, s = self.spec.hold_days + dh, self.spec.stop_pct + ds
+                if h < 1 or h > 15 or s <= 0:
+                    continue
+                e = Engine(replace(self.spec, hold_days=h, stop_pct=s))
+                e.select = self.select   # borrow this engine's selection
+                out.append(e)
+        return out
 
     # --- shared, identical for every engine (this is what keeps scoring honest) ---
     def run(self, events: pd.DataFrame, tide: pd.DataFrame) -> pd.DataFrame:

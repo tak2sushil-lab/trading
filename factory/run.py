@@ -51,20 +51,29 @@ def cmd_fleet(argv):
     if not passed:
         print("No engines pass the Proving Ground — nothing to sail.")
         return
-    roster_trades = {e.spec.name: e.run(events, tide) for e in passed}
-    # Throttle OFF by default — it failed validation on our (bull-only) data. --throttle to test.
-    floor = 0.5 if "--throttle" in argv else 1.0
-    brain = RiskBrain(throttle_floor=floor)
-    print("\n" + brain.describe(roster_trades))
-    print("\n--- RAW (includes the 2024-26 bull-market tide — NOT repeatable) ---")
-    raw = run_fleet(roster_trades, tide, brain=brain, basis="ret")
-    print(raw.render())
-    print("\n--- SKILL-ONLY (market-neutral alpha — the honest, repeatable number) ---")
-    skill = run_fleet(roster_trades, tide, brain=brain, basis="alpha")
-    print(skill.render())
-    print("\n⚠ Both curves are still inflated by universe survivorship (these 293 names were")
-    print("  partly chosen for having moved) + idealised stop fills. Live forward = the real test.")
-    return raw, skill
+    slot_engines = [e for e in passed if not e.spec.sleeve]
+    sleeve_engines = [e for e in passed if e.spec.sleeve]
+
+    # --- SLOT fleet: discrete-position engines (e.g. Wave Rider) ---
+    if slot_engines:
+        roster_trades = {e.spec.name: e.run(events, tide) for e in slot_engines}
+        floor = 0.5 if "--throttle" in argv else 1.0   # throttle OFF by default (failed validation)
+        brain = RiskBrain(throttle_floor=floor)
+        print("\n" + brain.describe(roster_trades))
+        print("\n--- SLOT FLEET — RAW (includes the 2024-26 bull tide — NOT repeatable) ---")
+        print(run_fleet(roster_trades, tide, brain=brain, basis="ret").render())
+        print("\n--- SLOT FLEET — SKILL-ONLY (market-neutral alpha — honest, repeatable) ---")
+        print(run_fleet(roster_trades, tide, brain=brain, basis="alpha").render())
+
+    # --- SLEEVE engines: market-neutral long-short books (e.g. Contrarian) ---
+    for e in sleeve_engines:
+        tr = e.run(events, tide); a = tr["alpha"]
+        t = a.mean() / (a.std() / len(a) ** 0.5) if a.std() > 0 else 0
+        print(f"\n--- SLEEVE — {e.spec.nickname} [{e.spec.name}] (market-neutral, pays bull OR bear) ---")
+        print(f"  per-leg alpha {a.mean():+.3f}%  t={t:.1f}  win {100*(a>0).mean():.0f}%  {len(tr)} legs")
+        print(f"  ↳ separate long-short book; blending its curve with the slot fleet is the next build.")
+
+    print("\n⚠ Slot numbers inflated by survivorship + idealised fills; live forward = the real test.")
 
 
 def main():

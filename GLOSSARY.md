@@ -148,15 +148,16 @@ Full design + diagram: `docs/ALPHA_FACTORY_DESIGN.md`. Judged on smoothness (Sha
 | **Sailing** | sailing skill vs the fleet on the same tide | `Trade.alpha` | *alpha* — market-neutral edge (return − tide). The only thing that survives a bear. |
 | **Personality** | a boat's temperament | `personality.csv` CALM/MID/WILD | a stock's volatility class (daily-range terciles). Momentum lives in WILD. |
 | **Engine** | a boat / fishing method | `factory/engines.py`, `Engine` | one strategy that emits trade tickets. |
-| **Wave Rider** | rides the momentum wave | `momentum_wild` | buy WILD stocks that popped up, hold 3d. **PASSED** the Proving Ground (only Roster engine). |
-| **Bargain Hunter** | buys the dip | `meanrev_mid` | buy MID stocks that fell. **FAILED** (fragile) — documented candidate, not trading. |
-| **Cross-Sectional Reversal** | back the laggards vs the leaders | `factory/research/xsec_prototype.py` | long the biggest 3-day losers / short the biggest 3-day winners, hold 5d. Market-neutral (long+short cancels the Tide). **PASSED the gate on the bench** (OOS +0.61/+0.85%, uncorrelated −0.13 to Wave Rider) — engine #2, awaiting framework integration. Caveats: breadth + shorting frictions → a scaled sleeve, not a $10k engine. |
+| **Wave Rider** | rides the momentum wave | `momentum_wild`; live `factory/live/wave_rider.py` | buy WILD stocks that popped up, hold 3d, 8% stop. **PASSED** the Proving Ground. **Running LIVE-PAPER in SHADOW** (launchd `com.sushil.trading.wave_rider`, table `wave_trades`) — flip to real paper orders via `WAVE_RIDER_MODE=LIVE`. |
+| **Contrarian** | back the laggards vs the leaders | `xsec_reversal` (`factory/xsec.py`) | long biggest 3-day losers / short biggest 3-day winners, hold 5d. Market-neutral **sleeve** (long+short cancels the Tide → pays bull OR bear). **PASSED — Roster engine #2**, corr −0.13 to Wave Rider. Caveats: breadth + shorting → a scaled sleeve, not a $10k engine. |
+| **Bargain Hunter** | buys the dip | `meanrev_mid` | buy MID stocks that fell. **FAILED** (fragile robustness) — documented candidate, not trading. |
+| **Steady Hand** | betting against beta | `xsec_lowvol` (`factory/xsec.py`) | long calm / short wild names (low-vol anomaly). **FAILED** — alpha inverted (−1.1%) in this high-beta tape. Engine-#3 candidate, gate-rejected. |
 | **The Proving Ground** | sea-trials | `factory/qc_dyno.py` | the QC gate: 7 honest checks (OOS alpha, walk-forward, robustness, uncorrelated, cost…). |
 | **The Roster** | the fleet that made the cut | — | the library of validated engines. |
 | **The Captain** | decides sail per boat | `factory/risk_brain.py` | portfolio construction — info-ratio weights + the Tide Gauge. |
 | **The Tide Gauge** | reef sails when tide goes out | `RiskBrain.throttle` | slow bear-exposure cut. **OFF by default — failed validation** (hurt on bull-only data). |
 | **The Fill Desk** | the harbour | `factory/execution.py` | discrete-slot portfolio sim → equity curve, Sharpe, drawdown. |
-| **The Lookout** | crow's-nest storm-watch | (planned) | live-vs-backtest monitor + decay alarm. |
+| **The Lookout** | crow's-nest storm-watch | `factory/live/lookout.py` | watches live/shadow vs backtest; sounds DRIFT + DECAY alarms. Read-only. |
 
 **Retirement queue (flagged by the factory's honest tests; live code NOT yet cut):** **Fish Finder**
 (`FISHFINDER_*`) and the equity **bear book** (`BEAR_MOMENTUM`, `_scan_and_enter_bear`) both fail the

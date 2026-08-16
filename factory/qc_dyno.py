@@ -109,20 +109,10 @@ def evaluate(engine: Engine, events: pd.DataFrame, tide: pd.DataFrame,
     sc.stats["alpha_net"] = net
     sc.checks["cost survival"] = (net > 0, f"alpha {a.mean():+.3f}% − cost {COST_DRAG} = {net:+.3f}%")
 
-    # 5. Robustness — neighboring hold/stop still positive overall (plateau, not spike)
-    neigh, neigh_ok = [], True
-    for dh in (-1, 0, 1):
-        for ds in (-2, 0, 2):
-            h = engine.spec.hold_days + dh
-            s = engine.spec.stop_pct + ds
-            if h < 1 or h > D.NF or s <= 0:
-                continue
-            alt = replace(engine.spec, hold_days=h, stop_pct=s)
-            e2 = Engine(alt); e2.select = engine.select  # borrow the same selection
-            am = e2.run(events, tide)["alpha"].mean()
-            neigh.append(am)
-            if not (dh == 0 and ds == 0) and am <= 0:
-                neigh_ok = False
+    # 5. Robustness — neighboring params still positive overall (plateau, not spike).
+    # Each engine defines its OWN neighbours (event engines vary hold/stop; cross-sectional
+    # varies lookback/hold), so this check generalises across engine types.
+    neigh = [e.run(events, tide)["alpha"].mean() for e in engine.neighbors()]
     frac_pos = np.mean([x > 0 for x in neigh]) if neigh else 0
     sc.stats["robust_frac"] = frac_pos
     sc.checks["robustness"] = (frac_pos >= 0.8, f"{frac_pos:.0%} of {len(neigh)} neighbor configs positive (need ≥80%)")
