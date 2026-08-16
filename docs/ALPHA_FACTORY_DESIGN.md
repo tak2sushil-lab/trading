@@ -132,6 +132,40 @@ close. Quantified on 4,974 WILD up-mover event-days from our 5-min bars (`scratc
   *exit refinement to Wave Rider*, not a new sleeve. Horizon coverage below swing is provided by **overnight
   (Night Shift)**, not intraday.
 
+## 5d. Fleet-blend test + Night Shift promotion (Aug 16 2026)
+`scratchpad/fleet_blend.py` — each engine → a daily-alpha series stitched over the full **2018→2026**
+(bear data early, factory data late; Wave Rider uses its daily proxy pre-2024), risk-parity-blended,
+Sharpe measured with bears actually in the sample.
+
+**Engine-#3 (Steady Hand / low-vol) — REJECTED for deployment.** This is the honest way to judge a
+defensive factor without market-timing, and it fails clearly. Solo Sharpe **−2.26** (−1.28 even
+bear-inclusive — the bear *months* don't offset the bleed across the non-crashing rest of 2018-23).
+Adding it to the roster **lowers Sharpe at every weight**: roster +1.94 → +1.09 (10%) → +0.21
+(equal-risk) → negative (2×). It only helps if you can *time* the crash — the regime prediction the
+factory forbids and we've repeatedly shown is impossible. The gate was right; low-vol stays a
+documented bear-conditional factor, **not** an engine.
+
+**Night Shift — PROMOTED to active bench candidate (improves the roster).** Solo Sharpe **+1.52 full,
++1.92 bear-inclusive (best of all four engines)** — tiny magnitude but very steady + uncorrelated.
+Adding it to {Wave Rider, Contrarian}: full Sharpe **+1.94 → +2.35**, bear-inclusive **+1.20 → +1.96**,
+and **max-drawdown −48 → −15** — it smooths the whole fleet. (Risk-parity over-weights it to ~66% for
+its low vol; a sane deployment weight is ~10%, which keeps Wave Rider's punch: Sharpe +2.28, and even
+lifts the bull to +3.37.)
+
+**User-inspired refinement VALIDATED (`scratchpad/gap_persistence.py`) — "pick the consistent
+repeat-gappers, not the biggest single gap":** ranking WILD names by **20-day up-night *consistency*
+(fraction of recent nights that gapped up)** beats the raw mean-overnight magnitude — OOS2 (2026)
+**+0.157% vs +0.076%/night** (≈2×), and it holds **out-of-regime**: positive in 3 of 4 crises and it
+**fixes the 2022 bear** (+0.074% t=2.5) where the magnitude signal was *negative* (−0.016%). This is the
+concrete basis for a **Night Shift v2** (long WILD names by overnight consistency).
+
+**Honest caveats before capital:** (1) magnitude is thin (0.07-0.16%/night in hard periods) — overnight
+= daily turnover + open-auction spreads, so a realistic cost model must come before trusting it;
+(2) long-biased overnight (carries overnight beta) unless paired with a short leg; (3) all figures are
+gross per-leg alpha on backtest — **live-shadow is the real test**, same on-ramp Wave Rider took.
+**Recommendation:** build Night Shift v2 as a registered engine (consistency factor) → full gate →
+live-shadow. Do NOT add Steady Hand.
+
 ## 6. Honest findings baked in (the factory working)
 - **The lookahead bug we caught:** first fleet showed Sharpe 5.3 / +1674% — because slot selection sorted by *realized* return. Fixed to select on an entry-time feature; guarded by `test_no_lookahead` + `test_shuffle_invariance`. Result fell to a believable Sharpe ~1.2.
 - **The tide-throttle FAILED validation** → defaulted OFF. On our (bull-only) data it cut ~20% CAGR *and* worsened drawdown — reefing sails during normal pullbacks missed recoveries. Its bear-protection value is **unproven** (we have no sustained bear in the data). Enable only with real reason.
