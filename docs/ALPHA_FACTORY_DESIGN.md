@@ -79,6 +79,7 @@ Data spine: `data.py` builds **Personality**, the **Tide**, and the unified **ev
 | **Bargain Hunter** (meanrev_mid) | **FAIL ❌** | uncorrelated & positive OOS, but **fails robustness** (67%) — held back |
 | **Steady Hand** (xsec_lowvol) | **FAIL ❌** | engine-#3 candidate (betting-against-beta). Alpha **−1.1%**, robustness 0% — the low-vol anomaly is *inverted* in this high-beta bull tape. Gate rejected. |
 | Cross-Sectional Momentum (bench) | **FAIL ❌** | best config looked great (OOS1 +2.4%) but **44% robustness** — an overfit spike |
+| **Earnings Drift** (pead_gap) | **FAIL ❌** | PEAD via a **gap proxy** (earnings_calendar is empty, so a big overnight gap ≥5% stands in for an earnings surprise). Textbook overfit: strong in-sample (+1.3%) but **negative both OOS** (−0.96% / −0.54%), t=1.0. Notably walk-forward (85%) *and* robustness (100%) **passed** — the OOS-alpha + significance checks are what caught it. A good illustration of why the gate has 7 layers, not 1. A *true* earnings-surprise PEAD is untested (no earnings data). |
 
 **The Roster now holds TWO uncorrelated engines** (Wave Rider + Contrarian, corr −0.13) — a directional momentum boat and a market-neutral long-short boat. Slot fleet (Wave Rider), skill-only: **+232%/2.6y, Sharpe 1.8, MaxDD −14%** (inflated — see §7). Contrarian sleeve: +0.36%/leg, t=3.9, pays bull or bear.
 
