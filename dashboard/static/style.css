@@ -211,10 +211,14 @@ html, body {
 /* ── TABLES ──────────────────────────────────────────────── */
 /* Every table-holding section scrolls horizontally within itself — the
    table can stay full-width, only this wrapper's overflow moves. */
-#equity-table, #options-table, #futures-table, #scorecard {
+#equity-table, #options-table, #futures-table, #scorecard, #system-health,
+#activity, #calendar, #alerts, #sector-grades {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+/* Reference pages (glossary / factory): every section scrolls its own wide content
+   horizontally instead of overflowing the page — fixes mobile "can't scroll right". */
+.glossary-page .section, .fac-page .section { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .positions-table {
   width: 100%; border-collapse: collapse; font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -280,6 +284,10 @@ html, body {
 
 /* ── TWO-COLUMN LAYOUT ────────────────────────────────────── */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+/* THE fix for "scorecard doesn't fit": grid items default to min-width:auto and refuse to
+   shrink below their content, so the inner overflow-x:auto never engages. min-width:0 lets
+   each column shrink to its share and scroll its own table. */
+.two-col > * { min-width: 0; }
 
 /* ── SECTOR GRID ──────────────────────────────────────────── */
 .sector-grid { display: flex; flex-wrap: wrap; gap: 6px; }

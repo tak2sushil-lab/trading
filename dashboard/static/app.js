@@ -119,7 +119,6 @@ function renderSystemHealth(h) {
       <span class="health-label" title="A+ grade equity signals seen today, whether or not a trade was taken">Signals today</span>
       <span>A+ equity: ${f.eq_aplus_long ?? 0} long / ${f.eq_aplus_short ?? 0} short</span>
     </div>
-    ${renderFishFinderHealth(h.fishfinder)}
     <div class="health-row">
       <span class="health-label" title="MNQ signal funnel today: how many entries got through, and which gate rejected the rest">Futures funnel</span>
       ${enteredChip}
