@@ -134,3 +134,30 @@ Each stage feeds the next morning's decisions. None overlap; all six stay.
    names stay in code forever (grep-ability > purity); never rename identifiers, DB tables, or
    launchd services for terminology reasons.
 5. Update this file in the same session any time a part is added, retired, or renamed.
+
+---
+
+## 8. The Alpha Factory (research subsystem — `factory/`, branch `alpha-factory`, built Aug 15 2026)
+
+An offline system that discovers, validates, and combines trading edges. Places NO live orders.
+Full design + diagram: `docs/ALPHA_FACTORY_DESIGN.md`. Judged on smoothness (Sharpe), not peak return.
+
+| Canonical name | Analogy | Code | What it is |
+|---|---|---|---|
+| **Tide** | ocean tide lifting every boat | `tide.csv`, `tide{k}` | *beta* — the market's average drift; return from just being invested. |
+| **Sailing** | sailing skill vs the fleet on the same tide | `Trade.alpha` | *alpha* — market-neutral edge (return − tide). The only thing that survives a bear. |
+| **Personality** | a boat's temperament | `personality.csv` CALM/MID/WILD | a stock's volatility class (daily-range terciles). Momentum lives in WILD. |
+| **Engine** | a boat / fishing method | `factory/engines.py`, `Engine` | one strategy that emits trade tickets. |
+| **Wave Rider** | rides the momentum wave | `momentum_wild` | buy WILD stocks that popped up, hold 3d. **PASSED** the Proving Ground (only Roster engine). |
+| **Bargain Hunter** | buys the dip | `meanrev_mid` | buy MID stocks that fell. **FAILED** (fragile) — documented candidate, not trading. |
+| **The Proving Ground** | sea-trials | `factory/qc_dyno.py` | the QC gate: 7 honest checks (OOS alpha, walk-forward, robustness, uncorrelated, cost…). |
+| **The Roster** | the fleet that made the cut | — | the library of validated engines. |
+| **The Captain** | decides sail per boat | `factory/risk_brain.py` | portfolio construction — info-ratio weights + the Tide Gauge. |
+| **The Tide Gauge** | reef sails when tide goes out | `RiskBrain.throttle` | slow bear-exposure cut. **OFF by default — failed validation** (hurt on bull-only data). |
+| **The Fill Desk** | the harbour | `factory/execution.py` | discrete-slot portfolio sim → equity curve, Sharpe, drawdown. |
+| **The Lookout** | crow's-nest storm-watch | (planned) | live-vs-backtest monitor + decay alarm. |
+
+**Retirement queue (flagged by the factory's honest tests; live code NOT yet cut):** **Fish Finder**
+(`FISHFINDER_*`) and the equity **bear book** (`BEAR_MOMENTUM`, `_scan_and_enter_bear`) both fail the
+market-neutral tests — scheduled for retirement when **Wave Rider** graduates to live paper. Until
+then they remain live and their glossary rows above stand.
