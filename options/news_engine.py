@@ -250,54 +250,102 @@ DEFAULT_CONTEXT = (
     "Ignore generic market commentary and analyst reiterations."
 )
 
-# ── LLM client: Groq (free) preferred, Claude fallback ───
-# Groq runs Llama 3 70B — same classification quality, zero cost.
-# Claude is used only if GROQ_KEY is absent and ANTHROPIC_KEY is set.
-if GROQ_KEY:
-    _groq_client = Groq(api_key=GROQ_KEY)
-    ai = None   # Claude client not needed
-else:
-    _groq_client = None
-    ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+# ── LLM client: Groq (free) ladder → Claude backstop ───
+# Aug 18 2026: Groq retired the ENTIRE Llama 3.x chat lineup. Both models this
+# file used (llama-3.3-70b-versatile, llama-3.1-8b-instant) now 404, and the old
+# fallback only caught '429 tokens per day' — so a 404 hit a bare `raise` and
+# classification was 100% dead (31,548 logged failures) with no fallback reachable.
+#
+# Every remaining free Groq model is a REASONING model. Two consequences:
+#   1. reasoning tokens are billed against max_tokens. At this file's budgets
+#      (120-300) an unconstrained model spends the whole allowance thinking and
+#      returns EMPTY content — which surfaces as a confusing 400
+#      json_validate_failed, not an obvious error. Hence pinned reasoning_effort
+#      + REASONING_HEADROOM, and an explicit empty-content check below.
+#   2. reasoning_effort is mandatory per model, so the ladder carries per-model
+#      kwargs rather than being a plain list of names.
+# Measured on this account Aug 18 2026 (free tier: 1,000 req/day, 8,000 tok/min):
+#   gpt-oss-120b + effort=low   → 37 tokens, 0.26s   (best quality)
+#   qwen3.6-27b  + effort=none  → 21 tokens, 0.27s   (leanest)
+#   gpt-oss-20b  + default      → 103 tokens, 0.46s
+# groq/compound is deliberately EXCLUDED — it is an agentic router that runs on
+# gpt-oss-120b and shares its quota, so it adds no capacity and contends with us.
+GROQ_MODELS = [
+    ('openai/gpt-oss-120b', {'reasoning_effort': 'low'}),
+    ('qwen/qwen3.6-27b',    {'reasoning_effort': 'none'}),
+    ('openai/gpt-oss-20b',  {}),
+]
+REASONING_HEADROOM = 256   # extra max_tokens so reasoning can never starve the answer
 
-_groq_fallback_active = False  # flips True when 70B daily cap is hit
+_groq_client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
+# Claude is a real backstop now. Previously this was `ai = None` whenever GROQ_KEY
+# was set, which made the advertised Haiku fallback unreachable by construction.
+ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+
+_groq_disabled_today: set[str] = set()   # models that hit their daily cap
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove a leading ```json / ``` fence and its closing fence, if present."""
+    t = text.strip()
+    if not t.startswith('```'):
+        return t
+    t = t.split('\n', 1)[1] if '\n' in t else ''      # drop the ```json line
+    if t.rstrip().endswith('```'):
+        t = t.rstrip()[:-3]
+    return t.strip()
 
 def _llm_call(prompt: str, max_tokens: int) -> str:
-    """Single LLM call — Groq 70B → 8B fallback on daily cap → Claude fallback."""
-    global _groq_fallback_active
+    """Groq free ladder (120b → qwen → 20b) → Claude Haiku backstop.
+
+    Any failure on one rung — API error, 404, rate limit, or empty content —
+    moves to the next rung. Only a daily-cap 429 disables a model for the rest
+    of the day (reset in _check_reset_daily).
+    """
+    errors: list[str] = []
     if _groq_client:
-        models = (
-            ['llama-3.1-8b-instant'] if _groq_fallback_active
-            else ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
-        )
-        for model in models:
+        for model, extra in GROQ_MODELS:
+            if model in _groq_disabled_today:
+                continue
             try:
                 resp = _groq_client.chat.completions.create(
                     model    = model,
                     messages = [{'role': 'user', 'content': prompt}],
-                    max_tokens      = max_tokens,
+                    max_tokens      = max_tokens + REASONING_HEADROOM,
                     temperature     = 0,
                     response_format = {'type': 'json_object'},
+                    **extra,
                 )
-                if model != 'llama-3.3-70b-versatile' and not _groq_fallback_active:
-                    pass  # already tried 70B, this is the fallback
-                return resp.choices[0].message.content.strip()
+                text = (resp.choices[0].message.content or '').strip()
+                if not text:
+                    # Reasoning consumed the whole budget — treat as a failure so
+                    # the ladder advances instead of returning '' to the caller.
+                    raise RuntimeError('empty content (reasoning consumed max_tokens)')
+                return text
             except Exception as e:
                 err = str(e)
-                if '429' in err and 'tokens per day' in err:
-                    if model == 'llama-3.3-70b-versatile':
-                        print(f'[LLM] 70B daily cap hit — switching to 8B for rest of day')
-                        _groq_fallback_active = True
-                        continue  # retry with next model
-                raise  # non-rate-limit error — propagate
+                errors.append(f'{model}: {err[:120]}')
+                if '429' in err and 'per day' in err:
+                    print(f'[LLM] {model} daily cap hit — disabled for rest of day')
+                    _groq_disabled_today.add(model)
+                continue   # every other error falls through to the next rung
     if ai:
-        resp = ai.messages.create(
-            model    = 'claude-haiku-4-5-20251001',
-            max_tokens = max_tokens,
-            messages = [{'role': 'user', 'content': prompt}],
-        )
-        return resp.content[0].text.strip()
-    raise RuntimeError('No LLM configured — set GROQ_API_KEY or ANTHROPIC_KEY')
+        try:
+            resp = ai.messages.create(
+                model    = 'claude-haiku-4-5-20251001',
+                max_tokens = max_tokens,
+                messages = [{'role': 'user', 'content': prompt}],
+            )
+            # Groq rungs use response_format=json_object and return bare JSON.
+            # Claude has no equivalent here and wraps output in a ```json fence,
+            # which would break the callers' json.loads(). Strip it so the
+            # backstop is a drop-in replacement, not a different contract.
+            return _strip_code_fence(resp.content[0].text.strip())
+        except Exception as e:
+            errors.append(f'claude-haiku: {str(e)[:120]}')
+    if errors:
+        raise RuntimeError('All LLM providers failed — ' + ' | '.join(errors))
+    raise RuntimeError('No LLM configured — set GROQ_KEY or ANTHROPIC_KEY')
 
 
 # ── Telegram ──────────────────────────────────────────────
@@ -673,15 +721,15 @@ def _save_alerted_file():
 
 
 def _check_reset_daily():
-    global _alerted_today, _alerted_date, _alerts_sent_today, _groq_fallback_active
+    global _alerted_today, _alerted_date, _alerts_sent_today
     today = datetime.now(ET_TZ).strftime('%Y-%m-%d')
     if _alerted_date != today:
         _alerted_today     = _load_alerted_file(today)
         _alerted_date      = today
         _alerts_sent_today = 0
-        # Groq's daily token cap resets daily too — without this, one cap hit
-        # permanently downgrades classification to the weaker 8B model forever.
-        _groq_fallback_active = False
+        # Groq's daily caps reset daily too — without this, one cap hit would
+        # permanently strand classification on the weaker rungs of the ladder.
+        _groq_disabled_today.clear()
 
 
 # ── Consolidated per-ticker alert ─────────────────────────────────────────────
@@ -1065,9 +1113,10 @@ def main():
     print(f'   Symbols  : {len(OPTIONS_SYMBOLS)}')
     print(f'   Interval : {SCAN_INTERVAL_MIN} min')
     print(f'   Sources  : {sources}')
-    llm_label = ('groq/llama-3.3-70b (free)' if _groq_client
+    llm_label = (f'groq ladder: {" → ".join(m for m, _ in GROQ_MODELS)}'
+                 + (' → claude-haiku' if ai else '') if _groq_client
                  else 'claude-haiku (fallback)' if ai
-                 else 'DISABLED — set GROK_API_KEY or ANTHROPIC_KEY')
+                 else 'DISABLED — set GROQ_KEY or ANTHROPIC_KEY')
     print(f'   LLM      : {llm_label}')
     print('=' * 52)
 
