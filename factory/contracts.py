@@ -99,7 +99,7 @@ class Engine:
             return empty_trades()
         hold, stop, side = self.spec.hold_days, self.spec.stop_pct, self.spec.side
         # long_ret = the stock's realised return if you BOUGHT it (net of the stop)
-        long_ret = sel.apply(lambda r: _outcome(r, hold, stop), axis=1)
+        long_ret = sel.apply(lambda r: _outcome(r, hold, stop, side), axis=1)
         tide_map = tide.set_index("date")[f"tide{hold}"]
         tide_vals = sel["date"].map(tide_map)
         # Tradable return and market-neutral alpha, stated once, cleanly:
@@ -122,30 +122,44 @@ class Engine:
             "ret": tradable.values,
             "tide": tide_vals.values,
             "alpha": alpha.values,
-            "stopped": sel.apply(lambda r: _stopped(r, hold, stop), axis=1).values,
+            "stopped": sel.apply(lambda r: _stopped(r, hold, stop, side), axis=1).values,
         })
         return out.dropna(subset=["ret", "tide", "alpha"])[TRADE_COLUMNS]
 
 
-def _outcome(row, hold: int, stop_pct: float) -> float:
-    """Realised LONG return over `hold` days with a hard stop at -stop_pct.
-    Uses daily lows to detect the stop; exits at the stop level if breached, else at the
-    close of day `hold`. Forward columns lo1..loN / cl1..clN are % vs the 10:00 entry."""
+def _outcome(row, hold: int, stop_pct: float, side: str = "LONG") -> float:
+    """Realised return over `hold` days with a hard stop at `stop_pct` against the position.
+
+    Returned in LONG terms (the caller negates for a SHORT), so the stop must be detected on
+    the side that HURTS the position:
+      LONG  is hurt by the day's LOW  -> stop when lo{k} <= -stop_pct, exit at -stop_pct
+      SHORT is hurt by the day's HIGH -> stop when hi{k} >= +stop_pct, exit at +stop_pct
+                                        (= -stop_pct once the caller negates)
+
+    Bug fixed Sep 3 2026: this used the LOW for both sides, so a SHORT was "stopped" on its
+    PROFIT side — capped wins, uncapped losses — and every short engine the Proving Ground
+    ever scored was mis-modelled. Falls back to the unstopped close if the needed column is
+    missing (an old cache with no hi{k}), so results degrade visibly rather than silently.
+    """
+    key = "hi" if side == "SHORT" else "lo"
     for k in range(1, hold + 1):
-        lo = row.get(f"lo{k}", np.nan)
-        if pd.isna(lo):
-            c = row.get(f"cl{hold}", np.nan)
-            return c
-        if lo <= -stop_pct:
+        v = row.get(f"{key}{k}", np.nan)
+        if pd.isna(v):
+            return row.get(f"cl{hold}", np.nan)
+        if side == "SHORT":
+            if v >= stop_pct:
+                return stop_pct
+        elif v <= -stop_pct:
             return -stop_pct
     return row.get(f"cl{hold}", np.nan)
 
 
-def _stopped(row, hold: int, stop_pct: float) -> int:
+def _stopped(row, hold: int, stop_pct: float, side: str = "LONG") -> int:
+    key = "hi" if side == "SHORT" else "lo"
     for k in range(1, hold + 1):
-        lo = row.get(f"lo{k}", np.nan)
-        if pd.isna(lo):
+        v = row.get(f"{key}{k}", np.nan)
+        if pd.isna(v):
             return 0
-        if lo <= -stop_pct:
+        if (v >= stop_pct) if side == "SHORT" else (v <= -stop_pct):
             return 1
     return 0

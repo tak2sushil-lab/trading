@@ -47,7 +47,11 @@ STOP_PCT  = 8.0
 # ── Turbo config (all provisional — tuned once shadow data lands) ─────────────
 EDGE_MIN      = 0.10     # required idealized EV as a fraction of risk (+10%)
 IV_FLOOR      = 25       # the one data-validated exclusion (IV rank < 25 = quiet name, skip)
-IV_CREDIT_HI  = 65       # IV rank > this → sell premium (credit) instead of buy (debit)
+IV_CREDIT_HI  = 50       # IV rank > this → credit (sell premium) instead of debit (buy).
+                         # ALIGNED Aug 17 2026 to the calculators' own handoff (debit calc caps at
+                         # 50, credit calc floors at 50). Was 65 → created a 50-65 DEAD ZONE where
+                         # turbo routed to debit but the debit calc refused ("use credit spread"),
+                         # silently skipping every IV 50-65 name (SMTC/COHR/UCTT today).
 US_HOLIDAYS   = {"2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"}
 
 try:

@@ -25,7 +25,11 @@ MIN_OOS_ALPHA = 0.05      # % per trade, required in EACH sealed OOS window
 MIN_N_OOS = 100           # trades needed across the OOS windows
 MIN_TSTAT = 1.5           # overall alpha t-stat
 MIN_WF_POS = 0.55         # fraction of walk-forward windows that must be positive
-COST_DRAG = 0.10          # % round-trip friction subtracted from alpha
+# Round-trip friction (%) subtracted from alpha. Raised 0.10 -> 0.20 on Sep 3 2026: measured
+# on REAL fills, commission ALONE is 0.153% (live equity, $1,324 median position) and 0.207%
+# (Clockwork, $968), because IBKR's $1.00 per-order minimum dominates at this account size.
+# 0.10 was only defensible for positions several times larger. Spread is on top of this.
+COST_DRAG = 0.20
 MAX_CORR = 0.50           # max |correlation| to any roster engine
 WF_WINDOW_M = 6           # walk-forward window length (months)
 WF_STEP_M = 2             # walk-forward step (months)
@@ -94,6 +98,22 @@ def evaluate(engine: Engine, events: pd.DataFrame, tide: pd.DataFrame,
     ok1 = (o1 >= MIN_OOS_ALPHA) and (o2 >= MIN_OOS_ALPHA)
     sc.checks["OOS alpha"] = (ok1, f"IS {is_a:+.3f}% | OOS1 {o1:+.3f}% | OOS2 {o2:+.3f}% "
                                    f"(need both OOS ≥ {MIN_OOS_ALPHA})")
+
+    # 1b. SPENDABLE RETURN — alpha is only money you can actually spend if the engine is
+    # genuinely hedged (a long-short sleeve). An UNHEDGED directional book earns `ret`, and
+    # `alpha = ret - tide` hands it a free credit equal to the tide. In a bull tape that makes
+    # any SHORT book look brilliant while it loses real money: measured Sep 3 2026, 17 short
+    # configs passed on alpha in both halves of 2026 and ZERO of them made a dollar (the 10-day
+    # tide was +2.42%). So a non-sleeve engine must ALSO clear cost on realised return.
+    if not engine.spec.sleeve:
+        r = trades["ret"]
+        r1 = r[trades["period"] == "OOS1"].mean() if (trades["period"] == "OOS1").any() else float("nan")
+        r2 = r[trades["period"] == "OOS2"].mean() if (trades["period"] == "OOS2").any() else float("nan")
+        ok_r = (r.mean() > COST_DRAG) and (r1 > 0) and (r2 > 0)
+        sc.stats["ret_mean"] = r.mean()
+        sc.checks["spendable return"] = (
+            ok_r, f"ret {r.mean():+.3f}% (need > cost {COST_DRAG}) | "
+                  f"OOS1 {r1:+.3f}% OOS2 {r2:+.3f}% (both need > 0)")
 
     # 2. Significance — sample size + t-stat on overall alpha
     a = trades["alpha"].values

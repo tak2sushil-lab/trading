@@ -99,7 +99,10 @@ def record_entry(sym, price, shares, consistency, order_id=None):
 def record_exit(tid, price):
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     t = dict(c.execute("SELECT * FROM overnight_trades WHERE id=?", (tid,)).fetchone())
-    pnl = (price - t["entry_price"]) * t["shares"]
+    # net of the real IBKR round trip. At this book's ~$968 positions that is ~0.207%,
+    # which is LARGER than the strategy's whole measured edge -- was gross until Sep 3 2026.
+    from database import equity_commission
+    pnl = (price - t["entry_price"]) * t["shares"] - equity_commission(t["shares"])
     pct = (price - t["entry_price"]) / t["entry_price"] * 100
     now = now_et()
     c.execute("""UPDATE overnight_trades SET status='CLOSED',exit_date=?,exit_time=?,exit_price=?,

@@ -7,7 +7,8 @@ Three products, all cached to factory/cache/ (regenerable, git-ignored):
   events.csv      : every >=3% morning mover with 15-day forward paths     -> "the fishing spots"
 
 An event is entered at 10:00 ET; forward columns lo{k}/cl{k} are % vs that 10:00 price for
-trading day k after entry (lo = that day's low, for stop detection; cl = that day's close).
+trading day k after entry (lo/hi = that day's low/high, for stop detection on LONG/SHORT
+respectively; cl = that day's close).
 """
 from __future__ import annotations
 import os, sys, datetime
@@ -91,6 +92,10 @@ def build_dataset(force: bool = False, progress: bool = True):
         # forward paths vs the 10:00 price
         cl = {k: (f["close"].shift(-k) - p10) / p10 * 100 for k in range(1, NF + 1)}
         lo = {k: (f["low"].shift(-k) - p10) / p10 * 100 for k in range(1, NF + 1)}
+        # hi{k} = day-k HIGH vs entry. Required to stop a SHORT correctly: a short is hurt
+        # by the HIGH, not the low. Without this the stop lands on the profit side and every
+        # short engine is scored with capped wins and uncapped losses (bug found Sep 3 2026).
+        hi = {k: (f["high"].shift(-k) - p10) / p10 * 100 for k in range(1, NF + 1)}
         base = pd.DataFrame({"date": f.index, "symbol": sym, **{f"cl{k}": cl[k].values for k in cl}})
         fwd_all.append(base)  # tide uses ALL symbol-days' forward closes
         # events = qualifying movers only
@@ -109,6 +114,7 @@ def build_dataset(force: bool = False, progress: bool = True):
             for k in range(1, NF + 1):
                 er[f"cl{k}"] = cl[k][mask].round(3).values
                 er[f"lo{k}"] = lo[k][mask].round(3).values
+                er[f"hi{k}"] = hi[k][mask].round(3).values
             event_rows.append(er)
 
     # --- Tide: universe average forward return per day, per horizon -----------

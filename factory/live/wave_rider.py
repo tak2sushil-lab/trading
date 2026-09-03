@@ -108,7 +108,10 @@ def record_entry(sym, price, shares, stop, exit_on, day_chg, order_id=None):
 def record_exit(tid, price, reason):
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     t = dict(c.execute("SELECT * FROM wave_trades WHERE id=?", (tid,)).fetchone())
-    pnl = (price - t["entry_price"]) * t["shares"]
+    # net of the real IBKR round trip ($0.005/share, $1.00 order minimum) -- was gross
+    # until Sep 3 2026, which flattered every shadow result by ~15-20bps a trade.
+    from database import equity_commission
+    pnl = (price - t["entry_price"]) * t["shares"] - equity_commission(t["shares"])
     pnl_pct = (price - t["entry_price"]) / t["entry_price"] * 100
     now = dt.datetime.now(ET) if ET else dt.datetime.now()
     c.execute("""UPDATE wave_trades SET status='CLOSED',exit_date=?,exit_time=?,exit_price=?,

@@ -544,6 +544,24 @@ def log_trade_entry(symbol, entry_price, shares, target_price,
     conn.close()
     return trade_id
 
+# ── Broker friction ────────────────────────────────────────────────────────────
+# IBKR US equities tiered/fixed: $0.005 per share, $1.00 minimum per ORDER. At this
+# account's position sizes ($1k-$2k) the $1.00 minimum dominates and costs ~15-21bps
+# round-trip -- 38% of gross winnings, and it was never being charged anywhere.
+# Added Sep 3 2026.
+IBKR_PER_SHARE = 0.005
+IBKR_MIN_ORDER = 1.00
+
+
+def equity_commission(shares: float, round_trip: bool = True) -> float:
+    """Commission in dollars for `shares` (one leg, or a full round trip)."""
+    try:
+        one = max(IBKR_MIN_ORDER, IBKR_PER_SHARE * abs(float(shares or 0)))
+    except (TypeError, ValueError):
+        return 0.0
+    return round(one * (2 if round_trip else 1), 2)
+
+
 def log_trade_exit(trade_id, exit_price, exit_reason, max_gain_pct=None):
     conn = get_connection()
     c    = conn.cursor()
@@ -558,11 +576,14 @@ def log_trade_exit(trade_id, exit_price, exit_reason, max_gain_pct=None):
 
     entry_price, shares, side = row[0], row[1], (row[2] or 'LONG')
     if side == 'SHORT':
-        pnl     = (entry_price - exit_price) * shares
-        pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+        gross = (entry_price - exit_price) * shares
     else:
-        pnl     = (exit_price - entry_price) * shares
-        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        gross = (exit_price - entry_price) * shares
+    # Charge the real round-trip commission. Was missing entirely until Sep 3 2026, so every
+    # historical pnl in this table is GROSS -- see equity_commission() above.
+    comm    = equity_commission(shares)
+    pnl     = gross - comm
+    pnl_pct = (pnl / (entry_price * shares) * 100) if (entry_price and shares) else 0.0
 
     c.execute('''UPDATE trades SET
         exit_date=?, exit_time=?, exit_price=?,
