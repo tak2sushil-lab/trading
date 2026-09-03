@@ -3092,3 +3092,59 @@ is unfundable — 2 contracts need ~$8,750 margin = **175% utilisation**; Sep 1'
 $116,619 notional (23× the configured allocation, 2.3× a $50k TopStep account). Real risk was
 $800 (the stop), but the broker demands the margin. (e) Nightly futures learner — deferred on
 purpose until (a) is fixed, or it will learn the divergence.
+
+---
+
+## Sep 3 2026 — reboot cost the London session: RunAtLoad was missing everywhere; TC unblocked
+
+**① WHY LONDON TOOK NO TRADES — the Mac rebooted, and nothing restarted.** `last reboot`:
+**shutdown 01:29, reboot 01:31** — the exact minute both trader logs stop. (An earlier
+"process hang" theory in this session was WRONG; the user's reboot guess was right. There was
+no hang and no trader bug.) The real gap: **only `watchman` and `options_trader` had
+`RunAtLoad=true`.** Every futures service, BOTH gateways, BOTH bridges and `autotrader` had
+none, so after a reboot each waited for its next `StartCalendarInterval`:
+reboot 01:31 → gateway 02:50 → traders 08:00. **London's 3-8am window was never covered.**
+**FIXED: `RunAtLoad=true` added to gateway, tc_gateway, bridge, tc_bridge, futures_personal,
+futures_trader, autotrader** (plists backed up to `~/Library/LaunchAgents/_bak-20260903/`),
+booted out + bootstrapped, all 7 verified running, both bridges reconnected (DU9952463 /
+DUQ640500). Note `KeepAlive` is `{Crashed: true}` on all of them — that covers a crash, it
+never covered a reboot.
+**⚠️ STILL MISSING: a heartbeat/watchdog.** Nothing alerts when a trader stops. This one was
+only found by reading logs a day later. Before any funded eval, the traders should write a
+heartbeat and something independent should Telegram on silence.
+
+**② TC WAS ADMINISTRATIVELY FROZEN — by $45, and it could not escape.** `check_can_trade()`
+refuses everything when `balance + unrealized < effective_floor + SOFT_STOP_BUFFER($300)`:
+balance $49,500 · HWM $51,245 · floor = 51,245−2,000 = **$49,245** · needs **$49,545**.
+Blocked by **$45**, on BOTH books. Last TC NY trade Aug 26 (−$84, the loss that pushed it
+under); last TC London trade Aug 25. **Deadlock — it cannot earn its way out because it cannot
+trade.** Same architecture class as the Jul 21 equity Book-Health freeze: a gate with no
+self-release path.
+**RESET (user-directed) to a clean combine baseline:** balance/HWM $50,000, total_profit 0,
+best_day 0, qualifying_days 0 (old file kept at `futures/prop_state.json.bak-20260903-105334`).
+Verified `check_can_trade → True`, floor now $48,000 with the full $2,000 of room, and **0 MLL
+blocks since the restart**.
+**⚠️ The freeze will recur** — nothing warns as the balance approaches the buffer, and there is
+no reset path other than editing the state file by hand.
+
+**③ TC LONDON — checked, as asked. 12 trades ever, +$5.12 total, Aug 10-25 only**, then the
+MLL guard shut it off. It is not a strategy sample; it is 12 trades of nothing.
+
+**④ WHAT THE TC FIXES DO: accuracy, not volume.** None opens the throttle — weekend guard and
+stop-sanity ceiling both *remove* junk, `RECONCILED`-exclusion corrects the number feeding TC's
+own DLL gate, and the short cap only resizes. **The premise "TC trades less" is FALSE**: since
+Jul 25 TC took 20 trades vs IBKR's 17 — until the MLL guard froze it.
+
+**⑤ TOPSTEP READINESS — do not buy the subscription yet.** Three independent reasons: (a) the
+TC account was already at −$500 against a +$3,000 target with **$1,745 of its $2,000 trailing
+MLL consumed** — 87% of the way to a blow-up with zero progress to target; (b) the arithmetic:
+~1.9 trades/week at ~$12/day mean vs a 4% trailing MLL, prior gauntlet **P(pass) 8.5% vs
+P(blow) 29%** (Daily Tide improves this to 0 blow-ups in the *historical ordering*, but the
+path-shuffled bootstrap has NOT been re-run on the Tide book); (c) infrastructure — a reboot
+silently cost a whole session and nobody was told.
+
+**⑥ LIVE CONFIG, both NY traders, verified in the running processes (restarted 10:54 ET Sep 3,
+clean startup, MIDDAY scans, IB classified, London enabled):**
+`MAX_OPEN_TRADES=1` · `ENTRY_COOLDOWN_MINUTES=2.0` · `SHORT_MAX_CONTRACTS=1` (LIVE) ·
+`TIDE_GATE_ENABLED=False` (**Daily Tide == the day>MA200 side check — LOG ONLY on BOTH
+accounts**, gate name `TIDE_INFO`, review ~Sep 9) · `TIDE_MA_DAYS=200`.
