@@ -3148,3 +3148,75 @@ clean startup, MIDDAY scans, IB classified, London enabled):**
 `MAX_OPEN_TRADES=1` · `ENTRY_COOLDOWN_MINUTES=2.0` · `SHORT_MAX_CONTRACTS=1` (LIVE) ·
 `TIDE_GATE_ENABLED=False` (**Daily Tide == the day>MA200 side check — LOG ONLY on BOTH
 accounts**, gate name `TIDE_INFO`, review ~Sep 9) · `TIDE_MA_DAYS=200`.
+
+---
+
+## Sep 3 2026 (pm) — live/sim divergence ROOT-CAUSED (3 defects) + heartbeat watchdog SHIPPED
+
+**① THE DIVERGENCE WAS NEVER A STRATEGY DIFFERENCE — it is three separate defects.**
+Diagnosed from one signal that BOTH accounts took at the same second (11:00:44 Sep 3), which
+finally made the comparison controlled.
+
+**Defect 1 — `tc_trader.py`'s setup label was a TWO-WAY STUB.** IBKR labels by a 5-way
+priority list (`pm_bull`→PM · `orb_bull`→ORB · `vwap_reclaim`→VWAP · `momentum_bull`→MOM ·
+else OPEN); TC had **one line**: `setup = f"ORB_{side}" if orb else f"VWAP_{side}"`. TC could
+**never emit PM_/MOM_/OPEN_**. Sep 3 proof: identical trade, `pm_bull` AND `orb_bull` both
+true → IBKR wrote `PM_LONG`, TC wrote `ORB_LONG`. **That single line is the entire "TC fires a
+different setup mix" mystery** (the Sep 2 entry's 8 ORB_LONG / 0 PM_LONG vs 3 PM_LONG /
+0 ORB_LONG). Every cross-account per-setup P&L table has been comparing a 5-name vocabulary
+against a 2-name one. FIXED — TC now carries IBKR's exact list, asserted identical by test.
+
+**Defect 2 — the DB stored the SCAN price, not the FILL price.** `place_trade()` verified fill
+SIZE (`_actual_filled`) but never fill PRICE. Measured on that same signal:
+IBKR scan 29378.25 / actual 29378.06 (**0.19pt**) · TC scan 29378.25 / actual 29392.93
+(**14.68pt = $58.72 on 2c**). Stops, targets, trail tiers and P&L all keyed off a price we did
+not pay — material when the whole edge is ~$12/day. FIXED: new `_get_fill_price()` in both
+traders, wired into `place_trade` BEFORE the backup stop and the DB write, and `sl/target` are
+recomputed from the real fill so a 200pt stop is 200pt from where we actually got in.
+**⚠️ PRIMARY SOURCE IS PORTFOLIO `avg_cost`, NOT `/order/{id}/status`** — verified live that a
+genuinely filled entry still returns `{status: PendingSubmit, filled: 0.0, avgFillPrice: 0.0}`,
+the same staleness class as the Jul 20 2026 USAR incident. Because `MAX_OPEN_TRADES==1` every
+entry opens from FLAT, so `avg_cost` IS that entry's fill with no blending. Guarded by
+`MAX_FILL_DRIFT_PTS=60` (reject stale/blended) and falls back to the scan price on any failure
+so an entry is never lost. **This is also why nobody could have built this before: the obvious
+endpoint has always been broken.**
+
+**Defect 3 — the two gateways genuinely quote and fill differently, and that part is NOT a
+bug.** Bar-derived values were byte-identical on both (`vwap=29252.30 rsi=50.7 rvol=1.21
+day_chg=+0.44`) ⇒ the BARS agree. Only the live quote differed (29378.5 vs 29381.0) and the
+fills by ~15pts. Two separate IBKR paper sessions simulate fills independently. Consequence to
+remember: **TC's P&L is systematically penalised vs IBKR by fill simulation, not by strategy** —
+do not read a TC-vs-IBKR P&L gap as a logic difference.
+
+**② HEARTBEAT + WATCHDOG SHIPPED (`futures/heartbeat.py`, launchd
+`com.sushil.trading.heartbeat`, every 5 min, `RunAtLoad`).** Built because the Sep 3 reboot cost
+a whole London session and **nobody was told** — found by reading logs a day later.
+- **writer**: `beat(name)` is the FIRST statement of each `run_scan` (both NY traders +
+  `london_trader`, which covers both accounts since it is threaded into each process), so it
+  stamps every 60s whether or not a trade fires. Atomic `os.replace`, never raises into the
+  caller. Silence therefore means the LOOP stopped, not that no signal qualified.
+- **checker**: `python -m futures.heartbeat --check` runs from launchd **outside the traders** —
+  that independence is the whole point, a watchdog inside the process it watches cannot report
+  that process dying. Checks beat staleness (>300s) AND both bridges' `connected` flag (catches
+  a dead gateway, which is what actually bit us on Aug 9 and Sep 2).
+- **ACTIVE_HOURS per service** — London only beats 03:00-08:59 ET (its cron window), so outside
+  it a missing beat is normal. Without this the watchdog would report `london: NO heartbeat file`
+  every 5 min from 9am to 3am and you would learn to ignore it — the same alert-fatigue failure
+  as the Jul 20 USAR retry storm. **A watchdog that cries wolf is worse than none.**
+- Alerts deduped to once per issue per 60min, suppressed outside 03:00-16:00 ET (logged, not
+  sent), and it sends a RECOVERED notice when everything comes back.
+- Verified end to end: fresh beats → OK/exit 0 · aged beat → detected, Telegram sent, exit 1 ·
+  immediate re-run → deduped · real trader beat returns → OK + recovery · London out of window →
+  correctly silent. `--status` gives an at-a-glance view.
+
+**③ OPS.** Both NY traders restarted 12:29 ET, verified beating with their real PIDs
+(22489 / 22492), both bridges connected. Watchdog loaded and running.
+
+**OPEN / NEXT.** (a) Daily Tide log-review ~Sep 9. (b) London decision (does not survive its own
+commission — see Sep 2-3 entry). (c) `IBKR_FLOOR=$5,000` unfundable at 2 contracts (~$8,750
+margin = 175%). (d) **The evidence clock started Sep 3.** The live NY strategy changed **20 times
+in 90 days**, longest stable window ever **15 calendar days (~4 trades at 1.9/week)** — which is
+why no live number has ever described any version of the code. Freeze entry/exit logic now; only
+touch infrastructure, logging and the divergence work. At 1.9 trades/week: ~4 trades in 2wks
+(mechanism check only), ~16 in 2mo (noisy direction), ~48 in 6mo (a real win rate), ~95 in 12mo
+(bootstrap p10 clears zero). **A bad day proves the machine held; it does not prove the edge.**

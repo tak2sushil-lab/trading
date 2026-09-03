@@ -49,6 +49,7 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
+from futures.heartbeat import beat as _beat  # noqa: E402
 from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: E402
 from futures.hero_score import (  # noqa: E402  — Trend Jury (Jul 25 2026 alignment)
     score_entry_regime, contracts_from_regime_score, detect_regime, is_gold_score,
@@ -343,6 +344,59 @@ def _get_ibkr_qty() -> float | None:
         if p.get('symbol') == SYMBOL:
             return float(p.get('qty', 0))
     return 0.0
+
+
+def _get_fill_price(order_id, fallback: float) -> float:
+    """Real average fill price for the entry we just placed; scan price on failure.
+
+    Added Sep 3 2026. place_trade() verified fill SIZE (_actual_filled) but never
+    the fill PRICE, so entry_price in futures_trades was the SCAN price. Measured
+    live the same day on one signal taken by BOTH accounts:
+        IBKR  scan 29378.25  actual 29378.06  ->  0.19pt error
+        TC    scan 29378.25  actual 29392.93  -> 14.68pt error = $58.72 on 2c
+    Every stop / target / trail level / P&L keyed off a price we did not pay. It
+    bites hardest on TC, whose separate gateway session simulates its own fills,
+    and it is a direct contributor to the live/sim divergence.
+
+    PRIMARY SOURCE is the portfolio avg_cost, NOT /order/{id}/status. The order
+    endpoint is unreliable — verified Sep 3 2026 on a real filled entry it still
+    returned {status: PendingSubmit, filled: 0.0, avgFillPrice: 0.0}, the same
+    class of staleness behind the Jul 20 2026 USAR auto-close incident. Because
+    MAX_OPEN_TRADES == 1 every entry is opened from FLAT, so the position's
+    avg_cost IS this entry's fill price with no blending.
+
+    Guarded: a value further than MAX_FILL_DRIFT_PTS from the scan price is
+    rejected as stale/blended rather than trusted, and any failure falls back to
+    the scan price so an entry is never lost.
+    """
+    MAX_FILL_DRIFT_PTS = 60.0
+    for src, getter in (
+        ('avg_cost', lambda: next(
+            (float(p['avg_cost']) for p in (_bridge_get('/futures/position') or [])
+             if isinstance(p, dict) and p.get('symbol') == SYMBOL
+             and float(p.get('qty', 0)) != 0 and float(p.get('avg_cost', 0)) > 0),
+            0.0)),
+        ('order_status', lambda: float(
+            (_bridge_get(f'/order/{order_id}/status') or {}).get('avgFillPrice') or 0)
+            if order_id else 0.0),
+    ):
+        try:
+            px = getter()
+        except Exception as e:
+            log(f"  fill-price via {src} failed ({e})")
+            continue
+        if px <= 0:
+            continue
+        drift = px - fallback
+        if abs(drift) > MAX_FILL_DRIFT_PTS:
+            log(f"  fill-price via {src} = {px} is {drift:+.1f}pts from scan "
+                f"{fallback} (> {MAX_FILL_DRIFT_PTS:.0f}) — REJECTED as stale")
+            continue
+        if abs(drift) > 0.01:
+            log(f"  fill {px} vs scan {fallback} ({drift:+.2f}pts, via {src}) — using real fill")
+        return px
+    log(f"  fill price unavailable — using scan price {fallback}")
+    return fallback
 
 
 def get_live_price() -> float | None:
@@ -1496,8 +1550,32 @@ def place_trade(side: str, sig: dict, regime: str,
             send_telegram(f"⚠️ FUTURES(TC) entry partial/over fill: requested {contracts}, got {_actual_filled} (order {order_id})")
             contracts = _actual_filled
 
+    # Real fill price (Sep 3 2026) — stops/targets/trail/P&L must key off what we
+    # actually paid, not the scan price. See _get_fill_price().
+    price = _get_fill_price(order_id, price)
+    sl, target = calc_sl_target(price, atr, side)
+
     session  = get_session()
-    setup    = f"ORB_{side}" if sig.get(f'orb_{"bull" if side=="LONG" else "bear"}') else f"VWAP_{side}"
+    # Setup label: priority order matches grade_entry's bonus hierarchy.
+    # ALIGNED with futures_trader.py Sep 3 2026 — TC previously used a two-way
+    # stub (`ORB_{side}` if orb else `VWAP_{side}`) so it could NEVER emit
+    # PM_/MOM_/OPEN_. Measured live Sep 3: both accounts took the SAME trade with
+    # pm_bull and orb_bull both true; IBKR labelled it PM_LONG by priority, TC
+    # labelled it ORB_LONG by its stub. That single line is the whole "TC fires a
+    # different setup mix" mystery — every cross-account per-setup P&L table was
+    # comparing a 5-name vocabulary against a 2-name one.
+    if side == 'LONG':
+        if sig.get('pm_bull'):          setup = 'PM_LONG'
+        elif sig.get('orb_bull'):       setup = 'ORB_LONG'
+        elif sig.get('vwap_reclaim'):   setup = 'VWAP_LONG'
+        elif sig.get('momentum_bull'):  setup = 'MOM_LONG'
+        else:                           setup = 'OPEN_LONG'
+    else:
+        if sig.get('pm_bear'):          setup = 'PM_SHORT'
+        elif sig.get('orb_bear'):       setup = 'ORB_SHORT'
+        elif sig.get('vwap_rejection'): setup = 'VWAP_SHORT'
+        elif sig.get('momentum_bear'):  setup = 'MOM_SHORT'
+        else:                           setup = 'OPEN_SHORT'
 
     # ── Backup IBKR stop order — placed immediately after entry ──────────────
     # Fixed at the initial hard stop. Never moved (trail managed in software).
@@ -1923,6 +2001,7 @@ def _get_open_unrealized() -> float:
 
 def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
+    _beat('futures_tc')   # watchdog liveness stamp (Sep 3 2026)
     global _confirmed_scans, _regime_scan_counts, _cached_df5
 
     if date.today() in CME_HOLIDAYS_2026:

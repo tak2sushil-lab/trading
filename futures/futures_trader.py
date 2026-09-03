@@ -64,6 +64,7 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 BRIDGE = os.getenv('FUTURES_BRIDGE_URL', 'http://localhost:8000')  # IBKR bridge (bridge.py)
 
 from strategy_core import SYMBOL, EXCHANGE, POINT_VALUE, TICK_SIZE, TICK_VALUE, COMMISSION  # noqa: E402
+from futures.heartbeat import beat as _beat  # noqa: E402
 from futures.gate_audit import log_block, log_enter, log_shadow_signal  # noqa: E402
 
 # ── Risk constants ────────────────────────────────────────
@@ -498,6 +499,59 @@ def _bridge_post(path: str, payload: dict, timeout: int = 10) -> dict:
     except Exception as e:
         log(f"Bridge POST {path} error: {e}")
         return {}
+
+
+def _get_fill_price(order_id, fallback: float) -> float:
+    """Real average fill price for the entry we just placed; scan price on failure.
+
+    Added Sep 3 2026. place_trade() verified fill SIZE (_actual_filled) but never
+    the fill PRICE, so entry_price in futures_trades was the SCAN price. Measured
+    live the same day on one signal taken by BOTH accounts:
+        IBKR  scan 29378.25  actual 29378.06  ->  0.19pt error
+        TC    scan 29378.25  actual 29392.93  -> 14.68pt error = $58.72 on 2c
+    Every stop / target / trail level / P&L keyed off a price we did not pay. It
+    bites hardest on TC, whose separate gateway session simulates its own fills,
+    and it is a direct contributor to the live/sim divergence.
+
+    PRIMARY SOURCE is the portfolio avg_cost, NOT /order/{id}/status. The order
+    endpoint is unreliable — verified Sep 3 2026 on a real filled entry it still
+    returned {status: PendingSubmit, filled: 0.0, avgFillPrice: 0.0}, the same
+    class of staleness behind the Jul 20 2026 USAR auto-close incident. Because
+    MAX_OPEN_TRADES == 1 every entry is opened from FLAT, so the position's
+    avg_cost IS this entry's fill price with no blending.
+
+    Guarded: a value further than MAX_FILL_DRIFT_PTS from the scan price is
+    rejected as stale/blended rather than trusted, and any failure falls back to
+    the scan price so an entry is never lost.
+    """
+    MAX_FILL_DRIFT_PTS = 60.0
+    for src, getter in (
+        ('avg_cost', lambda: next(
+            (float(p['avg_cost']) for p in (_bridge_get('/futures/position') or [])
+             if isinstance(p, dict) and p.get('symbol') == SYMBOL
+             and float(p.get('qty', 0)) != 0 and float(p.get('avg_cost', 0)) > 0),
+            0.0)),
+        ('order_status', lambda: float(
+            (_bridge_get(f'/order/{order_id}/status') or {}).get('avgFillPrice') or 0)
+            if order_id else 0.0),
+    ):
+        try:
+            px = getter()
+        except Exception as e:
+            log(f"  fill-price via {src} failed ({e})")
+            continue
+        if px <= 0:
+            continue
+        drift = px - fallback
+        if abs(drift) > MAX_FILL_DRIFT_PTS:
+            log(f"  fill-price via {src} = {px} is {drift:+.1f}pts from scan "
+                f"{fallback} (> {MAX_FILL_DRIFT_PTS:.0f}) — REJECTED as stale")
+            continue
+        if abs(drift) > 0.01:
+            log(f"  fill {px} vs scan {fallback} ({drift:+.2f}pts, via {src}) — using real fill")
+        return px
+    log(f"  fill price unavailable — using scan price {fallback}")
+    return fallback
 
 
 def _get_ibkr_qty() -> float | None:
@@ -1737,6 +1791,11 @@ def place_trade(side: str, sig: dict, regime: str,
             log(f"  WARNING: requested {contracts} contracts, broker shows {_actual_filled} filled — using real fill size")
             send_telegram(f"⚠️ FUTURES entry partial/over fill: requested {contracts}, got {_actual_filled} (order {order_id})")
             contracts = _actual_filled
+    # Real fill price (Sep 3 2026) — stops/targets/trail/P&L must key off what we
+    # actually paid, not the scan price. See _get_fill_price().
+    price = _get_fill_price(order_id, price)
+    sl, target = calc_sl_target(price, atr, side, session_rvol)
+
     session  = get_session()
     # Setup label: priority order matches grade_entry bonus hierarchy
     if side == 'LONG':
@@ -2478,6 +2537,7 @@ def _enter_elephant(signal: dict) -> bool:
 
 def run_scan():
     """5-min scan: check regime, signals, enter if qualified."""
+    _beat('futures_ibkr')   # watchdog liveness stamp (Sep 3 2026)
     global _confirmed_scans, _regime_scan_counts, _cached_df5
     global _ib_kind, _ib_kind_set, _day_regime
 

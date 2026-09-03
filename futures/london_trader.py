@@ -35,6 +35,7 @@ from datetime import datetime, date, timedelta, time as dt_time
 from dotenv import load_dotenv
 
 import pandas as pd
+from futures.heartbeat import beat as _beat
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -945,6 +946,7 @@ def run_scan():
       3. Detect IB breaks and enter trades.
       4. Monitor open position exits / trail updates.
     """
+    _beat('london', {'account': ACCOUNT_MODE})   # watchdog stamp (Sep 3 2026)
     global _ib_formed, _ovn_bias, _ovn_skip, _ovn_pos, _atr, _cached_df
     global _ib_pending_sync
 
