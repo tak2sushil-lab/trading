@@ -2987,3 +2987,108 @@ queries still not `account_mode`-filtered.
 **DECISION PENDING:** ship LONG-only + day>MA200 live on all 3 files
 (`futures_trader.py`, `tc_trader.py`, `sim_replay.py` + `parity_check.SIM_FLAGS`), or run it
 log-only first. Nothing wired this session.
+
+---
+
+## Sep 2-3 2026 — SHIPPED: short size cap (live) + Daily Tide (log-only) + TC gaps + commission bugs
+### ⚠️ ALSO: two of this session's own numbers were WRONG and are corrected here
+
+**⚠️⚠️ READ THIS FIRST — THE `+$3,353` "LIVE TODAY" BASELINE CARRIES A $6/CONTRACT
+FRICTION HAIRCUT; THE RAW `_run_scenario` OUTPUT DOES NOT.** `_mom_2021-06-01_2026-08-14.csv`
+(and every table in `docs/FUTURES_CATCHUP_2026-08-24.md`) is friction-adjusted. A fresh run of
+the *same nominal config* via `_stoprun.py`/`_capab.py` gives **+$9,252 raw**, which is
+**+$2,622 after $6/contract** — i.e. the same book. Mixing the two bases overstates every
+improvement by ~25-30%. **Always state the friction basis before quoting a total.**
+
+**ALL FIGURES BELOW ARE AT $6/CONTRACT, apples to apples:**
+
+| config | n | total | maxDD | worstDay | green |
+|---|---|---|---|---|---|
+| baseline (cap off) | 951 | +2,622 | −7,808 | −814 | 2/6 |
+| **SHIPPED short cap** | 951 | **+4,063** | −6,735 | −814 | 2/6 |
+| LONG-only + >MA200 | 419 | +6,962 | −2,906 | −813 | 5/6 |
+| SHORT-only + <MA200, 1c | 97 | +2,507 | −917 | −407 | 3/4 |
+| **★ DAILY TIDE (both legs)** | 516 | **+9,469** | **−2,906** | −813 | **5/6** |
+
+**① SHORT SIZE CAP — SHIPPED LIVE** (`SHORT_MAX_CONTRACTS=1`, futures_trader.py +
+tc_trader.py + sim_replay.py + parity SIM_FLAGS). The RVOL/IB conviction ladder is
+anti-predictive on the SHORT side ONLY: LONG 2c +$26.7/t green 6/6 vs **SHORT 2c −$85.3/t,
+green 1/6, negative in 5 of 6 years** (dropping its worst single trade still leaves −$4,221 ⇒
+systematic). Mechanism: the ladder scales on high ATR + big gap; for LONGs that is a +0.21-ATR
+momentum gap, for SHORTs a **−0.36-ATR gap-down at ATR-rank 0.80** — panic read as conviction,
+doubled into the snapback. Removes ZERO trades.
+**⚠️ CORRECTED MAGNITUDE — the clean within-engine A/B (`futures/factory/_capab.py`, one
+variable, same script) says +$1,081, NOT the +$2,517 frame estimate and NOT the +$7,544 a
+cross-cache diff claimed.** Decomposition: 60 resized shorts **+$2,276**, minus **−$1,195**
+knock-on on 4 same-day trades. **NEWLY DISCOVERED COST: Partial Scale-Out needs 2 contracts, so
+capping shorts at 1c means shorts can never scale out** — those 4 trades each lost a $298.76
+partial leg. maxDD −$5,175 → −$4,292 (raw basis). **RETRACTED: "blow-ups 6→4" — the clean A/B
+has 3 TC blow-ups in BOTH arms, unchanged.** Verdict: keep it (risk-reducing, small P&L gain,
+~$200/yr) but it is not a big win.
+
+**② DAILY TIDE — SHIPPED LOG-ONLY** (`TIDE_GATE_ENABLED=False`, gate name `TIDE_INFO`,
+review after one week). LONG only when the PREVIOUS daily close is above its PREVIOUS 200-day
+MA, SHORT only when below. Both legs pipeline-confirmed separately (`_longonly_ma.py`,
+`_shortonly_ma.py`), day sets provably disjoint ⇒ exact merge. `get_daily_tide()` is causal and
+**fails OPEN** so a missing daily bar can never halt trading; cached per calendar day.
+Also validated: **frame estimate == pipeline result to the dollar** on this book (signal-scarce
+⇒ a freed slot is never refilled). REJECTED: "skip high-ATR days" (−$1,325) — it is the TREND,
+not the volatility.
+Caveats under watch: the short leg is **bear insurance** (72 of 97 trades are 2022; ZERO trades
+in 2021 and 2024; dormant since Apr 8 2026); it already cost a real winner (Sep 1, +$512); NY
+zero-trade days rise **43% → 68%**; London shorts the same tape ungated.
+
+**③ WHY WE GET AMBUSHED (answers a long-standing question).** 17 of 949 trades (2%) exit ≤45min
+at the full stop for **−$8,547**, while the other 929 make **+$11,910**. **15 of 17 were below
+the daily MA50; 16 of 17 below MA50 AND MA200.** Not random days — days the tape was already
+walking downhill. A 1000pt stop does NOT fix it (one 2025 case goes −$407 → **−$2,001**, the
+whole TC MLL in one fill). **Aug 21 (−$1,979) would be fully prevented** (all 4 trades SHORT);
+**Aug 17 (−$1,510) would NOT** (all LONG, day above both MAs) — that is the ORPHAN class,
+still unsolved.
+
+**④ TC GAPS — found by AST-diffing all 52 shared functions with comments stripped.** The two NY
+traders are duplicated code and three real divergences had accrued, all now fixed in
+`tc_trader.py`: (a) **NO WEEKEND GUARD** — the Jul 18 2026 fix is recorded as applied to "both
+traders" but only ever landed in futures_trader.py; (b) no stop-sanity ceiling; (c) **RECONCILED
+rows counted in daily/all-time P&L**, and on TC that figure feeds `check_can_trade()`'s DLL gate
+and the daily circuit breaker, so a phantom row could halt a live prop account.
+**Note the premise "TC trades less" is FALSE over the comparable window** — since Jul 25 TC took
+20 trades vs IBKR's 17. **UNEXPLAINED: TC took 8 ORB_LONG / 0 PM_LONG while IBKR took 3 PM_LONG /
+0 ORB_LONG on the same days and minutes, with byte-identical `setup_name()`** ⇒ the two gateway
+sessions see different bars. Same thread as the live/sim divergence.
+
+**⑤ COMMISSION — three factual bugs, and one changes a conclusion.**
+(a) `london_v2_sim.py` charged **ZERO** commission and zero slippage. (b) `london_trader.py`
+subtracted `COMMISSION` once despite declaring it per-contract, and London always trades 2.
+(c) **`sim_replay.py` had the same bug** — every 2-contract trade in every backtest this program
+has ever run was under-charged one round turn (~$190 over the 5.5yr book).
+**LONDON DOES NOT SURVIVE ITS OWN COSTS.** Champion, 805 trades Jan 2025→Sep 2026:
+zero-cost +$1,299 · commission-only 1c **−$348** · **commission-only 2c (= live) −$697**
+(2025 +$2,209 / 2026 −$2,906) · +0.5pt/side −$3,917 · +1.0pt/side −$7,137. Gross edge +$1,299 vs
+$1,996 of round turns ⇒ **commission alone flips it negative, and 2026 is negative in every
+model.** Slippage stays opt-in (`--slippage`, default 0) and `--contracts` models live size, so
+measured costs and estimated costs remain separable. Counterweight: LIVE London is +$1,183 over
+96 trades on real fills — but 4 trades in the last 8 days carry all of it, and Jun 18–Aug 23 was
++$1.31/trade over 80 trades. **London decision pending.**
+
+**⑥ OPS.** Both NY traders restarted 23:50 ET Sep 2, verified running new code (process start
+after last file mtime), clean startup, no errors. **Both IB gateways were found DOWN** and
+restarted — that would have silently killed the Sep 3 London session (same failure class as
+Aug 9; check gateways, not just bridges).
+
+**⚠️⚠️ METHOD — I broke a rule this file already recorded, twice in one session.** The Aug 24
+entry says: *gate a within-engine A/B on total P&L, not correlation / not a cross-cache diff.*
+I first validated the cap by diffing against `_mom_2021-06-01_2026-08-14.csv` and reported
++$7,544 — invalid, because **949 of 949 trades differed, including 1-contract trades the cap
+cannot touch.** Then I compared friction-adjusted and raw books. **RULES: (1) never compare two
+caches unless the same script generated both; use `_capab.py`'s pattern. (2) State the friction
+basis with every total. (3) If trades the change cannot possibly touch have moved, the
+comparison is contaminated — stop and find out why.**
+
+**OPEN / NEXT.** (a) **live/sim divergence — highest priority**, now with a third data point
+(IBKR vs TC setup mix on identical minutes); until root-caused, live setup-level P&L cannot
+judge anything. (b) Daily Tide log-review ~Sep 9. (c) London decision. (d) `IBKR_FLOOR=$5,000`
+is unfundable — 2 contracts need ~$8,750 margin = **175% utilisation**; Sep 1's live short was
+$116,619 notional (23× the configured allocation, 2.3× a $50k TopStep account). Real risk was
+$800 (the stop), but the broker demands the margin. (e) Nightly futures learner — deferred on
+purpose until (a) is fixed, or it will learn the divergence.
