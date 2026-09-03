@@ -99,6 +99,36 @@ NO_MOVE_MINUTES  = 90
 NO_MOVE_MAX_PTS  = 60.0
 NO_MOVE_MIN_PTS  = -40.0
 
+# ── ATR-SCALED EXIT THRESHOLDS (candidate, Aug 24 2026, OPT-IN) ─────────────
+# Hypothesis (futures/factory/thesis_lab.py + atr_exit_lab.py): our exit
+# thresholds are denominated in POINTS while the tape moves in ATR. Median MFE
+# is a near-constant ~2.4-2.75 ATR in EVERY year 2021-2026, but the trail-arm
+# floor is a fixed 120pt = 7.21 ATR in 2021 vs 3.03 ATR in 2026 — so whether a
+# trade can EVER arm its trail is decided by the year's volatility, not by the
+# setup. Same units problem as the 200pt stop decaying 1.04 -> 0.44 daily-ATR.
+# When enabled, every scaled threshold is multiplied by
+#     k = ATR_at_entry / ATR_EXIT_REF
+# (ATR = compute_atr(bars_hist), 5-min ATR14, snapshotted at ENTRY and frozen
+# for the life of the trade). At ATR == ATR_EXIT_REF the behaviour is identical
+# to today, so this adds geometry-preserving breathing room, not new tuning.
+# Frame-lab result (within-engine, NOT pipeline-confirmed at time of writing):
+#   stop only +$494 · trail only +$4,328 · no-move only +$3,088 · all +$7,713,
+#   near-perfectly additive. The STOP carries ~6% — that is why widening it
+#   never helped. Default parts therefore exclude 'stop'.
+# ATR_EXIT_SCALE = None reproduces current live behaviour BYTE-FOR-BYTE.
+ATR_EXIT_SCALE: 'float | None' = None      # global multiplier on top of k; None = OFF
+ATR_EXIT_REF   = 31.4                      # A0: full-sample median 5-min ATR14 at entry
+ATR_EXIT_PARTS = ('trail', 'nomove')       # which families scale: stop | trail | nomove
+
+
+def _atr_k(atr_entry: 'float | None', part: str) -> float:
+    """Scale factor for one threshold family. 1.0 when the feature is off."""
+    if ATR_EXIT_SCALE is None or part not in ATR_EXIT_PARTS:
+        return 1.0
+    if not atr_entry or not ATR_EXIT_REF:
+        return 1.0
+    return ATR_EXIT_SCALE * (float(atr_entry) / ATR_EXIT_REF)
+
 # ── Candidate ideas (Jul 7 2026 evening) — opt-in only, untested against the
 # complete pipeline before now. Named directly from the Jul 7 missed-day
 # diagnosis: wave 2 (a real ~350pt rally) never got an entry because
@@ -981,8 +1011,9 @@ def simulate_day(
             if not exit_reason:
                 mins_open   = (i - entry_idx) * 5
                 cur_pnl_pts = (entry - float(bar['close'])) if is_short else (float(bar['close']) - entry)
+                _k_nm = _atr_k(position.get('atr_entry'), 'nomove')
                 if (mins_open >= NO_MOVE_MINUTES and
-                        NO_MOVE_MIN_PTS <= cur_pnl_pts <= NO_MOVE_MAX_PTS):
+                        NO_MOVE_MIN_PTS * _k_nm <= cur_pnl_pts <= NO_MOVE_MAX_PTS * _k_nm):
                     exit_price, exit_reason = float(bar['close']), 'no_move'
 
             # 6. EOD
@@ -1065,6 +1096,14 @@ def simulate_day(
                     _be_pts, _be_frac = BE_ACTIVATE_PTS, BE_LOCK_FRACTION
                     _wide_pts, _wide_gap = TRAIL_WIDE_PTS, TRAIL_WIDE_GAP
                     _tight_pts, _tight_gap = TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP
+
+                # ATR-scaled trail family (opt-in; _atr_k() returns 1.0 when off,
+                # so this block is a no-op in the default configuration).
+                _k_trail = _atr_k(position.get('atr_entry'), 'trail')
+                if _k_trail != 1.0:
+                    _be_pts    *= _k_trail
+                    _wide_pts  *= _k_trail; _wide_gap  *= _k_trail
+                    _tight_pts *= _k_trail; _tight_gap *= _k_trail
 
                 if pnl_pts_peak >= _be_pts:
                     locked = round(pnl_pts_peak * _be_frac, 2)
@@ -1302,6 +1341,7 @@ def simulate_day(
                     'grade':       grade,
                     'fail_streak': 0,
                     'flip_age':    consec_count,   # bars the regime had held at entry
+                    'atr_entry':   atr,            # frozen at entry — drives ATR-scaled exits
                 }
                 trade_count += 1
                 break
@@ -1524,11 +1564,34 @@ def main():
     # combos, a paradigm that no longer exists now that stop sizing is
     # point-based. Use --stop-pts / --target-pts with separate runs instead
     # if a similar comparison is needed.
+    ap.add_argument('--atr-exits', type=float, default=None, dest='atr_exits',
+                    metavar='SCALE',
+                    help='Candidate (Aug 24 2026): scale exit thresholds by '
+                         'ATR_at_entry/ATR_EXIT_REF instead of leaving them in fixed points. '
+                         'SCALE is an extra global multiplier (use 1.0 for the pure units '
+                         'change). Omitting the flag reproduces current live BYTE-FOR-BYTE. '
+                         'NOTE: the STOP is deliberately NOT scalable — stop width feeds '
+                         'MIN_RR and the stop sanity ceiling, so scaling it would change '
+                         'which trades are ENTERED and turn an exit test into an entry test. '
+                         'It also carries only ~6%% of the measured effect.')
+    ap.add_argument('--atr-exit-ref', type=float, default=None, dest='atr_exit_ref',
+                    help='Reference ATR (A0) for --atr-exits. Default 31.4 = full-sample '
+                         'median 5-min ATR14 at entry over 2021-06..2026-08.')
+    ap.add_argument('--atr-exit-parts', type=str, default=None, dest='atr_exit_parts',
+                    help='Comma list of threshold families to ATR-scale: trail,nomove '
+                         '(default "trail,nomove").')
     args = ap.parse_args()
 
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
     global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS, REV_EXIT_VOL_MULT
+    global ATR_EXIT_SCALE, ATR_EXIT_REF, ATR_EXIT_PARTS
+    if args.atr_exits is not None:
+        ATR_EXIT_SCALE = args.atr_exits
+    if args.atr_exit_ref is not None:
+        ATR_EXIT_REF = args.atr_exit_ref
+    if args.atr_exit_parts is not None:
+        ATR_EXIT_PARTS = tuple(x.strip() for x in args.atr_exit_parts.split(',') if x.strip())
     if args.partial is not None:
         PARTIAL_TAKE_PTS = args.partial
     if args.rev_exit_vol_mult is not None:

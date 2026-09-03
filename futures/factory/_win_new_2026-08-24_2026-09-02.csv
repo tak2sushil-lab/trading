@@ -1,0 +1,3 @@
+date,entry_time,exit_time,side,setup,entry,exit,stop_init,target,contracts,pnl,exit_reason,grade,flip_age
+2026-08-27,11:50,15:10,LONG,PM_LONG,29608.5,29592.5,28608.5,31108.5,1,-33.24,eod,A+,1
+2026-08-28,10:30,15:10,LONG,PM_LONG,29683.25,29479.25,28683.25,31183.25,1,-409.24,eod,A+,1

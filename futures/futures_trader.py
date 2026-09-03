@@ -88,12 +88,26 @@ DAILY_PROFIT_TARGET  = IBKR_DAILY_CAP # $1,200 — mirrors prop_rules IBKR daily
 MIN_RR               = 1.4     # minimum reward:risk ratio — trivially satisfied now that
                                 # target is a 1500pt backstop (RR~5.4); kept as a floor
                                 # in case target is ever tightened back down
-MAX_OPEN_TRADES      = 2       # max simultaneous MNQ positions
+MAX_OPEN_TRADES      = 1       # was 2 until Aug 24 2026. Every backtest in this
+                               # program (sim_replay:1127) models ONE position at a
+                               # time; live allowed two, so 78% of live entry-events
+                               # were correlated pairs and every Sharpe / MaxDD /
+                               # P(blow) figure understated real risk ~2x. This makes
+                               # live match the book we actually validated.
 MAX_DAILY_TRADES     = 5       # raised from 2 Jul 7 2026 — trial week, was matching
                                 # tc_champion.json's 2; testing whether confirmed A+
                                 # signals blocked purely by trade count (not regime/
                                 # grade/HERO) were being missed. Revisit end of week.
 COOLDOWN_MINUTES     = 2.0     # minutes to wait after any exit before next entry
+ENTRY_COOLDOWN_MINUTES = 2.0   # minutes to wait after any ENTRY before another entry.
+                               # Added Aug 24 2026. COOLDOWN_MINUTES only counted from the
+                               # last EXIT, so the 60s scan loop re-fired a still-valid
+                               # signal on the very next scan: 57 of 73 live repeat entries
+                               # were <2min apart (median gap 1min) and lost -$832, while
+                               # every genuine re-entry was >=2min away. Together with
+                               # MAX_OPEN_TRADES=1 this is what stops one signal becoming
+                               # two correlated positions (see docs / Aug 18 duplicate-entry
+                               # root cause).
 MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and live price at order time
 # A_EXT gate REMOVED Jul 6 2026 — gate_audit scored it 33% accuracy / "REMOVE"
 # verdict on live IBKR SHORT (N=6) after being wired off a small N=11/64% sample
@@ -244,7 +258,11 @@ NO_MOVE_MIN_PTS = -40.0   # below this → hard stop will manage it
 # ── ELEPHANT TRADE (Liquidity Grab Reversal) ─────────────
 # Algos sweep stop-loss clusters then reverse — we enter at the sweep extreme.
 # All parameters derived from 5.5yr MNQ backtest (Jun 12 2026 research session).
-ELEPHANT_ENABLED         = True    # master kill-switch
+ELEPHANT_ENABLED         = False   # PARKED Aug 16 2026 (factory review): too infrequent to
+                                   # ever prove — 9 trades/2026 (-$175), ~4/yr historically.
+                                   # Not "proven harmful", but can't earn its keep or reach
+                                   # significance at this frequency, and it's IBKR-only
+                                   # asymmetry vs TC. Code kept; flip True to revert.
 ELEPHANT_ENTRY_CONF      = 10.0    # pts above flush extreme for entry confirmation
 ELEPHANT_STOP_PTS        = 100.0   # pts from flush extreme to hard stop (widened from 50: +16pp WR Jun 13 2026)
 ELEPHANT_TARGET_PTS      = 150.0   # pts from entry to profit target  (R:R = 150/110 = 1.36)
@@ -318,6 +336,7 @@ _daily_pnl            = 0.0
 _peak_daily_pnl       = 0.0
 _trading_paused       = False
 _last_exit_time       = None   # datetime of most recent trade exit — cooldown gate
+_last_entry_time      = None   # datetime of most recent trade ENTRY — duplicate-entry gate
 _tg_offset            = 0      # Telegram getUpdates offset — marks messages as read
 _scheduler            = None
 _cached_df5           = pd.DataFrame()  # bars cached by run_scan(), reused by run_monitor()
@@ -804,14 +823,31 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
         if df5.empty or len(df5) < 6:
             return _last_regime
 
-        price      = float(df5['close'].iloc[-1])
-        vwap       = calc_vwap(df5)
-        rsi        = calc_rsi(df5['close'])
+        # ── Completed bars only (fixed Aug 24 2026) ───────────────────────
+        # get_bars() returns the currently-FORMING 5-min bar. Reading it made
+        # price / RSI / the 5-bar trend flicker *within* a single bar, which
+        # reset the consecutive-same-regime confirmation streak to 1 and made
+        # live confirmation lag the backtest. sim_replay.get_regime() is fed
+        # closed bars by construction, so this was a pure live/sim divergence.
+        # Third and final instance of this bug class, after calc_session_rvol
+        # (Jul 17 2026) and calc_htf_trend (Jul 18 2026).
+        # NOTE: calc_session_rvol() performs its OWN forming-bar trim, so it
+        # must keep receiving the untrimmed frame — passing df5c would drop
+        # two bars and understate RVOL.
+        df5c = df5
+        if (datetime.now(ET) - df5.index[-1]).total_seconds() < 300:
+            df5c = df5.iloc[:-1]
+        if len(df5c) < 6:
+            return _last_regime
+
+        price      = float(df5c['close'].iloc[-1])
+        vwap       = calc_vwap(df5c)
+        rsi        = calc_rsi(df5c['close'])
         rvol       = calc_session_rvol(df5)
 
         # Today's bars only
         today      = datetime.now(ET).date()
-        df_today   = df5[df5.index.date == today]
+        df_today   = df5c[df5c.index.date == today]
 
         # Price vs VWAP
         above_vwap = price > vwap if vwap else True
@@ -825,8 +861,8 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
             trending_up = trending_down = False
 
         # Day change vs prev close (used for WEAK — tested better there)
-        if len(df5) >= 2:
-            prev_close = float(df5['close'].iloc[-2]) if len(df_today) < 2 else float(df5[df5.index.date < today]['close'].iloc[-1]) if len(df5[df5.index.date < today]) > 0 else float(df5['close'].iloc[-2])
+        if len(df5c) >= 2:
+            prev_close = float(df5c['close'].iloc[-2]) if len(df_today) < 2 else float(df5c[df5c.index.date < today]['close'].iloc[-1]) if len(df5c[df5c.index.date < today]) > 0 else float(df5c['close'].iloc[-2])
             day_chg_pct = (price - prev_close) / prev_close * 100 if prev_close else 0
         else:
             day_chg_pct = 0
@@ -1438,7 +1474,7 @@ def place_trade(side: str, sig: dict, regime: str,
     Place a futures order via bridge. Returns True if submitted.
     Checks prop_rules before every order.
     """
-    global _trading_paused
+    global _trading_paused, _last_entry_time
 
     # ── Pre-flight gates ──────────────────────────────────
 
@@ -1480,6 +1516,15 @@ def place_trade(side: str, sig: dict, regime: str,
         _elapsed = (datetime.now(ET) - _last_exit_time).total_seconds() / 60
         if _elapsed < COOLDOWN_MINUTES:
             log(f"  BLOCKED: cooldown {_elapsed:.1f}min (need {COOLDOWN_MINUTES:.0f}min after last exit)")
+            return False
+
+    # 6b. Cooldown after any ENTRY — blocks the same still-valid signal from being
+    # taken twice by consecutive 60s scans (the live duplicate-cluster mechanism).
+    if _last_entry_time is not None:
+        _e2 = (datetime.now(ET) - _last_entry_time).total_seconds() / 60
+        if _e2 < ENTRY_COOLDOWN_MINUTES:
+            log(f"  BLOCKED: entry cooldown {_e2:.1f}min "
+                f"(need {ENTRY_COOLDOWN_MINUTES:.0f}min after last entry)")
             return False
 
     # 7. Daily P&L gates
@@ -1618,6 +1663,8 @@ def place_trade(side: str, sig: dict, regime: str,
         session=session, order_id=order_id, side=side,
         stop_order_id=stop_order_id or None,
     )
+
+    _last_entry_time = datetime.now(ET)   # arms the entry-cooldown gate
 
     risk_usd   = abs(price - sl) / TICK_SIZE * TICK_VALUE * contracts
     target_usd = abs(target - price) / TICK_SIZE * TICK_VALUE * contracts
@@ -2197,7 +2244,7 @@ def _enter_elephant(signal: dict) -> bool:
     Setup type: 'ELEPHANT_LONG' in futures_trades.
     Monitored by the standard monitor_open_trades() exit stack + longer ELEPHANT_TIMEOUT_MINS.
     """
-    global _elephant_trades_today, _elephant_flush_ids
+    global _elephant_trades_today, _elephant_flush_ids, _last_entry_time
 
     direction    = signal['direction']
     sl           = signal['sl']
@@ -2286,6 +2333,7 @@ def _enter_elephant(signal: dict) -> bool:
         stop_order_id=stop_order_id or None,
     )
 
+    _last_entry_time = datetime.now(ET)   # arms the entry-cooldown gate
     _elephant_trades_today += 1
     _elephant_flush_ids.add(flush_bar_ts)
 

@@ -2531,3 +2531,459 @@ per-trade risk cut $1200→$500. Bug fixed: debit/credit calc **key inconsistenc
 **NEXT (options) BUILD/VALIDATION:** design doc §10 (own-strike EV-max v2, extend
 `collect_chain_snapshots.py` for shadow marks) + the two validation asks above. See
 [[options-edge-dive-aug16]].
+
+---
+
+## Aug 16-17 2026 — Futures put on the Factory bench (IBKR + TC) — clarity on TopStep confidence
+
+User asked to deep-read both futures traders (IBKR `futures_trader.py` + TC `tc_trader.py`)
+ahead of hooking TC to a real TopStep $50k combine in ~2 weeks — wanted an honest read on
+"are we good / scope to improve / appetite for more contracts / wire to the factory?" Code
+unchanged since ~Jul 26; nobody had ever asked *does the automated book have a real OOS edge,
+or is it the user's manual hand?* Built a futures-side **Proving Ground** applying the equity
+factory *doctrine* (OOS / strip-manual / right-ruler / prop-realistic), NOT its cross-sectional
+code (single instrument MNQ). Full trail: [[futures-alpha-factory-aug16]].
+
+**Built (`futures/factory/`, offline — no live orders):**
+- `bench.py` — drives the validated `sim_replay` at live-parity SIM_FLAGS over 5.5yr MNQ bars
+  (2021→2026). Per-engine attribution, per-year OOS, PASS/WATCH/FAIL, **TopStep gauntlet**
+  (DLL$1k / trailing-MLL$2k / consistency-50% simulator + day-bootstrap → P(pass)/P(blow)),
+  give-back/MFE peak-exit analysis, rev-exit sweep, green-light validation. Scoring the sim =
+  manual-free by construction. `FRICTION_PER_CONTRACT=6.0` conservative haircut baked in.
+  Modes: (default scorecard+gauntlet), `--giveback`, `--rev-sweep`, `--green-light`.
+- `calibrate.py` — matched sim↔live trade comparison (execution) + day-availability.
+
+**The live-data reality first (both accounts, RECONCILED/partials excluded):** the two accounts
+are NOT the same system. IBKR NY **automated** ≈ breakeven (−$68/54t); its whole realized edge
+(+$3,696/14t, 100% WR) was the user's **manual FUT CLOSE** hand on 2 trend days (Aug 3-6). TC NY
+automated ≈ breakeven too (+$114/86t). IBKR-only engines (Elephant, PM_LONG) don't run on TC, so
+TC — unwatched, pure automated — is the honest preview of TopStep, and it's flat. TC's biggest
+lifetime leak (VWAP_LONG −$979/49t/39%) was mostly **pre-Jul25** (the give-back era the Reversal
+Exit was built to fix); post-Jul25 too thin to confirm.
+
+**Five bench findings (measured, not believed):**
+1. **Sim over-states edge, but the gap is SELECTION not EXECUTION.** 2026 sim +$9,327 vs live
+   ~breakeven — yet on the 15 trades sim+live both took, per-contract P&L is comparable (no fill
+   inflation; entry slippage even favorable). The gap = trades the sim takes that live never did.
+   Only 15 clean matched pairs exist → **can't empirically calibrate fills yet** (user's "reality is
+   weeks old" point, confirmed); using $6/contract friction until the hands-off weeks accumulate pairs.
+2. **PEAK-EXIT is NOT a fixable leak.** Rev-exit sweep (2026): live `2,0.30,120` WINS ($8,421,
+   Sharpe 4.19); every faster/tighter exit loses monotonically (aggressive 1,0.20,80 → $3,317).
+   Give-back/MFE: of 57 trades hitting a +100pt peak, only **2 (4%) round-trip to a loss** — 55/57
+   end green. Give-back = right-tail premium, not capturable. Confirms Jul-25 on fresh data. User's
+   "stop giving back → good PL" disproven for a *systematic* rule (their manual wins = human selective
+   reversal-reading, mechanizable only via Crest Watch). Only real exit leak: **ORB_LONG keeps 1% of a
+   112pt peak (n=7)** — targeted dig, not yet done.
+3. **"More trades/day" has NO juice — signal scarcity, not the cap.** Daily cap 2 vs 8 nearly identical
+   in BOTH 2026 (180... 126t; +$8,552 vs +$8,421) and the 2022 bear year (180 vs 182t) — raising the
+   cap adds 2-3 trades that lose. System generates ~2 quality signals/day by design (A+-only + hero +
+   RVOL gates). The live "trade #3+ = 100% winners" was pure manual-trend-day contamination.
+   **Green-Light Extender verdict: DON'T WIRE IT** — the doctrine avoided plugging a bad idea into the
+   eval account.
+4. **⚠️ THE BOOK IS REGIME-DEPENDENT AND NET-NEGATIVE EX-2026 (the decisive TopStep finding).**
+   Full 5.5yr per-year (friction-adj): **2021 −$1,138 / 2022 −$1,615 / 2023 −$1,314 / 2024 −$2,480 /
+   2025 +$1,480 / 2026 +$8,421.** LOST money in 4 of 6 years; the entire lifetime edge is 2025-2026,
+   and 2026 is a massive outlier. Strip 2026 → −$5,067 over 2021-2025. Same disease as
+   [[equity-regime-diagnosis-aug14]]. **TopStep gauntlet over the full-history distribution:
+   P(pass $3k)=8.5% vs P(blow $2k trailing MLL)=29% — you blow ~3.4× more often than you pass; the
+   real historical ordering BLEW the MLL on day 75.** Only reason it looks good now = we're in the
+   favorable 2025-26 regime.
+5. **Bootstrap P(pass) is path-optimistic:** 2026 real ordering BLEW the trailing MLL on day 34 while
+   shuffled bootstrap said 88% pass (bootstrap breaks losing-streak autocorrelation).
+
+**Engine verdicts — CORRECTED by full history (2026-only was misleading):** over 5.5yr only
+**PM_LONG survives as a marginal PASS** (Sharpe 1.10, +$10.7/t — but negative in 2022, ~0 in 2024;
+regime-dependent too). **ORB_SHORT, which looked like a co-carrier in 2026-only (+$2,060), FAILS over
+5.5yr: −$1,733/318t, Sharpe −0.44, MaxDD −$5,544** — its 2026 profit is a regime artifact. Everything
+else WATCH/THIN. Textbook case of why OOS/multi-year matters over a single favorable window.
+
+**Scaling answer (all three levers the user imagined — dead):** NOT more contracts (DLL math caps at
+2: 200pt stop × 2c = $800 < $1k DLL; 3c breaches), NOT more trades/day (signal-scarce), NOT tighter
+exits (already optimal). The only honest lever is finding whether the automated book has edge at all
+once calibrated — and adding a **defensive/bear leg** so a 2022-type regime doesn't blow the account.
+
+**Shipped:** **Elephant PARKED** (`ELEPHANT_ENABLED=False`, futures_trader.py:247) — too infrequent
+to ever prove (9 trades/2026 −$175, ~4/yr), IBKR-only asymmetry vs TC. Code kept, revertible.
+Restarted futures_personal, clean startup verified (RVOL loaded, London enabled, scheduler up; bridge
+showed disconnected = weekend gateway down, unrelated). TC never had Elephant, untouched.
+
+**CONFIDENCE VERDICT: real TopStep in 2 weeks is a LOSING BET on the evidence — do not fund.** The
+full-history gauntlet is 8.5% pass vs 29% blow. The book only works in the current 2025-26 regime and
+loses in 4 of 6 years; there is no proven all-weather automated edge, and no scaling lever exists
+(contracts DLL-capped at 2, trades signal-scarce, exits already optimal). What would change this is
+NOT more backtesting of 2024-2026 (already used) — it's (a) a genuinely new DEFENSIVE/bear engine so a
+2021-24-type regime doesn't blow the account, and (b) TC run hands-off proving positive automated
+expectancy forward without the manual overlay. Until then TopStep = paper only. See
+[[futures-tc-readiness-aug9]], [[futures-alpha-factory-aug16]].
+
+**ENGINE HUNT (Aug 17) — factory discovery half built (`futures/factory/engines.py`) + verdicts.**
+Factory now COMPLETE for futures (grader `bench.py` + pluggable discovery `engines.py`; a new engine
+= a spec that hunts through the same gauntlet). Candidates: (1) `stretch_fade` mean-reversion — DEAD
+(−$62k, neg every year; single-instrument intraday fade has no edge — equity mean-rev is
+cross-sectional). (2) `bear_breakdown` defensive short leg + daily-50MA-downtrend filter — anti-
+correlated (best years 2022/2024 = momentum's worst), but SHELVED: on the gauntlet it doubles pass
+yet quadruples blow (annual diversification doesn't survive daily-path prop rules).
+**THE CLEAN WIN — daily-downtrend filter on the EXISTING momentum book (stand aside on down days):
+P(blow) 29%→11.5% (halved), 0 DLL days, blow pushed day 75→131, pass ~flat. Low-overfit one-line rule
+that fixes the real disease (book bleeds trading into daily downtrends) — WORTH ADOPTING on live after
+forward-val; would go to BOTH futures_trader.py + tc_trader.py.**
+**STRUCTURAL VERDICT: NO config is fundable on $50k TopStep** — best (filtered momentum) still
+P(blow)11.5% > P(pass)8.7%. ~$12/day mean can't outrun a 4% trailing MLL; more engine-hunting won't
+fix the arithmetic. **$50k/$2k-trailing rule set is structurally hostile to this strategy** — a larger
+account / looser %-trail / different prop structure suits it far better. See [[futures-alpha-factory-aug16]].
+
+**Open/next:** (a) forward-validate the daily-downtrend momentum filter (the one shippable win) before
+wiring; (b) empirical fill calibration over hands-off weeks; (c) chop-year (2021/23) leg — but note it
+won't fix the structural pass-rate wall for TopStep; (d) any live logic change goes to BOTH
+futures_trader.py + tc_trader.py. ORB_LONG pathology dig + Green-Light shadow: both shelved per bench.
+
+---
+
+## Aug 19 2026 — Sizing thesis TESTED AND REJECTED (`futures/factory/sizing_lab.py`, no live change)
+
+Continued the Aug 18 thread. Full write-up `docs/FUTURES_SIZING_VERDICT_2026-08-19.md`,
+output `futures/factory/_out/sizing_lab_2026-08-19.txt`, memory [[futures-sizing-verdict-aug19]].
+Reused caches (recovered the prior session's `mom_mtf.csv` = full pipeline on MTF-filtered
+days into `futures/factory/`). **Nothing wired; recommendation pending user decision.**
+
+- **ATR-normalised sizing FAILS.** Lifts the barrier design ($/DD 2.24→3.19), CUTS the real
+  exit stack (4.46→2.87) — with a fixed 200pt stop dollar risk/contract is ALREADY constant.
+  Walk-forward peaky (train-opt $600 ≠ test-opt $700). Decisive control: ATR terciles WITHIN
+  each year → 2.67, worse than flat-2's 3.18 ⇒ the gain was the ATR 189→455 **time trend**.
+- **Room as a SIZE input FAILS** (flat mean and sd across R1-R5; $/DD 3.19 vs flat 3.18).
+  Third independent rejection of room.
+- **The Aug 18 barrier geometry LOSES to the live exit stack** on the same 343 entries,
+  1 position, 1c: real stack +$4,260/DD −1,303/**3.27**/Sh 1.78 vs barrier +$3,472/**2.08**/0.97.
+  No-stop = 1000pt = 600pt brake are byte-identical ⇒ the wide brake never fires.
+  **"green 6/6" was slot double-booking** — one-position-at-a-time drops 343→277 trades and
+  flips 2025 negative ⇒ 5/6 (and MA100 variants ARE green in 2022, so it was parameter-dependent).
+- **SURVIVES: the daily-trend day filter.** MTF-LONG under the real exit stack n=343
+  **+$7,311 / DD −1,640 / $/DD 4.46 / Sh 2.38** (2021 +333 / 2022 −683 / 2023 +1,744 /
+  2024 +1,330 / 2025 +846 / 2026 +3,742). Real plateau (MA50+rising 3/5/10d = 4.34/4.46/4.38,
+  MA100 4.89-5.08, MA20 too fast, MA200 too slow). **Day-level pipeline-cleanliness now
+  VERIFIED** — filtering the cached full book reproduces the dedicated run exactly, 0 diff.
+- **⚠️ TRAP RECORDED:** scoring the book against "hold 1 long 10:30→15:10 on days it traded"
+  gives alpha −$4,182 — a **tautology**. That benchmark is lookahead; buying 10:30 on ALL
+  MA50-up days LOSES $2,609; **79% of the day's move happens BEFORE entry**. Against the
+  deployable benchmark (hold from the real entry) **the exit stack is a net POSITIVE**.
+- **Conviction sizing (hero ladder, already live) is the only sizing input with signal** —
+  MTF-LONG sized-2 +$42/contract vs +$9, 6/6 years, beats 97.9% of permutations at identical
+  average exposure — **but it is noise on the full 949-trade book (82.8%)**. Suggestive only.
+- **LIVE CHECK (Jun 5-Aug 17, manual FUT CLOSE stripped — automated book = −$1,100/145t):**
+  the rule = **−$105/50t**, worst day −$1,510→−$981, **DLL breaches 2→0**, trading days 43→16.
+  **Risk-reducing, P&L-null.** Sim says 2026 +$3,742/34t — live/sim divergence inside the same year.
+- **Forward horizon: 12 months** (book trades 4.5 active days/mo; p10 stays negative until then).
+- **RECOMMENDATION:** wire the day filter LOG-ONLY on both traders; wire nothing else. The
+  bigger open item is still the **duplicate-entry gap** — every backtest describes a
+  1-position book while the account trades a 2-position one.
+
+---
+
+## Aug 19 2026 — What-if: wide stop + 1 contract + time-based exit (`futures/factory/wide_stop_lab.py`)
+
+User's design tested end to end: **1000pt SL every trade, 1 contract, existing entries (NO MA50
+filter), same on IBKR NY / TC NY / London, exit derived from data, flat same day via a time rule.**
+Doc `docs/FUTURES_WIDE_STOP_WHATIF_2026-08-19.md`, memory [[futures-wide-stop-whatif-aug19]].
+**Nothing wired. Verdict: do not wire — it fails on the tape, not on tuning.**
+
+- **REUSABLE**: cached sim entries are valid at ANY stop width. `hero_score.contracts_from_regime_score()`
+  skips on the SCORE alone; `calc_contracts_result` only caps the GOLD tier at `min(2,cc)` — widening
+  the stop takes cc 2→1 and **removes no entries**. No 45-min re-run needed for stop-width studies.
+- **The tape kills the target.** Median MFE **59pts** (MAE median 61 — bigger). Reach-before-−1000:
+  +50 57% · +100 29% · **+150 15%** · **+200 8%**. "Entry right 61%" only holds at a low bar —
+  MFE-beats-MAE is **51.3%**, a coin flip.
+- **The time rule is the WORST lever tested.** Best cell in the whole target×time grid is **no target
+  and no time rule** (hold to close, +$2,202). 30m −$4,812 · 60m −$1,437 · 180m −$1,461; clock-time
+  worse (flat-by-12:00 −$12,139). **Control with the trade set fixed at 944 confirms it is the RULE,
+  not freed-slot churn** (hold +$2,874 vs 60m −$1,382). ⇒ "not at target by X ⇒ entry was wrong that
+  day" is **disproven** — futures intraday trades recover by the close (OPPOSITE of the equity
+  stall-recycling finding). The one good cell (cut 60m if worse than −100, +$6,378) is a **spike** —
+  neighbours halve or flip sign, and **every cell in the neighbourhood is 3/6 green**.
+- **Narrower beats wider.** Hold-to-EOD stop sweep: 1000pt +$2,202/$/DD 0.34/worst day −$2,007 ·
+  850 +$2,802 · **625 +$3,702/0.74/−$1,257 (best)** · 500 +$3,198 · 200 (live) +$1,346/0.35/−$814.
+  Stop fires **1 in 472** ⇒ decoration. **The widest stop is the worst member of its own family.**
+- **"risk ≤ MLL" is NOT met.** 1000pt × $2 = **$2,000** = 100% of TC's trailing MLL (breaches with the
+  $300 buffer) and **200% of the $1,000 DLL**; IBKR soft DLL $1,250 = 625pt. A single-trade risk bigger
+  than the DLL means the daily halt **cannot** protect the account. Gauntlet: P(pass) ~10% vs
+  **P(blow) 35-43%** — fifth independent route to the same TopStep verdict.
+- **London: every variant loses** (−$2,252 … −$7,895); MFE median 40pts and the 1000pt stop is touched
+  by **0.0%** of paths (confirms Jul 18 — London's edge IS the BE=0.10 armour).
+  **⚠️ NEW, separate: `london_v2_sim` charges NO commission and NO slippage** (verified in source).
+  Champion 5.5yr = +$3,851 / 2,496 trades = **+$1.54/trade** → less commission only +$756;
+  **less 1pt slippage −$4,236; less $6/c −$14,220.** London does not survive its own costs — check
+  this before treating London as a live book at all.
+- **Closest workable version**: 625pt stop / no target / no time rule / hold to close / 1 contract —
+  +$3,702, $/DD 0.74, **green 3/6** (2021 −1,454 · 2022 +2,440 · 2023 −1,530 · 2024 +825 ·
+  2025 −1,370 · 2026 +4,790). Beats the live stack at 1c (+$938) but still loses half its years and
+  its worst day exceeds the IBKR DLL. Carry-forward: **625pt > 200pt for a HOLD-TO-CLOSE book** — a
+  different design needing its own validation, not a parameter change.
+
+---
+
+## Aug 19-24 2026 — NY futures redesign: pipeline-confirmed candidate (NOTHING WIRED)
+
+**📌 START HERE: `docs/FUTURES_CATCHUP_2026-08-24.md`** (full pack + paste-ready prompt).
+Memory entry point [[futures-catchup-aug24]]. Labs/caches in `futures/factory/`.
+
+**⚠️ GOVERNING CODE FACT — read before proposing any futures change.** `grade_entry()` is
+**ONE additive score per side** (SHORT needs `any()` of the bear bundle, then +20 orb / +15
+vwap_rej / +10 mom / +10 open / +25 pm; A+ ≥80). **`setup_name()` is only a naming-priority tag
+applied AFTER the entry decision.** There are NOT 9 strategies — one LONG, one SHORT. Proof:
+zeroing `sig['orb_bear']` removed only 9 of 276 shorts; **235 relabelled to VWAP_SHORT**.
+⇒ The only real levers are: remove a **signal**, remove a **side**, or raise the **threshold**.
+
+**Scope of a change:** `futures_trader.py` → IBKR NY only · `tc_trader.py` → TC NY only ·
+`london_trader.py` → BOTH accounts' London · `sim_replay.py` → backtest only. **IBKR and TC NY
+are DUPLICATED code** (`get_signals` differs by one dead variable `last3v`). **Any real change
+is 3 files.** London is a separate IB-range-break signal, untouched by NY changes.
+
+**Pipeline-confirmed candidate** (5.5yr, real `_run_scenario`, $6/contract):
+**1000pt stop / 1 contract / one position at a time / no trail / no rev-exit / no no-move /
+LONG ONLY** → n=493, **+$5,520**, maxDD **−$3,253**, **0 TC blow-ups**, **green 4/6**
+(2021 −59 · 2022 +1,568 · 2023 +1,375 · 2024 +249 · 2025 −1,223 · 2026 +3,610).
+vs LIVE TODAY (200pt, 2c, 2 open): +$3,353 / −$7,715 / **6 TC blows** / green 2/6.
+⇒ +65% P&L, −58% drawdown, blow-ups 6→0. **~1.5 trades/week** (1.3-1.7 every year).
+
+**Settled — do not re-litigate without a new mechanism:** wider stops lose (1000pt = −$1,142
+over 5.5yr; 625 > 850 > 1000); **1200 ≡ 1000 byte-for-byte**, and **any stop >1071pt yields ZERO
+trades** (MIN_RR 1.4 vs the 1500 target) unless the target is scaled; the wide stop fires 1 in
+378 (inert insurance); "slow the trail" is **non-monotonic — only ZERO works** (2×/3× are worse
+than live); time-based loss-booking is the worst lever tested; ATR-normalised sizing is a
+time-trend artifact; room fails as a size input (3rd rejection); VWAP_LONG is **not** a killer
+(best $/trade in the sim).
+
+**Live state through Aug 21:** automated book **−$3,080**/149 trades (IBKR −$1,787, TC −$1,292;
+the positive headline is +$4,209 of manual `FUT CLOSE`). **SHORT −$2,198 vs LONG −$882.**
+August automated −$2,617 of which **SHORT is −$2,235 (85%)**; the new config over the same 15
+days = **6 trades, +$232**. **Aug 21 (Fri) is the worst live day ever: −$1,979** — 4 trades, all
+SHORT/ORB_SHORT, duplicate pairs ~1 min apart on both accounts, IBKR −$1,270 breaching the
+$1,250 soft DLL. All five worst live days are 4-5 trade duplicate clusters (but Aug 7's cluster
+MADE +$1,168 — a variance amplifier, not a uniform loss).
+
+**TC comparability:** entry logic aligned `72b3bb5` (Jul 25 2026); sizing + daily cap only
+`a6fd51a`/`463680f` (Aug 9 2026) ⇒ TC is fully comparable for ~**7 trading days**. Older TC
+numbers blend three different systems.
+
+**Open decisions:** (1) ship **LONG-ONLY** (strongest independent evidence; one-line per file,
+same pattern as `pm_bear`) as a log-only shadow or live; (2) the exit rebuild; (3) **duplicate
+entries** — `MAX_OPEN_TRADES` 2→1 and/or a post-ENTRY cooldown; a real bug, flagged by the
+parity cop twice (Jul 15, Jul 20) and never root-caused; (4) **UNEXPLAINED**: live fires a very
+different setup mix than the sim (VWAP_LONG 5% of sim vs 32% of live, 1 vs 26 trades in the same
+17 days) — until root-caused, live setup-level P&L cannot judge a setup.
+
+---
+
+## Aug 24 2026 — NY futures: 3 fixes SHIPPED LIVE + regime-flip exit rejected (3rd time)
+
+**LIVE NOW on both `futures_trader.py` (IBKR) and `tc_trader.py` (TC)** — restarted 22:08 ET,
+clean startup verified, 0 errors, bridges 8000/8002. Full trail: [[futures-regime-exit-aug24]],
+lab `futures/factory/regime_exit_lab.py`.
+
+1. **`get_regime` forming-bar fix.** It read `df5['close'].iloc[-1]` — the *unfinished* 5-min
+   candle — for price/VWAP/RSI/5-bar trend, so the label flickered within a bar and reset the
+   consecutive-same-regime confirmation streak. **Third and final instance of this bug class**
+   after `calc_session_rvol` (Jul 17) and `calc_htf_trend` (Jul 18). New `df5c` drops the
+   forming bar. **`calc_session_rvol` deliberately keeps the UNTRIMMED frame** (it trims
+   internally; passing `df5c` would drop two bars). Unit-tested.
+2. **`MAX_OPEN_TRADES` 2 → 1.** `sim_replay.py:1127` has ALWAYS modelled one position, so every
+   Sharpe / MaxDD / P(blow) figure in this program understated live risk ~2×. Live now matches
+   the validated book. **Contracts unchanged (still 1-2)** — 1 pos × 2 ctr = 2 MNQ, was 4.
+3. **`ENTRY_COOLDOWN_MINUTES = 2.0` (new constant + `_last_entry_time`).** `COOLDOWN_MINUTES`
+   only counted from the last EXIT, so the 60s scan loop re-fired a still-valid signal on the
+   next scan. Live gaps between consecutive same-side entries: **median 1 min, 57 of 73 were
+   <2 min and lost −$832**; every genuine re-entry was ≥2 min away.
+
+**London deliberately NOT changed** — verified empirically that it has never opened an entry
+while another was live (min gap 4 min; `place_london_trade` guards on `_position is not None`).
+No `parity_check.SIM_FLAGS` change needed — sim was always a 1-position book, so parity improves.
+
+**Regime-flip exit — REJECTED, and this time the sensor was not the excuse.** The gap it targets
+is real: live ledger shows *every* adaptive exit profitable (trail +$5,901 · rev_exit +$1,922 at
+100% WR · no_move +$519) and the whole loss in trades that never earned one (real stop −$5,988 ·
+circuit breaker −$5,458), because Reversal Exit requires peak ≥120pts first.
+**But the regime label is `NORMAL` 85.5% of bars** (STRONG 7.3 / WEAK 7.2) — it is an *entry*
+gate, built to be rare, which makes it structurally unusable as an exit trigger. Plain
+regime-flip is negative at every confirmation (1/2/3/4 bars). The Jul-7-style 4-signal vote
+(regime | VWAP side | 30m HTF | 2 adverse closes) reaches +$5,338 vs +$3,353 baseline but is
+**green 2/6 in every variant**, barely improves drawdown, and makes the **worst day worse
+(−$1,342 vs −$814)**. REACTION FAILS — 8th confirmation.
+**⚠️ Look-ahead caught mid-lab worth $10,446:** `resample('30min').last()` labels a window by its
+**START**, so every 5-min bar in it saw the future. **Rule: after any `resample()`, shift the
+index forward one full period before joining back.**
+
+**Also settled this session:** the "~100pt stop" anomaly is **not a bug** — every instance was a
+TC trade *before* the Jul 25 alignment commit `72b3bb5`. Post-Jul-25 both accounts run exactly
+200pt, and it fires on **2 of 33 trades (6%)** ⇒ **do not widen it**. Pre-10:30 entries rejected
+a 4th time (09:45 start −$318 vs +$3,353; the 654 extra trades are −$5,442, of which early
+SHORTs are −$6,377 and early LONGs +$935). 90-min no-move is not a leak (+$519 live).
+Book Health rejected — the Jul 18 deferral was right (signal version is a −0.957 mirror; trade
+version is anti-predictive live, spread −$420).
+**⚠️ London since Jun 5: 81 trades, +$104 total, +$1.29/trade, 80 of 81 exits 'stop'** — and
+`london_v2_sim` charges zero commission/slippage. Verify London survives its own costs.
+
+**Still open:** decoder-in-real-time + nightly futures learner (not started); whether to ship
+**LONG + price>MA50** (+$7,092, DD −2,569, worst −$813, green 5/6 — beats every other candidate
+including the ★ 1000pt config on worst day and DLL-days).
+
+---
+
+## Aug 24 2026 (late) — ATR research: real mechanism, no shippable edge; decoder root-caused
+
+Full trail [[futures-regime-exit-aug24]]. Labs `futures/factory/{thesis_lab,atr_exit_lab,
+atr_thesis_lab,regime_exit_lab}.py`. **Nothing new wired to live beyond the 3 fixes above.**
+
+**THE STRUCTURAL FACT.** Split the 949-trade sim book by whether MFE ever reached +120pts (below
+which no adaptive exit can arm): **ORPHANS 733 (77%) = -$34,268, green 0/6** vs **MOVERS 216
+(23%) = +$37,621, green 6/6**. The movers are all-weather; the book's regime-dependence is
+entirely the orphan mix. The +$3,353 net is the residual of two huge opposing flows.
+
+**THE UNITS FINDING (real, and the strongest stable relationship the program has found).**
+Median MFE is a near-constant **~2.4-2.75 ATR every year**, but the trail-arm floor is a fixed
+120pt = **7.21 ATR in 2021 vs 3.03 ATR in 2026**. Within-year ATR vs reach-120: train +0.250 /
+test +0.250 — identical. So whether a trade can ever arm its trail is set by the year's
+volatility, not the setup. `--atr-exits` wired into `sim_replay.py` (default OFF, **no-op gate
+passed: identical trade frames**).
+**BUT the 5.5yr pipeline says +$633 (x1.0) / +$307 (x1.25) — green stays 2/6, worst day
+unchanged. Only drawdown improves (-7% / -18%). Risk-reducing, P&L-null. NOT SHIPPED.**
+
+**ATR does NOT rescue thesis invalidation** (`atr_thesis_lab.py`): cutting at X ATR adverse is
+catastrophic at every X (-$27k to -$32k vs -$2,015 baseline); "not +Y ATR within N bars" loses
+in every cell. ⭐ **UNIFYING PRINCIPLE, 9 confirmations: every change that gives trades MORE
+room helps; every change that cuts them EARLIER hurts.** ATR helps exactly where it widens a
+threshold and fails exactly where it tightens one.
+
+**DECODER root-caused + ATR context SHIPPED.** Every decoder field is scale-free or volume-based;
+correlation with the day's real ATR: adx **-0.008**, rvol +0.088, range_pos -0.121, vwap_ext
+-0.146, vwap_slope -0.155. It is structurally blind to price volatility — instrumented on the
+axis proven 8x unforecastable, blind to the one that survives a walk-forward split.
+`futures/expectancy_ledger.py` now writes `atr5` + `atr_ratio` to `gate_blocks_ctx`, computed
+**from BARS not the live feed, so fully backfillable over all history — no year of waiting.**
+
+**⚠️⚠️ METHOD LESSON: correlation is NOT a calibration gate.** The frame lab predicted +$7,713;
+the pipeline delivered +$633 — **12.2x overstatement**, because the frame engine's own baseline
+(-$2,015) did not reproduce the real stack (+$3,353). Per-trade correlation +0.856 passed and
+was still insufficient. **Gate a within-engine A/B on total P&L AND exit-mix agreement, not
+correlation. If the level is off, fix the engine before running any variant.**
+
+---
+
+## Aug 25 2026 — ❌ overnight-range gate RETRACTED (look-ahead); live fixes VERIFIED
+
+**The Aug 24 "overnight range" lead is VOID.** Found while specifying the window to wire it.
+I built it as `between_time('18:00','09:29')`, which **wraps midnight** and therefore included
+`D 18:00-23:59` — the evening AFTER day D's session. **The post-session half set the extreme in
+85% of 542 sessions.** Correct window (as `conditions.py:150` always had it):
+`prev_session 18:00 -> today 09:30`. Causal rebuild: corr(mover) **+0.146 -> -0.048 (sign flips)**;
+filter P&L **+$13,314 / green 6/6 -> +$130 / green 2/6**. Nothing was wired; no gate was built.
+
+**Why five checks missed it:** family-wise permutation, walk-forward, within-ATR and
+within-time-of-day controls, and drop-best-days **cannot detect look-ahead** — it produces a
+genuine correlation with the real label and is present in every split and bucket. The check that
+DID fire was **cross-build replication** (conditions.py's own build correlated only +0.133 and
+made -$500) and **I explained it away.**
+⇒ **RULE: a failed independent replication IS the finding — reconcile definitions first.**
+⇒ **RULE: never use `between_time()` for overnight windows; anchor to an explicit prior timestamp.**
+
+**Corrected feature-hunt result: 19 of 19 entry features FAILED.** Nothing currently measurable
+separates the 0/6-green ORPHANS (77% of trades, -$34k) from the 6/6-green MOVERS (23%, +$38k).
+The split is real; it is not predictable from anything we have.
+
+**LIVE FIXES VERIFIED (first full day, Aug 25):** regime forming-bar fix **CONFIRMED WORKING** —
+share of 5-min bars whose RSI/VWAP/day_chg changed mid-bar fell **100% -> 8.8%** (residual is the
+bar-boundary case). Zero tracebacks/exceptions since the restart. `MAX_OPEN_TRADES=1` and the
+2-min entry cooldown are shipped but **not yet exercised** — zero NY entries Aug 24 and Aug 25
+(GRADE never reached A+; best was A(75) SHORT). London took 4 trades on Aug 25, all BE scratches,
+net exactly $0.00.
+
+---
+
+## Sep 2 2026 — 9-day observation verdict: Aug-24 fixes WORK · exit rebuild KILLED · LONG-only + daily-trend filter is the candidate
+
+Ten-day monitoring window closed and evaluated. Both NY traders have run the Aug-24 code
+continuously since 22:08 that night (`ps` start time == file mtime, and `Max trades open (1)`
+appears in BOTH logs, so the fixes are confirmed live, not just on disk). **Zero manual
+`FUT CLOSE` in the window** ⇒ this is the first clean read of the automated book.
+
+**① THE AUG-24 FIXES ARE VALIDATED.**
+
+| | Jun 5 – Aug 23 | Aug 24 – Sep 2 |
+|---|---|---|
+| automated P&L | **−$2,536** / 155 trades / 45 days | **+$955** / 6 trades / 4 days |
+| entries <5 min apart | **78** | **0** |
+| parity cop (NY) | 2-5 live vs 0-1 sim, most days | 5 of 8 days clean |
+
+The duplicate-entry bug is **gone**. `MAX_OPEN_TRADES=1` is what does the work (1,353 scan
+cycles skipped while a position was live); `ENTRY_COOLDOWN_MINUTES` has **never fired** — it is
+the backup for the fast-exit case, keep it. n=6 is NOT evidence of profitability; it IS
+evidence the bug is fixed. Regime forming-bar fix confirmed working Aug 25 (mid-bar RSI/VWAP
+churn 100% → 8.8%).
+
+**② EXIT REBUILD (1000pt / 1c / no-trail / no-rev-exit / no-no-move) — KILLED, user-agreed.**
+Replayed the observation window both ways: **live exits +$227 sim (+$955 actual) vs ★ config
+−$454.** And 100% of the real live profit came from the two mechanisms ★ deletes:
+Aug 28 partial +$302 & rev_exit +$140 · Sep 1 partial +$302 & rev_exit +$210. Over 5.5yr they
+tie on P&L (+$8,107 vs +$8,722) but ★ has a **−$2,001 worst day vs −$802** and 3 TC DLL halts
+vs 0. **Do not re-open without a new mechanism.** Keep: 200pt stop, regime-aware trail,
+Reversal Exit `2,0.30,120`, Partial Scale-Out 150.
+
+**③ NEW — the instant-kill trades have a cause, and it is not stop width.**
+Split the 949-trade 5.5yr sim book by "exited ≤45min AND losing": **17 trades (2%) = −$8,547**,
+the other 929 = **+$11,910**. All 17 are full 200pt stop hits. Two percent of trades eat 2.5×
+the book's entire net profit. What those days had in common: **15 of 17 were below the daily
+MA50; 16 of 17 below MA50 AND MA200** (−$8,140 blocked). You are not ambushed on random days —
+you are ambushed on days the tape was already walking downhill.
+**A 1000pt stop does NOT fix it**: it converts most into slow EOD bleeds (good) but once
+(2025-11-20) into **−$2,001** (the whole TC MLL in one fill). 500pt is the best of the
+stop-width family (+$8,622, green 4/6); **1000pt is the worst member of its own family.**
+
+**④ PIPELINE-CONFIRMED CANDIDATE (real `_run_scenario`, live exit stack, 200pt stop).**
+Day filter is fully causal — PREVIOUS close vs PREVIOUS MA (`conditions.py:209-211`).
+Runner: `futures/factory/_longonly_ma.py <200 | 50,200>`.
+
+| config | n | total | maxDD | worstDay | TC blows | green | /week |
+|---|---|---|---|---|---|---|---|
+| LIVE TODAY (both sides, 2c) | 949 | +3,353 | −7,715 | −814 | **6** | 2/6 | 3.5 |
+| LONG-only, live exits | 601 | +8,722 | −3,201 | −802 | 1 | 5/6 | 2.2 |
+| **LONG-only + day>MA200** | 419 | **+9,848** | −2,198 | −801 | **0** | **6/6** | 1.5 |
+| LONG-only + day>MA50 & >MA200 | 326 | +10,113 | **−1,194** | −801 | **0** | 5/5 (2022 = 0 trades) | 1.2 |
+
+**Frame estimate == pipeline result EXACTLY** (both configs, to the dollar) — because the book
+is signal-scarce, a freed slot never gets refilled. Frame filters are trustworthy on THIS book.
+**Recommend MA200** (green all six years incl. 2022; one condition; still trades). MA50&200's
+better DD is only because it sat out all of 2022 — no 2022 evidence, not 2022 survival.
+Levers are independent and additive: day-filter alone +$6,324 · LONG-only alone +$5,376 ·
+both +$9,848. **REJECTED: "skip high-ATR days" (−$1,325)** — it is the TREND, not the volatility.
+
+**⑤ WOULD IT HAVE SAVED THE TWO BAD LIVE DAYS? Half.**
+- **Aug 21 (−$1,979, worst day ever): YES, fully.** All 4 trades SHORT ⇒ long-only deletes the
+  day. (Dup-fix alone already halves it to −$1,000.)
+- **Aug 17 (−$1,510): NO.** All 4 LONG, day above BOTH MA50 and MA200 — every proposed filter
+  waves them through. Only the already-live dup-fix helps (→ −$739). Entered ~30,275 at 11:06,
+  slid 200pts, IBKR held 4h50m to a backup stop at 15:55; never reached +120pts so the trail /
+  rev-exit / partial never armed. **This is the ORPHAN class** (77% of trades, −$34k, 19 of 19
+  entry features failed to predict it — see Aug 25 entry). Unsolved, and this change does not
+  claim to solve it.
+
+**Aug 1 → Sep 2 restated (automated, partials merged into their parent entry event):**
+actual **−$1,360** (6 losing days of 12, worst −$1,979) → live-now/dup-fix **−$14** (worst
+−$1,000) → +LONG-only&MA200 **+$599** (4 losing days, worst −$739, 9 trading days instead of 12).
+**Cost of the rule, stated: it gives back Sep 1's profitable SHORT (+$512) and skips Aug 14.**
+
+**⑥ LONDON — untouched, and the good week is NOT evidence.** Since Aug 24: +$1,078/16 trades,
+but **4 trades are the entire $1,079 and 12 of 16 were BE scratches** (net −$0.48). Jun 18–Aug 23
+was +$1.31/trade over 80 trades — i.e. indistinguishable from `london_v2_sim`'s +$1.54/trade.
+Live rows ARE net of commission (`london_trader.py:675`, $1.24 round-turn) and of real fills,
+so the live record (+$1,183 / 96 trades lifetime) is real; it is the SIM that is inflated
+(zero commission/slippage). Verdict unchanged: razor-thin, paper only.
+
+**⑦ STILL OPEN.** (a) live/sim divergence UNEXPLAINED — Aug 28 sim entered 29,683 vs live
+29,649 on the same signal (34pt gap, different bar); parity cop flagged Sep 1 live-only too
+(that one made +$512). Until root-caused, live setup-level P&L cannot judge a setup.
+(b) ATR-scaled exits — settled: risk-reducing, P&L-null, NOT shipped (`--atr-exits`, default
+OFF). (c) TC has taken 1 NY trade in 9 days (−$84) — not evaluable. (d) decoder-in-real-time +
+nightly futures learner — not started. (e) `parity_check.py` / `expectancy_ledger.py` London
+queries still not `account_mode`-filtered.
+
+**DECISION PENDING:** ship LONG-only + day>MA200 live on all 3 files
+(`futures_trader.py`, `tc_trader.py`, `sim_replay.py` + `parity_check.SIM_FLAGS`), or run it
+log-only first. Nothing wired this session.

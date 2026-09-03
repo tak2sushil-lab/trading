@@ -95,6 +95,22 @@ def ensure_tables(con):
         gate_block_id INTEGER PRIMARY KEY, phase TEXT, flow TEXT, adx REAL,
         vwap_ext REAL, vwap_slope REAL, vol_label TEXT, range_pos REAL,
         rvol REAL, snapshot_ts TEXT)""")
+    # ── VOLATILITY CONTEXT (added Aug 24 2026) ─────────────────────────────
+    # Why: every existing decoder field is scale-free or volume-based — adx is
+    # normalised by construction, range_pos/vwap_slope are ratios, rvol and
+    # vol_label are VOLUME. Measured against the day's real ATR they correlate
+    # -0.008 / +0.088 / -0.121 / -0.146 / -0.155. The decoder is structurally
+    # blind to how BIG the tape is, which is the one axis that has ever survived
+    # a walk-forward split (conditions.py: ib_range_atr IC +0.36->+0.41) and the
+    # strongest stable predictor of whether a move materialises (thesis_lab.py:
+    # within-year ATR vs reach-120, train +0.250 / test +0.250).
+    # These two are computed from BARS, not from the live decoder feed, so unlike
+    # every other column here they are FULLY BACKFILLABLE over all of history.
+    for _col, _typ in (('atr5', 'REAL'), ('atr_ratio', 'REAL')):
+        try:
+            con.execute(f'ALTER TABLE gate_blocks_ctx ADD COLUMN {_col} {_typ}')
+        except sqlite3.OperationalError:
+            pass          # already present — idempotent, same pattern as database.py
     con.commit()
 
 
@@ -150,12 +166,32 @@ def run_shadow_fishnet(con, dec, bars):
     log(f"shadow_fishnet: +{n_new} trades")
 
 
-def run_context_join(con, dec):
+def atr_context(bars):
+    """5-min ATR14 series + each session's ATR relative to its own trailing-100-session
+    median. Pure function of bars ⇒ backfillable over all history, unlike the live-only
+    decoder fields. `bars` is the 1-min frame; resampled to 5-min here to match the
+    ATR the traders actually compute (calc_atr / compute_atr, period 14)."""
+    b5 = bars.resample('5min').agg({'high': 'max', 'low': 'min',
+                                    'close': 'last'}).dropna()
+    tr = pd.concat([b5['high'] - b5['low'],
+                    (b5['high'] - b5['close'].shift()).abs(),
+                    (b5['low'] - b5['close'].shift()).abs()], axis=1).max(axis=1)
+    atr5 = tr.rolling(14).mean()
+    day_atr = tr.groupby(tr.index.date).mean()
+    # ratio uses YESTERDAY's ATR vs the prior 100 sessions -> known at the open, causal
+    ratio = (day_atr.shift(1) /
+             day_atr.shift(1).rolling(100, min_periods=20).median())
+    return atr5, {str(k): v for k, v in ratio.items()}
+
+
+def run_context_join(con, dec, bars=None):
     gb = pd.read_sql("select id, ts from gate_blocks where id not in "
                      "(select gate_block_id from gate_blocks_ctx)", con)
     if gb.empty or dec.empty:
         log("context join: nothing new")
         return
+    atr5, day_ratio = (atr_context(bars) if bars is not None and not bars.empty
+                       else (None, {}))
     gb['ts'] = pd.to_datetime(gb['ts'], format='ISO8601', utc=True).dt.tz_convert(ET)
     gb = gb.sort_values('ts')
     cols = ['ts', 'phase', 'flow', 'adx', 'vwap_ext', 'vwap_slope',
@@ -166,10 +202,19 @@ def run_context_join(con, dec):
     for _, r in j.iterrows():
         if pd.isna(r.get('phase')):
             continue
-        con.execute("insert or ignore into gate_blocks_ctx values (?,?,?,?,?,?,?,?,?,?)",
+        _a5 = None
+        if atr5 is not None:
+            _prev = atr5[atr5.index <= r['ts']].dropna()
+            _a5 = float(_prev.iloc[-1]) if len(_prev) else None
+        _ar = day_ratio.get(str(r['ts'].date()))
+        con.execute("insert or ignore into gate_blocks_ctx "
+                    "(gate_block_id, phase, flow, adx, vwap_ext, vwap_slope, vol_label, "
+                    " range_pos, rvol, snapshot_ts, atr5, atr_ratio) "
+                    "values (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (int(r['id']), r['phase'], r['flow'], r['adx'], r['vwap_ext'],
                      r['vwap_slope'], r['vol_label'], r['range_pos'], r['rvol'],
-                     str(r['ts'])))
+                     str(r['ts']), _a5,
+                     float(_ar) if _ar is not None and pd.notna(_ar) else None))
         n += 1
     con.commit()
     log(f"context join: +{n} rows -> gate_blocks_ctx")
@@ -216,7 +261,7 @@ def main():
     con = sqlite3.connect(TRADES_DB)
     ensure_tables(con)
     run_shadow_fishnet(con, dec, bars)
-    run_context_join(con, dec)
+    run_context_join(con, dec, bars)
     report(con)
     con.close()
 

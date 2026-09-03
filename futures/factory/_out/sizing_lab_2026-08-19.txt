@@ -1,0 +1,417 @@
+
+================================================================================================================================================================
+  Q1  THE CONFIG UNDER THE REAL EXIT STACK  (full pipeline: 200pt stop, trail, rev-exit,
+      partial scale-out, no-move, EOD — NOT the barrier sim that replaced all of it)
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  baseline book (all days)        949   1.17    +3,353   -7,715   0.43  0.32  2/6       -1,138    -1,615    -1,314    -2,480    +1,480    +8,421
+    LONG only                     593   1.17    +5,376   -4,029   1.33  0.88  4/6         +152    -2,839    +1,012      -291    +1,372    +5,970
+  MTF days, all sides             543   1.15    +5,547   -2,492   2.23  1.09  3/6         -593      -275      +183      -434      +693    +5,973
+  MTF days, LONG only  ★          343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  MTF days, SHORT only            200   1.11    -1,764   -4,651  -0.38 -0.87  2/6         -926      +409    -1,560    -1,764      -154    +2,231
+
+  Reference — the PROVISIONAL barrier sim this is meant to check (from Aug 18 memory):
+    barrier (stop -1000 / target +200 / hold to 15:10), flat 1c : +4,587  DD -1,822  $/DD 2.52  green 6/6
+    barrier + ATR-normalised sizing ($1,000 risk)              : +12,233  DD -3,636  $/DD 3.36  green 6/6
+
+================================================================================================================================================================
+  SIZING SCHEMES ON THE REAL-EXIT-STACK MTF-LONG BOOK
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  pipeline sizing (as traded)     343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  flat 1 contract(s)              343   1.00    +4,865   -1,620   3.00  1.84  5/6         +256      -675    +1,410      +911      +439    +2,524
+  flat 2 contract(s)              343   2.00   +10,154   -3,196   3.18  1.92  5/6         +561    -1,331    +2,935    +1,922      +977    +5,090
+  flat 3 contract(s)              343   3.00   +15,444   -4,773   3.24  1.94  5/6         +866    -1,986    +4,461    +2,933    +1,515    +7,656
+  ATR-normalised $700 risk        343   1.43    +7,584   -2,615   2.90  1.97  5/6         +326    -1,175    +2,920    +2,469      +521    +2,524
+  ATR-normalised $1,000 risk      343   2.08    +9,159   -3,196   2.87  1.74  5/6         +699    -1,331    +3,991    +2,156      +869    +2,775
+  ATR-normalised $1,400 risk      343   2.68   +11,458   -4,462   2.57  1.69  5/6         +647    -1,939    +4,461    +3,062    +1,883    +3,344
+
+  Flat sizing cannot change $/DD (it scales P&L and DD together). Any scheme whose
+  $/DD differs from the flat rows is doing real work — everything else is just leverage.
+
+  loading 1-min MNQ bars…
+  443,562 bars  2021-06-01 09:30:00 -> 2026-08-14 15:10:00
+
+================================================================================================================================================================
+  Q1b  THE BARRIER GEOMETRY (stop -1000 / target +200 / flat 15:10) ON THE SAME 343 ENTRIES
+       — reproduced here, then corrected for the slot it silently double-booked
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  barrier, overlaps allowed · flat 1c  343   1.00    +4,162   -1,856   2.24  1.04  5/6         -199       +79    +1,446    +2,317      +213      +305
+  barrier, overlaps allowed · flat 2c  343   2.00    +8,749   -3,667   2.39  1.09  5/6         -349      +178    +3,008    +4,733      +526      +653
+  barrier, overlaps allowed · ATR $1,000  343   2.08   +11,808   -3,706   3.19  1.47  6/6         +128      +178    +4,364    +5,988      +465      +685
+  barrier, ONE position at a time · flat 1c  277   1.00    +3,472   -1,666   2.08  0.97  4/6         -203      +335    +1,319    +2,020      -188      +188
+  barrier, ONE position at a time · flat 2c  277   2.00    +7,288   -3,329   2.19  1.01  4/6         -362      +687    +2,727    +4,123      -299      +411
+  barrier, ONE position at a time · ATR $1,000  277   2.08   +10,203   -3,170   3.22  1.48  5/6          +41      +687    +4,272    +5,126      -467      +544
+
+  For comparison, the REAL exit stack on the identical entries:
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  real stack · flat 1c            343   1.00    +4,865   -1,620   3.00  1.84  5/6         +256      -675    +1,410      +911      +439    +2,524
+  real stack · flat 2c            343   2.00   +10,154   -3,196   3.18  1.92  5/6         +561    -1,331    +2,935    +1,922      +977    +5,090
+  real stack · pipeline sizing    343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  real stack · ATR $1,000         343   2.08    +9,159   -3,196   2.87  1.74  5/6         +699    -1,331    +3,991    +2,156      +869    +2,775
+
+  loading 1-min MNQ bars…
+
+================================================================================================================================================================
+  Q11  WHAT DOES THE EXIT STACK COST?   Same entries, same times, ONE position at a
+       time, 1 contract, $6+commission friction. Only the exit differs.
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  REAL exit stack (200pt, trail…)  276   1.00    +4,260   -1,303   3.27  1.78  5/6         +206      -259    +1,348      +704      +135    +2,125
+  hold to 15:10, no stop at all   277   1.00    +3,796   -1,666   2.28  1.04  4/6         -203      +335    +1,362    +2,062      -188      +427
+  hold to 15:10, 1000pt brake     277   1.00    +3,796   -1,666   2.28  1.04  4/6         -203      +335    +1,362    +2,062      -188      +427
+  hold to 15:10, 600pt brake      277   1.00    +3,796   -1,666   2.28  1.04  4/6         -203      +335    +1,362    +2,062      -188      +427
+  hold to 15:10, 400pt brake      277   1.00    +3,761   -1,551   2.42  1.04  4/6         -203      +335    +1,362    +1,896      -367      +738
+  hold to 15:10, 200pt stop       277   1.00    +2,787   -2,283   1.22  0.83  4/6           +4      +213    +1,112    +2,160      -585      -117
+  barrier -1000 / +200            277   1.00    +3,472   -1,666   2.08  0.97  4/6         -203      +335    +1,319    +2,020      -188      +188
+  barrier -1000 / +400            277   1.00    +3,796   -1,666   2.28  1.04  4/6         -203      +335    +1,362    +2,062      -188      +427
+
+  and with the live conviction ladder instead of flat 1c:
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  REAL exit stack · live ladder   276   1.16    +6,248   -1,392   4.49  2.21  5/6         +283      -267    +1,584    +1,009      +355    +3,283
+  hold to 15:10 · live ladder     277   1.16    +6,343   -2,177   2.91  1.46  5/6          -75      +340    +1,012    +3,130      +206    +1,729
+  hold, 1000pt brake · live ladder  277   1.16    +6,343   -2,177   2.91  1.46  5/6          -75      +340    +1,012    +3,130      +206    +1,729
+  hold, 1000pt brake · ladder 1/4  277   1.48   +11,437   -3,429   3.34  1.78  6/6         +182      +349      +313    +5,266      +993    +4,333
+
+================================================================================================================================================================
+  Q2  WALK-FORWARD OF THE RISK-PER-TRADE PARAMETER   (fit 2021-23  ->  test 2024-26)
+================================================================================================================================================================
+  risk $/trade    |                TRAIN 2021-23                 |                 TEST 2024-26                
+                  |   avg c     total    maxDD    $/DD     Sh |   avg c     total    maxDD    $/DD     Sh
+  ----------------------------------------------------------------------------------------------------------------
+  $400            |    1.00      +990   -1,620    0.61   0.90 |    1.00    +3,874     -753    5.15   2.51
+  $500            |    1.13    +1,246   -1,620    0.77   1.10 |    1.00    +3,874     -753    5.15   2.51
+  $600            |    1.48    +2,407   -1,620    1.49   1.53 |    1.08    +4,035     -963    4.19   2.41
+  $700            |    1.72    +2,071   -2,615    0.79   1.10 |    1.21    +5,513     -857    6.43   2.84
+  $800            |    2.00    +2,337   -2,777    0.84   1.10 |    1.45    +5,133   -1,319    3.89   2.35
+  $900            |    2.28    +3,264   -3,196    1.02   1.37 |    1.63    +5,463   -1,379    3.96   2.32
+  $1,000          |    2.46    +3,359   -3,196    1.05   1.28 |    1.79    +5,799   -1,497    3.87   2.23
+  $1,200          |    2.81    +3,319   -4,210    0.79   1.10 |    2.11    +7,321   -1,527    4.79   2.32
+  $1,400          |    2.95    +3,169   -4,462    0.71   0.99 |    2.47    +8,289   -2,111    3.93   2.33
+  $1,600          |    2.97    +3,145   -4,773    0.66   0.95 |    2.62    +8,200   -2,241    3.66   2.24
+  $2,000          |    3.00    +3,341   -4,773    0.70   1.01 |    2.86    +9,359   -2,241    4.18   2.28
+
+  TRAIN-optimal risk (by $/DD) = $600  ->  its TEST $/DD = 4.19 (test-optimal was 6.43 at $700)
+  TEST $/DD range across the whole parameter range: 3.66 .. 6.43   -> PEAKY (parameter is a fitted choice)
+
+================================================================================================================================================================
+  THE CONFOUND THAT COULD KILL IT: MNQ ATR rose 188 -> 477 almost monotonically, so
+  "size down when ATR is high" is nearly the same instruction as "size down in later
+  years". If the gain is really a cross-year time bet, it will VANISH within a year.
+================================================================================================================================================================
+              n    ATR            low-ATR half                    high-ATR half         
+  year                       n   $/contract        WR       n   $/contract        WR
+  ----------------------------------------------------------------------------------------------------
+  2021       40    189      20          +12       60%      20           +1       65%
+  2023       93    209      47          +25       57%      46           +5       54%
+  2024       80    238      40          +40       68%      40          -18       50%
+  2025       80    306      40          +12       65%      40           -1       70%
+  2026       34    455      17          +20       65%      17         +129       88%
+
+  Low-ATR days paid more per contract in 4 of 5 years.
+  If that is not a clear majority, ATR-normalised sizing is NOT exploiting a within-year
+  edge — it is a cross-year leverage schedule, and its backtest gain is a bet that the
+  low-ATR years were under-levered. That bet cannot be validated on this sample.
+
+  CONTROL — ATR rank computed WITHIN each year (time trend removed by construction):
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  pipeline sizing                 343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  flat 2 contracts                343   2.00   +10,154   -3,196   3.18  1.92  5/6         +561    -1,331    +2,935    +1,922      +977    +5,090
+  ATR-normalised $1,000 (raw)     343   2.08    +9,159   -3,196   2.87  1.74  5/6         +699    -1,331    +3,991    +2,156      +869    +2,775
+  within-year ATR rank sizing     343   1.97    +8,619   -3,231   2.67  1.65  5/6         +766    -1,792    +3,035    +2,607    +1,102    +2,903
+
+  "within-year ATR rank" sizes 3/2/1 by the day ATR TERCILE INSIDE its own year. It
+  carries the same "small when volatile" instruction with ZERO cross-year drift. If it
+  does not beat flat, the raw-ATR gain was the time trend, not the volatility signal.
+
+================================================================================================================================================================
+  Q3  ROOM FORECAST AS A SIZE INPUT   (it failed twice as a GATE because room is
+      SYMMETRIC — high-room days travel further in BOTH directions. Symmetry does not
+      by itself disqualify it from scaling exposure, so: does it?)
+================================================================================================================================================================
+  room bucket     n   $/contract      WR    sd $/c   per-year $/contract
+  --------------------------------------------------------------------------------------------------------------------
+  R1 dead        69          +15     61%       134   2021:    -6 2022:   -52 2023:   +74 2024:   +54 2025:   -22 2026:  +251
+  R2             68           -2     59%       143   2021:   +25 2022:  -181 2023:    +7 2024:    -5 2025:   -18 2026:   +16
+  R3             69          +24     61%       119   2021:   -21 2022:  +262 2023:   +31 2024:   +11 2025:   +23 2026:   +22
+  R4             68          +14     62%       143   2021:    +3 2022:   -26 2023:   -20 2024:   -15 2025:    +5 2026:  +231
+  R5 wide        69          +21     65%       126   2021:   +30 2022:    +0 2023:   -43 2024:   +25 2025:   +47 2026:   +59
+
+  Read the sd column: if room scales the SPREAD but not the MEAN, sizing UP on it buys
+  variance with no return — the textbook way to make a Sharpe worse while P&L looks fine.
+
+================================================================================================================================================================
+  ROOM-SCALED SIZING SCHEMES
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  pipeline sizing (benchmark)     343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  flat 2 contracts                343   2.00   +10,154   -3,196   3.18  1.92  5/6         +561    -1,331    +2,935    +1,922      +977    +5,090
+  size UP with room (1/2/3)       343   2.01   +11,947   -3,749   3.19  2.10  5/6         +916      -563      +643    +2,207    +1,975    +6,769
+  size DOWN with room (3/2/1)     343   1.99    +8,362   -2,955   2.83  1.43  4/6         +206    -2,099    +5,228    +1,637       -21    +3,411
+  room x ATR (risk/ATR, up-tilt)  343   2.06    +9,861   -4,079   2.42  1.86  5/6         +596      -965    +2,426    +2,839    +1,832    +3,133
+
+  A size input must beat the benchmark on $/DD, not on total. Total always rises with
+  average size; only $/DD says the money was allocated to the right trades.
+
+================================================================================================================================================================
+  Q4  THE SIZING SCHEME THAT IS ALREADY WINNING — the live hero-score ladder
+      (contracts_from_regime_score: 1 or 2 by Trend-Jury score). Does the 2-contract
+      bucket actually earn its extra size, PER YEAR?
+================================================================================================================================================================
+  sized         n   $/contract      WR    sd $/c   per-year $/contract
+  --------------------------------------------------------------------------------------------------------------------
+  1 contract    286           +9     59%       137   2021:    +5 2022:   -47 2023:   +14 2024:    +7 2025:    +1 2026:   +63
+  2 contracts    57          +42     74%       108   2021:   +37 2022:    -5 2023:   +20 2024:   +37 2025:   +30 2026:   +92
+
+  The 2-contract bucket out-earned the 1-contract bucket per contract in 6 of 6 years.
+
+================================================================================================================================================================
+  EVERY HONEST HAIRCUT, APPLIED IN ORDER  (this is the number to actually believe)
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  as measured                     343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+    + first trade of day only     276   1.16    +6,248   -1,392   4.49  2.21  5/6         +283      -267    +1,584    +1,009      +355    +3,283
+    + friction $10/contract       343   1.17    +5,711   -1,800   3.17  1.86  5/6         +165      -755    +1,308      +966      +474    +3,554
+    + friction $14/contract       343   1.17    +4,111   -1,960   2.10  1.34  4/6           -3      -827      +872      +602      +102    +3,366
+
+  Live-book reality not modelled anywhere above: live runs MAX_OPEN_TRADES=2 with no
+  post-entry cooldown, so it fires the same signal twice (79% of live entry-events are
+  size-2 clusters vs 0% in this sim). At the same nominal contract count the live book
+  therefore carries roughly DOUBLE this exposure and drawdown. See
+  [[futures-live-duplicate-entries-aug18]].
+
+================================================================================================================================================================
+  Q5  THE HERO-SCORE CONVICTION LADDER  —  the sizing signal that is ALREADY LIVE
+      contracts_from_regime_score() puts 2 contracts on high Trend-Jury scores and 1 on
+      the rest. Nothing here was fitted by this lab: it is the live system's own ladder,
+      read out of the sim. Tested on the UNFILTERED book so it is not entangled with the
+      MA50 day filter that WAS chosen on this data.
+================================================================================================================================================================
+
+  FULL BOOK (all days, both sides)   (n=949)
+  tier              n   $/contract      WR      sd   per-year $/contract
+  ----------------------------------------------------------------------------------------------------------------------
+  sized 1         784           -1     55%     157   2021:    -4 2022:   -16 2023:   -12 2024:   -10 2025:   +10 2026:   +39
+  sized 2         165          +13     65%     160   2021:   -82 2022:    +9 2023:   +10 2024:   -23 2025:    -1 2026:   +72
+  -> high-conviction tier out-earned per contract in 3/6 years
+
+  MTF-LONG book   (n=343)
+  tier              n   $/contract      WR      sd   per-year $/contract
+  ----------------------------------------------------------------------------------------------------------------------
+  sized 1         286           +9     59%     137   2021:    +5 2022:   -47 2023:   +14 2024:    +7 2025:    +1 2026:   +63
+  sized 2          57          +42     74%     108   2021:   +37 2022:    -5 2023:   +20 2024:   +37 2025:   +30 2026:   +92
+  -> high-conviction tier out-earned per contract in 6/6 years
+
+================================================================================================================================================================
+  STRETCHING THE LADDER  (same trades, different contracts on each tier)
+================================================================================================================================================================
+
+  FULL BOOK
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  live ladder  1 / 2              949   1.17    +3,353   -7,715   0.43  0.32  2/6       -1,138    -1,615    -1,314    -2,480    +1,480    +8,421
+  stretched    1 / 3              949   1.35    +5,669   -8,967   0.63  0.43  2/6       -1,540    -1,251      -955    -2,928    +1,491   +10,852
+  stretched    1 / 4              949   1.52    +7,984  -10,338   0.77  0.49  2/6       -1,942      -887      -596    -3,375    +1,501   +13,284
+  levered      2 / 4              949   2.35    +7,883  -14,831   0.53  0.37  2/6       -2,175    -3,004    -2,380    -4,749    +3,193   +16,998
+  TOP TIER ONLY 0 / 1             165   1.00    +2,111   -1,857   1.14  1.31  3/6         -408      +318      +319      -474       -35    +2,390
+  TOP TIER ONLY 0 / 2             165   2.00    +4,426   -3,574   1.24  1.38  3/6         -810      +682      +679      -921       -25    +4,822
+   flat 2 reference:
+    flat 2 contracts              949   2.00    +3,252  -14,298   0.23  0.19  2/6       -1,371    -3,732    -3,099    -3,854    +3,172   +12,135
+
+  MTF-LONG
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  live ladder  1 / 2              343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  stretched    1 / 3              343   1.33    +9,757   -1,661   5.87  2.65  5/6         +410      -691    +2,077    +1,748    +1,253    +4,960
+  stretched    1 / 4              343   1.50   +12,203   -1,681   7.26  2.78  5/6         +487      -699    +2,411    +2,167    +1,660    +6,178
+  levered      2 / 4              343   2.33   +15,047   -3,237   4.65  2.44  5/6         +715    -1,347    +3,603    +2,759    +1,791    +7,526
+  TOP TIER ONLY 0 / 1              57   1.00    +2,376     -428   5.55  6.44  5/6          +75       -10      +314      +405      +391    +1,202
+  TOP TIER ONLY 0 / 2              57   2.00    +4,822     -853   5.65  6.54  5/6         +152       -18      +647      +823      +798    +2,420
+   flat 2 reference:
+    flat 2 contracts              343   2.00   +10,154   -3,196   3.18  1.92  5/6         +561    -1,331    +2,935    +1,922      +977    +5,090
+
+================================================================================================================================================================
+  Q6  PERMUTATION TEST — MTF book LONG   (n=343, high-conviction tier k=57)
+      Reassign the "high conviction" label to k RANDOM trades and re-run the 1/4
+      stretch. If the live hero score carries no information, the real result sits
+      inside this noise band.
+================================================================================================================================================================
+  total $    real +12,203.38   random: median  +7,614.85  p5  +2,879.70  p95 +12,007.70   -> real beats  95.7% of shuffles  [REAL SIGNAL]
+  $/DD       real      +7.26   random: median      +2.67  p5      +0.73  p95      +6.31   -> real beats  97.9% of shuffles  [REAL SIGNAL]
+  Sharpe     real      +2.78   random: median      +1.57  p5      +0.56  p95      +2.51   -> real beats  98.4% of shuffles  [REAL SIGNAL]
+  (flat-1c reference for this book: total +4,865  $/DD 3.00)
+
+  LEAVE-ONE-YEAR-OUT — drop each year, does the 1/4 stretch still beat the live 1/2 ladder?
+  dropped      1/2 ladder $/DD    1/4 stretch $/DD   better?
+  ------------------------------------------------------------
+  2021                    4.25                6.97       yes
+  2022                    8.42                7.80        NO
+  2023                    4.44                5.92       yes
+  2024                    3.65                5.97       yes
+  2025                    3.94                6.27       yes
+  2026                    2.18                3.58       yes
+
+================================================================================================================================================================
+  Q6  PERMUTATION TEST — BASE book   (n=949, high-conviction tier k=165)
+      Reassign the "high conviction" label to k RANDOM trades and re-run the 1/4
+      stretch. If the live hero score carries no information, the real result sits
+      inside this noise band.
+================================================================================================================================================================
+  total $    real  +7,984.16   random: median  +2,295.05  p5  -6,809.54  p95 +11,340.24   -> real beats  85.4% of shuffles  [inside the noise band]
+  $/DD       real      +0.77   random: median      +0.19  p5      -0.40  p95      +1.30   -> real beats  82.8% of shuffles  [inside the noise band]
+  Sharpe     real      +0.49   random: median      +0.14  p5      -0.42  p95      +0.71   -> real beats  84.4% of shuffles  [inside the noise band]
+  (flat-1c reference for this book: total +1,038  $/DD 0.14)
+
+  LEAVE-ONE-YEAR-OUT — drop each year, does the 1/4 stretch still beat the live 1/2 ladder?
+  dropped      1/2 ladder $/DD    1/4 stretch $/DD   better?
+  ------------------------------------------------------------
+  2021                    0.58                0.96       yes
+  2022                    0.76                1.08       yes
+  2023                    0.73                0.88       yes
+  2024                    1.15                1.78       yes
+  2025                    0.24                0.58       yes
+  2026                   -0.66               -0.51       yes
+
+================================================================================================================================================================
+  Q7  IS THE MA50 DAY FILTER ROBUST?  (it was chosen on this same 5.5yr sample, so the
+      only cheap test available is whether its NEIGHBOURS also work. A real regime rule
+      has a plateau around it; a lucky pick is a spike.)
+      Day-level filters are pipeline-clean — verified: filtering the cached full book
+      reproduces the dedicated MTF pipeline run exactly, 0 trades differ.
+================================================================================================================================================================
+  scheme                            n  avg c     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  no filter (LONG only)           593   1.17    +5,376   -4,029   1.33  0.88  4/6         +152    -2,839    +1,012      -291    +1,372    +5,970
+  close > MA20                    358   1.17    +3,337   -1,718   1.94  1.03  3/6          -44    -1,144    +2,489      -121      +566    +1,591
+  close > MA50                    380   1.17    +7,177   -2,569   2.79  2.01  5/6         +348    -1,184    +1,698      +540    +1,405    +4,369
+  close > MA100                   407   1.16    +8,258   -1,690   4.89  2.22  5/6          +72      -221    +2,502      +210      +272    +5,422
+  close > MA200                   414   1.16    +7,224   -2,660   2.72  1.77  5/6          +18      +137      +821      -291      +454    +6,086
+
+  close > MA20 AND MA20 rising(3d)  292   1.17    +4,713   -1,182   3.99  1.78  4/6         -134      -842    +2,139      +597      +884    +2,069
+  close > MA20 AND MA20 rising(5d)  289   1.18    +4,545   -1,591   2.86  1.71  4/6         -134      -960    +2,188      +597      +674    +2,180
+  close > MA20 AND MA20 rising(10d)  272   1.17    +3,839   -1,844   2.08  1.59  5/6          +97      -667    +1,661      +529      +818    +1,401
+  close > MA50 AND MA50 rising(3d)  342   1.16    +7,118   -1,640   4.34  2.32  5/6         +348      -786    +1,743    +1,106    +1,029    +3,677
+  close > MA50 AND MA50 rising(5d)  ★ shipped candidate  343   1.17    +7,311   -1,640   4.46  2.38  5/6         +333      -683    +1,744    +1,330      +846    +3,742
+  close > MA50 AND MA50 rising(10d)  332   1.17    +6,885   -1,571   4.38  2.30  5/6         +373      -830    +1,619    +1,290      +740    +3,693
+  close > MA100 AND MA100 rising(3d)  376   1.16    +8,594   -1,690   5.08  2.49  5/6          +72       +18    +2,811      +210       -70    +5,553
+  close > MA100 AND MA100 rising(5d)  374   1.16    +7,421   -1,782   4.16  2.16  5/6          +72       +18    +2,720      +210      -621    +5,021
+  close > MA100 AND MA100 rising(10d)  368   1.17    +6,739   -1,690   3.99  2.01  5/6          +88       +18    +2,298      +210      -477    +4,602
+  close > MA200 AND MA200 rising(3d)  395   1.16    +6,711   -2,660   2.52  1.73  5/6          +12      +137      +312      -291      +454    +6,086
+  close > MA200 AND MA200 rising(5d)  391   1.16    +6,893   -2,660   2.59  1.79  5/6          +53      +137      +454      -291      +454    +6,086
+  close > MA200 AND MA200 rising(10d)  388   1.16    +7,186   -2,660   2.70  1.88  5/6         +303      +137      +497      -291      +454    +6,086
+
+  TRADE COUNT PER YEAR for the shipped candidate (thin years are where a per-year
+  green/red verdict means least):
+    2021:  40 trades  2022:  16 trades  2023:  93 trades  2024:  80 trades  2025:  80 trades  2026:  34 trades
+
+================================================================================================================================================================
+  Q8  ALPHA vs TIDE   — "LONG only on up-trending days" is a long-beta instruction by
+      construction. The tide here is ONE contract held 10:30 -> 15:10 on the SAME days
+      the book traded, same friction. Anything the book earns beyond beta x tide is the
+      only part that is actually ours.
+================================================================================================================================================================
+  days=277   beta of book to tide = 0.53   correlation = 0.70
+
+  year      days     book $   tide $ (1c)  book - tide    alpha $
+  ------------------------------------------------------------------
+  2021        36       +333        +1,536       -1,203       -482
+  2022        13       -683        +1,999       -2,683     -1,744
+  2023        71     +1,744        +5,483       -3,740     -1,166
+  2024        67     +1,330        +4,998       -3,668     -1,322
+  2025        62       +846        +2,847       -2,001       -665
+  2026        28     +3,742        +4,798       -1,056     +1,196
+  ------------------------------------------------------------------
+  TOTAL      277     +7,311       +21,662      -14,351     -4,182
+
+  alpha Sharpe -1.90   vs book Sharpe 2.38   vs tide Sharpe 5.36
+
+  Read it this way: the tide column is what a machine that just bought one contract at
+  10:30 and sold at 15:10 on those days would have made, with no signal at all.
+
+  ⚠️ THIS BENCHMARK IS NOT DEPLOYABLE AND THE NEGATIVE ALPHA IS NOT A VERDICT.
+     "Buy at 10:30 on a day the book will trade" requires knowing at 10:30 that the
+     signal fires later — it does not fire until 11:00-13:00. Q10 proves the point:
+     buying 10:30 on ALL MA50-up days (which IS knowable at 10:30) LOSES $2,609.
+     Read this table as CAPTURE EFFICIENCY — the book converts about a third of the
+     drift its own signal identifies — and use --hold (Q11) for the deployable test,
+     which holds from the REAL entry time and finds the exit stack is a net POSITIVE.
+     Measured decomposition: 79%% of the 10:30->15:10 move happens BEFORE the book
+     enters. The signal fires BECAUSE price already ran — conditioning on "the book
+     traded" re-reads that run-up. Post-entry drift, the only part actually available,
+     averages +9.0 pts and is positive in 58%% of sessions.
+
+================================================================================================================================================================
+  Q10  THE DEPLOYABLE TIDE  —  buy 1 MNQ at the 10:30 close, sell at 15:10, on every
+       session whose PRIOR completed day closed above a rising daily MA. No signal, no
+       Trend Jury, no RVOL, no HTF, no trail, no reversal exit. Same $6+commission
+       friction as every book trade above.
+================================================================================================================================================================
+  strategy                                  days     total    maxDD   $/DD    Sh  grn         2021      2022      2023      2024      2025      2026
+  --------------------------------------------------------------------------------------------------------------------------------------------------
+  long every session (unconditional)        1325      +430   -7,452   0.06  0.02  3/6       +2,493    -4,107    +5,220    -2,546    -1,453      +823
+  long when MA50 up + rising  ★              809    -2,609   -7,171  -0.36 -0.21  2/6         +247      -919    +3,662    -1,933    -2,900      -766
+  long when MA100 up + rising                893    -4,212  -10,949  -0.38 -0.29  3/6       +2,176    -1,291    +2,295    -3,735    -3,787      +129
+  CONTROL: long when MA50 NOT up             516    +3,040   -6,253   0.49  0.26  4/6       +2,246    -3,188    +1,559      -613    +1,447    +1,589
+
+  MA50 days the book also traded             277   +21,662   -1,178  18.39  5.36  6/6       +1,536    +1,999    +5,483    +4,998    +2,847    +4,798
+  MA50 days the book found nothing           532   -24,271  -24,545  -0.99 -3.03  0/6       -1,289    -2,918    -1,822    -6,931    -5,747    -5,564
+
+  THE BOOK, same days, real exit stack       277    +7,311   -1,640   4.46  2.38    5/6         +333      -683    +1,744    +1,330      +846    +3,742
+
+  If the plain drift line beats the book line, the 11 labs found a DAY SELECTOR, and
+  the intraday machinery bolted onto it is subtracting value rather than adding it.
+
+================================================================================================================================================================
+  Q9  HOW LONG MUST A FORWARD SHADOW RUN?
+      Block-bootstrap whole TRADING DAYS from the historical MTF-LONG book (which keeps
+      each day's trades together) and ask what a forward window of N months would show
+      IF the edge is exactly as measured. This is the best case — it assumes the edge is
+      real and unchanged.
+================================================================================================================================================================
+  the book trades 277 days over 5.5yr = 4.5 active days/month
+
+  window        active days   P(positive)   median $     p10 $     p90 $
+  ------------------------------------------------------------------------
+  1 month                 4           64%       +102      -321      +554
+  3 months               13           71%       +335      -485    +1,156
+  6 months               27           79%       +716      -461    +1,883
+  12 months              54           87%     +1,466      -202    +3,080
+  24 months             107           94%     +2,818      +465    +5,061
+
+  A window whose p10 is still deeply negative cannot distinguish "the edge is real"
+  from "the edge is gone" — it can only catch a catastrophic break.
+
+================================================================================================================================================================
+  Q12  THE RULE ON THE LIVE ACCOUNT  —  the only data the 5.5yr sim never saw.
+       Manual FUT CLOSE trades are stripped: the Aug 16 bench established that IBKR's
+       entire realised edge was the user's hand on 3 trend days, not the automated book.
+================================================================================================================================================================
+  live CLOSED trades 163  (2026-06-05 -> 2026-08-17)   manual closes removed: 18 worth $+4,210 on 3 days
+
+  AUTOMATED-ONLY live book: n=145   total $-1,100
+
+  bucket                            n     total     WR      avg     IBKR / TC split
+  --------------------------------------------------------------------------------------------
+  MTF PASS + LONG  (the rule)      50      -105    38%       -2     IBKR: $+333  TC: $-438
+  MTF PASS + SHORT (blocked)       31      +322    55%      +10     IBKR: $-1,077  TC: $+1,398
+  MTF FAIL any side (blocked)      60      +194    55%       +3     IBKR: $+1,040  TC: $-846
+
+  RULE vs ACTUAL (automated only)
+    P&L               actual $  -1,100   under the rule $    -105
+    worst single day  actual $  -1,510   under the rule $    -981
+    days <= -$1,000   actual         2   under the rule         0
+    trading days      actual        43   under the rule        16
+
+  Live sample is 2.5 months and the sim/live gap is already documented (selection, not
+  execution; plus live runs ~2x the sim's exposure via duplicate entries). Treat this as
+  a RISK reading, not a P&L verdict.
