@@ -41,6 +41,19 @@ TRAIL_WIDE_ATR  = 1.00   # profit (ATR) at which wide trail (1.0 ATR gap) arms
 TRAIL_TIGHT_ATR = 1.50   # profit (ATR) at which tight trail (0.5 ATR gap) arms
 MAX_TRADES_DAY  = 2
 DOLLARS_PER_PT  = 2.0    # 1 MNQ contract
+# ── COST MODEL (added Sep 2 2026) ──────────────────────────────────────────
+# This sim charged ZERO commission and ZERO slippage until Sep 2 2026, while the
+# live book trades MAX_CONTRACTS=2 and pays a real round turn per contract. That
+# is not a rounding issue for London specifically: the champion's live edge is
+# ~$1.30/trade, the same order of magnitude as its own costs, so an uncosted sim
+# cannot answer the only question that matters ("does London survive its costs?").
+# CONTRACTS defaults to 1 so previously-published per-contract figures stay
+# comparable; pass --contracts 2 to model the live book.
+# SLIPPAGE_PTS is an ESTIMATE, not a fact, so it defaults to 0 and is opt-in via
+# --slippage — costs that are measured and costs that are guessed stay separable.
+COMMISSION_RT   = 1.24   # per contract, round turn — matches sim_replay/live
+CONTRACTS       = 1
+SLIPPAGE_PTS    = 0.0    # per side; total round-turn cost is 2x this
 VOL_CONFIRM_MULT = 1.2
 OVN_SKIP_LO, OVN_SKIP_HI = 0.20, 0.40
 
@@ -171,7 +184,9 @@ def run_day(sess, cfg):
                     break
         if exit_p is None:
             exit_p = float(fut1.iloc[-1]['close'])
-        pnl = sign * (exit_p - e) * DOLLARS_PER_PT
+        gross = sign * (exit_p - e) * DOLLARS_PER_PT * CONTRACTS
+        pnl = round(gross - (COMMISSION_RT + 2 * SLIPPAGE_PTS * DOLLARS_PER_PT)
+                    * CONTRACTS, 2)
         trades.append({'side': side, 'entry': e, 'exit': exit_p,
                        'pnl': pnl, 'reason': reason,
                        'time': fut1.index[0].strftime('%H:%M')})
@@ -218,12 +233,27 @@ def main():
     ap.add_argument('--skip-day',    action='store_true', help='v1 overnight whole-day veto')
     ap.add_argument('--be-mult', type=float, default=None,
                     help='BE arm profit in ATR (omit for no BE stop)')
+    ap.add_argument('--contracts', type=int, default=None,
+                    help='Contracts to model (default 1). Pass 2 to match the live '
+                         'book (london_trader MAX_CONTRACTS=2).')
+    ap.add_argument('--slippage', type=float, default=None, dest='slippage',
+                    help='Estimated slippage in POINTS PER SIDE (round turn costs 2x). '
+                         'Default 0 — this is an estimate, not a measured cost, so it '
+                         'is opt-in and reported separately from commission.')
     ap.add_argument('--grid', action='store_true')
     ap.add_argument('--rev-exit', type=str, default=None, dest='rev_exit',
                     help='Candidate (Jul 24 2026): "n_bars,retrace_frac,peak_atr_min" — '
                          'after peak ≥ peak_atr_min×ATR, exit on n adverse 1m closes '
                          'AND retrace ≥ retrace_frac of peak. e.g. --rev-exit 3,0.35,1.0')
     a = ap.parse_args()
+    global CONTRACTS, SLIPPAGE_PTS
+    if a.contracts is not None:
+        CONTRACTS = a.contracts
+    if a.slippage is not None:
+        SLIPPAGE_PTS = a.slippage
+    print(f"cost model: {CONTRACTS} contract(s) x (${COMMISSION_RT:.2f} commission"
+          f" + {SLIPPAGE_PTS:.2f}pt/side slippage)"
+          f" = ${(COMMISSION_RT + 2*SLIPPAGE_PTS*DOLLARS_PER_PT)*CONTRACTS:.2f}/trade")
     rev_cfg = None
     if a.rev_exit:
         _r = [float(x) for x in a.rev_exit.split(',')]

@@ -672,7 +672,12 @@ def place_london_trade(side: str, signal_price: float) -> bool:
 
 def _pnl_usd(entry: float, price: float, side: str, contracts: int) -> float:
     pts = (price - entry) if side == 'LONG' else (entry - price)
-    return round(pts * POINT_VALUE * contracts - COMMISSION, 2)
+    # COMMISSION is declared "round-turn commission per contract" (line 53) but was
+    # subtracted once regardless of size until Sep 2 2026. London always trades
+    # MAX_CONTRACTS=2, so EVERY live London row in london_trades under-reports cost
+    # by one round turn. Matters more here than anywhere else in the system because
+    # London's edge is only ~$1.30/trade — the same order as the error.
+    return round(pts * POINT_VALUE * contracts - COMMISSION * contracts, 2)
 
 
 def monitor_position(df: pd.DataFrame):

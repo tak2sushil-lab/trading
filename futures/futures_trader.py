@@ -109,6 +109,34 @@ ENTRY_COOLDOWN_MINUTES = 2.0   # minutes to wait after any ENTRY before another 
                                # two correlated positions (see docs / Aug 18 duplicate-entry
                                # root cause).
 MAX_PRICE_DIVERGENCE = 100.0   # pts: max allowed gap between scan price and live price at order time
+
+# ── SHORT-SIDE RISK CAP + DAILY TIDE GATE (Sep 2 2026) ─────────────────────
+SHORT_MAX_CONTRACTS = 1        # LIVE. The RVOL/IB conviction ladder in
+                               # calc_contracts_dynamic() is anti-predictive on the
+                               # short side ONLY (see the comment there). Shorts are
+                               # profitable at 1c (+$10.1/trade) and ruinous at 2c
+                               # (-$85.3/trade, negative 5 of 6 years). Removes no
+                               # trades — only caps their size.
+
+# The "Daily Tide" side gate: only take LONGs when the previous daily close was
+# ABOVE its own 200-day MA, and SHORTs only when BELOW it. 5.5yr pipeline result
+# (both legs run separately through _run_scenario, disjoint day sets, merged):
+#   live today   949t  +$3,353  maxDD -$7,715  worstDay -$814  6 TC blows  green 2/6
+#   daily tide   516t +$12,937  maxDD -$2,198  worstDay -$801  0 TC blows  green 6/6
+# The short leg alone is +$3,089 (n=97) and is what finally gives the book a
+# DEFENSIVE leg: 2022 goes -$1,615 -> +$2,238.
+# ⚠️ LOG-ONLY for now (user decision Sep 2 2026): it blocks nothing, it only records
+# what it WOULD have blocked, under gate name 'TIDE_INFO' so gate_audit scores it
+# the same way OVN_SKIP was scored before it was trusted. Review after one week.
+# Honest caveats being watched during the log window:
+#   - the short leg is bear-market insurance: 72 of its 97 trades are in 2022, and
+#     it would have taken ZERO trades in 2021 and 2024.
+#   - it has already cost a real winner (Sep 1 2026 VWAP_SHORT, +$512).
+#   - NY zero-trade days would rise 43% -> 68%.
+#   - London shorts the same tape in the same week and is NOT gated by this.
+TIDE_GATE_ENABLED  = False     # False = LOG ONLY. Flip True to actually block.
+TIDE_MA_DAYS       = 200
+
 # A_EXT gate REMOVED Jul 6 2026 — gate_audit scored it 33% accuracy / "REMOVE"
 # verdict on live IBKR SHORT (N=6) after being wired off a small N=11/64% sample
 # Jun 24. Also structurally conflicts with the new wide-stop philosophy: blocking
@@ -1280,7 +1308,8 @@ def had_loss_today() -> bool:
 
 
 def calc_contracts_dynamic(price: float, sl: float,
-                            rvol: float, ib_range: float) -> int:
+                            rvol: float, ib_range: float,
+                            side: str = 'LONG') -> int:
     """
     RVOL-based contract scaling (ported from backtest _dynamic_contracts()).
     Base = 1 (IBKR personal $15K account).
@@ -1304,8 +1333,74 @@ def calc_contracts_dynamic(price: float, sl: float,
         n += 1
     if had_loss_today():
         n -= 1
-    return max(1, min(n, get_max_contracts(n)))   # hard cap: 2 for IBKR
+    n = max(1, min(n, get_max_contracts(n)))      # hard cap: 2 for IBKR
 
+    # ── SHORT SIZE CAP (Sep 2 2026) ────────────────────────────────────────
+    # The conviction ladder above is anti-predictive on the SHORT side and only
+    # on the short side. Measured over the 949-trade 5.5yr sim book:
+    #     LONG  1c  n=499  +$2,870   +$5.8/trade    green 3/6
+    #     LONG  2c  n= 94  +$2,506  +$26.7/trade    green 6/6   <- ladder works
+    #     SHORT 1c  n=297  +$3,012  +$10.1/trade    green 3/6   <- profitable
+    #     SHORT 2c  n= 59  -$5,035  -$85.3/trade    green 1/6   <- wipes it out
+    # SHORT-2c is negative in 5 of 6 years; dropping its single worst trade
+    # still leaves -$4,221, so it is systematic, not one blow-up. Mechanism:
+    # the ladder scales up on high ATR + a large gap. For LONGs a 2c trade has
+    # a median gap of +0.21 ATR (real momentum); for SHORTs it is -0.36 ATR at
+    # ATR-rank 0.80 — a violent gap-down, i.e. the ladder reads panic as
+    # conviction and doubles into the snapback.
+    # Capping shorts at 1c removes ZERO trades and is worth +$2,517 over 5.5yr
+    # (+$3,353 -> +$5,870), TC blow-ups 6 -> 4. Mirrored in sim_replay.py.
+    if side == 'SHORT':
+        n = min(n, SHORT_MAX_CONTRACTS)
+    return n
+
+
+
+# ── Daily Tide helper (Sep 2 2026) ─────────────────────────────────────────
+_tide_cache = {}     # {date: (above_ma, prev_close, prev_ma)} — one read per day
+
+
+def get_daily_tide():
+    """PREVIOUS daily close vs its PREVIOUS 200-day MA. Returns (above, close, ma)
+    or (None, None, None) if there is not enough daily history.
+
+    Causal by construction — both sides of the comparison are shifted one session
+    back, so nothing about today is used (same anchoring as
+    futures/factory/conditions.py:209-211, which produced the backtest).
+    Cached per calendar day: this is a daily-frequency signal, there is no reason
+    to re-read it on a 60s scan loop.
+    """
+    today = datetime.now(ET).date()
+    if today in _tide_cache:
+        return _tide_cache[today]
+    out = (None, None, None)
+    try:
+        import pandas as _pd
+        _c = sqlite3.connect(MKT_DB_PATH)
+        _d = _pd.read_sql_query(
+            "SELECT ts_utc, close FROM futures_bars_1d WHERE symbol=? ORDER BY ts_utc",
+            _c, params=(SYMBOL,))
+        _c.close()
+        if len(_d) > TIDE_MA_DAYS + 1:
+            _d['d'] = _pd.to_datetime(_d.ts_utc, utc=True, format='ISO8601').dt.date
+            _d = _d[_d.d < today]                     # never read today's own bar
+            ma = _d.close.rolling(TIDE_MA_DAYS).mean()
+            pc, pm = float(_d.close.iloc[-1]), float(ma.iloc[-1])
+            if pm == pm:                              # not NaN
+                out = (pc > pm, pc, pm)
+    except Exception as e:
+        log(f"  [TIDE] unavailable: {e}")
+    _tide_cache[today] = out
+    return out
+
+
+def tide_agrees(side: str) -> bool:
+    """True when the daily tide agrees with the trade direction (or is unknown —
+    fails OPEN, so a missing daily bar can never silently halt trading)."""
+    above, _, _ = get_daily_tide()
+    if above is None:
+        return True
+    return above if side == 'LONG' else (not above)
 
 # ── Database helpers ──────────────────────────────────────
 
@@ -1579,8 +1674,27 @@ def place_trade(side: str, sig: dict, regime: str,
         log(f"  SKIP: stop {stop_pts:.0f}pts > {stop_sanity_ceiling:.0f} max (broken/extreme data)")
         return False
 
+    # ── Daily Tide side gate (Sep 2 2026) — LOG ONLY while TIDE_GATE_ENABLED is False.
+    # Records what it WOULD have blocked so it can be scored before it is trusted.
+    _tide_above, _tide_c, _tide_m = get_daily_tide()
+    if _tide_above is not None and not tide_agrees(side):
+        _dist = (_tide_c / _tide_m - 1) * 100
+        _verdict = 'BLOCKED' if TIDE_GATE_ENABLED else 'would block (LOG ONLY)'
+        log(f"  [TIDE] {_verdict}: {side} while prev close {_tide_c:,.0f} is "
+            f"{'above' if _tide_above else 'below'} the {TIDE_MA_DAYS}d MA "
+            f"{_tide_m:,.0f} ({_dist:+.1f}%)")
+        try:
+            log_block(ACCOUNT_MODE, SYMBOL, side,
+                      'TIDE' if TIDE_GATE_ENABLED else 'TIDE_INFO',
+                      f'prev_close={_tide_c:.0f} ma{TIDE_MA_DAYS}={_tide_m:.0f} '
+                      f'dist={_dist:+.1f}%', price, session)
+        except Exception:
+            pass
+        if TIDE_GATE_ENABLED:
+            return False
+
     ib_range   = calc_ib_range_today(df5)
-    contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range)
+    contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range, side)
 
     rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
     # Use small tolerance to avoid floating-point false rejects at exactly MIN_RR

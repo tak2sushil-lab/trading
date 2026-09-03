@@ -116,6 +116,11 @@ NO_MOVE_MIN_PTS  = -40.0
 #   near-perfectly additive. The STOP carries ~6% — that is why widening it
 #   never helped. Default parts therefore exclude 'stop'.
 # ATR_EXIT_SCALE = None reproduces current live behaviour BYTE-FOR-BYTE.
+# ── SHORT SIZE CAP (live Sep 2 2026) ────────────────────────────────────────
+# Mirrors calc_contracts_dynamic()'s short-side cap in futures_trader.py /
+# tc_trader.py. Live value is 1. Set to None to reproduce the pre-Sep-2 book.
+SHORT_MAX_CONTRACTS: 'int | None' = 1
+
 ATR_EXIT_SCALE: 'float | None' = None      # global multiplier on top of k; None = OFF
 ATR_EXIT_REF   = 31.4                      # A0: full-sample median 5-min ATR14 at entry
 ATR_EXIT_PARTS = ('trail', 'nomove')       # which families scale: stop | trail | nomove
@@ -408,7 +413,11 @@ def calc_contracts(price: float, sl: float) -> int:
 
 def pnl_dollars(entry: float, exit_p: float, side: str, contracts: int) -> float:
     pts = (exit_p - entry) if side == 'LONG' else (entry - exit_p)
-    return round(pts * POINT_VALUE * contracts - COMMISSION_RT, 2)
+    # COMMISSION_RT is a PER-CONTRACT round turn. It was subtracted once regardless
+    # of size until Sep 2 2026, so every 2-contract trade in every backtest this
+    # program has ever run was under-charged one round turn. Impact is small
+    # (~$190 over the 5.5yr book) but it is a factual error, not a modelling choice.
+    return round(pts * POINT_VALUE * contracts - COMMISSION_RT * contracts, 2)
 
 
 # ── Signal detection ─────────────────────────────────────────────────────────
@@ -933,7 +942,8 @@ def simulate_day(
             # 2. Daily circuit breaker (realized + unrealized, checked before target)
             if not exit_reason:
                 cur_pnl_pts = (entry - float(bar['close'])) if is_short else (float(bar['close']) - entry)
-                cur_usd = cur_pnl_pts * POINT_VALUE * contracts - COMMISSION_RT + position.get('partial_pnl', 0.0)
+                cur_usd = (cur_pnl_pts * POINT_VALUE * contracts - COMMISSION_RT * contracts
+                           + position.get('partial_pnl', 0.0))   # per-contract commission, fixed Sep 2 2026
                 if daily_pnl + cur_usd <= -MAX_DAILY_LOSS:
                     exit_price, exit_reason = float(bar['close']), 'dll_circuit'
 
@@ -1311,6 +1321,14 @@ def simulate_day(
                 else:
                     contracts = cc
 
+                # SHORT size cap — mirrors calc_contracts_dynamic() in both live
+                # traders (shipped Sep 2 2026). The conviction ladder is
+                # anti-predictive on the short side only: SHORT-2c is -$85.3/trade
+                # and negative in 5 of 6 years, while SHORT-1c is +$10.1/trade.
+                # SHORT_MAX_CONTRACTS = None reproduces pre-Sep-2 behaviour exactly.
+                if side == 'SHORT' and SHORT_MAX_CONTRACTS is not None:
+                    contracts = min(contracts, SHORT_MAX_CONTRACTS)
+
                 # RVOL + HTF gates — added Jul 7 2026, checked AFTER Hero gate
                 # (matches live run_scan() exact order).
                 entry_rvol = calc_session_rvol(bars_today)
@@ -1564,6 +1582,10 @@ def main():
     # combos, a paradigm that no longer exists now that stop sizing is
     # point-based. Use --stop-pts / --target-pts with separate runs instead
     # if a similar comparison is needed.
+    ap.add_argument('--short-max-contracts', type=int, default=None,
+                    dest='short_max_contracts',
+                    help='Cap SHORT-side size (live default 1, shipped Sep 2 2026). '
+                         'Pass 0 to disable the cap and reproduce the pre-Sep-2 book.')
     ap.add_argument('--atr-exits', type=float, default=None, dest='atr_exits',
                     metavar='SCALE',
                     help='Candidate (Aug 24 2026): scale exit thresholds by '
@@ -1585,6 +1607,9 @@ def main():
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
     global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS, REV_EXIT_VOL_MULT
+    global SHORT_MAX_CONTRACTS
+    if args.short_max_contracts is not None:
+        SHORT_MAX_CONTRACTS = None if args.short_max_contracts == 0 else args.short_max_contracts
     global ATR_EXIT_SCALE, ATR_EXIT_REF, ATR_EXIT_PARTS
     if args.atr_exits is not None:
         ATR_EXIT_SCALE = args.atr_exits

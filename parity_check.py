@@ -38,7 +38,13 @@ SIM_FLAGS = ['--graduated-rvol', '--rvol-floor', '0.70',
              '--no-ovn-skip',   # OVN whole-day veto removed live Jul 18 2026
              '--dll', '1250',   # $5K futures allocation risk model (Jul 18 2026)
              '--rev-exit', '2,0.30,120',  # reversal-detection exit live Jul 25 2026
-             '--partial', '150']          # partial scale-out live Jul 25 2026
+             '--partial', '150',          # partial scale-out live Jul 25 2026
+             '--short-max-contracts', '1']  # short size cap live Sep 2 2026 —
+                              # passed explicitly (it is also the sim default) so a
+                              # future change to the module default cannot silently
+                              # desync sim from live. NOTE: the cop matches on
+                              # time+side, not size, so it cannot detect a size
+                              # divergence on its own.
 
 TRADE_RE = re.compile(
     r'^\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(LONG|SHORT)\s+(\S+)\s+\S+\s+([\d.]+)')

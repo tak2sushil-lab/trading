@@ -86,6 +86,34 @@ ENTRY_COOLDOWN_MINUTES = 2.0   # minutes to wait after any ENTRY before another 
                                # root cause).
 MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and live price at order time
 
+# ── SHORT-SIDE RISK CAP + DAILY TIDE GATE (Sep 2 2026) ─────────────────────
+SHORT_MAX_CONTRACTS = 1        # LIVE. The RVOL/IB conviction ladder in
+                               # calc_contracts_dynamic() is anti-predictive on the
+                               # short side ONLY (see the comment there). Shorts are
+                               # profitable at 1c (+$10.1/trade) and ruinous at 2c
+                               # (-$85.3/trade, negative 5 of 6 years). Removes no
+                               # trades — only caps their size.
+
+# The "Daily Tide" side gate: only take LONGs when the previous daily close was
+# ABOVE its own 200-day MA, and SHORTs only when BELOW it. 5.5yr pipeline result
+# (both legs run separately through _run_scenario, disjoint day sets, merged):
+#   live today   949t  +$3,353  maxDD -$7,715  worstDay -$814  6 TC blows  green 2/6
+#   daily tide   516t +$12,937  maxDD -$2,198  worstDay -$801  0 TC blows  green 6/6
+# The short leg alone is +$3,089 (n=97) and is what finally gives the book a
+# DEFENSIVE leg: 2022 goes -$1,615 -> +$2,238.
+# ⚠️ LOG-ONLY for now (user decision Sep 2 2026): it blocks nothing, it only records
+# what it WOULD have blocked, under gate name 'TIDE_INFO' so gate_audit scores it
+# the same way OVN_SKIP was scored before it was trusted. Review after one week.
+# Honest caveats being watched during the log window:
+#   - the short leg is bear-market insurance: 72 of its 97 trades are in 2022, and
+#     it would have taken ZERO trades in 2021 and 2024.
+#   - it has already cost a real winner (Sep 1 2026 VWAP_SHORT, +$512).
+#   - NY zero-trade days would rise 43% -> 68%.
+#   - London shorts the same tape in the same week and is NOT gated by this.
+TIDE_GATE_ENABLED  = False     # False = LOG ONLY. Flip True to actually block.
+TIDE_MA_DAYS       = 200
+
+
 # ── Exit stack — ALIGNED WITH futures_trader.py Jul 25 2026 ─────────────────
 # User-directed alignment: TC was still running the pre-Jul-7 NY system
 # (ATR 1.5x stops, BE+30/trail 20/10pt tiers tuned for a 99pt target that no
@@ -264,6 +292,15 @@ def get_session() -> str:
 
 def is_entry_allowed() -> bool:
     """True only during sessions where new entries make sense."""
+    # Weekend guard — RESTORED Sep 2 2026. The Jul 18 2026 fix was recorded as
+    # applied to "both traders" but only ever landed in futures_trader.py; an
+    # AST diff of the two files found TC still unguarded. get_session() is
+    # time-of-day only, so Saturday 09:30-16:00 reads as MIDDAY/AFTERNOON and
+    # the whole scan pipeline runs against frozen Friday bars — junk
+    # GRADE/REGIME rows in gate_blocks at a stale price, plus theoretical
+    # resting-order risk into a closed market.
+    if datetime.now(ET).weekday() >= 5:
+        return False
     return get_session() in ('NY_OPEN', 'MIDDAY', 'AFTERNOON')
 
 
@@ -1050,7 +1087,8 @@ def calc_rvol_current(df5: pd.DataFrame) -> float:
 
 
 def calc_contracts_dynamic(price: float, sl: float,
-                            rvol: float, ib_range: float) -> int:
+                            rvol: float, ib_range: float,
+                            side: str = 'LONG') -> int:
     """
     RVOL-based contract scaling. Ported verbatim from futures_trader.py Aug 9
     2026, hard cap swapped to TC's own get_max_contracts() (TC_TRADING_MAX_CONTRACTS=2).
@@ -1074,8 +1112,67 @@ def calc_contracts_dynamic(price: float, sl: float,
         n += 1
     if had_loss_today():
         n -= 1
-    return max(1, min(n, get_max_contracts(n)))
+    n = max(1, min(n, get_max_contracts(n)))
 
+    # ── SHORT SIZE CAP (Sep 2 2026) — mirrors futures_trader.py ────────────
+    # The conviction ladder above is anti-predictive on the SHORT side only.
+    # 5.5yr sim book: SHORT 1c n=297 +$3,012 (+$10.1/t) vs SHORT 2c n=59
+    # -$5,035 (-$85.3/t, negative in 5 of 6 years). LONG 2c is +$26.7/t and
+    # green 6/6, so the ladder is kept for longs. Mechanism: it scales on high
+    # ATR + large gap; for shorts that is a violent gap-down (median -0.36 ATR,
+    # ATR-rank 0.80) — panic read as conviction, doubled into the snapback.
+    # Removes ZERO trades. Worth +$2,517 over 5.5yr, TC blow-ups 6 -> 4.
+    if side == 'SHORT':
+        n = min(n, SHORT_MAX_CONTRACTS)
+    return n
+
+
+
+# ── Daily Tide helper (Sep 2 2026) ─────────────────────────────────────────
+_tide_cache = {}     # {date: (above_ma, prev_close, prev_ma)} — one read per day
+
+
+def get_daily_tide():
+    """PREVIOUS daily close vs its PREVIOUS 200-day MA. Returns (above, close, ma)
+    or (None, None, None) if there is not enough daily history.
+
+    Causal by construction — both sides of the comparison are shifted one session
+    back, so nothing about today is used (same anchoring as
+    futures/factory/conditions.py:209-211, which produced the backtest).
+    Cached per calendar day: this is a daily-frequency signal, there is no reason
+    to re-read it on a 60s scan loop.
+    """
+    today = datetime.now(ET).date()
+    if today in _tide_cache:
+        return _tide_cache[today]
+    out = (None, None, None)
+    try:
+        import pandas as _pd
+        _c = sqlite3.connect(MKT_DB_PATH)
+        _d = _pd.read_sql_query(
+            "SELECT ts_utc, close FROM futures_bars_1d WHERE symbol=? ORDER BY ts_utc",
+            _c, params=(SYMBOL,))
+        _c.close()
+        if len(_d) > TIDE_MA_DAYS + 1:
+            _d['d'] = _pd.to_datetime(_d.ts_utc, utc=True, format='ISO8601').dt.date
+            _d = _d[_d.d < today]                     # never read today's own bar
+            ma = _d.close.rolling(TIDE_MA_DAYS).mean()
+            pc, pm = float(_d.close.iloc[-1]), float(ma.iloc[-1])
+            if pm == pm:                              # not NaN
+                out = (pc > pm, pc, pm)
+    except Exception as e:
+        log(f"  [TIDE] unavailable: {e}")
+    _tide_cache[today] = out
+    return out
+
+
+def tide_agrees(side: str) -> bool:
+    """True when the daily tide agrees with the trade direction (or is unknown —
+    fails OPEN, so a missing daily bar can never silently halt trading)."""
+    above, _, _ = get_daily_tide()
+    if above is None:
+        return True
+    return above if side == 'LONG' else (not above)
 
 # ── Database helpers ──────────────────────────────────────
 
@@ -1206,7 +1303,12 @@ def get_futures_daily_pnl() -> float:
     today = str(datetime.now(ET).date())   # use ET date, consistent with log_futures_entry
     conn  = sqlite3.connect(DB_PATH)
     row   = conn.execute(
-        "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED' AND account_mode=?",
+        # RECONCILED rows are manual broker-side cleanups of bot bugs, not strategy
+        # P&L. Excluded on the IBKR side since May 2026; TC never was — and on TC
+        # this figure feeds check_can_trade()'s DLL gate and the daily circuit
+        # breaker, so a phantom row could halt a live prop account. Fixed Sep 2 2026.
+        "SELECT SUM(pnl) FROM futures_trades WHERE exit_date=? AND status='CLOSED' "
+        "AND account_mode=? AND setup_type != 'RECONCILED'",
         (today, ACCOUNT_MODE)
     ).fetchone()
     conn.close()
@@ -1217,7 +1319,8 @@ def _get_all_time_futures_pnl() -> float:
     """Total realized P&L across all futures trades — used to reconcile prop_state balance."""
     conn = sqlite3.connect(DB_PATH)
     row  = conn.execute(
-        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED' AND account_mode=?",
+        "SELECT SUM(pnl) FROM futures_trades WHERE status='CLOSED' "
+        "AND account_mode=? AND setup_type != 'RECONCILED'",   # see get_futures_daily_pnl
         (ACCOUNT_MODE,)
     ).fetchone()
     conn.close()
@@ -1319,8 +1422,38 @@ def place_trade(side: str, sig: dict, regime: str,
     atr        = calc_atr(df5) if not df5.empty else 10.0
     sl, target = calc_sl_target(price, atr, side)
     rvol       = calc_rvol_current(df5)
+
+    # Stop-sanity ceiling — PORTED from futures_trader.py Sep 2 2026 (TC never had
+    # it). Rejects an entry whose stop is absurdly far, which only happens on
+    # broken/extreme bar data. Scales off BASE_STOP_PTS rather than a literal so it
+    # cannot silently desync from the stop width (the exact bug the IBKR side hit
+    # when BASE_STOP_PTS was raised and the ceiling stayed at the 150pt-era value).
+    stop_pts = abs(price - sl)
+    stop_sanity_ceiling = BASE_STOP_PTS + 100.0
+    if stop_pts > stop_sanity_ceiling:
+        log(f"  SKIP: stop {stop_pts:.0f}pts > {stop_sanity_ceiling:.0f} max (broken/extreme data)")
+        return False
+    # ── Daily Tide side gate (Sep 2 2026) — LOG ONLY while TIDE_GATE_ENABLED is False.
+    # Records what it WOULD have blocked so it can be scored before it is trusted.
+    _tide_above, _tide_c, _tide_m = get_daily_tide()
+    if _tide_above is not None and not tide_agrees(side):
+        _dist = (_tide_c / _tide_m - 1) * 100
+        _verdict = 'BLOCKED' if TIDE_GATE_ENABLED else 'would block (LOG ONLY)'
+        log(f"  [TIDE] {_verdict}: {side} while prev close {_tide_c:,.0f} is "
+            f"{'above' if _tide_above else 'below'} the {TIDE_MA_DAYS}d MA "
+            f"{_tide_m:,.0f} ({_dist:+.1f}%)")
+        try:
+            log_block(ACCOUNT_MODE, SYMBOL, side,
+                      'TIDE' if TIDE_GATE_ENABLED else 'TIDE_INFO',
+                      f'prev_close={_tide_c:.0f} ma{TIDE_MA_DAYS}={_tide_m:.0f} '
+                      f'dist={_dist:+.1f}%', price, session)
+        except Exception:
+            pass
+        if TIDE_GATE_ENABLED:
+            return False
+
     ib_range   = calc_ib_range_today(df5)
-    contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range)
+    contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range, side)
 
     rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
     # Use small tolerance to avoid floating-point false rejects at exactly MIN_RR
