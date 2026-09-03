@@ -1863,12 +1863,127 @@ def place_trade(side: str, sig: dict, regime: str,
 
 # ── Monitor positions (exit stack) ───────────────────────
 
+def exit_map(trade: dict, price: float) -> list[str]:
+    """How far is this position from every exit that can ACTUALLY fire?
+
+    Added Sep 3 2026. `target_price` in the DB is BASE_TARGET_PTS = 1500pts away —
+    it has fired ZERO times in 951 trades over 5.5yr, and the best trade this book
+    has ever produced ran 378pts. It exists only as (a) a disaster cap and (b) the
+    numerator of the MIN_RR gate. Showing it as "the target" is actively
+    misleading: it tells you nothing about how close you are to being out.
+
+    This lists the exits that DO fire, nearest first, so that if you are deciding
+    whether to pull the plug by hand you can see whether the system was about to
+    do it for you or was nowhere near.
+    """
+    out, is_short = [], trade['side'] == 'SHORT'
+    entry = float(trade['entry_price'])
+    ct    = int(trade['contracts'])
+    sgn   = -1 if is_short else 1
+    pnl_pts = (entry - price) if is_short else (price - entry)
+
+    def money(pts):  return pts / TICK_SIZE * TICK_VALUE * ct
+    def away(level): return abs(price - level), (abs(price - level) / price * 100)
+
+    # 1. trail stop — the real floor
+    stop = trade.get('stop_price')
+    if stop:
+        d, pct = away(float(stop))
+        locked = (float(stop) - entry) * sgn
+        out.append((d, f"stop {float(stop):,.2f}  {d:>6.1f}pt ({pct:.2f}%)  "
+                      f"→ locks ${money(locked):+,.0f}"))
+
+    # 2. reversal exit — only armed once peak cleared the floor
+    tid  = trade['id']
+    s_pk = _session_high.get(tid) if not is_short else _session_low.get(tid)
+    if s_pk is not None:
+        peak = (entry - s_pk) if is_short else (s_pk - entry)
+        if peak >= REV_EXIT_PEAK_MIN_PTS:
+            trig_pts = peak * (1 - REV_EXIT_RETRACE_FRAC)
+            lvl = entry + sgn * trig_pts
+            d, pct = away(lvl)
+            streak = _rev_state.get(tid, {}).get('adv_streak', 0)
+            out.append((d, f"rev-exit {lvl:,.2f}  {d:>6.1f}pt ({pct:.2f}%)  "
+                          f"→ ARMED (peak +{peak:.0f}, {streak}/{REV_EXIT_CONFIRM_BARS} adverse bars)"))
+        else:
+            out.append((9e9, f"rev-exit  not armed — peak +{peak:.0f}pt of "
+                             f"{REV_EXIT_PEAK_MIN_PTS:.0f} needed"))
+
+    # 3. partial scale-out — the only "target" that ever fires
+    if ct >= 2 and not _partial_done.get(tid):
+        lvl = entry + sgn * PARTIAL_TAKE_PTS
+        d, pct = away(lvl)
+        out.append((d, f"partial  {lvl:,.2f}  {d:>6.1f}pt ({pct:.2f}%)  "
+                      f"→ banks 1ct ≈ ${PARTIAL_TAKE_PTS/TICK_SIZE*TICK_VALUE:+,.0f}"))
+
+    # 4. no-move — a TIME exit, not a price one
+    try:
+        et_now = datetime.now(ET)
+        opened = ET.localize(datetime.strptime(
+            f"{trade['entry_date']} {trade['entry_time']}", '%Y-%m-%d %H:%M:%S'))
+        mins = (et_now - opened).total_seconds() / 60
+        left = NO_MOVE_MINUTES - mins
+        in_band = NO_MOVE_MIN_PTS <= pnl_pts <= NO_MOVE_MAX_PTS
+        if left > 0:
+            out.append((9e9, f"no-move  in {left:>5.0f}min  "
+                             f"→ {'WILL fire' if in_band else 'will NOT fire'} "
+                             f"(needs {NO_MOVE_MIN_PTS:+.0f}..{NO_MOVE_MAX_PTS:+.0f}pt, now {pnl_pts:+.0f})"))
+        elif in_band:
+            out.append((0, f"no-move  DUE NOW ({pnl_pts:+.0f}pt is inside the band)"))
+    except Exception:
+        pass
+
+    # 5. EOD flatten
+    try:
+        et_now = datetime.now(ET)
+        eod = et_now.replace(hour=HARD_CLOSE[0], minute=HARD_CLOSE[1], second=0, microsecond=0)
+        mins = (eod - et_now).total_seconds() / 60
+        if mins > 0:
+            out.append((9e9, f"EOD      in {mins:>5.0f}min ({HARD_CLOSE[0]:02d}:{HARD_CLOSE[1]:02d} ET) → flattens regardless"))
+    except Exception:
+        pass
+
+    out.sort(key=lambda x: x[0])
+    return [t for _, t in out]
+
+
+def _publish_exit_map(open_trades: list) -> None:
+    """Write the live exit map so the DASHBOARD can show it without importing the
+    trader. The rev-exit level depends on `_session_high`, which only exists in
+    this process's memory — the dashboard has no way to derive it from the DB.
+    Cheap (a few dict entries, atomic replace, once per monitor cycle) and never
+    raises into the monitor. Added Sep 3 2026."""
+    try:
+        import json as _json
+        d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'logs', 'heartbeat')
+        os.makedirs(d, exist_ok=True)
+        if not open_trades:                     # flat: publish empty, no bridge call
+            price = 0.0
+        else:
+            price = get_live_price() or 0.0
+        payload = {'ts': datetime.now(ET).isoformat(), 'price': price, 'positions': []}
+        for t in open_trades:
+            payload['positions'].append({
+                'trade_id': t['id'], 'side': t['side'], 'contracts': t['contracts'],
+                'entry': t['entry_price'], 'exits': exit_map(t, price),
+            })
+        p = os.path.join(d, f'exitmap_{ACCOUNT_MODE}.json')
+        tmp = p + '.tmp'
+        with open(tmp, 'w') as fh:
+            _json.dump(payload, fh)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
 def monitor_open_trades(regime: str = 'NORMAL'):
     """
     Check all open futures positions and apply exit stack.
     Runs every MONITOR_INTERVAL seconds.
     """
     trades = get_open_futures_trades()
+    _publish_exit_map(trades)   # dashboard visibility (Sep 3 2026) — no bridge call when flat
     if not trades:
         return
 
@@ -3018,6 +3133,16 @@ def poll_telegram_commands():
                         f"  {t['side']} {t['contracts']}ct @ {t['entry_price']} | "
                         f"now {live:.2f} | uPnL ${upnl:+.0f} | risk ${risk:.0f}"
                     )
+                    # Distance to every exit that can ACTUALLY fire. The DB's
+                    # target_price is the 1500pt disaster cap (0 hits in 951
+                    # trades / 5.5yr) and tells you nothing about how close you
+                    # are to being out — this does. Added Sep 3 2026 so a manual
+                    # FUT CLOSE is an informed decision, not a blind one.
+                    try:
+                        for _ln in exit_map(t, live):
+                            pos_lines.append('     ' + _ln)
+                    except Exception as _e:
+                        pos_lines.append(f'     (exit map unavailable: {_e})')
                 pos_str = '\n'.join(pos_lines) if pos_lines else '  No open positions'
                 ovn_str = (f"skip({_overnight_position})" if _overnight_skip_day
                            else f"pos={_overnight_position}" if _overnight_position is not None

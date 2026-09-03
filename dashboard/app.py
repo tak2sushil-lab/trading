@@ -449,6 +449,32 @@ def get_futures_positions():
                 'verdict': r['verdict'], 'reasoning': r['reasoning'],
                 'checked_at': r['checked_at']}
 
+
+    # ── Exit Map (Sep 3 2026) ────────────────────────────────────────────────
+    # `target_price` on these rows is BASE_TARGET_PTS = 1500pts away. It has
+    # fired ZERO times in 951 trades over 5.5yr and the best trade this book has
+    # ever produced ran 378pts — it exists only as a disaster cap and as the
+    # numerator of the MIN_RR gate. Showing it as "the target" tells you nothing
+    # about how close a position is to actually being closed.
+    # The traders publish the REAL distances (trail stop, reversal exit, partial,
+    # no-move, EOD) each monitor cycle. We read the file rather than recompute,
+    # because the reversal-exit level depends on the running peak which only
+    # exists in the trader's memory.
+    def _exit_map(account_mode, trade_id):
+        try:
+            p = os.path.join(BASE_DIR, 'logs', 'heartbeat', f'exitmap_{account_mode}.json')
+            with open(p) as fh:
+                d = json.load(fh)
+            age = (datetime.now(ET) - datetime.fromisoformat(d['ts'])).total_seconds()
+            if age > 180:            # stale -> say so rather than show old distances
+                return {'stale': True, 'age_s': int(age), 'exits': []}
+            for pos in d.get('positions', []):
+                if pos.get('trade_id') == trade_id:
+                    return {'stale': False, 'age_s': int(age), 'exits': pos.get('exits', [])}
+        except Exception:
+            pass
+        return None
+
     def _unreal(ep, mp, qty, is_short):
         if mp is None or not ep:
             return None  # bridge down/reconnecting — render "---", not misleading $0
@@ -478,6 +504,7 @@ def get_futures_positions():
             'account_mode':   row['account_mode'],
             'status':         'OK',
             'crest_watch':    _crest_watch('NY', row['id']),
+            'exit_map':       _exit_map(row['account_mode'], row['id']),
         })
     for row in london_rows:
         sym, ep, qty = 'MNQ', row['entry'] or 0, row['contracts'] or 1

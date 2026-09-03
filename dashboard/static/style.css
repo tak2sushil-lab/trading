@@ -470,3 +470,19 @@ html, body {
 .glossary-table .decides { color: var(--green-bright); }
 .glossary-table .watches { color: var(--muted); }
 .glossary-note-inline { font-size: 9px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+/* ── Exit Map badge (Sep 3 2026) ──────────────────────────────────────────
+   Distance to the nearest exit that can ACTUALLY fire. The neighbouring "Cap"
+   column is the 1500pt BASE_TARGET_PTS backstop, which has fired 0 times in
+   951 trades over 5.5 years — it is deliberately muted so the eye goes here. */
+.exit-badge {
+  display: inline-block; padding: 2px 7px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.exit-badge.close { color: #ffb454; background: rgba(255,180,84,0.14); }  /* <=25pt */
+.exit-badge.near  { color: var(--green-bright); background: rgba(63,185,80,0.10); }
+.exit-badge.far   { color: var(--muted); background: rgba(255,255,255,0.04); }
+.exit-badge.info  { color: var(--muted); background: rgba(255,255,255,0.04); font-weight: 500; }
+.exit-badge.stale { color: #f85149; background: rgba(248,81,73,0.12); }
+.exit-badge.none  { color: var(--muted); background: rgba(255,255,255,0.03); font-weight: 500; }
+.positions-table td.muted { color: var(--muted); opacity: 0.55; }

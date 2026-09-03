@@ -538,8 +538,9 @@ function renderFuturesTable(positions, session) {
   el.innerHTML = `<table class="positions-table">
     <thead><tr>
       <th>Account</th><th>Symbol</th><th>Contract</th><th>Session</th><th>Side</th>
-      <th>Contracts</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th>
-      <th>Unreal P&amp;L</th><th>Status</th><th>Crest Watch</th>
+      <th>Contracts</th><th>Entry</th><th>Now</th><th>Stop</th>
+      <th title="BASE_TARGET_PTS backstop — 1500pts out. Has fired 0 times in 951 trades over 5.5yr; the best trade ever ran 378pts. It is a disaster cap and the numerator of the MIN_RR gate, NOT a level being chased.">Cap<sup>?</sup></th>
+      <th>Unreal P&amp;L</th><th>Nearest real exit</th><th>Status</th><th>Crest Watch</th>
     </tr></thead>
     <tbody>${positions.map(p => {
       const pnlCls = (p.unreal_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
@@ -554,13 +555,32 @@ function renderFuturesTable(positions, session) {
         <td>${p.entry_price != null ? p.entry_price.toFixed(2) : '—'}</td>
         <td>${p.market_price != null ? p.market_price.toFixed(2) : '—'}</td>
         <td>${p.stop_price != null ? p.stop_price.toFixed(2) : '—'}</td>
-        <td>${p.target_price != null ? p.target_price.toFixed(2) : '—'}</td>
+        <td class="muted">${p.target_price != null ? p.target_price.toFixed(2) : '—'}</td>
         <td class="${pnlCls}">${p.unreal_pnl != null ? `${sign}$${Math.abs(p.unreal_pnl).toFixed(2)}` : '—'}</td>
+        <td>${renderExitMap(p.exit_map)}</td>
         <td><span class="status-badge ${p.status||'OK'}">${p.status||'OK'}</span></td>
         <td>${renderCrestBadge(p.crest_watch)}</td>
       </tr>`;
     }).join('')}</tbody>
   </table>`;
+}
+
+function renderExitMap(em) {
+  // The "Cap" column is the 1500pt backstop and is meaningless day to day.
+  // THIS column answers the question that actually matters when you are deciding
+  // whether to close by hand: how far is this position from an exit that can
+  // really fire? Nearest first; hover for the full list.
+  if (!em)          return `<span class="exit-badge none" title="Trader has not published an exit map for this position yet">—</span>`;
+  if (em.stale)     return `<span class="exit-badge stale" title="Exit map is ${em.age_s}s old — the trader may not be running">stale ${Math.round(em.age_s/60)}m</span>`;
+  if (!em.exits || !em.exits.length) return `<span class="exit-badge none">—</span>`;
+  const first = em.exits[0];
+  // "stop 29,478.75    40.2pt (0.14%)  → locks $+203"
+  const m = first.match(/^(\S+)\s+([\d,\.]+)?\s*([\d\.]+)pt \(([\d\.]+)%\)/);
+  const title = em.exits.join('\n').replace(/"/g, '&quot;');
+  if (!m) return `<span class="exit-badge info" title="${title}">${first.split('→')[0].trim()}</span>`;
+  const pts = parseFloat(m[3]);
+  const tier = pts <= 25 ? 'close' : pts <= 60 ? 'near' : 'far';
+  return `<span class="exit-badge ${tier}" title="${title}">${m[1]} ${m[3]}pt (${m[4]}%)</span>`;
 }
 
 function renderCrestBadge(cw) {

@@ -3220,3 +3220,39 @@ why no live number has ever described any version of the code. Freeze entry/exit
 touch infrastructure, logging and the divergence work. At 1.9 trades/week: ~4 trades in 2wks
 (mechanism check only), ~16 in 2mo (noisy direction), ~48 in 6mo (a real win rate), ~95 in 12mo
 (bootstrap p10 clears zero). **A bad day proves the machine held; it does not prove the edge.**
+
+---
+
+## Sep 3 2026 (pm2) — Exit Map: show distance to the exits that ACTUALLY fire
+
+**The problem (user-raised):** the DB's `target_price` shows ~1500pts away (e.g. 30,878 on a
+29,378 entry) and is the only "target" visible anywhere. It is `BASE_TARGET_PTS`, a disaster cap
+and the numerator of the `MIN_RR` gate. **It has fired ZERO times in 951 trades over 5.5yr; the
+best trade this book has ever produced ran 378pts.** So nothing on screen answered the question
+that matters when deciding whether to close by hand: *how close was I to the system doing it?*
+
+**SHIPPED (display-only — no trade selection touched, safe inside the frozen window):**
+- **`exit_map(trade, price)`** in both NY traders — distance in pts AND % to every exit that can
+  really fire, nearest first: trail stop (with the $ it locks), Reversal Exit trigger level (or
+  "not armed — peak +Xpt of 120 needed", plus the adverse-bar streak), Partial at +150 (only
+  while 2 contracts and untaken), no-move (time left + whether P&L is inside the band so it
+  *can* fire), EOD.
+- **`FUT STATUS`** now prints it under each position — the phone answer.
+- **`_publish_exit_map()`** writes `logs/heartbeat/exitmap_{ACCOUNT}.json` each monitor cycle
+  (atomic, no bridge call when flat). **Required because the rev-exit level depends on the
+  running peak `_session_high`, which exists ONLY in the trader's memory — the dashboard cannot
+  derive it from the DB.**
+- **Dashboard**: new "Nearest real exit" column (colour-coded ≤25pt / ≤60pt / far, full list on
+  hover, red "stale Nm" if the file ages past 180s = the trader is not running). The old Target
+  column is renamed **"Cap"**, greyed out, with a tooltip explaining it never fires.
+
+**⚠️ SIDE EFFECT LEARNED THE HARD WAY — restarting mid-position DISARMS the Reversal Exit.**
+`_session_high` / `_rev_state` are in-memory only. Restarting the traders at 13:10 while both
+held a runner reset peak +166 → +118, so rev-exit went from ARMED at 29,494 to *not armed*
+(needs 120). **The trail stop is unaffected — it lives in the DB** — so the locked floor
+survived, but the give-back protection did not. **Do not restart mid-position unless the change
+is worth losing peak state; prefer flat periods.** (Candidate fix, NOT built: persist peak to
+the DB the way Bite Check and the Crest Watch streak already are.)
+
+**Live at time of writing:** IBKR banked $308.50 + unreal $238.83 = **$547** · TC $308.00 +
+$221.64 = **$530**; stops 29,479.75 / 29,481.00 ≈ 16pt below price.
