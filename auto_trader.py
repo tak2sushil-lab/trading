@@ -1119,6 +1119,30 @@ def tod_relative_volume(symbol, today_cum_vol, now=None):
     return round(float(today_cum_vol) / med, 2)
 
 
+HOLD_TO_CLOSE_BEFORE = (10, 0)   # entries before this hour:minute ride to the EOD close
+
+
+def holds_to_close(tid):
+    """True when this trade was opened early enough that its edge is a hold-to-close edge.
+
+    Measured on 4.9M 2026 bars, day-clustered, by ENTRY time (alpha to close vs +60min):
+      entry 09:30-10:00  close-minus-60min  +0.374%   t=+2.54   better on 58% of days
+      entry 10:30-13:00  close-minus-60min  -0.080%   t=-1.32   better on 49% of days
+    So holding to the close is not a better exit in general — it is better ONLY for early
+    entries, and actively worse for later ones. That is why this is conditional and not a
+    blanket change: the live exit stack is measurably good (+$1,085 vs hold-to-close over
+    238 real trades) on the 10:00+ population it was built for.
+
+    Risk controls are never suspended by this — only the discretionary and time-based
+    exits that would cut a young trade before its edge has had the session to play out.
+    Hard stop, dollar circuit breaker, P&L protection and the EOD close all still fire.
+    """
+    ent = trade_entry_times.get(tid)
+    if not ent:
+        return False
+    return (ent.hour, ent.minute) < HOLD_TO_CLOSE_BEFORE
+
+
 def is_early_session(now=None):
     """True during 09:30-09:44 ET, when RTH indicators are not yet meaningful."""
     now = now or datetime.now(ET)
@@ -2289,11 +2313,18 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
 
         atr = get_atr(sym) or (entry * 0.02)
 
+        # Early entries ride to the close: the trails below are give-back protection, and
+        # giving back some of the peak is exactly the premium being paid for the right tail.
+        # The hard stop and circuit breaker above are untouched.
+        _ride = holds_to_close(tid)
+
         # ── ATR trailing stop ─────────────────────────────────
         # HIGH_VOL cluster: tighter trail (1.0×) — trend fades fast (46.8% next-day continuation)
         # All others: standard 1.5× trail
         trail_mult = 1.0 if sym in HIGH_VOL_SYMBOLS else ATR_TRAIL_MULT
-        if is_short:
+        if _ride:
+            pass          # hold-to-close trade — no trailing stop
+        elif is_short:
             trail_threshold = entry - atr              # 1 ATR of profit on short
             if price <= trail_threshold:
                 atr_trail = round(session_low[tid] + trail_mult * atr, 2)
@@ -2330,7 +2361,9 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     log(f"  {sym}: PCT trail → ${sl} ({pnl_pct:+.1f}%)")
 
         # ── Break-even stop: once +2.5% profit ───────────────
-        if pnl_pct >= 2.5:
+        # Skipped for hold-to-close trades: it is give-back protection like the trails, and
+        # the measured edge is the UNPROTECTED hold. The hard stop is still the risk floor.
+        if pnl_pct >= 2.5 and not _ride:
             if is_short and sl > entry:                # SL already above entry = ok
                 risk_dist = sl - entry
                 be_sl = round(entry + max(risk_dist * 0.5, 0.05), 2)  # tighten ABOVE entry
@@ -2364,7 +2397,8 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                 pass
 
         # ── 5-min trailing stop ───────────────────────────────
-        if is_market_open() and pnl_pct >= 3.0 and df5 is not None and len(df5) >= 3:
+        if (is_market_open() and pnl_pct >= 3.0 and df5 is not None
+                and len(df5) >= 3 and not _ride):
             try:
                 if is_short:
                     intra_trail = round(float(df5['High'].iloc[-3:-1].max()), 2)
@@ -2460,14 +2494,15 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             exit_reason = f'Circuit breaker: -${MAX_LOSS_PER_TRADE} hit (${pnl_usd:+.0f})'
 
         # 3. VWAP signal: cross above = cover short / cross below = exit long
-        if not exit_reason and is_market_open() and pnl_pct > 0.5 and above_vwap is not None:
+        if (not exit_reason and is_market_open() and pnl_pct > 0.5
+                and above_vwap is not None and not holds_to_close(tid)):
             if is_short and above_vwap and prev_above_vwap is False:
                 exit_reason = f'VWAP cross above ${vwap_val} — short momentum gone ({pnl_pct:+.1f}%)'
             elif not is_short and not above_vwap and prev_above_vwap is True:
                 exit_reason = f'VWAP cross below ${vwap_val} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})'
 
         # 4. Momentum fade (bounce for shorts, drop for longs)
-        if not exit_reason and pnl_pct > 0.3:
+        if not exit_reason and pnl_pct > 0.3 and not holds_to_close(tid):
             if is_short:
                 rise = price - session_low.get(tid, price)
                 if rise > ATR_FADE_MULT * atr:
@@ -2480,7 +2515,7 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         # 5. No-move exit
         # INSTITUTIONAL cluster: 300 min — these consolidate longer before continuing (vol_clustering 0.26)
         # All others: 240 min standard
-        if not exit_reason and is_market_open():
+        if not exit_reason and is_market_open() and not holds_to_close(tid):
             entry_dt = trade_entry_times.get(tid)
             if entry_dt:
                 mins_held = (now - entry_dt).total_seconds() / 60
@@ -4991,7 +5026,11 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
 def get_premarket_pct(sym):
     """Returns pre-market % change vs previous close, or None if unavailable."""
     try:
-        data = yf.Ticker(sym).history(period='1d', interval='1m', prepost=True)
+        # period='2d' not '1d': before the session opens, yfinance's 1d window can be empty
+        # or hold only the prior session, which is why the 4:30am scan logged
+        # 'no price data found' on all 90 of its runs and never produced a single mover.
+        # 2d always spans today's pre-market; the today-filter below still isolates it.
+        data = yf.Ticker(sym).history(period='2d', interval='1m', prepost=True)
         if data.empty:
             return None
         # tz-aware filter: only today's pre-market bars (before 9:30am ET)

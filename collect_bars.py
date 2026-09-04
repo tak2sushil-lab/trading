@@ -346,6 +346,42 @@ def _to_utc_str(dt_str: str) -> str:
         return dt_str
 
 
+# ── split / scale-break detection ──────────────────────────────────────────────
+# A corporate action (split, reverse split, consolidation) rebases a symbol's price.
+# The DataBento backfill and the daily collector do not agree on adjustment, so a symbol
+# can end up holding TWO price scales in one table with nothing to flag it. Found
+# Sep 4 2026: CVNA carried unadjusted pre-split prices (~$235) for 2024-08-15 -> 2026-05-07
+# and adjusted prices (~$78) after its 3:1 split on 2026-05-08 — 46,583 rows, one symbol,
+# and every backtest touching CVNA across that date was silently wrong. Same failure shape
+# as the Aug 7 2026 ts_utc dual-format bug: two sources, one table, no reconciliation.
+#
+#   venv/bin/python collect_bars.py --check-splits
+def check_scale_breaks(db_path: Path = DB_PATH, threshold: float = 0.35) -> list[dict]:
+    """Report symbols whose consecutive daily median close jumps by more than `threshold`.
+
+    A real overnight gap rarely exceeds ~35%; a split ratio is typically 2x-10x, so the two
+    populations barely overlap. Reports only — repairing price history is a deliberate,
+    backed-up act, never something a collector should do on its own."""
+    con = sqlite3.connect(str(db_path))
+    try:
+        df = pd.read_sql_query("SELECT symbol, ts_utc, close FROM bars_5m", con)
+    finally:
+        con.close()
+    if df.empty:
+        return []
+    ts = pd.to_datetime(df["ts_utc"], format="mixed", utc=True, errors="coerce")
+    df = df.assign(day=ts.dt.strftime("%Y-%m-%d")).dropna(subset=["day"])
+    med = df.groupby(["symbol", "day"])["close"].median().reset_index()
+    med = med.sort_values(["symbol", "day"])
+    med["prev"] = med.groupby("symbol")["close"].shift(1)
+    med["ratio"] = med["close"] / med["prev"]
+    hits = med[(med["ratio"] < threshold) | (med["ratio"] > 1 / threshold)].dropna()
+    out = [{"symbol": r.symbol, "date": r.day, "prev_close": round(r.prev, 2),
+            "close": round(r.close, 2), "ratio": round(r.ratio, 3)}
+           for r in hits.itertuples()]
+    return out
+
+
 # ── diagnostics ────────────────────────────────────────────────────────────────
 def print_summary(db_path: Path = DB_PATH) -> None:
     """Print per-symbol row counts and date ranges. Useful after bootstrap."""
@@ -532,6 +568,18 @@ def collect_databento(symbols: list[str], start: str = DATABENTO_START) -> None:
 
 
 # ── main ───────────────────────────────────────────────────────────────────────
+def _cmd_check_splits() -> None:
+    hits = check_scale_breaks()
+    if not hits:
+        print("✅ no scale breaks detected in bars_5m")
+        return
+    print(f"⚠️  {len(hits)} scale break(s) — a symbol holding two price scales:")
+    for h in hits:
+        print(f"    {h['symbol']:6s} {h['date']}  {h['prev_close']} -> {h['close']}  (x{h['ratio']})")
+    print("\n  These are NOT auto-repaired. Back up, confirm the ratio against an")
+    print("  independent source, then rescale the pre-break rows.")
+
+
 def main() -> None:
     _setup_logging()
 
@@ -544,10 +592,16 @@ def main() -> None:
                         help="Print DB summary and exit")
     parser.add_argument("--symbols",    nargs="+", metavar="SYM",
                         help="Override symbol list (default: full universe)")
+    parser.add_argument("--check-splits", action="store_true",
+                        help="Report symbols holding two price scales (missed corporate action)")
     args = parser.parse_args()
 
     if args.summary:
         print_summary()
+        return
+
+    if args.check_splits:
+        _cmd_check_splits()
         return
 
     # import universe from live system
