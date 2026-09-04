@@ -80,8 +80,23 @@ ATR_FADE_MULT     = 1.0      # momentum fade: drop > 1×ATR from session high
 PCT_TRAIL_ACTIVATE = 1.5     # % trail activates at +1.5% gain (protects dead zone below ATR activation)
 PCT_TRAIL_GAP      = 0.5     # trail 0.5% below session high (Gap 1 fix — validated May 2026)
 MAX_HOLD_DAYS     = 1        # hard max hold: exit any position after 1 business day (~24h)
-NO_ENTRY_BEFORE   = 10       # wait until 10:00am — let opening range establish
-NO_ENTRY_AFTER    = 15       # no new entries at/after 3:00pm ET
+# Entry window. Sep 4 2026: opened to 09:30 and closed at 13:00, from a day-clustered
+# study of 4.9M 2026 bars (165 trading days, market-adjusted alpha of >=3% movers):
+#   09:35-09:45  +0.794%  t=+1.97      10:30-11:00  -0.031%  t=-0.33
+#   09:45-10:00  +0.402%  t=+1.98      11:00-13:00  -0.086%  t=-1.22
+#   10:00-10:30  +0.047%  t=+0.41      13:00-15:00  -0.147%  t=-2.98  <- significantly NEGATIVE
+# Matched-day spread early(09:35-10:00) minus late(10:30-15:00) = +0.579%, t=+2.51,
+# better on 62% of days, positive in BOTH halves of 2026 (H1 +0.443%, H2 +0.942%).
+# The old 10:00 floor dated from the regime-based era ("let the market pick a direction"),
+# and was never revisited when the book went regime-agnostic. It placed every entry at
+# the exact moment the early move turns over.
+NO_ENTRY_BEFORE     = 9      # hour; the minute floor below completes it
+NO_ENTRY_BEFORE_MIN = 30     # no entries before 09:30 ET
+NO_ENTRY_AFTER      = 13     # no new entries at/after 1:00pm ET
+# Before this time the RTH session is too young for RTH-derived indicators (VWAP on 1-2
+# bars, a 78x volume extrapolation, an undefined opening range). In that window the
+# PRE-MARKET session supplies the reference levels instead — see get_premarket_levels().
+EARLY_SESSION_UNTIL = (9, 45)
 MIN_REGIME_SCANS  = 2        # regime must be confirmed for N consecutive scans before entry
 MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
@@ -607,7 +622,7 @@ def is_entry_window():
     now = datetime.now(ET)
     if not is_market_open():
         return False
-    if now.hour < NO_ENTRY_BEFORE:
+    if (now.hour, now.minute) < (NO_ENTRY_BEFORE, NO_ENTRY_BEFORE_MIN):
         return False
     if now.hour >= NO_ENTRY_AFTER:
         return False
@@ -987,6 +1002,129 @@ def check_first_bar_quality(df5_today, day_open, avg_vol):
 # ─────────────────────────────────────────────────────────
 # INTRADAY SIGNALS
 # ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────
+# EARLY-SESSION SUPPORT (09:30-09:45) — added Sep 4 2026
+#
+# Opening the entry window to 09:30 breaks three RTH-derived indicators, because at
+# 09:35 the regular session is one bar old:
+#   vol_ratio  extrapolates 5 minutes to 390 (a 78x multiplier on noise)
+#   VWAP       is computed over 1-2 bars, so it just equals price
+#   ORB        needs 09:30-09:44, which has not finished yet
+# Both helpers below close those gaps WITHOUT adding per-scan API load:
+#   get_premarket_levels() hits IBKR once per symbol per day (pre-market is finished
+#     and immutable by 09:30, so one fetch is correct and a re-fetch is waste), and
+#   tod_relative_volume() reads bars we already collect, so it costs nothing at all.
+# yfinance is NOT usable here: with prepost=True it returns pre-market prices but
+# ZERO volume (verified Sep 4 2026), which cannot support VWAP or relative volume.
+# ─────────────────────────────────────────────────────────
+_pm_levels_cache = {}      # {symbol: (date, dict|None)} — pre-market is static after 09:30
+_tod_vol_cache   = {}      # {(symbol, 'HH:MM'): (date, median_cum_volume)}
+
+
+# IBKR paces historical-data requests (roughly 60 per 10 minutes); the scan grades all
+# ~243 universe names, so an unguarded per-symbol fetch would be an instant violation and
+# would starve every other bridge caller. Two guards: only symbols already showing a real
+# move are worth a call, and the day is capped regardless.
+PM_FETCH_MIN_MOVE   = 2.0    # % intraday move before a symbol earns an IBKR call
+PM_FETCH_DAILY_CAP  = 40     # hard ceiling on pre-market fetches per session
+_pm_fetch_count     = [0, None]   # [count, date]
+
+
+def get_premarket_levels(symbol, allow_fetch=True):
+    """Pre-market (04:00-09:29) high/low/VWAP/volume for today, or None.
+
+    Cached per symbol per calendar day — pre-market is immutable after 09:30, so one
+    fetch per symbol is correct and a re-fetch is pure waste. Returns None on any
+    failure or when the daily fetch budget is spent; every caller must degrade to the
+    ordinary RTH path rather than block an entry."""
+    today = datetime.now(ET).date()
+    hit = _pm_levels_cache.get(symbol)
+    if hit and hit[0] == today:
+        return hit[1]
+    if not allow_fetch:
+        return None
+    if _pm_fetch_count[1] != today:
+        _pm_fetch_count[0], _pm_fetch_count[1] = 0, today
+    if _pm_fetch_count[0] >= PM_FETCH_DAILY_CAP:
+        return None
+    _pm_fetch_count[0] += 1
+    out = None
+    try:
+        r = requests.get(f"{BRIDGE}/history/{symbol}",
+                         params={'duration': '2 D', 'bar_size': '5 mins', 'rth': 'false'},
+                         timeout=20)
+        if r.ok:
+            bars = r.json()
+            if isinstance(bars, list) and bars:
+                df = pd.DataFrame(bars)
+                df['dt'] = pd.to_datetime(df['date'], errors='coerce', utc=True).dt.tz_convert(ET)
+                df = df.dropna(subset=['dt'])
+                df = df[(df['dt'].dt.date == today) &
+                        (df['dt'].dt.strftime('%H:%M') < '09:30')]
+                if len(df) >= 3 and float(df['volume'].sum()) > 0:
+                    typ = (df['high'] + df['low'] + df['close']) / 3
+                    out = {
+                        'pm_high':  round(float(df['high'].max()), 2),
+                        'pm_low':   round(float(df['low'].min()), 2),
+                        'pm_close': round(float(df['close'].iloc[-1]), 2),
+                        'pm_vwap':  round(float((typ * df['volume']).sum() / df['volume'].sum()), 2),
+                        'pm_vol':   int(df['volume'].sum()),
+                        'pm_bars':  int(len(df)),
+                    }
+    except Exception:
+        out = None
+    _pm_levels_cache[symbol] = (today, out)
+    return out
+
+
+def tod_relative_volume(symbol, today_cum_vol, now=None):
+    """Today's cumulative RTH volume vs this symbol's OWN median at the same clock time.
+
+    Replaces the whole-day extrapolation before 10:00. `vol_ratio` normally projects the
+    session (today_vol * 390/mins_open), which at 09:35 multiplies five minutes of noise
+    by 78. Comparing like-for-like against the same minute of prior sessions is what a
+    professional scanner means by RVOL, and it needs no new data — it reads bars_5m,
+    which collect_bars already maintains. Returns None if history is too thin."""
+    now = now or datetime.now(ET)
+    hhmm = now.strftime('%H:%M')
+    key = (symbol, hhmm)
+    today = now.date()
+    hit = _tod_vol_cache.get(key)
+    if hit and hit[0] == today:
+        med = hit[1]
+    else:
+        med = None
+        try:
+            import sqlite3 as _sq
+            con = _sq.connect('market_data.db')
+            rows = con.execute(
+                "SELECT ts_utc, volume FROM bars_5m WHERE symbol=? AND ts_utc>=?",
+                (symbol, (today - timedelta(days=45)).isoformat())).fetchall()
+            con.close()
+            if len(rows) > 50:
+                d = pd.DataFrame(rows, columns=['ts_utc', 'volume'])
+                ts = pd.to_datetime(d['ts_utc'], format='mixed', utc=True).dt.tz_convert(ET)
+                d['day'] = ts.dt.strftime('%Y-%m-%d')
+                d['t']   = ts.dt.strftime('%H:%M')
+                d = d[(d['t'] >= '09:30') & (d['t'] <= hhmm) & (d['day'] != str(today))]
+                if len(d):
+                    per_day = d.groupby('day')['volume'].sum()
+                    if len(per_day) >= 5:
+                        med = float(per_day.median())
+        except Exception:
+            med = None
+        _tod_vol_cache[key] = (today, med)
+    if not med or med <= 0:
+        return None
+    return round(float(today_cum_vol) / med, 2)
+
+
+def is_early_session(now=None):
+    """True during 09:30-09:44 ET, when RTH indicators are not yet meaningful."""
+    now = now or datetime.now(ET)
+    return (9, 30) <= (now.hour, now.minute) < EARLY_SESSION_UNTIL
+
+
 def get_intraday_signals(symbol, spy_chg=0):
     try:
         # 5-min intraday: yfinance (IB rate limits prevent scanning 60+ stocks every 5 min)
@@ -1018,6 +1156,13 @@ def get_intraday_signals(symbol, spy_chg=0):
         _rth_today = _today.between_time('09:30', '16:00') if not _today.empty else _today
         _today_vol = float(_rth_today['Volume'].sum()) if not _rth_today.empty else float(df5['Volume'].iloc[-1])
         vol_ratio  = (_today_vol * (390 / mins_open)) / avg_vol if avg_vol > 0 else 1
+        # Early session: the 390/mins_open projection multiplies ~5 minutes of noise by 78.
+        # Compare like-for-like against this symbol's own volume at the same clock minute.
+        # Falls through to the projection if history is too thin (tod_relative_volume -> None).
+        if is_early_session(now):
+            _tod = tod_relative_volume(symbol, _today_vol, now)
+            if _tod is not None:
+                vol_ratio = _tod
 
         close    = df1d['Close']
         ma20     = float(close.rolling(20).mean().iloc[-1])
@@ -1096,6 +1241,12 @@ def get_intraday_signals(symbol, spy_chg=0):
         # ── VWAP (intraday, resets each session) ─────────────
         # Compute on today's bars only — 5-day cumsum produces a meaningless multi-day VWAP
         _vwap_src = _today.copy() if not _today.empty else df5.iloc[-78:].copy()
+        # Early session: 1-2 RTH bars make VWAP equal price, so every above/below-VWAP
+        # test is meaningless. The pre-market session VWAP is the level traders actually
+        # reference at the open, and it is fully formed by 09:30.
+        _pm_early = (get_premarket_levels(symbol,
+                     allow_fetch=abs(intra_chg) >= PM_FETCH_MIN_MOVE)
+                     if is_early_session(now) else None)
         _vwap_src['typical'] = (_vwap_src['High'] + _vwap_src['Low'] + _vwap_src['Close']) / 3
         _vwap_src['vwap']    = ((_vwap_src['typical'] * _vwap_src['Volume']).cumsum()
                                 / _vwap_src['Volume'].cumsum())
@@ -1105,6 +1256,8 @@ def get_intraday_signals(symbol, spy_chg=0):
                           if not _today.empty else
                           (df5['typical'] * df5['Volume']).cumsum() / df5['Volume'].cumsum())
         vwap           = round(float(_vwap_src['vwap'].iloc[-1]), 2)
+        if _pm_early and len(_vwap_src) < 4:
+            vwap = _pm_early['pm_vwap']      # too few RTH bars to mean anything yet
         above_vwap     = price > vwap
         # VWAP reclaim: last bar crossed above VWAP from below
         vwap_reclaim   = (len(_vwap_src) >= 2 and
@@ -1147,6 +1300,21 @@ def get_intraday_signals(symbol, spy_chg=0):
                 (today_bars.index.minute >= 30) &
                 (today_bars.index.minute < 45)
             ]
+            # Before 09:45 the 09:30-09:44 window has not finished forming, so the
+            # PRE-MARKET range stands in as the opening range. This is not a
+            # substitute invented for convenience — the pre-market high is the level
+            # the open actually trades against, and it is complete at 09:30.
+            if len(orb_window) < 2 and is_early_session(now):
+                _pm = get_premarket_levels(symbol,
+                                           allow_fetch=abs(intra_chg) >= PM_FETCH_MIN_MOVE)
+                if _pm:
+                    orb_high = _pm['pm_high']
+                    orb_low  = _pm['pm_low']
+                    orb_break = price > orb_high and price >= orb_high * 0.998
+                    if symbol not in key_levels:
+                        key_levels[symbol] = {}
+                    key_levels[symbol].update({'orb_high': orb_high, 'orb_low': orb_low,
+                                               'orb_src': 'premarket'})
             if len(orb_window) >= 2:
                 orb_high  = round(float(orb_window['High'].max()), 2)
                 orb_low   = round(float(orb_window['Low'].min()), 2)
@@ -3523,24 +3691,24 @@ def run_scan():
         log(f"Trading blocked — monitoring only")
         exits = monitor_open_trades(regime, confirmed_scans)
     elif regime == 'CHOPPY':
-        log(f"CHOPPY market — monitoring only; checking catalyst overrides")
+        log(f"CHOPPY market — no entries; catalyst overrides + observe-only grading")
         _scan_catalyst_override(open_trades)
-        exits = monitor_open_trades(regime, confirmed_scans)
+        exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
     elif regime == 'WEAK':
         # Require 3 consecutive WEAK scans before any bear entry (all-day rule)
         # Eliminates false signals from brief dips, lunch noise, and quick regime flips
         if confirmed_scans < 3:
             log(f"WEAK market — need 3 confirmed scans (have {confirmed_scans}); checking catalyst overrides")
             _scan_catalyst_override(open_trades)
-            exits = monitor_open_trades(regime, confirmed_scans)
+            exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
         else:
             # RETIRED Aug 15 2026 — equity bear book (BEAR_MOMENTUM / _scan_and_enter_bear) failed
             # the Alpha Factory's honest tests (down-movers bounce; no robust short edge in any
             # regime/period). WEAK regime is now catalyst-overrides + monitor only. Revert: restore
             # the _scan_and_enter_bear call. See docs/ALPHA_FACTORY_DESIGN.md retirement queue.
-            log(f"WEAK market — bear book RETIRED (Aug 15 2026); catalyst overrides + monitor only")
+            log(f"WEAK market — bear book RETIRED (Aug 15 2026); catalyst overrides + observe-only grading")
             _scan_catalyst_override(open_trades)
-            exits = monitor_open_trades(regime, confirmed_scans)
+            exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
     elif not spy_above_open:
         log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
         exits = monitor_open_trades(regime, confirmed_scans)
@@ -4158,7 +4326,15 @@ def book_is_on(direction):
     h = _book_health_cache[direction]
     return h is None or h[0] is None or h[0] > BOOK_HEALTH_THRESHOLD
 
-def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
+def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_only=False):
+    """observe_only=True: grade every candidate and write scan_log as normal, but never
+    place an order. Aug 18 2026 fix — the regime router only ever reached this function on
+    NORMAL/STRONG days, so WEAK/CHOPPY sessions wrote ZERO scan_log rows (confirmed: Aug 14,
+    17, 18 all empty). scan_log is the ONLY data source for Book Health, so the health
+    window silently stopped refreshing whenever the market was weak — the same blindness the
+    Jul 21 fix removed, returning through a different door (that time the blocker was
+    book_is_on() at the top of this function; this time it was the router upstream of it).
+    Observability must never be gated by the same condition that gates trading."""
     global daily_bull_count, traded_today
 
     # ── Manual longs-paused gate (PAUSE LONGS / WATCH commands) ───────────
@@ -4401,8 +4577,11 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1):
     # Jul 21 2026: moved here from the top of the function — grading/logging above this
     # point now always runs, so the health measurement never goes blind. This is the ONLY
     # gate that blocks committing real capital; nothing above it places an order.
-    _long_book_on = book_is_on('LONG')
-    if not _long_book_on:
+    _long_book_on = book_is_on('LONG') and not observe_only
+    if observe_only:
+        log(f"👁️  OBSERVE-ONLY scan ({regime}) — {len(candidates)} candidates graded and logged, "
+            f"no entries (regime routing blocks trading, not measurement)")
+    elif not _long_book_on:
         log("📖 LONG book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
 
     for pick in (candidates if _long_book_on else []):
@@ -4824,9 +5003,22 @@ def get_premarket_pct(sym):
             return None
         pm_last = float(pm['Close'].iloc[-1])
         hist = yf.Ticker(sym).history(period='5d', interval='1d')
-        if len(hist) < 2:
+        if hist.empty:
             return None
-        prev_close = float(hist['Close'].iloc[-2])
+        # Reference must be the last close STRICTLY BEFORE today. iloc[-2] assumed yfinance
+        # always returns a partial row for today — pre-market it usually does NOT, so the
+        # reference silently became the close from TWO sessions ago. Measured Sep 3 2026:
+        # MRNA logged "+145.4% pre-mkt" on Aug 20 because it was compared to Aug 18's $62.96
+        # instead of Aug 19's $174.16 (the real gap was -14%). That mis-ranks the entire
+        # 8:15am pre-market movers list every day.
+        h = hist.copy()
+        h.index = h.index.tz_convert(ET) if h.index.tz is not None else h.index.tz_localize(ET)
+        prior = h[h.index.date < today]
+        if prior.empty:
+            return None
+        prev_close = float(prior['Close'].iloc[-1])
+        if prev_close <= 0:
+            return None
         return round((pm_last - prev_close) / prev_close * 100, 2)
     except Exception:
         return None
