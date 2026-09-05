@@ -3749,8 +3749,14 @@ def run_scan():
             _scan_catalyst_override(open_trades)
             exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
     elif not spy_above_open:
-        log(f"SPY below open price (${spy_open_price}) — no new longs until market recovers")
-        exits = monitor_open_trades(regime, confirmed_scans)
+        # Observe-only, not monitor-only — fourth and final instance of the same defect
+        # family (see _scan_and_enter's docstring). A gate that stops trading must never
+        # also stop measuring, or the data needed to judge the gate is destroyed by the
+        # gate itself. This branch fired 16 times in a recent log sample, each one a
+        # scan cycle we graded nothing on and can never reconstruct.
+        log(f"SPY below open price (${spy_open_price}) — no new longs until market "
+            f"recovers; observe-only grading")
+        exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
     elif len(open_trades) >= MAX_OPEN_TRADES:
         log(f"Max open trades ({MAX_OPEN_TRADES}) — monitoring only")
         exits = monitor_open_trades(regime, confirmed_scans)
