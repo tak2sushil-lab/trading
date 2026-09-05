@@ -42,8 +42,16 @@ TOP_N = 10                 # top decile of the 100 WILD names, equal-weighted
 PER_NAME = CAPITAL / TOP_N
 LOOKBACK = 30              # up-night consistency window (validated plateau 20-40)
 PRICE_LO, PRICE_HI = 5.0, 800.0
-ENTRY_START, ENTRY_END = dt.time(15, 45), dt.time(15, 59)   # near the close
-EXIT_START, EXIT_END = dt.time(9, 30), dt.time(9, 50)       # at the open
+# Auction windows (Sep 5 2026). The backtest prices entries at the daily CLOSE and exits at
+# the daily OPEN, so live uses MOC/MOO auction orders to fill at those exact prints instead of
+# paying the spread with a MARKET order 13 min early. Auction orders must be SUBMITTED before
+# the exchange cutoff (MOC ~15:50, MOO ~09:28) and only FILL later, so each side is two phases:
+# submit, then confirm the fill once the auction has run.
+ENTRY_START, ENTRY_END = dt.time(15, 40), dt.time(15, 49)   # submit MOC BUY
+ENTRY_CONFIRM_START, ENTRY_CONFIRM_END = dt.time(16, 0), dt.time(16, 40)
+EXIT_START, EXIT_END = dt.time(9, 0), dt.time(9, 27)        # submit MOO SELL
+EXIT_CONFIRM_START, EXIT_CONFIRM_END = dt.time(9, 31), dt.time(9, 59)
+EXIT_FALLBACK_AFTER = dt.time(9, 45)   # MOO never filled -> cross with a MARKET order
 US_HOLIDAYS = {"2026-09-07", "2026-11-26", "2026-12-25"}
 
 
@@ -74,8 +82,12 @@ def init_db():
 
 
 def get_open() -> list[dict]:
+    """Only rows belonging to the CURRENT mode. Without this, flipping SHADOW->LIVE would make
+    exit_at_open() place real SELL orders against positions that were never actually bought —
+    i.e. open naked shorts. Found before the first LIVE session, Sep 5 2026."""
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
-    rows = [dict(r) for r in c.execute("SELECT * FROM overnight_trades WHERE status='OPEN'")]
+    rows = [dict(r) for r in c.execute(
+        "SELECT * FROM overnight_trades WHERE status='OPEN' AND mode=?", (MODE,))]
     c.close(); return rows
 
 
@@ -86,14 +98,43 @@ def entered_today() -> bool:
     c.close(); return n > 0
 
 
-def record_entry(sym, price, shares, consistency, order_id=None):
+def record_entry(sym, price, shares, consistency, order_id=None, status="OPEN"):
     now = now_et()
     c = sqlite3.connect(DB)
     c.execute("""INSERT INTO overnight_trades(symbol,entry_date,entry_time,entry_price,shares,
-        status,consistency,mode,order_id) VALUES(?,?,?,?,?,'OPEN',?,?,?)""",
+        status,consistency,mode,order_id) VALUES(?,?,?,?,?,?,?,?,?)""",
         (sym, now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), price, shares,
-         round(consistency, 3), MODE, order_id))
+         status, round(consistency, 3), MODE, order_id))
     c.commit(); c.close()
+
+
+def rows_with_status(st: str) -> list[dict]:
+    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    rows = [dict(r) for r in c.execute(
+        "SELECT * FROM overnight_trades WHERE status=? AND mode=?", (st, MODE))]
+    c.close(); return rows
+
+
+def set_status(tid, st, **cols):
+    sets = ",".join([f"{k}=?" for k in cols] + ["status=?"])
+    c = sqlite3.connect(DB)
+    c.execute(f"UPDATE overnight_trades SET {sets} WHERE id=?", (*cols.values(), st, tid))
+    c.commit(); c.close()
+
+
+def order_fill(oid):
+    """(filled, avg_price). `/order/{id}/status` can lag (the Jul-20 USAR / Sep-3 futures
+    lesson), so a 'not filled' answer here is never treated as proof — the caller retries on
+    the next 5-min pass and falls back to a MARKET cross before the window closes."""
+    try:
+        d = requests.get(f"{BRIDGE}/order/{oid}/status", timeout=5).json()
+        if d.get("status") == "Filled" and d.get("avgFillPrice"):
+            return True, float(d["avgFillPrice"])
+        if float(d.get("filled") or 0) > 0 and d.get("avgFillPrice"):
+            return True, float(d["avgFillPrice"])
+    except Exception as e:
+        log(f"fill check failed for order {oid}: {e}")
+    return False, 0.0
 
 
 def record_exit(tid, price):
@@ -165,15 +206,20 @@ def bridge_quote(sym: str):
     return None
 
 
-def place_paper_order(sym, shares, side):
+def place_paper_order(sym, shares, side, order_type="MARKET"):
+    """Returns (accepted, fill_price, order_id). For MOC/MOO the auction has not run yet, so
+    `accepted` means the broker took the order and fill_price is 0.0 — the fill is picked up
+    later by confirm_fills()."""
     try:
         r = requests.post(f"{BRIDGE}/order",
-                          json={"symbol": sym, "qty": shares, "side": side, "order_type": "MARKET"}, timeout=10)
+                          json={"symbol": sym, "qty": shares, "side": side, "order_type": order_type}, timeout=10)
         if r.status_code != 200 or not r.text.strip():
             log(f"order rejected {sym}: {r.status_code}"); return False, 0.0, None
         oid = r.json().get("orderId")
         if not oid:
             return False, 0.0, None
+        if order_type in ("MOC", "MOO"):
+            return True, 0.0, str(oid)      # fills at the auction, not now
         for _ in range(4):
             time.sleep(2)
             d = requests.get(f"{BRIDGE}/order/{oid}/status", timeout=5).json()
@@ -203,11 +249,11 @@ def scan_and_enter():
         price = float(price)
         shares = max(1, int(PER_NAME / price))
         if MODE == "LIVE":
-            ok, fill, oid = place_paper_order(sym, shares, "BUY")
+            ok, fill, oid = place_paper_order(sym, shares, "BUY", order_type="MOC")
             if not ok:
                 picks_log.append((sym, cons, "ORDER_FAILED")); continue
-            price = fill or price
-            record_entry(sym, price, shares, cons, oid)
+            # MOC fills in the 16:00 auction — park it and pick up the real print later.
+            record_entry(sym, price, shares, cons, oid, status="PENDING_ENTRY")
         else:
             record_entry(sym, price, shares, cons)
         entered += 1
@@ -219,19 +265,53 @@ def scan_and_enter():
 
 
 def exit_at_open():
+    """SHADOW: mark out at the open price. LIVE: submit MOO before the 09:28 cutoff."""
     for t in get_open():
-        px = bridge_quote(t["symbol"])
-        if px is None:
-            log(f"no open price for {t['symbol']} — will retry next fire"); continue
-        px = float(px)
         if MODE == "LIVE":
-            ok, fill, _ = place_paper_order(t["symbol"], t["shares"], "SELL")
-            if not ok:   # never mark CLOSED unless the SELL actually confirmed a fill (USAR lesson)
-                log(f"exit for {t['symbol']} NOT confirmed filled — leaving OPEN, retry next fire")
-                continue
-            if fill:
-                px = fill
-        record_exit(t["id"], px)
+            ok, _, oid = place_paper_order(t["symbol"], t["shares"], "SELL", order_type="MOO")
+            if not ok:
+                log(f"MOO submit FAILED {t['symbol']} — stays OPEN, retried next pass"); continue
+            set_status(t["id"], "PENDING_EXIT", order_id=oid)
+            log(f"MOO SELL submitted {t['symbol']} x{t['shares']} (fills at the open)")
+        else:
+            px = bridge_quote(t["symbol"])
+            if px is None:
+                log(f"no open price for {t['symbol']} — will retry next fire"); continue
+            record_exit(t["id"], float(px))
+
+
+def confirm_fills():
+    """Promote auction orders once the auction has actually run. LIVE only.
+
+    A position is NEVER marked OPEN or CLOSED on a price we did not get filled at — that is
+    the Jul-20 USAR lesson. An entry that never filled is deleted (we own nothing); an exit
+    that never filled is crossed with a MARKET order before the window shuts, because holding
+    an unsold overnight position into the day is risk this engine never signed up for."""
+    n = now_et()
+    if MODE != "LIVE":
+        return
+    if ENTRY_CONFIRM_START <= n.time() <= ENTRY_CONFIRM_END:
+        for t in rows_with_status("PENDING_ENTRY"):
+            filled, px = order_fill(t["order_id"])
+            if filled:
+                set_status(t["id"], "OPEN", entry_price=px)
+                log(f"ENTRY FILLED {t['symbol']} x{t['shares']} @ ${px:.2f} (closing auction)")
+            elif n.time() >= ENTRY_CONFIRM_END:
+                c = sqlite3.connect(DB)
+                c.execute("DELETE FROM overnight_trades WHERE id=?", (t["id"],)); c.commit(); c.close()
+                log(f"ENTRY NEVER FILLED {t['symbol']} — row removed, we hold nothing")
+    if EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END:
+        for t in rows_with_status("PENDING_EXIT"):
+            filled, px = order_fill(t["order_id"])
+            if filled:
+                record_exit(t["id"], px)
+            elif n.time() >= EXIT_FALLBACK_AFTER:
+                ok, fill, _ = place_paper_order(t["symbol"], t["shares"], "SELL")
+                if ok and fill:
+                    log(f"MOO did not fill {t['symbol']} — crossed with MARKET @ ${fill:.2f}")
+                    record_exit(t["id"], fill)
+                else:
+                    log(f"fallback SELL not confirmed for {t['symbol']} — stays PENDING_EXIT")
 
 
 # ─────────────────────────── main ───────────────────────────
@@ -244,10 +324,14 @@ def run_once():
         log("previous pass still active — skipping"); return
     open(LOCK, "w").close()
     try:
-        if EXIT_START <= n.time() <= EXIT_END:
-            exit_at_open()                         # sell overnight holds at the open
+        confirm_fills()                            # promote yesterday's auction orders first
+        # LIVE submits the MOO before the 09:28 cutoff; SHADOW has no order to place, so it
+        # marks out AFTER the open instead (marking at 09:00 would be a pre-market price).
+        if (MODE == "LIVE" and EXIT_START <= n.time() <= EXIT_END) or \
+           (MODE != "LIVE" and EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END):
+            exit_at_open()
         if ENTRY_START <= n.time() <= ENTRY_END:
-            scan_and_enter()                       # buy top-consistency WILD near the close
+            scan_and_enter()                       # submit MOC before the 15:50 cutoff
         log(f"pass complete — {len(get_open())} overnight position(s) held")
     finally:
         try:

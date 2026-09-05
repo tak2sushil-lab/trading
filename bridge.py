@@ -7,7 +7,7 @@ load_dotenv()  # loads .env file from same folder
 
 import os
 from ib_async import IB, Stock, Index, Option, Contract, ComboLeg, Future, \
-                    MarketOrder, LimitOrder, StopOrder, \
+                    MarketOrder, LimitOrder, StopOrder, Order, \
                     ScannerSubscription, WshEventData
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -481,8 +481,19 @@ async def place_order(req: OrderRequest):
     contract = Stock(req.symbol.upper(), 'SMART', 'USD')
     await ib.qualifyContractsAsync(contract)
 
-    if req.order_type == "LIMIT" and req.limit_price:
+    ot = req.order_type.upper()
+    if ot == "LIMIT" and req.limit_price:
         order = LimitOrder(req.side.upper(), req.qty, req.limit_price)
+    elif ot == "MOC":
+        # Market-on-close: fills at the official closing auction print. Added Sep 5 2026 for
+        # Clockwork, whose backtest prices entries at the daily CLOSE — a plain MARKET order at
+        # 15:47 pays the spread AND is 13 min early, so it measured our slippage, not the edge.
+        order = Order(action=req.side.upper(), totalQuantity=req.qty, orderType='MOC', tif='DAY')
+    elif ot == "MOO":
+        # Market-on-open: fills at the official opening auction print (a MARKET order with
+        # tif='OPG'). Mirrors MOC for the exit side. Must be submitted before the open.
+        order = MarketOrder(req.side.upper(), req.qty)
+        order.tif = 'OPG'
     else:
         order = MarketOrder(req.side.upper(), req.qty)
 
@@ -664,7 +675,7 @@ TOOLS = [
                 "symbol":      {"type": "string"},
                 "qty":         {"type": "integer"},
                 "side":        {"type": "string", "enum": ["BUY", "SELL"]},
-                "order_type":  {"type": "string", "enum": ["MARKET", "LIMIT"]},
+                "order_type":  {"type": "string", "enum": ["MARKET", "LIMIT", "MOC", "MOO"]},
                 "limit_price": {"type": "number"}
             },
             "required": ["symbol", "qty", "side", "order_type"]

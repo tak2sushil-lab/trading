@@ -3256,3 +3256,79 @@ the DB the way Bite Check and the Crest Watch streak already are.)
 
 **Live at time of writing:** IBKR banked $308.50 + unreal $238.83 = **$547** · TC $308.00 +
 $221.64 = **$530**; stops 29,479.75 / 29,481.00 ≈ 16pt below price.
+
+---
+
+## Sep 5 2026 — Clockwork + Contrarian WIRED LIVE (paper orders) + MOC/MOO added to bridge
+
+Equity swing deep-read first (see [[equity-swing-deep-read-sep5]]): **Wave Rider is not broken.**
+Over its live window it picked **−2.15%/trade from an opportunity set averaging −2.13%** —
+selection cost 0.02pts; tide was −1.87%. ~90% of the −$904 is the tape. In 2026 the engine's
+entire profit is **Apr+May (+$4,265); every other month combined is −$917**, and alpha
+day-clustered t = **+0.70**. The 8% stop is irrelevant (mean return flat from 5% to no stop),
+hedging does not save it (alpha is negative in the same months), and no causal SPY market-state
+gate helps. **Wave Rider left in SHADOW, unchanged.**
+
+**Two corrections to my own analysis, recorded so they are not repeated:** (1) "the picker is
+noise" was WRONG — a flat top-5 test misses that 3-day holds mean the book usually fills only
+1-2 slots, so it mostly takes rank 1-2, the good ranks; under real slot dynamics the ranker
+beats random in all 3 years. **Test selection under the book's real capacity constraint.**
+(2) A `day_chg>=7%` filter looked excellent in 2026 (z=+2.83, clean 7-9 plateau, both halves
+positive) and is a **curve-fit** — 2024 z=−1.63, 2025 z=−0.08. Plateau and split-half both
+passed and were both wrong; **only the cross-year check caught it.**
+
+**⭐ THE FACTORY GATE HAS A HOLE — `COST_DRAG` is a PERCENTAGE-only model that never checks
+position size.** Contrarian as validated holds ~100 concurrent positions (10 long + 10 short ×
+5d). At $10k that is $100/position, where IBKR's **$1 minimum commission is 1% per side**: net
+**−3.65% at $10k, −1.49% at $25k, −0.67% at $50k**. A breadth strategy sails through a
+percentage cost gate and dies on a fixed-cost floor. Any future cross-sectional engine must be
+checked at the position size we can actually fund.
+
+**⚠️ TWO BIASES THAT INFLATE ANY CONTRARIAN BACKTEST, both worst under concentration:**
+(1) `daily_close.csv` is built from RAW bars with **no split adjustment**, so a split reads as a
+~−90% 3-day "crash" — CMG (50:1 Jun 2024), AVGO (10:1 Jul 2024), NFLX, BKNG, KLAC were all top
+picks; **12.6% of #1 picks were split artifacts**, and they "returned" +12.83% vs +2.71% for
+real fallers (fake recoveries from the known dual-format `bars_5m` problem). (2) The 241-name
+universe was **screened in Jul 2026 partly on past performance**, so "buy the biggest crasher"
+is exactly the axis survivorship bias inflates. **Treat every Contrarian backtest number as
+having no credible prior. Only the forward run is clean.**
+
+**SHIPPED:**
+- **`bridge.py`: MOC + MOO order types** (additive branch in `/order`; MARKET/LIMIT untouched).
+  Needed because Clockwork's backtest prices entries at the daily CLOSE and exits at the daily
+  OPEN, while live placed MARKET orders at 15:47 and 09:31 — paying the spread at the two widest
+  moments and 13 min early. It was measuring our slippage, not the edge. Bridge restarted
+  (Saturday, gateway down — zero-risk window).
+- **Clockwork → LIVE** (`CLOCKWORK_MODE=LIVE`). Now two-phase per side: submit MOC 15:40-15:49 →
+  confirm the fill 16:00-16:40; submit MOO 09:00-09:27 → confirm 09:31-09:59, with a **MARKET
+  fallback after 09:45** so an unsold overnight position is never carried into the day. Nothing
+  is marked OPEN or CLOSED on a price we did not fill at (the Jul-20 USAR lesson).
+  Shadow record it graduates on: **150 trades, +$1,034 — but 83% of that is ONE real event**
+  (MRNA +177% on 200M shares vs 4M normal). **Ex-MRNA +$379**, which is ~breakeven at the
+  factory's own 0.20% cost assumption. Going live is how the true fill cost finally gets measured.
+- **Contrarian → BUILT + LIVE** (`factory/live/contrarian.py`, `contrarian_trades` /
+  `contrarian_scan_log`, launchd `com.sushil.trading.contrarian`). **Concentrated form the
+  Proving Ground never scored**, per user's design: **2 slots × ~$5,000, recycled as they
+  close** — which puts commission at 0.02%/side instead of 1%. Ranks the universe by trailing
+  3-day move, buys the biggest fallers, 5-day hold, 15% stop, earnings block, and a
+  **`SPLIT_MAX_DROP=-35%` artifact filter** (it LOWERS the 2026 backtest $10,791→$6,900 —
+  correct, because it removes fiction). **LONG-ONLY on purpose:** the short leg carried only
+  +0.116% of the +0.355% alpha for all the borrow/squeeze risk. That drops market-neutrality,
+  so **judge this book on alpha vs the Tide, not raw P&L.**
+- **Mode isolation on both engines' open-position queries** — caught before Monday: Clockwork
+  had 10 OPEN rows from SHADOW, and in LIVE `exit_at_open()` would have placed real SELL orders
+  for stock never bought = **10 naked shorts**. `get_open()`/`rows_with_status()` now filter on
+  `mode=MODE`; the same guard was added to Contrarian pre-emptively. The 10 shadow rows were
+  settled flat (commission only — we do not get to claim Monday's open on an abandoned book),
+  so LIVE starts from zero.
+
+**Corrections to the ask:** Contrarian was **never** wired (no service, no table) — what existed
+was Clockwork and **Trend Rider** (MNQ futures, whose LIVE order path is still a `TODO` stub).
+
+**⚠️ MONDAY SEP 8 — FIRST LIVE SESSION, WATCH IT.** Neither order path has ever placed a real
+order; both were built and smoke-tested on a Saturday with the gateway down. Watch, in order:
+(1) `logs/contrarian.log` from 10:00 — first real BUY, confirm fill price is recorded;
+(2) `logs/clockwork.log` 15:40-15:49 — MOC submitted, then **16:00-16:40 the fill must confirm**;
+(3) Tuesday 09:00-09:27 MOO submitted, 09:31+ filled. **If MOC/MOO do not fill on the IBKR paper
+simulator, revert to MARKET** — the fallback covers the exit side only, not entry.
+Revert either engine: set its `*_MODE` back to `SHADOW` in the plist and reload.
