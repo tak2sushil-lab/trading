@@ -497,24 +497,27 @@ def replay_run(start, end):
             session_pnl = daily['pnl'] + unrealized_now
 
             open_trades = at.get_open_trades()
-            if at.is_entry_window() and not at.is_trading_blocked()[0]:
+            # Fish Finder is retired live (FISH_FINDER_ENABLED=False); mirror that.
+            if getattr(at, 'FISH_FINDER_ENABLED', False) and at.is_entry_window() \
+                    and not at.is_trading_blocked()[0]:
                 at._scan_regime_adaptive(regime, open_trades)
                 open_trades = at.get_open_trades()
+
+            # ── ROUTER — must mirror auto_trader.run_scan() branch for branch ──────
+            # Re-synced Sep 5 2026. It had drifted badly: it still called the RETIRED
+            # bear book (_scan_and_enter_bear) and Fish Finder, and it predated the
+            # observe_only mode entirely, so CHOPPY/WEAK/unconfirmed/SPY-below-open all
+            # monitored instead of grading. A replay of a system we no longer run cannot
+            # validate anything -- CONSTITUTION.md requires sim to match the live path.
+            #
+            # REGIME_AS_MODIFIER: when True, the market-wide label stops being a router
+            # and only the per-trade risk gates remain. This is the A/B switch for the
+            # question "does the regime router earn the ~70% of cycles it stands down?"
+            _rm = globals().get('REGIME_AS_MODIFIER', False)
 
             if not at.is_entry_window():
                 at.monitor_open_trades(regime, confirmed_scans)
             elif at.is_trading_blocked()[0]:
-                at.monitor_open_trades(regime, confirmed_scans)
-            elif regime == 'CHOPPY':
-                at._scan_catalyst_override(open_trades)
-                at.monitor_open_trades(regime, confirmed_scans)
-            elif regime == 'WEAK':
-                at._scan_catalyst_override(open_trades)
-                if confirmed_scans < 3:
-                    at.monitor_open_trades(regime, confirmed_scans)
-                else:
-                    at._scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans)
-            elif not spy_above_open:
                 at.monitor_open_trades(regime, confirmed_scans)
             elif len(open_trades) >= at.MAX_OPEN_TRADES:
                 at.monitor_open_trades(regime, confirmed_scans)
@@ -522,8 +525,24 @@ def replay_run(start, end):
                 at.monitor_open_trades(regime, confirmed_scans)
             elif session_pnl >= at.DAILY_PROFIT_TARGET:
                 at.monitor_open_trades(regime, confirmed_scans)
+            elif _rm:
+                # regime demoted: grade and trade regardless of the market label
+                at._scan_catalyst_override(open_trades)
+                at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
+            elif regime == 'CHOPPY':
+                at._scan_catalyst_override(open_trades)
+                at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans,
+                                   observe_only=True)
+            elif regime == 'WEAK':
+                at._scan_catalyst_override(open_trades)
+                at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans,
+                                   observe_only=True)
+            elif not spy_above_open:
+                at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans,
+                                   observe_only=True)
             elif confirmed_scans < at.MIN_REGIME_SCANS:
-                at.monitor_open_trades(regime, confirmed_scans)
+                at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans,
+                                   observe_only=True)
             else:
                 at._scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
@@ -535,12 +554,16 @@ def replay_run(start, end):
 
     return daily_summaries
 
+REGIME_AS_MODIFIER = False   # set by --regime-as-modifier
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--start'); ap.add_argument('--end')
     ap.add_argument('--parity', help='decision-parity check vs scan_log for one date')
     ap.add_argument('--no-book-health', action='store_true')
+    ap.add_argument('--regime-as-modifier', action='store_true',
+                    help='A/B: demote the market regime from router to modifier')
     a = ap.parse_args()
 
     start = a.parity or a.start
@@ -554,6 +577,11 @@ def main():
     _orig_book_is_on = at.book_is_on
     if a.no_book_health:
         at.book_is_on = lambda direction: True
+
+    global REGIME_AS_MODIFIER
+    REGIME_AS_MODIFIER = a.regime_as_modifier
+    if REGIME_AS_MODIFIER:
+        print('  ⚙  REGIME AS MODIFIER — market label does not route entries')
 
     try:
         with sqlite_guard():
