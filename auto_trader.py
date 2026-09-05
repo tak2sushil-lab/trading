@@ -1282,6 +1282,8 @@ def get_intraday_signals(symbol, spy_chg=0):
         vwap           = round(float(_vwap_src['vwap'].iloc[-1]), 2)
         if _pm_early and len(_vwap_src) < 4:
             vwap = _pm_early['pm_vwap']      # too few RTH bars to mean anything yet
+            log(f"  [PRE-MKT LEVELS] {symbol}: VWAP ${vwap} from {_pm_early['pm_bars']} pre-market "
+                f"bars (RTH has only {len(_vwap_src)}) | pm range ${_pm_early['pm_low']}-${_pm_early['pm_high']}")
         above_vwap     = price > vwap
         # VWAP reclaim: last bar crossed above VWAP from below
         vwap_reclaim   = (len(_vwap_src) >= 2 and
@@ -1339,6 +1341,8 @@ def get_intraday_signals(symbol, spy_chg=0):
                         key_levels[symbol] = {}
                     key_levels[symbol].update({'orb_high': orb_high, 'orb_low': orb_low,
                                                'orb_src': 'premarket'})
+                    log(f"  [PRE-MKT ORB] {symbol}: opening range ${orb_low}-${orb_high} from "
+                        f"pre-market (RTH 09:30-09:44 not formed yet) | break={orb_break}")
             if len(orb_window) >= 2:
                 orb_high  = round(float(orb_window['High'].max()), 2)
                 orb_low   = round(float(orb_window['Low'].min()), 2)
@@ -3757,8 +3761,15 @@ def run_scan():
         log(f"✅ Daily target +${session_pnl:.0f} hit — protecting gains, no new entries")
         exits = monitor_open_trades(regime, confirmed_scans)
     elif confirmed_scans < MIN_REGIME_SCANS:
-        log(f"Regime {regime} only confirmed {confirmed_scans}x — waiting for stability")
-        exits = monitor_open_trades(regime, confirmed_scans)
+        # Observe-only, not monitor-only. Sep 4 2026: this branch was the last place where
+        # observability was still gated by the same condition that gates trading — the exact
+        # principle the Aug 18 fix established for CHOPPY/WEAK. It cost us real data on Sep 4:
+        # the 09:35 and 09:50 scans wrote ZERO scan_log rows because the regime label had
+        # flipped and reset its counter, so the first 30 minutes of the newly-opened entry
+        # window is precisely where we are blindest.
+        log(f"Regime {regime} only confirmed {confirmed_scans}x — waiting for stability; "
+            f"observe-only grading")
+        exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
     else:
         exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
