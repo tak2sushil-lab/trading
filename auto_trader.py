@@ -1149,10 +1149,72 @@ def is_early_session(now=None):
     return (9, 30) <= (now.hour, now.minute) < EARLY_SESSION_UNTIL
 
 
+# ── Batched 5-min prefetch ─────────────────────────────────────────────────────
+# Measured Sep 5 2026: the per-symbol `yf.Ticker(sym).history(period='5d', interval='5m')`
+# call is 96% of get_intraday_signals' fetch cost (0.130s x 243 = 31.6s a scan) and it
+# CANNOT be cached — it is intraday data that must refresh every cycle. It can, however,
+# be BATCHED: one yf.download() for the whole universe returns the same bars in ~12s.
+# The daily frame beside it is only 1.2s and changes once a day, so it is not the target.
+#
+# Deliberately fail-open: a missing symbol, a malformed frame or a stale batch all fall
+# through to the original per-symbol call. This can make a scan slower; it can never make
+# it wrong. TTL is short so a cycle never trades on the previous cycle's bars.
+_df5_batch = {"ts": None, "data": {}}
+DF5_BATCH_TTL = 150      # seconds; scans run ~300s apart, so a batch is never reused
+
+
+def prefetch_df5(symbols):
+    """One batched download of 5-min bars for `symbols`, cached for DF5_BATCH_TTL."""
+    global _df5_batch
+    try:
+        syms = [s for s in dict.fromkeys(symbols) if s]
+        if not syms:
+            return 0
+        raw = yf.download(syms, period='5d', interval='5m', group_by='ticker',
+                          progress=False, threads=True, auto_adjust=True)
+        data = {}
+        if raw is not None and not raw.empty:
+            for sym in syms:
+                try:
+                    df = raw[sym] if isinstance(raw.columns, pd.MultiIndex) else raw
+                    df = df.dropna(how='all')
+                    # Only accept a frame shaped like history()'s, or downstream breaks
+                    if len(df) >= 3 and {'Open', 'High', 'Low', 'Close', 'Volume'} <= set(df.columns):
+                        # yf.download() indexes in UTC; yf.Ticker().history() indexes in ET.
+                        # get_intraday_signals normalises internally, but any other consumer
+                        # of df5.index would silently read the wrong hour, so make the batch
+                        # frame indistinguishable from the single call at the source.
+                        try:
+                            idx = df.index
+                            df.index = (idx.tz_convert(ET) if idx.tz is not None
+                                        else idx.tz_localize('UTC').tz_convert(ET))
+                        except Exception:
+                            continue
+                        data[sym] = df
+                except Exception:
+                    continue
+        _df5_batch = {"ts": time.time(), "data": data}
+        return len(data)
+    except Exception as e:
+        _df5_batch = {"ts": None, "data": {}}
+        log(f"  ⚠️  batched 5m prefetch failed ({e}) — falling back to per-symbol fetches")
+        return 0
+
+
+def _get_df5(symbol):
+    """5-min frame for `symbol`: the batch if it is fresh, else the original single call."""
+    b = _df5_batch
+    if b["ts"] and (time.time() - b["ts"]) < DF5_BATCH_TTL:
+        df = b["data"].get(symbol)
+        if df is not None and len(df) >= 3:
+            return df.copy()
+    return yf.Ticker(symbol).history(period='5d', interval='5m')
+
+
 def get_intraday_signals(symbol, spy_chg=0):
     try:
         # 5-min intraday: yfinance (IB rate limits prevent scanning 60+ stocks every 5 min)
-        df5 = yf.Ticker(symbol).history(period='5d', interval='5m')
+        df5 = _get_df5(symbol)
 
         # Daily bars: IB first (accurate, cached 24h) → yfinance fallback
         df1d = get_ib_daily(symbol, duration='60 D')
@@ -3366,6 +3428,7 @@ def _scan_premarket_catalyst(open_trades):
 
     today     = date.today()
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    prefetch_df5(scan_order)   # one batched 5-min download; falls back per-symbol on failure
     candidates = []
 
     for symbol in scan_order:
@@ -4039,6 +4102,7 @@ def _scan_regime_adaptive(regime, open_trades):
     global daily_bull_count, daily_bear_count, traded_today
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    prefetch_df5(scan_order)   # one batched 5-min download; falls back per-symbol on failure
     entries, attempted = [], []
 
     corr    = _crowd_gauge_correlation()
@@ -4162,6 +4226,7 @@ def _scan_catalyst_override(open_trades):
 
     # Build scan list: dynamic (momentum scanner) picks first, then full universe
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    prefetch_df5(scan_order)   # one batched 5-min download; falls back per-symbol on failure
     entries   = []
     attempted = 0   # orders submitted this cycle (incl. failures) — prevents MAX_OPEN bypass
 
@@ -4444,6 +4509,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
 
     # Build scan order: catalyst picks first, then rest of universe
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    prefetch_df5(scan_order)   # one batched 5-min download; falls back per-symbol on failure
     candidates = []
 
     for symbol in scan_order:
@@ -4821,6 +4887,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
             return monitor_open_trades(regime, confirmed_scans)
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
+    prefetch_df5(scan_order)   # one batched 5-min download; falls back per-symbol on failure
     candidates = []
 
     for symbol in scan_order:
