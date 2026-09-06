@@ -290,16 +290,39 @@ def confirm_fills():
     n = now_et()
     if MODE != "LIVE":
         return
+    today = n.date().isoformat()
+
+    # ── Stale sweep, runs on EVERY pass ───────────────────────────────────────────────
+    # A PENDING_* row is invisible to get_open() (which wants status='OPEN'), so anything
+    # left pending from a PRIOR day is a zombie: never exited, never counted, silently wrong.
+    # The original same-day cleanup could only fire in the single instant t == 16:40:00, which
+    # a 5-min cadence essentially never hits — so it never ran. Found in the Sep 6 bug sweep.
+    for t in rows_with_status("PENDING_ENTRY"):
+        if t["entry_date"] < today:
+            filled, px = order_fill(t["order_id"])
+            if filled:                       # it DID fill, we just never saw it — adopt it
+                set_status(t["id"], "OPEN", entry_price=px)
+                log(f"STALE ENTRY adopted {t['symbol']} @ ${px:.2f} (filled, confirm was missed)")
+            else:
+                c = sqlite3.connect(DB)
+                c.execute("DELETE FROM overnight_trades WHERE id=?", (t["id"],)); c.commit(); c.close()
+                log(f"STALE ENTRY never filled {t['symbol']} — row removed, we hold nothing")
+    for t in rows_with_status("PENDING_EXIT"):
+        if t["entry_date"] < today and not (EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END):
+            filled, px = order_fill(t["order_id"])
+            if filled:
+                record_exit(t["id"], px)
+                log(f"STALE EXIT confirmed {t['symbol']} @ ${px:.2f}")
+            else:                            # still holding it — hand it back to the exit path
+                set_status(t["id"], "OPEN")
+                log(f"STALE EXIT unfilled {t['symbol']} — returned to OPEN, will re-submit MOO")
+
     if ENTRY_CONFIRM_START <= n.time() <= ENTRY_CONFIRM_END:
         for t in rows_with_status("PENDING_ENTRY"):
             filled, px = order_fill(t["order_id"])
             if filled:
                 set_status(t["id"], "OPEN", entry_price=px)
                 log(f"ENTRY FILLED {t['symbol']} x{t['shares']} @ ${px:.2f} (closing auction)")
-            elif n.time() >= ENTRY_CONFIRM_END:
-                c = sqlite3.connect(DB)
-                c.execute("DELETE FROM overnight_trades WHERE id=?", (t["id"],)); c.commit(); c.close()
-                log(f"ENTRY NEVER FILLED {t['symbol']} — row removed, we hold nothing")
     if EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END:
         for t in rows_with_status("PENDING_EXIT"):
             filled, px = order_fill(t["order_id"])

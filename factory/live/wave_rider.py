@@ -86,8 +86,12 @@ def record_scan(funnel: dict, candidates: list):
 
 
 def get_open() -> list[dict]:
+    """Only rows belonging to the CURRENT mode. Without this, flipping SHADOW->LIVE makes
+    monitor() place real SELL orders against positions that were never actually bought — i.e.
+    open naked shorts. Same guard added to overnight.py/contrarian.py on Sep 5 2026."""
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
-    rows = [dict(r) for r in c.execute("SELECT * FROM wave_trades WHERE status='OPEN'")]
+    rows = [dict(r) for r in c.execute(
+        "SELECT * FROM wave_trades WHERE status='OPEN' AND mode=?", (MODE,))]
     c.close(); return rows
 
 

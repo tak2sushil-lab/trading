@@ -3866,6 +3866,12 @@ def run_scan():
             # only from the CHOPPY/WEAK branches, so leaving it out here would ship a different
             # system from the one the A/B measured.
             _scan_catalyst_override(open_trades)
+            # REFRESH — _scan_and_enter takes its open_count and its duplicate-symbol guard
+            # from this list, so a position the Wildcard just opened would be invisible: the
+            # book could exceed MAX_OPEN_TRADES or buy the same symbol twice in one cycle.
+            # Under the router this never mattered (the Wildcard only ran on branches where
+            # _scan_and_enter was observe_only). Same pattern the Fish Finder block used.
+            open_trades = get_open_trades()
         exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
     # Batched WhatsApp exit message
