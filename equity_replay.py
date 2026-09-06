@@ -554,7 +554,14 @@ def replay_run(start, end):
 
     return daily_summaries
 
-REGIME_AS_MODIFIER = False   # set by --regime-as-modifier
+# Default now MIRRORS LIVE (auto_trader.REGIME_AS_MODIFIER, True since Sep 6 2026) so a plain
+# replay validates the system we actually run — CONSTITUTION.md requires sim to match live.
+# --regime-as-modifier still forces it on; --hard-router forces the old behaviour for A/Bs.
+try:
+    import auto_trader as _at_flag
+    REGIME_AS_MODIFIER = getattr(_at_flag, 'REGIME_AS_MODIFIER', False)
+except Exception:
+    REGIME_AS_MODIFIER = False
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
@@ -562,6 +569,8 @@ def main():
     ap.add_argument('--start'); ap.add_argument('--end')
     ap.add_argument('--parity', help='decision-parity check vs scan_log for one date')
     ap.add_argument('--no-book-health', action='store_true')
+    ap.add_argument('--hard-router', action='store_true',
+                    help='force the OLD hard regime router (pre-Sep-6 behaviour), for A/Bs')
     ap.add_argument('--regime-as-modifier', action='store_true',
                     help='A/B: demote the market regime from router to modifier')
     a = ap.parse_args()
@@ -579,7 +588,10 @@ def main():
         at.book_is_on = lambda direction: True
 
     global REGIME_AS_MODIFIER
-    REGIME_AS_MODIFIER = a.regime_as_modifier
+    if a.hard_router:
+        REGIME_AS_MODIFIER = False
+    elif a.regime_as_modifier:
+        REGIME_AS_MODIFIER = True
     if REGIME_AS_MODIFIER:
         print('  ⚙  REGIME AS MODIFIER — market label does not route entries')
 

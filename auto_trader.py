@@ -98,6 +98,20 @@ NO_ENTRY_AFTER      = 13     # no new entries at/after 1:00pm ET
 # PRE-MARKET session supplies the reference levels instead — see get_premarket_levels().
 EARLY_SESSION_UNTIL = (9, 45)
 MIN_REGIME_SCANS  = 2        # regime must be confirmed for N consecutive scans before entry
+
+# Regime demoted from ROUTER to MODIFIER — Sep 6 2026, on the completed A/B (equity_replay.py
+# --regime-as-modifier, Jun 1 -> Sep 3, 59 matched days): hard router -$2,320 vs modifier -$892,
+# matched-day spread +$1,428, t=+2.18, better on 59% of days and 3 of 4 months, and it survives
+# dropping the 5 best days (+$557). Almost all of it is the CATALYST book (-$1,847 -> -$552).
+# The label is NOT removed: it still flows into grade_setup() as a SCORE input, which is what
+# "modifier" means. What stops is the four branches that refused to trade on the label alone —
+# CHOPPY, WEAK, SPY-below-open, and unconfirmed-regime — which together stood the book down on
+# ~70% of scan cycles before a single stock was graded.
+# HONEST LIMITS: both arms still LOSE money (this is "lose less", not "make money"); +$1,345 of
+# the +$1,428 is August alone (July favours the router); and the replay harness stubs
+# catalyst/sympathy flags and sector_strength, so it under-represents CATALYST_OVERRIDE.
+# REVERT: set this False. Nothing else needs changing.
+REGIME_AS_MODIFIER = True
 MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
@@ -3799,11 +3813,11 @@ def run_scan():
     elif is_trading_blocked()[0]:
         log(f"Trading blocked — monitoring only")
         exits = monitor_open_trades(regime, confirmed_scans)
-    elif regime == 'CHOPPY':
+    elif not REGIME_AS_MODIFIER and regime == 'CHOPPY':
         log(f"CHOPPY market — no entries; catalyst overrides + observe-only grading")
         _scan_catalyst_override(open_trades)
         exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
-    elif regime == 'WEAK':
+    elif not REGIME_AS_MODIFIER and regime == 'WEAK':
         # Require 3 consecutive WEAK scans before any bear entry (all-day rule)
         # Eliminates false signals from brief dips, lunch noise, and quick regime flips
         if confirmed_scans < 3:
@@ -3818,7 +3832,7 @@ def run_scan():
             log(f"WEAK market — bear book RETIRED (Aug 15 2026); catalyst overrides + observe-only grading")
             _scan_catalyst_override(open_trades)
             exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
-    elif not spy_above_open:
+    elif not REGIME_AS_MODIFIER and not spy_above_open:
         # Observe-only, not monitor-only — fourth and final instance of the same defect
         # family (see _scan_and_enter's docstring). A gate that stops trading must never
         # also stop measuring, or the data needed to judge the gate is destroyed by the
@@ -3836,7 +3850,7 @@ def run_scan():
     elif session_pnl >= DAILY_PROFIT_TARGET:
         log(f"✅ Daily target +${session_pnl:.0f} hit — protecting gains, no new entries")
         exits = monitor_open_trades(regime, confirmed_scans)
-    elif confirmed_scans < MIN_REGIME_SCANS:
+    elif not REGIME_AS_MODIFIER and confirmed_scans < MIN_REGIME_SCANS:
         # Observe-only, not monitor-only. Sep 4 2026: this branch was the last place where
         # observability was still gated by the same condition that gates trading — the exact
         # principle the Aug 18 fix established for CHOPPY/WEAK. It cost us real data on Sep 4:
@@ -3847,6 +3861,11 @@ def run_scan():
             f"observe-only grading")
         exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
     else:
+        if REGIME_AS_MODIFIER:
+            # Arm B ran the Catalyst Wildcard on every cycle. Under the router it was reachable
+            # only from the CHOPPY/WEAK branches, so leaving it out here would ship a different
+            # system from the one the A/B measured.
+            _scan_catalyst_override(open_trades)
         exits = _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans)
 
     # Batched WhatsApp exit message
