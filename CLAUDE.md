@@ -3332,3 +3332,52 @@ order; both were built and smoke-tested on a Saturday with the gateway down. Wat
 (3) Tuesday 09:00-09:27 MOO submitted, 09:31+ filled. **If MOC/MOO do not fill on the IBKR paper
 simulator, revert to MARKET** — the fallback covers the exit side only, not entry.
 Revert either engine: set its `*_MODE` back to `SHADOW` in the plist and reload.
+
+---
+
+## Sep 7 2026 (Labor Day) — TC London root-caused: the gateway was never running during London
+
+**TC London has never really traded, and no London code was at fault.** `LONDON_ENABLED=True`
+on TC since Aug 9, the scheduler fires, `run_scan` runs every 60s — and logs
+`Bridge disconnected — skipping scan` **291 times, 03:00 -> 07:51, EVERY weekday** (deterministic;
+291 min is exactly that span). Cause: **IB Gateway logs itself off nightly at 23:45** (see the
+23:45 mtimes on `~/ibc/logs/*.txt`), so each gateway comes back ONLY at its own launchd time:
+
+| launchd job | started (Mon Sep 7) | London needs |
+|---|---|---|
+| `com.sushil.trading.gateway` (IBKR) | **02:50:03** | 03:00 IB formation ✅ |
+| `com.sushil.trading.tc_gateway` (TC) | **07:50:04** | entry window 04:00-08:00 ❌ |
+
+**The 07:50 was correct when it was written** — TC was NY-only and 07:50 gives ~100 min of
+warm-up before the 09:30 open. It stopped being correct on **Aug 9 2026**, when commit
+`a6fd51a` wired London onto TC: that commit touched `london_trader.py`, `tc_trader.py`,
+`prop_rules.py` and the dashboard, **but no plist**. Nobody revisited the gateway schedule.
+Proof in the trade record: **12 of TC London's 14 lifetime entries are stamped 07:51-07:58** —
+the last nine minutes of a four-hour window, taken the instant the gateway came up. The one
+exception (Aug 14, entries 04:01/04:05) is a day the gateway happened to already be running.
+So "TC London: 12 trades, +$5.12" was never a London sample at all.
+
+**FIXED:** added `{Hour 2, Minute 50}` for all five weekdays to `com.sushil.trading.tc_gateway`,
+matching the IBKR gateway. The existing 07:50 entries are KEPT as a retry — launchd skips a
+StartCalendarInterval for a job already running, so a second chance costs nothing if the 02:50
+login fails. Verified: launchd holds all 10 entries (5×02:50 + 5×07:50), gateway restarted,
+TC bridge reconnected (DUQ640500). Backup: `scratchpad/tc_gateway.plist.bak`.
+**Tomorrow is the first day TC London gets its full 04:00-08:00 window.**
+
+**Also fixed (both ops-only, no trading logic):**
+- **The watchdog overstated its scope.** Its alert ended with a blanket *"Nothing is trading
+  until this is fixed"* — false on Sep 7, when only the TC gateway was down and IBKR traded
+  London normally. It now appends **"Still healthy: ..."** and only claims total failure when
+  everything is genuinely down. Same alert-fatigue lesson as the Jul 20 USAR retry storm.
+- **`auto_trader` went silent on holidays.** Its main loop had no case for 09:31-16:00 on a
+  closed day, so a market holiday looked identical to a hung process in exactly the window you
+  would check. Now logs once an hour. Verified today placed **0 trades, 0 scan_log rows**.
+
+**⚠️ Watch item, NOT fixed:** both accounts' London instances write to the SAME
+`logs/london_trader.log` with no account tag, so `Bridge disconnected` lines cannot be attributed
+without counting cadence. Add `ACCOUNT_MODE` to the London log prefix before trusting that file
+for per-account diagnosis.
+
+**Open question this re-opens:** London still does not survive its own commission (Sep 2-3:
+gross +$1,299 vs $1,996 of round turns). TC London now *can* trade a full window for the first
+time — treat the coming weeks as its first real sample, not a continuation of the old 12 trades.
