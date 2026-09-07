@@ -144,8 +144,17 @@ def check(force: bool = False) -> int:
 
     to_alert = [i for i in issues if force or _should_alert(i.split(':')[0], state)]
     if to_alert and (in_window or force):
+        # Say WHAT IS STILL WORKING, not just what broke. The old text ended with a blanket
+        # "Nothing is trading until this is fixed", which on Sep 7 2026 was simply false: only
+        # the TC gateway was down, IBKR traded the whole London session normally. An alert that
+        # overstates its own scope is the one you learn to ignore — the same alert-fatigue
+        # failure as the Jul 20 USAR retry storm.
+        broken = {i.split(':')[0] for i in issues}
+        healthy = [k for k in list(STALE_SEC) + list(BRIDGES) if k not in broken]
+        tail = ('\n\nStill healthy: ' + ', '.join(healthy)) if healthy else \
+               '\n\nNothing is trading until this is fixed.'
         _telegram('🚨 TRADING WATCHDOG — ' + stamp + ' ET\n' + '\n'.join('• ' + i for i in to_alert)
-                  + '\n\nNothing is trading until this is fixed.')
+                  + tail)
         for i in to_alert: state[i.split(':')[0]] = time.time()
     elif to_alert:
         print('   (outside 03:00-16:00 ET trading window — logged, not alerted)')

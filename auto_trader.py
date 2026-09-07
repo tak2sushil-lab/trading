@@ -5804,6 +5804,13 @@ if __name__ == '__main__':
                     log(f"Market closed. Bull: {daily_bull_count} Bear: {daily_bear_count} | P&L ${daily['pnl']:+.2f} | sleeping until tomorrow...")
                 elif now.hour < 9 or (now.hour == 9 and now.minute < 31):
                     log("Pre-market — waiting for open...")
+                elif now.date() in US_HOLIDAYS_2026 or now.weekday() >= 5:
+                    # Say it out loud. Between 09:31 and 16:00 on a closed day this branch
+                    # logged NOTHING, so a holiday looked identical to a hung process in the
+                    # one window you would actually check. Once per hour is enough.
+                    if now.minute < (SCAN_INTERVAL // 60) + 1:
+                        log(f"Market closed today ({'holiday' if now.date() in US_HOLIDAYS_2026 else 'weekend'}) "
+                            f"— no scans, resuming next session")
                 time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
             daily = get_daily_pnl()
