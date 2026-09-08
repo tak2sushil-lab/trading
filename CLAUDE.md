@@ -23,24 +23,45 @@ Last updated: Aug 7 2026
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Aug 8 2026.
 
-**⚠️ NEXT SESSION PRIORITY (rewritten Aug 16 2026 — MAJOR PIVOT; read the `alpha-factory` memory first):**
-The equity system pivoted to an **Alpha Factory** — an offline engine-discovery/validation system
-(`factory/`, branch `alpha-factory`; live services run from this working tree). Full design +
-architecture diagram: `docs/ALPHA_FACTORY_DESIGN.md`; dashboard `/factory` page.
-**Fish Finder (`FISHFINDER_*`/`_scan_regime_adaptive`) + the equity bear book (`BEAR_MOMENTUM`/
-`_scan_and_enter_bear`) are DECOMMISSIONED** (`FISH_FINDER_ENABLED=False` in auto_trader.py; both
-failed every factory market-neutral test, Fish Finder bled ~$780/mo; code kept, revertible). The
-dated Aug 6-8 Fish Finder sections below are now HISTORICAL. Two uncorrelated Roster engines validated
-on 2.5yr: **Wave Rider** (momentum·wild, 3-day swing — now LIVE-PAPER in SHADOW via
-`com.sushil.trading.wave_rider`, `wave_trades`/`wave_scan_log` tables) + **Contrarian** (market-neutral
-cross-sectional reversal, a sleeve). Rejected by the gate: Bargain Hunter, low-vol, PEAD, XS-momentum,
-the tide-throttle. Live equity right now = old LONG/SHORT momentum + catalyst books (Book Health ON),
-with Wave Rider shadowing as the intended replacement.
-**⏸ PARKED Sun Aug 16 — resume Mon Aug 17:** (1) run the FREE 2022 bear stress-test (yfinance DAILY,
-no Databento) — do our edges survive a bear? more data does NOT rescue failed engines, it stress-tests
-the 2 passers. (2) watch Wave Rider's first live shadow scan (`logs/wave_rider.log` + /factory funnel).
-(3) decide: merge `alpha-factory`→main or keep on branch. Still open (pre-pivot): `BUY <SYM>` Telegram
-bug (auto_trader.py:2729) opens a new LONG regardless of existing position — not fixed.
+**⚠️ NEXT SESSION PRIORITY (rewritten Sep 7 2026 — read this before anything else):**
+
+**ALL FOUR EQUITY BOOKS NOW PLACE REAL ORDERS on the IBKR paper account (DU9952463).**
+Tomorrow (Tue Sep 8) is the first full session with the new configuration. Zero open positions
+in every book at close, so it starts clean.
+
+| book | mode | size | window |
+|---|---|---|---|
+| `auto_trader.py` | LIVE | 5 × $2,000 | enter 09:30-13:00, EOD close 15:45 |
+| Wave Rider (`factory/live/wave_rider.py`) | LIVE | 5 × $2,000 | enter 10:00-15:00, hold 3d, 8% stop |
+| Contrarian (`factory/live/contrarian.py`) | LIVE | 2 × $5,000 | enter 10:00-15:00, hold 5d, 15% stop |
+| Clockwork (`factory/live/overnight.py`) | LIVE | 10 × ~$1,000 | MOC 15:40-15:49, MOO 09:00-09:27 |
+
+**WATCH TOMORROW, IN THIS ORDER — none of these order paths has ever placed a real order:**
+1. `logs/contrarian.log` + `logs/wave_rider.log` from 10:00 — first real BUYs; confirm the
+   recorded price is the FILL, not the scan price.
+2. `logs/clockwork.log` 15:40-15:49 — MOC submitted (accepted, not filled yet).
+3. **`logs/clockwork.log` 16:00-16:40 — THE ONE THAT MATTERS.** The MOC fill must confirm. If
+   nothing confirms, IBKR's paper simulator does not support auction orders → revert Clockwork
+   to MARKET (the fallback covers the EXIT side only, not entry).
+4. Wed 09:00-09:27 MOO submitted, 09:31+ filled; MARKET fallback fires 09:45 if not.
+5. `logs/london_trader.log` 03:00+ — **first day TC London gets its full 04:00-08:00 window**
+   (its gateway now starts 02:50). Lines are now tagged `[LON:IBKR]` / `[LON:TC]`.
+6. **`venv/bin/python commission_check.py`** after the close — first time our commission
+   constants are checked against what IBKR actually charged, instead of assumed.
+
+**Judge on MECHANISM, not P&L.** One week is 4-8 trades per engine: enough to prove orders
+place, fills record, stops arm and exits fire on schedule; nowhere near enough to say anything
+about edge. Review ~Sep 14.
+
+**Equity regime router DEMOTED to a modifier** (`REGIME_AS_MODIFIER=True`, auto_trader.py) on
+the completed A/B: router -$2,320 vs modifier -$892, matched-day spread +$1,428, t=+2.18.
+Both arms still LOSE — this is "lose less", not "make money", and +$1,345 of the +$1,428 is
+August alone. Revert = flip the flag.
+
+**Open, not started:** `BUY <SYM>` Telegram bug (auto_trader.py:2729) opens a new LONG
+regardless of an existing position — still not fixed. Reversion shadow book's sunset review
+(due Sep 3) still not done. Chart Gate / Thesis Check write to `auto_trader.log` with NO table,
+so their weekly reviews have to grep text.
 
 **⚠️ STAGED PLAN (user-set Aug 8 2026, confirmed same night — do not forget or skip
 stages). No automation set up for this — user explicitly wants it documented, not a
@@ -3424,3 +3445,36 @@ traders restarted clean, 0 errors, London enabled on both, bridges connected.
 
 **Still gross by design:** `risk_usd` / `target_usd` in the sizing path — those are pre-trade
 risk estimates, and folding commission in there would change position sizing.
+
+---
+
+## Sep 7 2026 (pm2) — does IBKR charge commission on paper trades? Now answerable with data
+
+User asked the right question: if IBKR charges commission on a paper fill, are we
+double-counting by also subtracting a model?
+
+**Checked first — we are NOT double-counting.** Every P&L in this system is recomputed from the
+PRICE DIFFERENCE and then has a MODELLED commission subtracted; nothing ever reads the broker's
+reported P&L. Equity: `database.log_trade_exit()` does `gross = (exit-entry)*shares` then
+`- equity_commission()`. Futures: `pnl_ticks * TICK_VALUE * contracts` then `- COMMISSION *
+contracts` (as of today). So subtracting a model is correct — **but nothing verified the
+model.** `1.24` per MNQ round turn and `$0.005/share, $1 min` have been assumptions all along.
+
+**SHIPPED:**
+- **`bridge.py` `GET /executions`** — every fill with the commission IBKR ITSELF charged
+  (`commissionReport`) plus `realizedPNL`. Additive, no existing endpoint touched. A **null**
+  commission means the report has not arrived yet (it lands a moment after the exec) and is
+  explicitly NOT treated as zero.
+- **`commission_check.py`** — per instrument, IBKR actual vs our model, printing the
+  per-contract round turn both ways; flags any bucket off by >10%. Rows without a
+  commissionReport are excluded from the averages, not counted as free.
+
+**COULD NOT VERIFY TODAY, and did not pretend to:** Sep 7 is a US holiday and **IBKR serves
+executions for the CURRENT trading session only**, so `reqExecutions` returned 0 fills. The
+"yes it charges" answer above is from how the API is built, not from account data.
+**Run `venv/bin/python commission_check.py` after tomorrow's close** — first real calibration.
+
+**⚠️ Note for the TopStep number:** TC currently runs against a SECOND IBKR paper account
+(DUQ640500), not TopStep. Tomorrow's check therefore yields IBKR's real rate for BOTH accounts.
+`commission_rt_tc` stays an unverified placeholder until we are actually on ProjectX — it must
+come from TopStep's published fee schedule, not from this tool.
