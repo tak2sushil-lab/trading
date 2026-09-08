@@ -115,10 +115,16 @@ TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 
 # ── Logging — named logger so we don't pollute futures_trader's root logger ───
 
-_logger = logging.getLogger('london')
+# BOTH accounts thread this module into their own process (futures_personal -> IBKR,
+# futures_trader -> TC) and BOTH write to this one file. Until Sep 7 2026 every line was
+# tagged only '[LON]', so a line could not be attributed to an account without inferring it
+# from scan cadence — which is exactly what made the TC-gateway outage take a day to find.
+# The tag is now [LON:IBKR] / [LON:TC].
+_logger = logging.getLogger(f'london.{ACCOUNT_MODE}')
 if not _logger.handlers:
     _logger.setLevel(logging.INFO)
-    _fmt = logging.Formatter('%(asctime)s [LON] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    _fmt = logging.Formatter(f'%(asctime)s [LON:{ACCOUNT_MODE}] %(message)s',
+                             datefmt='%Y-%m-%d %H:%M:%S')
     _sh  = logging.StreamHandler(sys.stdout)
     _sh.setFormatter(_fmt)
     _logger.addHandler(_sh)

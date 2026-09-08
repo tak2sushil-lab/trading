@@ -47,4 +47,14 @@ EXCHANGE    : str   = _inst['exchange']
 POINT_VALUE : float = _inst['point_value']
 TICK_SIZE   : float = _inst['tick_size']
 TICK_VALUE  : float = _inst['tick_value']
-COMMISSION  : float = _inst['commission_rt']
+# Commission is ACCOUNT-AWARE (Sep 7 2026). IBKR and TopStep do not charge the same round
+# turn — IBKR is broker commission + CME exchange + regulatory, TopStep bundles its own fee
+# schedule — and TC is heading for a funded subscription where this number feeds the DLL/MLL
+# gates, not just reporting. One shared constant would quietly mis-state one of the two.
+#   ⚠️ commission_rt_tc is currently set EQUAL to the IBKR rate as a placeholder, so today's
+#   behaviour is unchanged. It is UNVERIFIED — confirm it against TopStep's published fee
+#   schedule before the subscription starts, and update MNQ.json only (no code change).
+_MODE = os.getenv('FUTURES_ACCOUNT_MODE', 'TC')
+COMMISSION  : float = float(
+    _inst.get('commission_rt_tc', _inst['commission_rt']) if _MODE == 'TC'
+    else _inst['commission_rt'])

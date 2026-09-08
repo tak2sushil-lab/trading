@@ -1743,6 +1743,23 @@ def _publish_exit_map(open_trades: list) -> None:
         pass
 
 
+
+def _net_usd(gross_usd: float, contracts: int) -> float:
+    """Gross P&L minus the real round-turn commission for the contracts actually closed.
+
+    Added Sep 7 2026. Until then NY exits recorded GROSS while london_trader.py recorded NET,
+    so the two books were not comparable and every NY live figure was overstated by
+    COMMISSION x contracts per trade. It matters more than the size suggests: this number is
+    what `record_trade_pnl()` feeds to prop_rules, and on TC that drives the DLL / trailing-MLL
+    gates — a gross figure makes the account look further from its loss limit than it is.
+
+    Applied ONLY at the recording boundary (DB write, prop-rule tracker, Telegram). The live
+    `pnl_usd` used for trail tiers and the dollar circuit breaker is deliberately left GROSS,
+    because charging commission there would shift real exit thresholds — a strategy change,
+    which the Sep 3 evidence freeze rules out. Books get accurate; decisions do not move.
+    """
+    return round(gross_usd - COMMISSION * max(1, int(contracts)), 2)
+
 def monitor_open_trades(regime: str = 'NORMAL'):
     """
     Check all open futures positions and apply exit stack.
@@ -1877,9 +1894,10 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                         _partial_done[tid] = True
                         _ppts = pnl_pts
                         _pusd = _ppts / TICK_SIZE * TICK_VALUE * 1
-                        _log_partial_close(trade, price, round(_pusd, 2),
+                        _pnet = _net_usd(_pusd, 1)     # one contract's round turn
+                        _log_partial_close(trade, price, _pnet,
                                            round(_ppts / TICK_SIZE, 1))
-                        record_trade_pnl(_pusd)
+                        record_trade_pnl(_pnet)
                         contracts -= 1
                         trade['contracts'] = contracts
                         pnl_usd = pnl_ticks * TICK_VALUE * contracts
@@ -2047,9 +2065,11 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 else:
                     exit_display = f"~{price} (est.)"
                     price_note = f"IBKR backup stop: {backup_stop_px} | Est. from current price"
+                pnl_net = _net_usd(pnl_usd, contracts)
                 log_futures_exit(tid, price, f"[backup-stop] IBKR stop @ {backup_stop_px} filled",
-                                 round(pnl_usd, 2), round(pnl_ticks, 1))
-                record_trade_pnl(pnl_usd)
+                                 pnl_net, round(pnl_ticks, 1))
+                record_trade_pnl(pnl_net)
+                pnl_usd = pnl_net          # Telegram below reports what was actually booked
                 emoji = '✅' if pnl_usd > 0 else '🔴'
                 msg = (
                     f"{emoji} FUTURES EXIT (IBKR stop filled)\n"
@@ -2075,9 +2095,10 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 'order_type': 'MARKET',
             })
 
-            log_futures_exit(tid, price, exit_reason, round(pnl_usd, 2),
-                             round(pnl_ticks, 1))
-            record_trade_pnl(pnl_usd)
+            pnl_net = _net_usd(pnl_usd, contracts)
+            log_futures_exit(tid, price, exit_reason, pnl_net, round(pnl_ticks, 1))
+            record_trade_pnl(pnl_net)
+            pnl_usd = pnl_net              # Telegram below reports what was actually booked
 
             emoji  = '✅' if pnl_usd > 0 else '🔴'
             msg = (
@@ -2635,7 +2656,8 @@ def _force_close_all():
     for t in trades:
         pnl_pts   = (t['entry_price'] - price) if t.get('side') == 'SHORT' else (price - t['entry_price'])
         pnl_ticks = pnl_pts / TICK_SIZE
-        pnl_usd   = pnl_ticks * TICK_VALUE * t.get('contracts', 1)
+        pnl_usd   = _net_usd(pnl_ticks * TICK_VALUE * t.get('contracts', 1),
+                             t.get('contracts', 1))
         log_futures_exit(t['id'], price, 'FUT CLOSE command', pnl_usd, pnl_ticks)
         total_pnl += pnl_usd
     record_trade_pnl(total_pnl)

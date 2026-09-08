@@ -3381,3 +3381,46 @@ for per-account diagnosis.
 **Open question this re-opens:** London still does not survive its own commission (Sep 2-3:
 gross +$1,299 vs $1,996 of round turns). TC London now *can* trade a full window for the first
 time — treat the coming weeks as its first real sample, not a continuation of the old 12 trades.
+
+---
+
+## Sep 7 2026 (pm) — London logs tagged per account + NY commission finally deducted
+
+**① London logging is now attributable.** Both accounts thread `london_trader.py` into their
+own process and BOTH write to one `logs/london_trader.log`, tagged only `[LON]` — which is
+exactly why the TC-gateway outage had to be inferred from scan cadence instead of read. The
+logger is now per-account (`logging.getLogger(f'london.{ACCOUNT_MODE}')`) and every line reads
+**`[LON:IBKR]`** or **`[LON:TC]`**. Verified both render. Historical lines stay untagged.
+
+**② NY futures P&L was recorded GROSS of commission — fixed.** `pnl_usd = pnl_ticks *
+TICK_VALUE * contracts` went straight into `log_futures_exit()` **and** `record_trade_pnl()`
+with nothing subtracted, on BOTH NY traders, while `london_trader.py` has always recorded NET.
+So the two books were never comparable, live NY was overstated by `COMMISSION x contracts` on
+every trade (~$200-370 across the 149 automated trades), and — the part that actually matters —
+`record_trade_pnl()` is what feeds prop_rules, so on TC a **gross figure makes the account look
+further from its DLL / trailing-MLL than it really is.**
+
+New `_net_usd(gross, contracts)` in both traders, applied at all four realized-write sites each:
+partial scale-out (1 contract), backup-stop fill, main exit, and the `FUT CLOSE` reconcile.
+The orphan-row cleanup stays $0 (no trade happened, no commission).
+
+**⚠️ Deliberately NOT applied to the live decision variable.** The `pnl_usd` at
+`monitor_open_trades`'s top also drives the trail tiers and the dollar circuit breaker.
+Charging commission there would move real exit thresholds — a strategy change, which the Sep 3
+evidence freeze forbids. **Books get accurate; not one trading decision moves.** Telegram now
+reports the booked (net) number so the message matches the DB.
+
+**③ Commission is now ACCOUNT-AWARE.** `strategy_core.COMMISSION` resolves from
+`FUTURES_ACCOUNT_MODE`: `commission_rt` for IBKR, `commission_rt_tc` for TC. IBKR (broker +
+CME + regulatory) and TopStep (its own bundled schedule) do not charge the same round turn, and
+TC is heading for a funded subscription where this number gates the account.
+**⚠️ `commission_rt_tc` is currently set EQUAL to IBKR's 1.24 as a placeholder — UNVERIFIED.
+Confirm it against TopStep's published fee schedule before the subscription; it is a one-line
+edit in `futures/instruments/MNQ.json`, no code change.**
+
+Verified: 11 static + arithmetic checks pass (helper defined before use, `contracts` bound in
+scope at every site, cost always charged never credited, 2c/-$800 stop → -$802.48). Both NY
+traders restarted clean, 0 errors, London enabled on both, bridges connected.
+
+**Still gross by design:** `risk_usd` / `target_usd` in the sizing path — those are pre-trade
+risk estimates, and folding commission in there would change position sizing.
