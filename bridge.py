@@ -520,6 +520,50 @@ async def place_order(req: OrderRequest):
         "orderType": req.order_type
     }
 
+# ── Executions + REAL commission ─────────────────────────
+@app.get("/executions")
+async def get_executions(days: int = 1):
+    """Every fill IBKR has for the current session, with the commission IT actually charged.
+
+    Added Sep 7 2026. Both equity and futures P&L in this system are recomputed from the price
+    difference and then have a MODELLED commission subtracted (database.equity_commission /
+    strategy_core.COMMISSION) — we never read the broker's own number, so nothing is
+    double-counted, but nothing is verified either. This endpoint is how the model gets
+    calibrated against reality instead of staying an assumption.
+
+    NOTE: IBKR serves executions for the CURRENT trading session only; `days` is passed to the
+    filter but the API will not return prior sessions. Use it intraday or right after the close.
+    """
+    from ib_async import ExecutionFilter
+    f = ExecutionFilter()
+    f.time = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y%m%d-%H:%M:%S")
+    try:
+        fills = await ib.reqExecutionsAsync(f)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}", "fills": []}
+    out = []
+    for fl in fills:
+        cr = getattr(fl, "commissionReport", None)
+        out.append({
+            "symbol":      fl.contract.symbol,
+            "secType":     fl.contract.secType,
+            "side":        fl.execution.side,
+            "shares":      float(fl.execution.shares),
+            "price":       float(fl.execution.price),
+            "time":        str(fl.execution.time),
+            "orderId":     fl.execution.orderId,
+            "execId":      fl.execution.execId,
+            # None means IBKR has not sent the commissionReport for this fill YET — it arrives
+            # a moment after the exec. Absent is not the same as zero; do not treat it as free.
+            "commission":  (float(cr.commission) if cr and cr.commission is not None else None),
+            "currency":    (cr.currency if cr else None),
+            "realizedPNL": (float(cr.realizedPNL)
+                            if cr and cr.realizedPNL is not None and abs(cr.realizedPNL) < 1e17
+                            else None),
+        })
+    return {"count": len(out), "fills": out}
+
+
 # ── Order fill status ────────────────────────────────────
 @app.get("/order/{order_id}/status")
 async def get_order_status(order_id: int):
