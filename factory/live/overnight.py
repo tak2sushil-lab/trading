@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0, "/Users/sushil/trading")
 from collect_bars import load_bars  # noqa: E402
+from factory.live._fills import place_verified, position_qty, last_fill_price  # noqa: E402
 
 LOCK = "/tmp/clockwork.lock"
 MODE = os.environ.get("CLOCKWORK_MODE", "SHADOW").upper()   # SHADOW | LIVE
@@ -137,6 +138,25 @@ def order_fill(oid):
     return False, 0.0
 
 
+def real_position(sym):
+    """Ground truth from IBKR's own portfolio: (qty, avg_cost), or (0, None) if genuinely
+    flat, or (None, None) if the check itself failed — that last case must NEVER be treated
+    as confirmed-flat, exactly the distinction order_fill's own docstring already asks for
+    but that confirm_fills() didn't actually apply (Sep 2026 root cause: 10 real Clockwork
+    MOC fills got deleted from tracking on a lagged order-status read with no portfolio
+    cross-check, then sat as real, untracked IBKR positions for two days until
+    auto_trader.py's reconcile rediscovered them as "orphans")."""
+    try:
+        r = requests.get(f"{BRIDGE}/portfolio", timeout=10).json()
+        for p in r:
+            if p.get("symbol") == sym:
+                return int(p.get("qty", 0) or 0), (float(p["avgCost"]) if p.get("avgCost") else None)
+        return 0, None
+    except Exception as e:
+        log(f"portfolio check failed for {sym}: {e}")
+        return None, None
+
+
 def record_exit(tid, price):
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     t = dict(c.execute("SELECT * FROM overnight_trades WHERE id=?", (tid,)).fetchone())
@@ -209,26 +229,12 @@ def bridge_quote(sym: str):
 def place_paper_order(sym, shares, side, order_type="MARKET"):
     """Returns (accepted, fill_price, order_id). For MOC/MOO the auction has not run yet, so
     `accepted` means the broker took the order and fill_price is 0.0 — the fill is picked up
-    later by confirm_fills()."""
-    try:
-        r = requests.post(f"{BRIDGE}/order",
-                          json={"symbol": sym, "qty": shares, "side": side, "order_type": order_type}, timeout=10)
-        if r.status_code != 200 or not r.text.strip():
-            log(f"order rejected {sym}: {r.status_code}"); return False, 0.0, None
-        oid = r.json().get("orderId")
-        if not oid:
-            return False, 0.0, None
-        if order_type in ("MOC", "MOO"):
-            return True, 0.0, str(oid)      # fills at the auction, not now
-        for _ in range(4):
-            time.sleep(2)
-            d = requests.get(f"{BRIDGE}/order/{oid}/status", timeout=5).json()
-            if d.get("status") == "Filled":
-                px = d.get("avgFillPrice")
-                return True, float(px) if px else 0.0, str(oid)
-        return False, 0.0, str(oid)
-    except Exception as e:
-        log(f"order error {sym}: {e}"); return False, 0.0, None
+    later by confirm_fills(). Confirmation logic lives in _fills.place_verified: it decides on
+    the POSITION DELTA, which is correct for sells as well as buys. The Sep-10 version of this
+    function checked `abs(qty) >= shares`, which on a SELL reads "the position is still here"
+    as "the sell filled" — exactly backwards, and it booked avgCost (an entry basis) as the
+    exit price."""
+    return place_verified(BRIDGE, sym, shares, side, order_type=order_type, log=log)
 
 
 # ─────────────────────────── entry / exit ───────────────────────────
@@ -303,19 +309,52 @@ def confirm_fills():
             if filled:                       # it DID fill, we just never saw it — adopt it
                 set_status(t["id"], "OPEN", entry_price=px)
                 log(f"STALE ENTRY adopted {t['symbol']} @ ${px:.2f} (filled, confirm was missed)")
+                continue
+            # order_fill's own docstring: "not filled" is never proof by itself — cross-check
+            # the real portfolio before deleting our only record of this position.
+            qty, avg_cost = real_position(t["symbol"])
+            if qty is None:
+                log(f"STALE ENTRY {t['symbol']} — order status AND portfolio check both "
+                    f"failed, leaving row pending, will retry next pass")
+            elif qty > 0:
+                px = avg_cost or t["entry_price"]
+                set_status(t["id"], "OPEN", entry_price=px)
+                log(f"STALE ENTRY adopted {t['symbol']} @ ${px:.2f} qty={qty} via portfolio "
+                    f"check (order status lagged, real position confirms the fill)")
             else:
                 c = sqlite3.connect(DB)
                 c.execute("DELETE FROM overnight_trades WHERE id=?", (t["id"],)); c.commit(); c.close()
-                log(f"STALE ENTRY never filled {t['symbol']} — row removed, we hold nothing")
+                log(f"STALE ENTRY never filled {t['symbol']} — confirmed zero in portfolio, "
+                    f"row removed")
     for t in rows_with_status("PENDING_EXIT"):
         if t["entry_date"] < today and not (EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END):
             filled, px = order_fill(t["order_id"])
             if filled:
                 record_exit(t["id"], px)
                 log(f"STALE EXIT confirmed {t['symbol']} @ ${px:.2f}")
-            else:                            # still holding it — hand it back to the exit path
+                continue
+            # Sep 10 2026 — THE OVERSELL BUG. This used to fall straight through to
+            # set_status(OPEN), which hands the row back to exit_at_open(), which submits
+            # ANOTHER MOO SELL next pass. When the first sell HAD actually filled (the status
+            # endpoint just lagged), every pass sold again: CC reached -396 shares, CLF -492,
+            # UUUU -408 before reconcile bought them back. "Not filled" is not proof — the
+            # position itself is. Only return to OPEN if we verifiably still hold the shares.
+            qty = position_qty(BRIDGE, t["symbol"], log)
+            if qty is None:
+                log(f"STALE EXIT {t['symbol']} — cannot verify position, leaving PENDING_EXIT "
+                    f"(will retry; never re-sends a sell on an unverified read)")
+            elif qty <= 0:
+                px2 = last_fill_price(BRIDGE, t["symbol"], "SLD", log) or bridge_quote(t["symbol"])
+                if px2:
+                    record_exit(t["id"], float(px2))
+                    log(f"STALE EXIT confirmed {t['symbol']} @ ${float(px2):.2f} — position is "
+                        f"flat, the sell had filled (order status lagged)")
+                else:
+                    log(f"STALE EXIT {t['symbol']} flat in portfolio but no fill price yet — "
+                        f"leaving PENDING_EXIT rather than booking a made-up price")
+            else:                            # genuinely still holding it — back to the exit path
+                log(f"STALE EXIT unfilled {t['symbol']} — {qty} shares still held, returned to OPEN")
                 set_status(t["id"], "OPEN")
-                log(f"STALE EXIT unfilled {t['symbol']} — returned to OPEN, will re-submit MOO")
 
     if ENTRY_CONFIRM_START <= n.time() <= ENTRY_CONFIRM_END:
         for t in rows_with_status("PENDING_ENTRY"):

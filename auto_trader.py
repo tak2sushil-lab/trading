@@ -196,6 +196,8 @@ _l3_pending         = {}     # trade_id → {sym, entry_time, entry_price, direc
 pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
 _morning_pnl_snap   = None   # P&L frozen at first post-noon scan — afternoon gate uses this
 _daily_loss_alerted = False  # ensures circuit breaker Telegram fires once per day only
+_orphan_close_state = {}     # sym → {'date','attempts','last_ts'} — reconcile cooldown/cap (Sep 2026)
+_mismatch_last_alert = None  # last unaccounted-symbol set alerted on — dedups the parity alert
 
 # ── Bear exclusions — stocks with insufficient bear backtest WR ──
 BEAR_EXCLUDED = {'RDW'}   # RDW: 60% bear WR (below 80% threshold), bull-only addition
@@ -902,66 +904,165 @@ def get_ibkr_positions():
     except:
         return {}
 
+ORPHAN_CLOSE_COOLDOWN_S   = 90    # min seconds between close attempts on the same symbol
+MAX_DAILY_ORPHAN_ATTEMPTS = 5     # then alert once and stop auto-retrying (mirrors watchman.py)
+ORPHAN_GRACE_S            = 120   # a position must be unaccounted for THIS long before we act
+_orphan_first_seen        = {}    # sym → epoch when it first looked unaccounted
+
+def _last_fill_price(sym, side_code):
+    """True fill price for this symbol/side from IBKR's own execution records ('BOT'/'SLD').
+    The portfolio's avgCost is the BLENDED basis of everything held in that ticker — across
+    all four books — so it is not a fill price and must never be recorded as one."""
+    try:
+        d = requests.get(f"{BRIDGE}/executions?days=1", timeout=10).json()
+        fills = d.get('fills', d) if isinstance(d, dict) else d
+        best = None
+        for f in fills:
+            if f.get('symbol') != sym or f.get('side') != side_code:
+                continue
+            if best is None or str(f.get('time', '')) > str(best.get('time', '')):
+                best = f
+        if best and best.get('price'):
+            return float(best['price'])
+    except Exception as e:
+        log(f"_last_fill_price {sym}: {e}")
+    return None
+
+
+def _other_book_symbols():
+    """Symbols legitimately held right now by the OTHER three live equity books — Wave Rider,
+    Contrarian, Clockwork — all of which trade the same real IBKR account through their own
+    separate tables (wave_trades / contrarian_trades / overnight_trades), invisible to
+    get_open_trades() which only ever reads `trades`.
+
+    Sep 2026: this gap was latent and harmless for months because none of those three engines
+    could successfully place a live order (a separate bug, fixed the same day). The moment that
+    bug was fixed, this one became actively destructive: reconcile started closing every real
+    position those engines opened within seconds, because it had never been taught they exist.
+    """
+    syms = set()
+    try:
+        conn = __import__('sqlite3').connect(os.path.join(_DIR, 'trades.db'))
+        c = conn.cursor()
+        for tbl, statuses in (('wave_trades', ('OPEN',)),
+                               ('contrarian_trades', ('OPEN',)),
+                               ('overnight_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'))):
+            try:
+                q = f"SELECT symbol FROM {tbl} WHERE mode='LIVE' AND status IN ({','.join('?'*len(statuses))})"
+                c.execute(q, statuses)
+                syms.update(r[0] for r in c.fetchall())
+            except Exception as _te:
+                log(f"_other_book_symbols {tbl} query failed: {_te}")
+        conn.close()
+    except Exception as e:
+        log(f"_other_book_symbols error: {e}")
+    return syms
+
+
 def reconcile_with_ibkr():
+    """
+    Sep 2026 incident (28 symbols, 600+ Telegram alerts over two days, positions oversold
+    to multiples of their original size): bridge.py's /order endpoint hardcodes
+    `"status": "submitted"` regardless of what actually happens to the order — it never
+    reflects a real fill, reject, or cancel. The old `status not in ('Cancelled','Inactive','')`
+    check therefore ALWAYS evaluated true, so every close order silently "succeeded" whether
+    or not it did anything, and reconcile_with_ibkr() had no memory across calls — it re-derives
+    "orphan" fresh every ~30-40s scan cycle. A symbol whose close hadn't actually landed yet
+    (or never would) got ANOTHER market order fired at it every single cycle, forever, with no
+    cap — each of which could itself land later and stack, turning a small position into a
+    large one in the opposite direction. Fixed two ways: (1) verify against the REAL portfolio
+    after a close attempt instead of trusting the bogus status field, (2) a per-symbol cooldown
+    + daily attempt cap so a stuck symbol gets retried patiently, not hammered.
+    """
     ibkr = get_ibkr_positions()
     if not ibkr:
         return  # bridge unreachable — skip, don't corrupt DB
 
     db_trades  = get_open_trades()
     db_symbols = {t['symbol']: t for t in db_trades}
+    other_books = _other_book_symbols()
+    today_str  = date.today().isoformat()
 
     # IBKR has position, DB doesn't → orphaned: close it immediately.
     # We do NOT adopt orphans as strategy positions — they were never scored/sized
     # by the system, and adopting them caused the May 26 2026 mass-entry incident.
     for sym, pos in ibkr.items():
         qty = int(pos['qty'])
-        if sym not in db_symbols and qty != 0:
-            # Long orphan → SELL, Short orphan → BUY
-            close_side = 'SELL' if qty > 0 else 'BUY'
-            close_qty  = abs(qty)
-            log(f"Reconcile: {sym} in IBKR (qty={qty}) but missing from DB → closing orphan immediately")
-            send_telegram(f"⚠️ Reconcile: {sym} orphan position ({qty} shares) found — closing now")
-            closed = False
+        if sym in db_symbols or sym in other_books or qty == 0:
+            _orphan_first_seen.pop(sym, None)     # accounted for — reset the grace clock
+            continue
 
-            # Attempt 1: market order (fast, works when data subscription exists)
+        # RACE GUARD (Sep 10 2026). Wave Rider / Contrarian / Clockwork write their DB row only
+        # AFTER fill confirmation, which takes 8-10s (status polls + portfolio check). A
+        # reconcile landing inside that window sees a real position that no book has claimed
+        # YET, and would close a position that was legitimately opened seconds earlier. Require
+        # a symbol to look unaccounted for continuously before acting on it.
+        _first = _orphan_first_seen.setdefault(sym, time.time())
+        if time.time() - _first < ORPHAN_GRACE_S:
+            log(f"Reconcile: {sym} unaccounted (qty={qty}) — within {ORPHAN_GRACE_S}s grace, "
+                f"another book may still be recording it; not acting yet")
+            continue
+
+        st = _orphan_close_state.get(sym)
+        if st is None or st['date'] != today_str:
+            st = {'date': today_str, 'attempts': 0, 'last_ts': 0.0}
+            _orphan_close_state[sym] = st
+
+        if time.time() - st['last_ts'] < ORPHAN_CLOSE_COOLDOWN_S:
+            continue   # a close may already be in flight — give it time to land, don't re-fire
+
+        if st['attempts'] >= MAX_DAILY_ORPHAN_ATTEMPTS:
+            if st['attempts'] == MAX_DAILY_ORPHAN_ATTEMPTS:   # fire the alert exactly once
+                send_telegram(f"🚨 Reconcile: {sym} orphan still open after "
+                               f"{MAX_DAILY_ORPHAN_ATTEMPTS} close attempts today — MANUAL "
+                               f"ACTION REQUIRED, auto-retry stopped for the rest of today")
+                log(f"Reconcile: {sym} exhausted {MAX_DAILY_ORPHAN_ATTEMPTS} attempts — "
+                    f"manual close required")
+                st['attempts'] += 1   # step past the threshold so this branch fires only once
+            continue
+
+        st['attempts'] += 1
+        st['last_ts'] = time.time()
+
+        close_side = 'SELL' if qty > 0 else 'BUY'   # Long orphan → SELL, Short orphan → BUY
+        close_qty  = abs(qty)
+        log(f"Reconcile: {sym} in IBKR (qty={qty}) but missing from DB → closing orphan "
+            f"(attempt {st['attempts']}/{MAX_DAILY_ORPHAN_ATTEMPTS})")
+        send_telegram(f"⚠️ Reconcile: {sym} orphan position ({qty} shares) found — closing "
+                       f"now (attempt {st['attempts']}/{MAX_DAILY_ORPHAN_ATTEMPTS})")
+
+        try:
+            requests.post(f"{BRIDGE}/order", json={'symbol': sym, 'qty': close_qty,
+                          'side': close_side, 'order_type': 'MARKET'}, timeout=10)
+        except Exception as _re:
+            log(f"Reconcile: {sym} market order failed ({_re})")
+
+        time.sleep(2)   # give a liquid-name market order time to actually register
+        remaining = int(get_ibkr_positions().get(sym, {}).get('qty', 0) or 0)
+
+        if remaining == 0:
+            log(f"Reconcile: {sym} confirmed flat after close")
+            send_telegram(f"✅ Reconcile: {sym} confirmed flat")
+            _orphan_close_state.pop(sym, None)
+            _orphan_first_seen.pop(sym, None)
+            continue
+        if remaining != qty:
+            log(f"Reconcile: {sym} partial fill — qty {qty} → {remaining}, will retry next cycle")
+            continue
+
+        # Genuinely unchanged (verified against the real portfolio, not the status field) —
+        # only now is the limit fallback warranted.
+        log(f"Reconcile: {sym} still shows qty={remaining} after market order — trying a limit order")
+        price = get_live_price(sym)
+        if price:
+            lmt = round(price * 1.005 if close_side == 'BUY' else price * 0.995, 2)
             try:
-                r_close = requests.post(
-                    f"{BRIDGE}/order",
-                    json={'symbol': sym, 'qty': close_qty,
-                          'side': close_side, 'order_type': 'MARKET'},
-                    timeout=10,
-                )
-                status = r_close.json().get('status', '')
-                log(f"Reconcile: {sym} market close → {status}")
-                if status not in ('Cancelled', 'Inactive', ''):
-                    closed = True
-            except Exception as _re:
-                log(f"Reconcile: {sym} market order failed ({_re})")
-
-            # Attempt 2: limit order with yfinance price (bypasses data subscription gate)
-            if not closed:
-                price = get_live_price(sym)
-                if price:
-                    # Limit slightly aggressive to ensure fill
-                    lmt = round(price * 1.005 if close_side == 'BUY' else price * 0.995, 2)
-                    try:
-                        r_lmt = requests.post(
-                            f"{BRIDGE}/order",
-                            json={'symbol': sym, 'qty': close_qty,
-                                  'side': close_side, 'order_type': 'LIMIT',
-                                  'limit_price': lmt},
-                            timeout=10,
-                        )
-                        status = r_lmt.json().get('status', '')
-                        log(f"Reconcile: {sym} limit close @ {lmt} → {status}")
-                        if status not in ('Cancelled', 'Inactive', ''):
-                            closed = True
-                    except Exception as _re2:
-                        log(f"Reconcile: {sym} limit order failed ({_re2})")
-
-            if not closed:
-                send_telegram(f"🚨 Reconcile: {sym} orphan could not be closed — MANUAL ACTION REQUIRED")
-                log(f"Reconcile: {sym} all close attempts failed — manual close required")
+                requests.post(f"{BRIDGE}/order", json={'symbol': sym, 'qty': close_qty,
+                              'side': close_side, 'order_type': 'LIMIT', 'limit_price': lmt},
+                              timeout=10)
+                log(f"Reconcile: {sym} limit close @ {lmt} submitted")
+            except Exception as _re2:
+                log(f"Reconcile: {sym} limit order failed ({_re2})")
 
     # DB has open trade, IBKR doesn't → closed externally (manual close, partial fill, etc.)
     for sym, trade in db_symbols.items():
@@ -2209,6 +2310,15 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
         except Exception:
             pass  # If account query fails, proceed rather than block a valid trade
 
+        # Snapshot the position BEFORE ordering. The portfolio fallbacks below used to read the
+        # whole IBKR position as "our fill" — which is only correct when this book is the sole
+        # owner of the symbol. Wave Rider / Contrarian / Clockwork trade the SAME account, so if
+        # any of them already held this ticker, auto_trader would record THEIR shares as its own
+        # (and their blended avgCost as its entry price), then sell the combined lot on exit.
+        # Found Sep 10 2026, before it fired. Only the DELTA is ever ours.
+        _pre_pos = get_ibkr_positions()
+        _pre_qty = int(_pre_pos.get(symbol, {}).get('qty', 0) or 0)
+
         order_side = 'BUY' if side == 'LONG' else 'SELL'
         payload = {'symbol': symbol, 'qty': shares, 'side': order_side, 'order_type': 'MARKET'}
         if limit_price:
@@ -2266,9 +2376,16 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                     ibkr_qty = ibkr_chk.get(symbol, {}).get('qty', 0) or 0
                     position_match = (side == 'LONG' and ibkr_qty > 0) or (side == 'SHORT' and ibkr_qty < 0)
                     if position_match:
-                        log(f"  {symbol}: Order {order_id} {d['status']} but {side} position confirmed in IBKR — recording fill")
-                        price  = ibkr_chk[symbol].get('avgCost', price)
-                        shares = abs(int(ibkr_qty))   # use actual filled qty from IBKR
+                        _delta = abs(int(ibkr_qty) - _pre_qty)   # only the change is ours
+                        if _delta == 0:
+                            log(f"  {symbol}: Order {order_id} {d['status']} and position "
+                                f"unchanged at {ibkr_qty} (already held by another book) — not recording")
+                            return None
+                        log(f"  {symbol}: Order {order_id} {d['status']} but {side} position confirmed "
+                            f"in IBKR ({_pre_qty} → {ibkr_qty}) — recording fill of {_delta} sh")
+                        _fill_px = _last_fill_price(symbol, 'BOT' if side == 'LONG' else 'SLD')
+                        price  = _fill_px or price   # never the blended avgCost
+                        shares = min(shares, _delta)
                         filled = True
                         break
                     log(f"  {symbol}: Order {order_id} {d['status']} — not recording")
@@ -2282,11 +2399,16 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
             # already exists in IBKR.
             ibkr_chk = get_ibkr_positions()
             ibkr_qty = ibkr_chk.get(symbol, {}).get('qty', 0) or 0
-            position_match = (side == 'LONG' and ibkr_qty > 0) or (side == 'SHORT' and ibkr_qty < 0)
+            _delta   = abs(int(ibkr_qty) - _pre_qty)   # only the change is ours (see snapshot above)
+            position_match = _delta > 0 and (
+                (side == 'LONG' and int(ibkr_qty) > _pre_qty) or
+                (side == 'SHORT' and int(ibkr_qty) < _pre_qty))
             if position_match:
-                log(f"  {symbol}: Fill confirmed via portfolio fallback (order status slow) — recording fill")
-                price  = ibkr_chk[symbol].get('avgCost', price)
-                shares = abs(int(ibkr_qty))
+                log(f"  {symbol}: Fill confirmed via portfolio fallback (order status slow) — "
+                    f"position {_pre_qty} → {ibkr_qty}, recording {_delta} sh")
+                _fill_px = _last_fill_price(symbol, 'BOT' if side == 'LONG' else 'SLD')
+                price  = _fill_px or price   # never the blended avgCost
+                shares = min(shares, _delta)
                 filled = True
             else:
                 log(f"  {symbol}: Fill not confirmed after {poll_attempts * 2}s — skipping DB entry")
@@ -2522,8 +2644,14 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     _cp.execute('UPDATE trades SET partial_exited=1 WHERE id=?', (tid,))
                     _cp.commit()
                     _cp.close()
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    # This flag is the ONLY durable record that the 1R partial already fired —
+                    # startup rebuilds partial_done_trades from it. Swallowing the failure
+                    # silently means a restart re-arms the partial and sells another 50%.
+                    log(f"  {sym}: ⚠️ FAILED to persist partial_exited flag ({_pe}) — a restart "
+                        f"before this trade closes could double-fire the partial exit")
+                    send_telegram(f"⚠️ {sym}: partial-exit flag not saved — do not restart "
+                                  f"auto_trader until this position closes")
                 tag = '↓SHORT' if is_short else ''
                 log(f"  {sym} {tag}: PARTIAL EXIT {half}sh @ ${price} +${locked:.0f} locked — trailing {shares - half}sh")
                 exits.append({'sym': sym, 'price': price, 'entry': entry,
@@ -2663,10 +2791,21 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     peak = session_high.get(tid, entry)
                     _max_gain_pct = (peak - entry) / entry * 100 if peak > entry else 0.0
                 pnl = log_trade_exit(tid, price, exit_reason, max_gain_pct=_max_gain_pct)
-                requests.post(f"{BRIDGE}/order", json={
-                    'symbol': sym, 'qty': close_qty,
-                    'side': close_side, 'order_type': 'MARKET'
-                }, timeout=10)
+                # Response was previously discarded entirely — a failed exit submission looked
+                # identical to a successful one, and only surfaced later as a reconcile orphan.
+                # reconcile_with_ibkr() is now a verified safety net for that, but flying blind
+                # here is still how the failure stays invisible in this log.
+                try:
+                    _xr = requests.post(f"{BRIDGE}/order", json={
+                        'symbol': sym, 'qty': close_qty,
+                        'side': close_side, 'order_type': 'MARKET'
+                    }, timeout=10)
+                    if _xr.status_code != 200:
+                        log(f"  {sym}: EXIT ORDER REJECTED — bridge {_xr.status_code}: "
+                            f"{_xr.text[:120]} (DB already booked; reconcile will pick it up)")
+                except Exception as _xe:
+                    log(f"  {sym}: EXIT ORDER FAILED TO SUBMIT ({_xe}) — DB already booked; "
+                        f"reconcile_with_ibkr() will detect the still-open position")
                 exits.append({
                     'sym': sym, 'price': price, 'entry': entry,
                     'pnl': pnl, 'pnl_pct': pnl_pct, 'pnl_usd': round(pnl_usd, 2),
@@ -2726,10 +2865,20 @@ def fast_monitor_positions():
                 pnl = log_trade_exit(tid, price, reason, max_gain_pct=_max_gain)
                 if ibkr_qty > 0:
                     close_side = 'BUY' if is_short else 'SELL'
-                    requests.post(f"{BRIDGE}/order", json={
-                        'symbol': sym, 'qty': min(shares, int(ibkr_qty)),
-                        'side': close_side, 'order_type': 'MARKET'
-                    }, timeout=10)
+                    # Response used to be discarded entirely — the close could silently fail
+                    # to fill and nothing would know until reconcile_with_ibkr() rediscovered
+                    # it as an "orphan" (Sep 2026 incident). reconcile is now the verified
+                    # safety net for this (real portfolio check + cooldown + attempt cap), so
+                    # the DB-write-first ordering here is fine — just stop flying blind.
+                    try:
+                        r = requests.post(f"{BRIDGE}/order", json={
+                            'symbol': sym, 'qty': min(shares, int(ibkr_qty)),
+                            'side': close_side, 'order_type': 'MARKET'
+                        }, timeout=10)
+                        log(f"  {sym}: fast-exit close order → {r.json().get('status', '?')}")
+                    except Exception as _oe:
+                        log(f"  {sym}: fast-exit close order failed to submit ({_oe}) — "
+                            f"reconcile_with_ibkr() will pick it up")
                 for d in (price_history, session_high, session_low, open_positions, _l3_pending):
                     d.pop(tid if tid in d else sym, None)
                 direction = '↓SHORT' if is_short else ''
@@ -2821,6 +2970,14 @@ def _chart_alignment_check(sym, entry_price, sl, strategy):
                      f"Rate the setup quality 1-5 and describe the pattern in one sentence.")
         answer_5m = _claude_analyse_image(b64_5m, prompt_5m)
 
+        # Sep 2026: found the equity-side twin of the Aug 9 futures Crest Watch bug — on
+        # ANY API failure (both calls returned None for 6+ hours straight when the Anthropic
+        # account ran out of credit), `'YES' in (None or '').upper()` silently evaluates to
+        # False, which prints as "❌" — indistinguishable from a real "Claude said NO" read.
+        # A SKIPPED entry can't be silently misread as a verdict.
+        if answer_1h is None and answer_5m is None:
+            log(f"  [CHART GATE LOG] {sym} | SKIPPED — Claude vision call failed, see error above")
+            return
         aligned = 'YES' in (answer_1h or '').upper()
         log(f"  [CHART GATE LOG] {sym} | 1h aligned: {'✅' if aligned else '❌'} | {answer_1h}")
         log(f"  [CHART GATE LOG] {sym} | 5m quality: {answer_5m}")
@@ -2874,7 +3031,15 @@ def _thesis_check_position(trade_id, sym, side, entry_price, current_price, pnl_
                   f"action since entry, or does this look like it is breaking down? "
                   f"Answer INTACT or BREAKING on the first line, then one sentence of reasoning.")
         answer = _claude_analyse_image(b64, prompt)
-        breaking = 'BREAKING' in (answer or '').upper()
+        if answer is None:
+            # Sep 2026: on any API failure this silently defaulted to "✅ INTACT" — the single
+            # worst failure mode for a mechanism that exists to catch a BREAKING thesis. A
+            # multi-hour Anthropic billing outage would have logged a wall of fabricated
+            # "everything's fine" verdicts with zero indication the check never ran.
+            log(f"  [THESIS CHECK LOG] {sym} #{trade_id} | SKIPPED — Claude vision call failed, "
+                f"see error above | {pnl_pct:+.2f}%")
+            return
+        breaking = 'BREAKING' in answer.upper()
         log(f"  [THESIS CHECK LOG] {sym} #{trade_id} | {'⚠️ BREAKING' if breaking else '✅ INTACT'} | "
             f"{pnl_pct:+.2f}% | {answer}")
     except Exception as e:
@@ -2909,13 +3074,19 @@ def thesis_check_weekly_review():
         log_file = os.path.join(_DIR, 'logs', 'auto_trader.log')
         if not os.path.exists(log_file):
             return
-        breaking_calls, intact_calls = [], []
+        breaking_calls, intact_calls, skipped = [], [], 0
         with open(log_file, 'r') as f:
             for line in f:
                 if '[THESIS CHECK LOG]' not in line:
                     continue
                 try:
                     parts = line.split('[THESIS CHECK LOG]')[1].strip()
+                    if 'SKIPPED' in parts:
+                        # a failed API call, not a real read — must NOT silently count as
+                        # INTACT (Sep 2026: this is exactly the miscount that made a multi-hour
+                        # Anthropic outage look like a wall of healthy positions)
+                        skipped += 1
+                        continue
                     sym_and_id = parts.split('|')[0].strip()
                     sym = sym_and_id.split('#')[0].strip()
                     breaking = 'BREAKING' in parts
@@ -2926,7 +3097,9 @@ def thesis_check_weekly_review():
 
         total = len(breaking_calls) + len(intact_calls)
         if total == 0:
-            send_telegram("🧠 Thesis Check Weekly Review\nNo checks logged this week — no losing positions triggered one, or none yet wired in long enough.")
+            skip_note = f" ({skipped} skipped — API failures)" if skipped else ""
+            send_telegram(f"🧠 Thesis Check Weekly Review\nNo checks logged this week{skip_note} — "
+                           f"no losing positions triggered one, or none yet wired in long enough.")
             return
 
         # Cross-ref BREAKING calls with DB outcomes — did the position that
@@ -2945,9 +3118,10 @@ def thesis_check_weekly_review():
         conn.close()
 
         confirmed_loss_count = sum(1 for s in breaking_outcomes if 'LOSS' in s)
+        skip_note = f" | SKIPPED (API failed): {skipped}" if skipped else ""
         lines = [
             f"🧠 Thesis Check Weekly Review | {datetime.now(ET).strftime('%b %d')}",
-            f"Total checks: {total} | BREAKING: {len(breaking_calls)} | INTACT: {len(intact_calls)}",
+            f"Total checks: {total} | BREAKING: {len(breaking_calls)} | INTACT: {len(intact_calls)}{skip_note}",
             "",
             f"BREAKING calls that ended in a real loss: {confirmed_loss_count}/{len(breaking_calls)}"
             if breaking_calls else "No BREAKING calls this week.",
@@ -3656,8 +3830,14 @@ def run_scan():
         bst = requests.get(f"{BRIDGE}/", timeout=5).json()
         if not bst.get('connected', False):
             log("⚠️ Gateway not connected — reconcile skipped, entries blocked this cycle")
+            _was_down = _gateway_unstable_until is not None
             _gateway_unstable_until = datetime.now(ET) + timedelta(minutes=10)
-            send_telegram("⚠️ IBKR gateway disconnected — entries paused for 10 min")
+            # Alert on the TRANSITION only. This fired every scan cycle while the gateway was
+            # down, so a multi-hour outage (a reboot, or the nightly 23:45 IB logoff) produced
+            # an unbroken wall of identical Telegrams — the same alert-fatigue failure as the
+            # Jul 20 USAR storm and the Sep 10 position-mismatch flood.
+            if not _was_down:
+                send_telegram("⚠️ IBKR gateway disconnected — entries paused for 10 min")
             _entries_allowed = False
     except Exception as _be:
         log(f"⚠️ Bridge unreachable ({_be}) — entries blocked this cycle")
@@ -3676,14 +3856,31 @@ def run_scan():
     if _entries_allowed:
         reconcile_with_ibkr()
 
-        # Layer 3: position parity — if counts still differ after reconcile, don't enter
+        # Layer 3: position parity — if counts still differ after reconcile, don't enter.
+        # Sep 10 2026: this counted ONLY the `trades` table against the WHOLE account, so every
+        # position legitimately held by Wave Rider / Contrarian / Clockwork registered as a
+        # mismatch. Effect was not just noise (55 identical Telegrams in one morning) — it set
+        # _entries_allowed=False on every cycle, so auto_trader was locked out of trading
+        # entirely for as long as any other book held anything. Count all four books, and only
+        # alert when the number actually changes.
         ibkr_pos  = get_ibkr_positions()
-        ibkr_count = len([p for p in ibkr_pos.values() if int(p.get('qty', 0)) != 0])
-        db_count   = len(get_open_trades())
-        if ibkr_count != db_count:
-            log(f"⚠️ Position mismatch after reconcile: IBKR={ibkr_count} DB={db_count} — entries blocked this cycle")
-            send_telegram(f"⚠️ Position mismatch IBKR={ibkr_count} DB={db_count} — entries paused, check positions")
+        ibkr_syms = {s for s, p in ibkr_pos.items() if int(p.get('qty', 0)) != 0}
+        known_syms = {t['symbol'] for t in get_open_trades()} | _other_book_symbols()
+        # Same race guard as reconcile: a position another book has not finished recording yet
+        # is not a mismatch, it is a 10-second timing gap. Don't alert or block on it.
+        unaccounted = {s for s in (ibkr_syms - known_syms)
+                       if time.time() - _orphan_first_seen.get(s, 0) >= ORPHAN_GRACE_S}
+        if unaccounted:
+            msg = (f"IBKR has {len(unaccounted)} position(s) no book owns "
+                   f"({', '.join(sorted(unaccounted))})")
+            log(f"⚠️ Position mismatch after reconcile: {msg} — entries blocked this cycle")
+            global _mismatch_last_alert
+            if _mismatch_last_alert != sorted(unaccounted):
+                send_telegram(f"⚠️ Position mismatch — {msg}. Entries paused.")
+                _mismatch_last_alert = sorted(unaccounted)
             _entries_allowed = False
+        else:
+            _mismatch_last_alert = None
 
     # Update sector ETF strengths once per scan cycle
     update_sector_strength()

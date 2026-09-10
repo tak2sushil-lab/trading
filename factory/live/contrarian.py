@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0, "/Users/sushil/trading")
 from collect_bars import load_bars  # noqa: E402
+from factory.live._fills import place_verified  # noqa: E402
 
 LOCK = "/tmp/contrarian.lock"
 MODE = os.environ.get("CONTRARIAN_MODE", "SHADOW").upper()
@@ -203,23 +204,10 @@ def days_to_earnings(sym: str):
 
 
 def place_paper_order(sym, shares, side):
-    try:
-        r = requests.post(f"{BRIDGE}/order",
-                          json={"symbol": sym, "qty": shares, "side": side, "order_type": "MARKET"}, timeout=10)
-        if r.status_code != 200 or not r.text.strip():
-            log(f"order rejected {sym}: {r.status_code}"); return False, 0.0, None
-        oid = r.json().get("orderId")
-        if not oid:
-            return False, 0.0, None
-        for _ in range(4):
-            time.sleep(2)
-            d = requests.get(f"{BRIDGE}/order/{oid}/status", timeout=5).json()
-            if d.get("status") == "Filled":
-                px = d.get("avgFillPrice")
-                return True, float(px) if px else 0.0, str(oid)
-        return False, 0.0, str(oid)
-    except Exception as e:
-        log(f"order error {sym}: {e}"); return False, 0.0, None
+    """Confirmation lives in _fills.place_verified, which decides on the POSITION DELTA —
+    correct for the SELL exits below as well as for BUY entries. See _fills.py for why the
+    order-status field is never trusted on its own."""
+    return place_verified(BRIDGE, sym, shares, side, log=log)
 
 
 # ─────────────────────────── scan + enter ───────────────────────────

@@ -62,6 +62,25 @@ MAX_AGE_HOURS     = 16     # fetch window: covers overnight news at 9:30am open
                            # (4pm close + ~12h gap to open = need ≥13h; 16h gives margin)
 DEDUP_HOURS       = 24     # dedup window: must be >= MAX_AGE_HOURS to prevent re-classifying
 
+# ── Paid-fallback kill switch (Sep 10 2026) ──────────────────────────────────
+# This engine was the single largest consumer of paid Anthropic credit in the whole system,
+# by a wide margin, and it was spending it on output that is NOT ALLOWED TO TRADE: news was
+# decoupled from execution on Jul 19 2026 (Ghost Ledger only, every suggestion marked
+# NO_TRADE) and the Aug 16 audit found news conviction carries no measurable edge.
+#
+# The spend came from a failure loop, not from normal use:
+#   1. Groq's free tier hits its DAILY cap (51 recorded cap events) and all rungs disable.
+#   2. Every remaining classify that day falls through to paid claude-haiku.
+#   3. A headline only enters the dedup window once it is SUCCESSFULLY classified and stored,
+#      so anything that fails is re-fetched and re-classified on the very next 15-min scan.
+#   4. A failed BATCH call retries every headline INDIVIDUALLY (N× amplification).
+# Net result: a component designed for "<25 LLM calls/day" produced 119,581 failed-provider
+# log lines, and an equivalent volume of PAID calls before the credit ran out.
+#
+# False = ride the free Groq tier only; when Groq is capped, skip classification for the rest
+# of the day rather than buying it. Flip to True only if news is ever re-wired to trade.
+ALLOW_PAID_LLM_FALLBACK = False
+
 # Alpha Vantage free tier: 25 calls/day.  We call once per symbol per calendar
 # day (13 symbols = 13 calls).  This set resets at midnight automatically
 # because process restarts or we check the date inside the guard.
@@ -329,7 +348,7 @@ def _llm_call(prompt: str, max_tokens: int) -> str:
                     print(f'[LLM] {model} daily cap hit — disabled for rest of day')
                     _groq_disabled_today.add(model)
                 continue   # every other error falls through to the next rung
-    if ai:
+    if ai and ALLOW_PAID_LLM_FALLBACK:
         try:
             resp = ai.messages.create(
                 model    = 'claude-haiku-4-5-20251001',
@@ -686,6 +705,15 @@ def classify_headlines_batch(symbol: str,
             return results
         print(f"[LLM] {symbol} batch length mismatch ({len(results)} vs {len(headlines)}) — retrying individually")
     except Exception as e:
+        # A provider-exhaustion failure ("All LLM providers failed") is NOT a per-headline
+        # problem, so retrying each headline individually just multiplies an outage by N.
+        # Sep 10 2026: that amplification is a large part of how this engine produced 119,581
+        # failed-provider log lines. Only fan out for errors that are actually per-item
+        # (a truncated batch response), which is what the fallback was built for.
+        if 'All LLM providers failed' in str(e):
+            print(f"[LLM] {symbol} batch classify aborted: providers exhausted — "
+                  f"skipping {len(headlines)} headline(s) this pass, NOT retrying individually")
+            return [None] * len(headlines)
         print(f"[LLM] {symbol} batch classify error: {e} — retrying individually")
 
     # Fallback: classify each headline individually so a token-limit truncation
@@ -1113,9 +1141,11 @@ def main():
     print(f'   Symbols  : {len(OPTIONS_SYMBOLS)}')
     print(f'   Interval : {SCAN_INTERVAL_MIN} min')
     print(f'   Sources  : {sources}')
+    _paid = ai and ALLOW_PAID_LLM_FALLBACK      # banner must not advertise a rung that is off
     llm_label = (f'groq ladder: {" → ".join(m for m, _ in GROQ_MODELS)}'
-                 + (' → claude-haiku' if ai else '') if _groq_client
-                 else 'claude-haiku (fallback)' if ai
+                 + (' → claude-haiku' if _paid else ' (free tier only — paid fallback OFF)')
+                 if _groq_client
+                 else 'claude-haiku (fallback)' if _paid
                  else 'DISABLED — set GROQ_KEY or ANTHROPIC_KEY')
     print(f'   LLM      : {llm_label}')
     print('=' * 52)

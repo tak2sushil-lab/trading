@@ -205,15 +205,47 @@ async def get_portfolio():
                 continue
             sym = p.contract.symbol
             pf  = price_map.get(sym)
+            mkt_px = clean(pf.marketPrice)   if pf else None
+            mkt_val = clean(pf.marketValue)  if pf else None
+            upnl   = clean(pf.unrealizedPNL) if pf else None
+            avg    = clean(p.avgCost)
+
+            # ── Bad-tick guard (Sep 10 2026) ─────────────────────────────────
+            # ib.portfolio() serves whatever marketPrice the account-update stream last
+            # carried. When IBKR has not ticked a contract, that field can come back as a
+            # near-zero placeholder: MRVL was reported at $0.87 against a $238.01 basis
+            # while /quote correctly said $232.58 — a fabricated -$1,936 unrealized loss on
+            # an 8-share position. That number is not cosmetic: auto_trader sums
+            # unrealizedPnL into session P&L, peak_session_pnl, and the DAILY LOSS CIRCUIT
+            # BREAKER, so one stale tick can halt live trading on a loss that never happened.
+            # A position marked at <20% of its own cost basis is treated as suspect and
+            # re-priced from the live quote before it can poison anything downstream.
+            try:
+                if avg and mkt_px is not None and 0 < mkt_px < avg * 0.2:
+                    # p.contract is already qualified (it came from ib.positions()); building a
+                    # fresh Stock() here fails with "can't be hashed because no 'conId' value".
+                    tkr = ib.reqMktData(p.contract, snapshot=True)
+                    await asyncio.sleep(2)
+                    live_px = clean_price(tkr.last) or clean_price(tkr.close) \
+                              or clean_price(tkr.bid) or clean_price(tkr.ask)
+                    if live_px and live_px > avg * 0.2:
+                        mkt_px  = live_px
+                        mkt_val = round(live_px * p.position, 2)
+                        upnl    = round((live_px - avg) * p.position, 2)
+                        print(f"[portfolio] {sym}: stale marketPrice repriced from quote "
+                              f"-> ${live_px} (basis ${avg})")
+            except Exception as e:
+                print(f"[portfolio] {sym}: bad-tick recheck failed: {e}")
+
             result.append({
                 "account":       p.account,
                 "symbol":        sym,
                 "qty":           p.position,
-                "avgCost":       clean(p.avgCost),
-                "marketPrice":   clean(pf.marketPrice)   if pf else None,
-                "marketValue":   clean(pf.marketValue)   if pf else None,
-                "unrealizedPnL": clean(pf.unrealizedPNL) if pf else None,
-                "realizedPnL":   clean(pf.realizedPNL)   if pf else None,
+                "avgCost":       avg,
+                "marketPrice":   mkt_px,
+                "marketValue":   mkt_val,
+                "unrealizedPnL": upnl,
+                "realizedPnL":   clean(pf.realizedPNL) if pf else None,
             })
         return result
 

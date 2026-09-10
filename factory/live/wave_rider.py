@@ -21,6 +21,7 @@ import os, sys, sqlite3, time, datetime as dt
 import requests
 import pandas as pd
 sys.path.insert(0, "/Users/sushil/trading")
+from factory.live._fills import place_verified  # noqa: E402
 
 LOCK = "/tmp/wave_rider.lock"   # prevents overlapping launchd runs (the scan can exceed 5 min)
 
@@ -210,25 +211,13 @@ def qualifies(sig) -> bool:
 
 # ─────────────────────────── order path (LIVE only) ───────────────────────────
 def place_paper_order(sym, shares, side) -> tuple[bool, float, str | None]:
-    """Returns (filled, fill_price, order_id). Mirrors auto_trader's confirm-fill pattern."""
-    try:
-        r = requests.post(f"{BRIDGE}/order",
-                          json={"symbol": sym, "qty": shares, "side": side, "order_type": "MARKET"}, timeout=10)
-        if r.status_code != 200 or not r.text.strip():
-            log(f"order rejected {sym}: {r.status_code}"); return False, 0.0, None
-        oid = r.json().get("orderId")
-        if not oid:
-            return False, 0.0, None
-        import time
-        for _ in range(4):
-            time.sleep(2)
-            d = requests.get(f"{BRIDGE}/order/{oid}/status", timeout=5).json()
-            if d.get("status") == "Filled":
-                px = d.get("avgFillPrice")
-                return True, float(px) if px else 0.0, str(oid)
-        return False, 0.0, str(oid)
-    except Exception as e:
-        log(f"order error {sym}: {e}"); return False, 0.0, None
+    """Returns (filled, fill_price, order_id). Confirmation lives in _fills.place_verified,
+    which decides on the POSITION DELTA. The Sep-9 version of this function checked
+    `abs(qty) >= shares` against the portfolio, which is right for a BUY but exactly backwards
+    for the SELL exits below — it would read "the position is still here" as "the sell filled"
+    and book avgCost (an entry basis) as the exit price. Fixed Sep 10 before it ever fired
+    here; it had already driven Clockwork's positions to -396 shares."""
+    return place_verified(BRIDGE, sym, shares, side, log=log)
 
 
 # ─────────────────────────── scan + enter ───────────────────────────
