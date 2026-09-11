@@ -1253,6 +1253,10 @@ def tod_relative_volume(symbol, today_cum_vol, now=None):
 
 
 HOLD_TO_CLOSE_BEFORE = (10, 0)   # entries before this hour:minute ride to the EOD close
+# Let a hold-to-close trade still exit on a VWAP CROSS (exit rule 3) — structure saying the
+# move is over — while keeping every give-back exit off for it. Set False to restore the
+# fully-unprotected ride. See the comment on rule 3 for the reasoning and the thin evidence.
+FADE_EXIT_ON_RIDE = True
 
 
 def holds_to_close(tid):
@@ -2771,8 +2775,24 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
             exit_reason = f'Circuit breaker: -${MAX_LOSS_PER_TRADE} hit (${pnl_usd:+.0f})'
 
         # 3. VWAP signal: cross above = cover short / cross below = exit long
+        #
+        # Sep 11 2026 — this is now allowed on hold-to-close trades too (FADE_EXIT_ON_RIDE).
+        # Rationale, and the distinction that makes it different from the give-back exits this
+        # repo has rejected four times: rule 4 below cuts on how much has been HANDED BACK
+        # (drop from the high), and that is the premium paid for the right tail — it stays off.
+        # This rule cuts on STRUCTURE: price crossing back under the session's own volume-
+        # weighted average having been above it, while we are up >= 0.5%. That is the move
+        # being over, not the move breathing. holds_to_close() says it suspends the exits "that
+        # would cut a young trade before its edge has had the session to play out" — a genuine
+        # VWAP cross at +0.5% or better is not that, so excluding it was over-broad.
+        # It is also not a new invention: the identical rule has been live on the other ~446
+        # trades in the book all along. Note it requires a real CROSS (prev_above_vwap True),
+        # not merely being below VWAP.
+        # ⚠️ Evidence is THIN: hold-to-close only shipped Sep 4 and just 7 such trades exist.
+        # September replay favours it (+$40 vs +$12 for a trail) but n=7 is not proof. This is
+        # a judgement call taken on paper, reversible by flipping the constant.
         if (not exit_reason and is_market_open() and pnl_pct > 0.5
-                and above_vwap is not None and not holds_to_close(tid)):
+                and above_vwap is not None and (FADE_EXIT_ON_RIDE or not holds_to_close(tid))):
             if is_short and above_vwap and prev_above_vwap is False:
                 exit_reason = f'VWAP cross above ${vwap_val} — short momentum gone ({pnl_pct:+.1f}%)'
             elif not is_short and not above_vwap and prev_above_vwap is True:
