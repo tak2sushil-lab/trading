@@ -909,6 +909,24 @@ MAX_DAILY_ORPHAN_ATTEMPTS = 5     # then alert once and stop auto-retrying (mirr
 ORPHAN_GRACE_S            = 120   # a position must be unaccounted for THIS long before we act
 _orphan_first_seen        = {}    # sym → epoch when it first looked unaccounted
 
+def _my_unrealized(portfolio):
+    """Unrealized P&L of THIS book's positions only.
+
+    auto_trader shares one IBKR account with Wave Rider (3-day swings), Contrarian (5-day
+    holds) and Clockwork (overnight). Summing the whole account here charged their open
+    drawdown to auto_trader's intraday daily-loss limit: on Sep 11 2026 the brake reported
+    "-$505" and blocked entries for the rest of the day while this book's own realized was
+    -$96 and its own unrealized was +$25. A multi-day position being underwater mid-hold is
+    not a daily loss, and it certainly is not THIS book's daily loss."""
+    try:
+        mine = {t['symbol'] for t in get_open_trades()}
+        return sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio
+                   if (p.get('qty') or 0) != 0 and p.get('symbol') in mine)
+    except Exception as e:
+        log(f"_my_unrealized: {e}")
+        return 0
+
+
 def _last_fill_price(sym, side_code):
     """True fill price for this symbol/side from IBKR's own execution records ('BOT'/'SLD').
     The portfolio's avgCost is the BLENDED basis of everything held in that ticker — across
@@ -3958,7 +3976,7 @@ def run_scan():
     # Live session P&L = realized today + current unrealized
     try:
         portfolio_snap = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
-        unrealized_now = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio_snap if (p.get('qty') or 0) != 0)
+        unrealized_now = _my_unrealized(portfolio_snap)   # THIS book only — see _my_unrealized()
     except Exception:
         unrealized_now = 0
     session_pnl = daily['pnl'] + unrealized_now
@@ -4696,7 +4714,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
     # ── Daily max loss brake ───────────────────────────────────
     try:
         portfolio = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
-        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio if (p.get('qty') or 0) != 0)
+        unrealized = _my_unrealized(portfolio)   # THIS book only — see _my_unrealized()
     except Exception:
         unrealized = 0
     realized    = get_daily_pnl()
@@ -5079,7 +5097,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     # ── Daily max loss brake ───────────────────────────────────
     try:
         portfolio = requests.get(f"{BRIDGE}/portfolio", timeout=8).json()
-        unrealized = sum(p.get('unrealizedPnL', 0) or 0 for p in portfolio if (p.get('qty') or 0) != 0)
+        unrealized = _my_unrealized(portfolio)   # THIS book only — see _my_unrealized()
     except Exception:
         unrealized = 0
     realized    = get_daily_pnl()
@@ -5923,7 +5941,7 @@ if __name__ == '__main__':
         _pr_conn.close()
         try:
             _pf_snap = requests.get(f"{BRIDGE}/portfolio", timeout=5).json()
-            _unreal_snap = sum((p.get('unrealizedPnL') or 0) for p in _pf_snap if (p.get('qty') or 0) != 0)
+            _unreal_snap = _my_unrealized(_pf_snap)   # THIS book only
         except Exception:
             _unreal_snap = 0.0
         _restored_peak = float(_realized_snap) + float(_unreal_snap)

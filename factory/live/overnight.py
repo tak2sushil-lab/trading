@@ -25,7 +25,8 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0, "/Users/sushil/trading")
 from collect_bars import load_bars  # noqa: E402
-from factory.live._fills import place_verified, position_qty, last_fill_price  # noqa: E402
+from factory.live._fills import (place_verified, position_qty, last_fill_price,  # noqa: E402
+                                   fill_by_order_id)
 
 LOCK = "/tmp/clockwork.lock"
 MODE = os.environ.get("CLOCKWORK_MODE", "SHADOW").upper()   # SHADOW | LIVE
@@ -124,9 +125,15 @@ def set_status(tid, st, **cols):
 
 
 def order_fill(oid):
-    """(filled, avg_price). `/order/{id}/status` can lag (the Jul-20 USAR / Sep-3 futures
-    lesson), so a 'not filled' answer here is never treated as proof — the caller retries on
-    the next 5-min pass and falls back to a MARKET cross before the window closes."""
+    """(filled, avg_price) for THIS order id.
+
+    Checks the execution records FIRST (ground truth, identifies our specific order) and only
+    falls back to the status endpoint, which lags. Never infers anything from the net position
+    — in a shared account that is the sum of all four books, and reading it as ours is what
+    caused the Sep 11 2026 oversell."""
+    filled, px, _sh = fill_by_order_id(BRIDGE, oid, log)
+    if filled and px:
+        return True, px
     try:
         d = requests.get(f"{BRIDGE}/order/{oid}/status", timeout=5).json()
         if d.get("status") == "Filled" and d.get("avgFillPrice"):
@@ -310,22 +317,24 @@ def confirm_fills():
                 set_status(t["id"], "OPEN", entry_price=px)
                 log(f"STALE ENTRY adopted {t['symbol']} @ ${px:.2f} (filled, confirm was missed)")
                 continue
-            # order_fill's own docstring: "not filled" is never proof by itself — cross-check
-            # the real portfolio before deleting our only record of this position.
-            qty, avg_cost = real_position(t["symbol"])
+            # order_fill() already consulted the execution record for THIS order id, which is
+            # the only uncontaminated answer. The previous version fell back to the net
+            # portfolio position here — the mirror image of the exit-side oversell: if Wave
+            # Rider happened to hold the same ticker, Clockwork would "adopt" ITS shares and
+            # then sell them at the next open. Only delete the row when the account is
+            # genuinely flat in that symbol AND no book claims it; otherwise hold and retry.
+            qty, _avg = real_position(t["symbol"])
             if qty is None:
-                log(f"STALE ENTRY {t['symbol']} — order status AND portfolio check both "
-                    f"failed, leaving row pending, will retry next pass")
-            elif qty > 0:
-                px = avg_cost or t["entry_price"]
-                set_status(t["id"], "OPEN", entry_price=px)
-                log(f"STALE ENTRY adopted {t['symbol']} @ ${px:.2f} qty={qty} via portfolio "
-                    f"check (order status lagged, real position confirms the fill)")
-            else:
+                log(f"STALE ENTRY {t['symbol']} — order status, execution record and portfolio "
+                    f"all inconclusive; leaving row pending, will retry next pass")
+            elif qty == 0:
                 c = sqlite3.connect(DB)
                 c.execute("DELETE FROM overnight_trades WHERE id=?", (t["id"],)); c.commit(); c.close()
-                log(f"STALE ENTRY never filled {t['symbol']} — confirmed zero in portfolio, "
-                    f"row removed")
+                log(f"STALE ENTRY never filled {t['symbol']} — no fill on order {t['order_id']} "
+                    f"and the account is flat in it, row removed")
+            else:
+                log(f"STALE ENTRY {t['symbol']} — order {t['order_id']} shows no fill, but the "
+                    f"account holds {qty} (another book's). NOT adopting it; leaving pending")
     for t in rows_with_status("PENDING_EXIT"):
         if t["entry_date"] < today and not (EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END):
             filled, px = order_fill(t["order_id"])
@@ -333,28 +342,20 @@ def confirm_fills():
                 record_exit(t["id"], px)
                 log(f"STALE EXIT confirmed {t['symbol']} @ ${px:.2f}")
                 continue
-            # Sep 10 2026 — THE OVERSELL BUG. This used to fall straight through to
-            # set_status(OPEN), which hands the row back to exit_at_open(), which submits
-            # ANOTHER MOO SELL next pass. When the first sell HAD actually filled (the status
-            # endpoint just lagged), every pass sold again: CC reached -396 shares, CLF -492,
-            # UUUU -408 before reconcile bought them back. "Not filled" is not proof — the
-            # position itself is. Only return to OPEN if we verifiably still hold the shares.
-            qty = position_qty(BRIDGE, t["symbol"], log)
-            if qty is None:
-                log(f"STALE EXIT {t['symbol']} — cannot verify position, leaving PENDING_EXIT "
-                    f"(will retry; never re-sends a sell on an unverified read)")
-            elif qty <= 0:
-                px2 = last_fill_price(BRIDGE, t["symbol"], "SLD", log) or bridge_quote(t["symbol"])
-                if px2:
-                    record_exit(t["id"], float(px2))
-                    log(f"STALE EXIT confirmed {t['symbol']} @ ${float(px2):.2f} — position is "
-                        f"flat, the sell had filled (order status lagged)")
-                else:
-                    log(f"STALE EXIT {t['symbol']} flat in portfolio but no fill price yet — "
-                        f"leaving PENDING_EXIT rather than booking a made-up price")
-            else:                            # genuinely still holding it — back to the exit path
-                log(f"STALE EXIT unfilled {t['symbol']} — {qty} shares still held, returned to OPEN")
-                set_status(t["id"], "OPEN")
+            # Sep 10-11 2026 — THE OVERSELL BUG, twice.
+            # v1 fell straight through to set_status(OPEN), which hands the row back to
+            # exit_at_open() and submits ANOTHER MOO SELL next pass. v2 tried to guard that
+            # with the NET POSITION — but the net is the sum of all four books sharing this
+            # account, so when Clockwork's sell filled and Wave Rider still held the same
+            # ticker, the net stayed positive, v2 read "still held" and sold AGAIN. Ten
+            # symbols went short and Wave Rider's positions were consumed in the process.
+            # order_fill() now identifies OUR order by id via the execution records, so a
+            # "did it fill" answer can no longer be contaminated by another book. If that
+            # is still inconclusive we hold the row PENDING_EXIT and retry — we never
+            # re-send a sell on an ambiguous read.
+            log(f"STALE EXIT {t['symbol']} — order {t['order_id']} shows no fill in the "
+                f"execution record yet; holding PENDING_EXIT for the next pass rather than "
+                f"re-sending a sell (never infer from the shared net position)")
 
     if ENTRY_CONFIRM_START <= n.time() <= ENTRY_CONFIRM_END:
         for t in rows_with_status("PENDING_ENTRY"):

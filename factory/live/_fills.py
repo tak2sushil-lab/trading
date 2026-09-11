@@ -71,6 +71,42 @@ def last_fill_price(bridge: str, sym: str, side_code: str, log=None):
     return None
 
 
+def fill_by_order_id(bridge: str, oid, log=None):
+    """Did THIS SPECIFIC order fill? Returns (filled, avg_price, shares_filled).
+
+    This is the only fill check that is safe in a shared account. Everything else we have
+    tried is contaminated by the other books:
+
+      * the order-status endpoint LAGS and reports PendingSubmit on filled orders
+      * the NET POSITION is the sum across all four books, so "position is still positive"
+        does NOT mean our sell failed — it can simply mean another book still holds shares.
+
+    That second trap is what broke Clockwork on Sep 11 2026: its MOO sells DID fill, but
+    Wave Rider still held the same tickers, so the net stayed positive, the exit handler
+    concluded "still held", returned the row to OPEN and sold again — every pass, until ten
+    symbols were short and Wave Rider's own positions had been consumed. Identifying OUR
+    order by id removes the ambiguity completely.
+    """
+    try:
+        d = requests.get(f"{bridge}/executions?days=1", timeout=10).json()
+        fills = d.get("fills", d) if isinstance(d, dict) else d
+        tot, notional = 0.0, 0.0
+        for f in fills:
+            if str(f.get("orderId")) != str(oid):
+                continue
+            sh = float(f.get("shares") or 0)
+            px = float(f.get("price") or 0)
+            if sh > 0 and px > 0:
+                tot += sh
+                notional += sh * px
+        if tot > 0:
+            return True, round(notional / tot, 4), tot
+    except Exception as e:
+        if log:
+            log(f"execution lookup failed for order {oid}: {e}")
+    return False, None, 0.0
+
+
 def place_verified(bridge: str, sym: str, shares: int, side: str,
                    order_type: str = "MARKET", log=None, polls: int = 4, wait: float = 2.0):
     """Place an order and confirm it against reality. Returns (ok, fill_price, order_id).
@@ -107,7 +143,14 @@ def place_verified(bridge: str, sym: str, shares: int, side: str,
             if d.get("status") == "Filled" and d.get("avgFillPrice"):
                 return True, float(d["avgFillPrice"]), str(oid)
 
-        # Status stayed ambiguous. Decide on the position delta, never on the status field.
+        # Status stayed ambiguous. Ask the execution record about THIS order id first — it is
+        # unambiguous and immune to anything the other books are doing concurrently.
+        ok, px, _sh = fill_by_order_id(bridge, oid, _log)
+        if ok and px:
+            _log(f"{sym}: order status lagged, execution record confirms {side_u} @ ${px:.2f}")
+            return True, px, str(oid)
+
+        # Last resort: the position delta around our own order.
         after = position_qty(bridge, sym, _log)
         if before is None or after is None:
             _log(f"{sym}: status ambiguous AND portfolio unreadable — reporting NOT filled "
