@@ -486,3 +486,11 @@ html, body {
 .exit-badge.stale { color: #f85149; background: rgba(248,81,73,0.12); }
 .exit-badge.none  { color: var(--muted); background: rgba(255,255,255,0.03); font-weight: 500; }
 .positions-table td.muted { color: var(--muted); opacity: 0.55; }
+
+/* Engine scoreboard (Sep 11 2026) — standalone colour utilities. The dashboard only had
+   .health-chip.pos/.neg scoped to chips; the ENGINES table needs them on bare spans. */
+.pos  { color: #4ade80; }
+.neg  { color: #f87171; }
+.warn { color: #d29922; }
+#engines-table .positions-table { width: 100%; }
+#engines-table td, #engines-table th { white-space: nowrap; }

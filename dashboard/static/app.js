@@ -72,11 +72,43 @@ function renderAll(d) {
   renderFuturesTable(d.futures_positions, d.futures_session);
   renderSectors(d.sector_grades);
   renderSystemHealth(d.system_health);
+  renderEngines(d.engines);
   renderAlerts(d.alerts);
   renderCalendar(d.earnings_calendar, d.macro_calendar);
   allActivity = d.activity || [];
   renderActivityFeed(allActivity);
   renderProdChecklist(d.golive_checklist);
+}
+
+// ── Engine scoreboard (Sep 11 2026) ──────────────────────────────────────
+// One row per live equity book. "own exits" = closed by the engine's OWN rule vs by reconcile
+// or by hand; while that is not ~1.0 the P&L beside it describes the plumbing, not the strategy.
+function renderEngines(rows) {
+  const el = document.getElementById('engines-table');
+  if (!el) return;
+  if (!rows || !rows.length) { el.innerHTML = '<div class="empty-msg">no engine data</div>'; return; }
+  const money = v => `<span class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${v > 0 ? '+' : ''}$${(v || 0).toFixed(2)}</span>`;
+  const selfCell = s => {
+    if (!s) return '<span class="muted-text" title="this table has no exit_reason column">—</span>';
+    const [a, b] = s.split('/').map(Number);
+    const cls = b === 0 ? '' : (a === b ? 'pos' : (a === 0 ? 'neg' : 'warn'));
+    const tip = a === b ? 'every exit was the engine\'s own rule — this data is trustworthy'
+                        : 'some/all exits came from reconcile or a manual close, NOT the strategy';
+    return `<span class="${cls}" title="${tip}">${s}</span>`;
+  };
+  el.innerHTML = `<table class="positions-table"><thead><tr>
+      <th>engine</th><th>open</th><th>today</th><th>7-day</th><th>win</th>
+      <th title="exits the engine made itself vs forced by reconcile/manual">own exits</th>
+      <th>last</th></tr></thead><tbody>` +
+    rows.map(r => `<tr title="${r.desc || ''}">
+      <td><b>${r.engine}</b>${r.err ? ' <span class="neg" title="' + r.err + '">!</span>' : ''}</td>
+      <td>${r.open}</td>
+      <td>${r.today_n}t ${money(r.today_pnl)}</td>
+      <td>${r.wk_n}t ${money(r.wk_pnl)}</td>
+      <td>${r.wk_win == null ? '—' : r.wk_win + '%'}</td>
+      <td>${selfCell(r.self_exits)}</td>
+      <td class="muted-text">${r.last || '—'}</td></tr>`).join('') +
+    `</tbody></table>`;
 }
 
 // ── System health panel (Book Health / funnel / Trade Cop / Mirror Book) ──

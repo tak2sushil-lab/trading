@@ -338,6 +338,45 @@
   </div>
 
   <div class="card section">
+    <div class="section-title">CONTRARIAN — LIVE PAPER (mean-reversion sleeve)
+      {% if f.contra.mode=='LIVE' %}<span class="pill livebadge">LIVE ORDERS</span>{% else %}<span class="pill shadowbadge">SHADOW · no orders</span>{% endif %}
+    </div>
+    <p class="subtle"><b>Buys the biggest 3-day fallers</b>, 5-day hold, 15% stop, earnings blocked, with a
+      <code>SPLIT_MAX_DROP</code> filter that rejects un-split-adjusted price artifacts. Run <b>concentrated</b>
+      (2 slots × ~$5,000) rather than as the ~100-position breadth book the Proving Ground scored — that was a
+      deliberate call to dodge IBKR's $1 minimum commission, which is 1% per side at $100/position. It is
+      <b>long-only</b> (the short leg carried only +0.116% of the +0.355% alpha for all the borrow risk), so it is
+      no longer market-neutral: <b>judge it on alpha vs the tide, not raw P&amp;L</b>. Two known biases inflate any
+      Contrarian backtest — unadjusted splits and a universe screened partly on past performance — so only the
+      forward run is clean. This panel was missing entirely until Sep 11 2026.</p>
+
+    {% if f.contra.scan %}
+    <div style="margin:6px 0 10px">
+      <div style="font-size:11px;color:#8b949e;margin-bottom:4px">LATEST SCAN — {{ f.contra.scan.ts }}</div>
+      {% for k, v in f.contra.scan.funnel.items() %}<span class="kpi"><b>{{ v }}</b><span>{{ k }}</span></span>{% endfor %}
+    </div>
+    {% endif %}
+
+    {% if f.contra.open %}
+    <div style="font-size:11px;color:#8b949e;margin:10px 0 4px">OPEN ({{ f.contra.open|length }})</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>Entry</th><th>Shares</th><th>Stop</th><th>Exit on</th></tr></thead>
+      <tbody>{% for p in f.contra.open %}<tr><td>{{ p.symbol }}</td><td>${{ p.entry_price }}</td><td>{{ p.shares }}</td><td>${{ p.stop_price }}</td><td>{{ p.exit_on_date }}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% else %}
+    <p class="subtle">No open positions.</p>
+    {% endif %}
+
+    {% if f.contra.summary %}
+    <div style="font-size:11px;color:#8b949e;margin:10px 0 4px">RECENT CLOSED ({{ f.contra.summary.n }}) — P&amp;L ${{ f.contra.summary.pnl }}, win {{ f.contra.summary.win }}%</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>P&amp;L</th><th>%</th><th>Exit reason</th></tr></thead>
+      <tbody>{% for p in f.contra.closed %}<tr><td>{{ p.symbol }}</td><td>${{ '%.2f'|format(p.pnl or 0) }}</td><td>{{ '%.1f'|format(p.pnl_pct or 0) }}%</td><td class="subtle">{{ p.exit_reason or '—' }}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="card section">
     <div class="section-title">DECOMMISSIONED (retired by the factory's honest tests)</div>
     <p class="subtle"><b>Fish Finder</b> (FISHFINDER_*) and the equity <b>bear book</b> (BEAR_MOMENTUM) were retired Aug 15 2026 — both failed every market-neutral test and Fish Finder bled ~$780/mo. Disabled in <code>auto_trader.py</code> (code kept as reference). Wave Rider is their validated replacement.</p>
   </div>

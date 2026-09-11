@@ -1140,6 +1140,76 @@ def _turbo_ladder(pick):
         return []
 
 
+ENGINE_SPECS = [
+    # label,        table,               mode col?, the book's own docstring in one line
+    ('auto_trader', 'trades',             False, 'intraday catalyst/momentum, EOD close'),
+    ('Wave Rider',  'wave_trades',        True,  'momentum swing, 3-day hold, 8% stop'),
+    ('Contrarian',  'contrarian_trades',  True,  'buys the biggest 3-day fallers, 5-day hold'),
+    ('Clockwork',   'overnight_trades',   True,  'MOC in / MOO out, overnight gap'),
+]
+
+
+def get_engine_scoreboard():
+    """One row per live equity book — the thing you actually watch to evaluate them.
+
+    Added Sep 11 2026. Before this, Contrarian appeared NOWHERE in the dashboard, Wave Rider and
+    Clockwork lived only on /factory, and those panels mixed SHADOW history in with LIVE trades,
+    so there was no way to see what was real. Every number here is LIVE mode only.
+
+    `self_exits` is the column that matters most right now: a trade closed by the engine's own
+    rule counts, one closed by reconcile or by hand does not. Until that ratio is ~1.0 the P&L
+    beside it is describing the plumbing, not the strategy."""
+    out = []
+    today = datetime.now(tz=ET).strftime('%Y-%m-%d')
+    week = (datetime.now(tz=ET) - timedelta(days=7)).strftime('%Y-%m-%d')
+    try:
+        conn = sqlite3.connect(TRADES_DB)
+        conn.row_factory = sqlite3.Row
+        for label, tbl, has_mode, desc in ENGINE_SPECS:
+            row = {'engine': label, 'desc': desc, 'table': tbl, 'mode': 'LIVE',
+                   'open': 0, 'today_n': 0, 'today_pnl': 0.0, 'wk_n': 0, 'wk_pnl': 0.0,
+                   'wk_win': None, 'self_exits': None, 'last': None, 'err': None}
+            try:
+                cols = {r[1] for r in conn.execute(f'PRAGMA table_info({tbl})')}
+                mode_f = " AND mode='LIVE'" if has_mode and 'mode' in cols else ''
+                closed = "('WIN','LOSS','CLOSED')" if tbl == 'trades' else "('CLOSED')"
+                exit_d = 'exit_date' if 'exit_date' in cols else 'entry_date'
+                extra = " AND setup_type!='RECONCILED'" if tbl == 'trades' else ''
+
+                row['open'] = conn.execute(
+                    f"SELECT COUNT(*) FROM {tbl} WHERE status IN "
+                    f"('OPEN','PENDING_ENTRY','PENDING_EXIT'){mode_f}{extra}").fetchone()[0]
+                r1 = conn.execute(
+                    f"SELECT COUNT(*), COALESCE(SUM(pnl),0) FROM {tbl} "
+                    f"WHERE status IN {closed} AND {exit_d}=?{mode_f}{extra}", (today,)).fetchone()
+                row['today_n'], row['today_pnl'] = r1[0], round(r1[1] or 0, 2)
+                r2 = conn.execute(
+                    f"SELECT COUNT(*), COALESCE(SUM(pnl),0), "
+                    f"       COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0) FROM {tbl} "
+                    f"WHERE status IN {closed} AND {exit_d}>=?{mode_f}{extra}", (week,)).fetchone()
+                row['wk_n'], row['wk_pnl'] = r2[0], round(r2[1] or 0, 2)
+                row['wk_win'] = round(100 * r2[2] / r2[0]) if r2[0] else None
+
+                # did the engine close it, or did reconcile / a human?
+                if 'exit_reason' in cols and r2[0]:
+                    bad = conn.execute(
+                        f"SELECT COUNT(*) FROM {tbl} WHERE status IN {closed} AND {exit_d}>=? "
+                        f"{mode_f}{extra} AND (exit_reason LIKE '%RECONCIL%' "
+                        f"OR exit_reason LIKE '%FORCED%' OR exit_reason LIKE '%MANUAL%')",
+                        (week,)).fetchone()[0]
+                    row['self_exits'] = f'{r2[0] - bad}/{r2[0]}'
+                last = conn.execute(
+                    f"SELECT MAX({exit_d}) FROM {tbl} WHERE 1=1{mode_f}{extra}").fetchone()[0]
+                row['last'] = last
+            except Exception as e:
+                row['err'] = str(e)[:60]
+            out.append(row)
+        conn.close()
+    except Exception:
+        pass
+    return out
+
+
 def get_factory_state():
     """Alpha Factory visibility (Aug 15 2026): the snapshot (roster/fleet/scorecards from
     factory/cache/factory_snapshot.json) + live Wave Rider state (wave_trades) + the scan funnel
@@ -1202,6 +1272,36 @@ def get_factory_state():
                                        "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
     except Exception:
         pass
+    # Contrarian — the mean-reversion sleeve (buys the biggest 3-day fallers). Was missing from
+    # this page entirely until Sep 11 2026 despite trading live since Sep 9, so its activity was
+    # invisible anywhere in the dashboard.
+    state["contra"] = {"open": [], "closed": [], "scan": None, "candidates": [],
+                        "mode": "SHADOW", "summary": None}
+    try:
+        conn = sqlite3.connect(TRADES_DB); conn.row_factory = sqlite3.Row
+        state["contra"]["open"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM contrarian_trades WHERE status='OPEN' ORDER BY entry_date DESC")]
+        state["contra"]["closed"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM contrarian_trades WHERE status='CLOSED' "
+            "ORDER BY exit_date DESC, id DESC LIMIT 15")]
+        row = conn.execute("SELECT scan_ts, detail FROM contrarian_scan_log WHERE kind='SUMMARY' "
+                           "ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            state["contra"]["scan"] = {"ts": row["scan_ts"], "funnel": json.loads(row["detail"])}
+            state["contra"]["candidates"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM contrarian_scan_log WHERE kind='CANDIDATE' AND scan_ts=? "
+                "ORDER BY id LIMIT 12", (row["scan_ts"],))]
+        m = conn.execute("SELECT mode FROM contrarian_trades ORDER BY id DESC LIMIT 1").fetchone()
+        if m:
+            state["contra"]["mode"] = m["mode"]
+        conn.close()
+        cl = state["contra"]["closed"]
+        if cl:
+            pnls = [c["pnl"] or 0 for c in cl]
+            state["contra"]["summary"] = {"n": len(pnls), "pnl": round(sum(pnls), 2),
+                                           "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
+    except Exception:
+        pass
     # Turbo — the options execution layer on Wave Rider (options_shadow). Shows what Turbo
     # WOULD trade (structure + strike ladder) and what it rejected + why (the Edge-Budget gate).
     state["turbo"] = {"open": [], "skipped": [], "closed": [], "mode": "SHADOW", "summary": None}
@@ -1253,6 +1353,7 @@ def api_data():
     earnings, macro = get_calendar(opt_pos, eq_pos)
     sectors    = get_sector_grades()
     health     = get_system_health()
+    engines    = get_engine_scoreboard()
 
     prod_avail = PROD_BRIDGE_URL is not None
     prod_bridge = get_bridge_info(PROD_BRIDGE_URL) if prod_avail else None
@@ -1282,6 +1383,7 @@ def api_data():
         'macro_calendar':    macro,
         'sector_grades': sectors,
         'system_health': health,
+        'engines':      engines,
     })
 
 
