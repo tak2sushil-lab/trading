@@ -1334,6 +1334,40 @@ def prefetch_df5(symbols):
         return 0
 
 
+def _bar_extreme_since(symbol, entry_dt, want_high=True):
+    """Highest high (or lowest low) printed since `entry_dt`, from today's 5-min bars.
+
+    Sep 11 2026 — why this exists. session_high/session_low were built only from the price
+    SAMPLED on each monitor cycle, so any spike that reverted before the next sample was
+    invisible. Measured over 12 live trades the recorded peak understated the true intraday
+    peak by 0.33pp on average, and by 1.47pp on IONQ (recorded +0.49%, real +1.96%).
+
+    That is not just a reporting error: PCT trail = session_high * (1 - 0.5%) and ATR trail =
+    session_high - 1.5*ATR, so an undersampled high puts BOTH trails lower than designed and
+    hands back more before they fire. Using the bar extreme makes the existing trails behave
+    the way they were specified, which is a repair, not a retune."""
+    try:
+        df = _get_df5(symbol)
+        if df is None or len(df) == 0:
+            return None
+        today = datetime.now(ET).date()
+        idx = df.index
+        if getattr(idx, 'tz', None) is None:
+            idx = idx.tz_localize('UTC').tz_convert(ET)
+        else:
+            idx = idx.tz_convert(ET)
+        df = df.copy(); df.index = idx
+        df = df[df.index.date == today]
+        if entry_dt is not None:
+            df = df[df.index >= entry_dt]
+        if df.empty:
+            return None
+        return float(df['High'].max()) if want_high else float(df['Low'].min())
+    except Exception as e:
+        log(f"_bar_extreme_since {symbol}: {e}")
+        return None
+
+
 def _get_df5(symbol):
     """5-min frame for `symbol`: the batch if it is fresh, else the original single call."""
     b = _df5_batch
@@ -2495,12 +2529,22 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         if len(price_history[tid]) > 20:
             price_history[tid].pop(0)
 
+        # Peak/trough must come from the BAR extremes, not just the sampled price — see
+        # _bar_extreme_since(). Both trails below are computed off these, so an undersampled
+        # value makes them sit lower than designed and give back more before firing.
+        _ent_dt = trade_entry_times.get(tid)
         if is_short:
             session_low[tid] = min(session_low.get(tid, price), price)
+            _bl = _bar_extreme_since(sym, _ent_dt, want_high=False)
+            if _bl is not None:
+                session_low[tid] = min(session_low[tid], _bl)
             pnl_pct = (entry - price) / entry * 100   # positive when price drops
             pnl_usd = (entry - price) * shares
         else:
             session_high[tid] = max(session_high.get(tid, price), price)
+            _bh = _bar_extreme_since(sym, _ent_dt, want_high=True)
+            if _bh is not None:
+                session_high[tid] = max(session_high[tid], _bh)
             pnl_pct = (price - entry) / entry * 100
             pnl_usd = (price - entry) * shares
 
@@ -2858,10 +2902,15 @@ def fast_monitor_positions():
         if not price:
             continue
 
+        # This loop runs every ~30s but never touched session_high/session_low, so the peak was
+        # only ever sampled on the ~6-min monitor cycle. Recording it here costs nothing (we
+        # already have the live price) and cuts the sampling gap by an order of magnitude.
         if is_short:
+            session_low[tid] = min(session_low.get(tid, price), price)
             pnl_usd = (entry - price) * shares
             stop_hit = price >= sl
         else:
+            session_high[tid] = max(session_high.get(tid, price), price)
             pnl_usd = (price - entry) * shares
             stop_hit = price <= sl
 
