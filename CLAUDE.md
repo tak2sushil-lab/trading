@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Aug 7 2026
+Last updated: Sep 20 2026 (pm5)
 
 ---
 
@@ -21,37 +21,71 @@ Last updated: Aug 7 2026
 
 **Read this first for "what's the status."** The sections below this one are a
 chronological log (useful for "why did we do X"); this one is always current for
-"what's shipped, what's running, what's still open." Last refreshed: Aug 8 2026.
+"what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
-**⚠️ NEXT SESSION PRIORITY (rewritten Sep 7 2026 — read this before anything else):**
+**⚠️ NEXT SESSION PRIORITY (rewritten Sep 20 2026 — read this before anything else):**
 
-**ALL FOUR EQUITY BOOKS NOW PLACE REAL ORDERS on the IBKR paper account (DU9952463).**
-Tomorrow (Tue Sep 8) is the first full session with the new configuration. Zero open positions
-in every book at close, so it starts clean.
+**THE ONE THING THAT CHANGED THIS MONTH: 91% of our universe's return accrues OVERNIGHT
+(Sharpe 2.23) and all four equity engines trade the intraday half (Sharpe 0.16, +4%/yr).**
+Confirmed on unselected ETFs and in every year; replicates Lou/Polk/Skouras (JFE 2019).
+Full trail: the Sep 20 dated sections below and [[strategy-hunt-overnight-sep20]].
 
-| book | mode | size | window |
-|---|---|---|---|
-| `auto_trader.py` | LIVE | 5 × $2,000 | enter 09:30-13:00, EOD close 15:45 |
-| Wave Rider (`factory/live/wave_rider.py`) | LIVE | 5 × $2,000 | enter 10:00-15:00, hold 3d, 8% stop |
-| Contrarian (`factory/live/contrarian.py`) | LIVE | 2 × $5,000 | enter 10:00-15:00, hold 5d, 15% stop |
-| Clockwork (`factory/live/overnight.py`) | LIVE | 10 × ~$1,000 | MOC 15:40-15:49, MOO 09:00-09:27 |
+**Clockwork (`factory/live/overnight.py`) is now the book to watch.** Reconfigured Sep 20:
 
-**WATCH TOMORROW, IN THIS ORDER — none of these order paths has ever placed a real order:**
-1. `logs/contrarian.log` + `logs/wave_rider.log` from 10:00 — first real BUYs; confirm the
-   recorded price is the FILL, not the scan price.
-2. `logs/clockwork.log` 15:40-15:49 — MOC submitted (accepted, not filled yet).
-3. **`logs/clockwork.log` 16:00-16:40 — THE ONE THAT MATTERS.** The MOC fill must confirm. If
-   nothing confirms, IBKR's paper simulator does not support auction orders → revert Clockwork
-   to MARKET (the fallback covers the EXIT side only, not entry).
-4. Wed 09:00-09:27 MOO submitted, 09:31+ filled; MARKET fallback fires 09:45 if not.
-5. `logs/london_trader.log` 03:00+ — **first day TC London gets its full 04:00-08:00 window**
-   (its gateway now starts 02:50). Lines are now tagged `[LON:IBKR]` / `[LON:TC]`.
-6. **`venv/bin/python commission_check.py`** after the close — first time our commission
-   constants are checked against what IBKR actually charged, instead of assumed.
+| | before | now |
+|---|---|---|
+| positions | 10 x ~$1,000 | **3 x $3,333** |
+| budget | shared | **its own $10,000**, not taken from intraday |
+| fee model | FIXED ($2.00 rt) | **TIERED ($0.70 rt)** |
+| earnings | none | **blackout, 1 day** |
+| position cap | none (a real bug) | **capped at TOP_N in total** |
 
-**Judge on MECHANISM, not P&L.** One week is 4-8 trades per engine: enough to prove orders
-place, fills record, stops arm and exits fire on schedule; nowhere near enough to say anything
-about edge. Review ~Sep 14.
+Same signal, official prints, 673 nights: old config **−2.78bp/night, negative in all three
+years**; new config **+19.09bp, Sharpe 2.01, maxDD −13.7%**. The fee exceeded the edge every
+year — it was never a strategy problem.
+
+**TRACK FROM MON SEP 21, in this order:**
+1. **09:00-09:31** — the 10 legacy positions ($9,593) exit on MOO. They were entered Sep 18
+   under the old config; the book must reach FLAT before the new sizing means anything.
+2. **15:40-15:49** — first MOC under the new config: expect **3 names at ~$3,333**, not 10.
+   Dry-scan on Sep 20 picked CENX / NUTX / P. Watch for `EARNINGS_BLACKOUT` skips in the log.
+3. **16:00-16:40** — entry fills confirm.
+4. **17:05 daily** — `com.sushil.trading.overnight_reference` writes `ref_entry` / `ref_exit` /
+   `ref_pnl` / `exec_drag`. ⭐ **`ref_pnl` IS THE HONEST READ ON THIS BOOK; `pnl` IS NOT** —
+   IBKR paper fabricates auction fills (Sep 18: PI filled 179.00 when the 09:30 bar was
+   open=high=low=182.29). Judge the strategy on `ref_pnl`, the plumbing on `exec_drag`.
+5. **Over months, not days** — 97% of this book's return comes from the best 5% of nights.
+   A long flat or losing stretch is NORMAL and is not evidence the edge is gone.
+6. **Benchmark the PICK against a random 3** from the same eligible pool. The selection beat
+   random by +7.5bp overall but LOST in 2025 (−2.8bp) — roughly 3/4 of the value is the
+   window, 1/4 the sort. If the sort stops earning, widen the book rather than defend it.
+
+**ALSO LIVE, lower priority:**
+- `auto_trader.py` — score components + the corrected forward label now log on every scan
+  (shipped Sep 18). In ~4-6 weeks the 15 grader weights can be FITTED instead of guessed;
+  that is the only untried lever on the intraday book. Do not hand-tune a weight before then.
+- Short candidates are GRADED AND LOGGED again from Sep 21 (`BEAR_OBSERVE_ONLY=True`), after
+  going dark on Jul 31. Zero orders possible. Short TRADING stays retired.
+- Wave Rider / Contrarian — 8 and 2 own-exit trades. Not evaluable. Leave them alone.
+- **Options — spreads go LIVE on paper Mon Sep 21 (Sep 20 pm5). Scalps stay frozen.** Root cause found: the book bought structures whose
+  median breakeven was a **+8.1% move**, which our universe clears **15.6% of the time in
+  7 days** — 17 of 22 closed trades lost, almost exactly the rate the structure dictated.
+  Fixed a real bug (expected move was ~20% overstated by a calendar/252 day-count mix, so
+  every strike sat 20% too far OTM), switched both debit calculators to **delta-anchored**
+  strikes (**breakeven +6.40% → −0.20%** on identical inputs), and shipped the **Edge
+  Budget** gate on all four calculators — a structure may only trade when the signal's own
+  expected move clears its breakeven. Our A+/A LONG signals measure **−0.79% at 7d vs the
+  universe's +0.81%**, so the gate correctly refuses them. ⚠️ **Do not unfreeze to force
+  activity** — see the Sep 20 (pm4) section for the one-line flip and exactly what it costs.
+  Next real step is Contrarian → options, gated on ~20 own-exit trades.
+
+**⚠️ BEFORE ANY REAL MONEY:** `IBKR_COMMISSION_PLAN='TIERED'` is a MODELLING assumption. The
+API does not expose the plan and the live account has never traded. Enroll in Tiered in IBKR
+Client Portal or the model understates cost by ~$1.30/trade.
+
+**⚠️ ANY BACKTEST ON THIS UNIVERSE:** 113 of 241 names were screened in Jul 2026 on backtest
+win rates of 88-93% over 2024-2026. Benchmark against the universe's own equal-weight
+buy-and-hold — never zero, never SPY.
 
 **Equity regime router DEMOTED to a modifier** (`REGIME_AS_MODIFIER=True`, auto_trader.py) on
 the completed A/B: router -$2,320 vs modifier -$892, matched-day spread +$1,428, t=+2.18.
@@ -3478,3 +3512,1079 @@ executions for the CURRENT trading session only**, so `reqExecutions` returned 0
 (DUQ640500), not TopStep. Tomorrow's check therefore yields IBKR's real rate for BOTH accounts.
 `commission_rt_tc` stays an unverified placeholder until we are actually on ProjectX — it must
 come from TopStep's published fee schedule, not from this tool.
+
+---
+
+## Sep 18 2026 — Equity deep read: give-back is a SYMPTOM. The diseases are cost and a 1.19 signal.
+
+Full lab set in the session scratchpad (`mfe_ledger.py`, `stall_lab.py`, `addon_lab.py`,
+`horizon_lab.py`, `sel_lab2.py`, `stack_lab.py`). **One infrastructure fix shipped
+(`collect_bars.py`); no strategy change, the Sep 3 evidence freeze holds.**
+
+**① THE GIVE-BACK LEDGER, on 668 replayed trades (Apr 15 – Sep 18, real 5-min bars).**
+Split the book by how far each trade ever got:
+
+| lifetime peak (MFE) | n | share | P&L | avg peak | avg realized | capture |
+|---|---|---|---|---|---|---|
+| < 0.5% | 302 | 45% | **−$2,960** | 0.0% | −0.8% | n/a |
+| 0.5–1% | 86 | 13% | −$715 | 0.7% | −0.5% | — |
+| 1–2% | 119 | 18% | −$89 | 1.5% | −0.1% | — |
+| 2–3% | 79 | 12% | +$1,386 | 2.4% | +1.2% | 49% |
+| 3–5% | 59 | 9% | +$1,745 | 3.7% | +2.1% | 56% |
+| > 5% | 14 | 2% | +$571 | 6.9% | +4.5% | **65%** |
+
+**Capture on the trades that actually move is already 49–65%.** The money is lost in the 58%
+of trades that never see +1% — and you cannot keep money a trade never showed you. This is
+the same ORPHANS/MOVERS structure the futures bench found (77% orphans −$34k vs 23% movers
++$38k), now confirmed on equity. Median MFE 0.60%, median MAE −0.74%.
+
+**② THREE FRESH TESTS, THREE REJECTIONS — the exit side is not where the cure is.**
+- **Stall-cut** (the Aug 8 finding that was queued behind Fish Finder and never shipped):
+  cut at T+15/30/45/60/90 when the mark is below 0 / +0.25 / +0.5%. **NEGATIVE in 14 of 15
+  cells** (best −$81, one +$57 outlier). The Aug 8 +$15,639 came from *Fish Finder simulated*
+  trades; on the real book a trade at −1% at T+30 still has avg MFE +0.68% left in it.
+  Fish Finder is decommissioned — **de-queue this, it is dead.**
+- **Add-on to proven winners** (nobody had tried exiting LATER with MORE size): at T+30,
+  mark ≥ +1% → **−$327, 0 of 6 months positive.** And the control **inverts**: adding to
+  trades that have NOT worked is **+$304**. ⭐ **So forward return after T+30 is negative for
+  winners and positive for losers — everything mean-reverts once the first half hour is done.
+  82% of a trade's lifetime peak is already reached by T+30.** The book's whole profit is
+  made in the first 30 minutes.
+- **Flat exit horizon** (the direct implication of the above): T+15 −$418 · T+30 +$277 ·
+  T+45 −$211 · T+60 −$50 · T+90 +$70. **Sign flips between adjacent horizons = a spike, not a
+  plateau.** Rejected on the same rule that killed the futures wide-stop cell.
+
+That is **6 independent rejections** of "keep more of the peak" (trails, conditional arms,
+1-min granularity, fade-exit segmentation, stall-cut, horizon). ⭐ The mechanism is now
+measurable, not just asserted: **median forward MFE 0.99% vs MAE −0.83% = an edge ratio of
+1.19.** The peak is mostly noise on a ~3%-ATR stock, so any rule that catches the top also
+catches the noise on the trades that were going to keep running.
+
+**③ THE COST DISEASE — nobody had applied the Sep 5 factory finding to the main book.**
+`pnl` is already net (`log_trade_exit` subtracts `equity_commission`). Adding it back:
+
+| | net | commission | **gross** |
+|---|---|---|---|
+| Apr | −$443 | $250 | −$193 |
+| May | +$1,670 | $262 | **+$1,932** |
+| Jun | −$722 | $171 | −$551 |
+| Jul | −$287 | $183 | −$104 |
+| Aug | −$1,199 | $664 | −$535 |
+| Sep | −$603 | $111 | −$493 |
+| **total** | **−$1,584** | **$1,641** | **+$57** |
+
+**96% of trades (777 of 810) pay IBKR's $1 minimum, not $0.005/share — so commission is a
+flat $2 per trade regardless of size.** Median position is **$1,312** and the median trade's
+entire lifetime peak is ~1%, so **commission eats ~16% of the best moment the median trade
+ever sees**; on the 114 sub-$500 positions it is 0.53% round trip. Commission roughly DOUBLES
+the loss in every month. It is **not** the whole disease — gross is negative in 5 of 6 months
+— but it is the half we control by arithmetic. Halving trade count at double size would take
+−$1,584 to about −$763 with identical gross exposure.
+
+**④ ENTRY-SIDE HUNT — real separation at signal level, and it FAILS at trade level.**
+Corrected a measurement trap first: **`actual_day_high_pct` is the stock's day measured from
+the OPEN (`database.py:1993`), not forward headroom from the signal** — it mostly re-reports
+the `MIN_TODAY_GAIN` 3% entry gate (it says 94% of candidates are "movers"; the truth is
+23%). Recomputed true forward MFE from bars for 2,699 enriched A+/A LONG candidates:
+
+| feature | orphan end | mover end | monthly consistency |
+|---|---|---|---|
+| `burst_age_min` | >150min → **10%** mover | 30–90min → 31% | monotone, all 5 months |
+| signal hour | 13:00+ → **10%** | 09:xx → 32%, 08:xx → 48% | monotone, all months |
+| `vol_ratio` | <1.5× → **11%** | >10× → 44% | monotone, all months |
+| `price_vs_hod_pct` | pinned at HOD → 20% | 2–5% BELOW HOD → 37–39% | **inverts the HOD-break preference** |
+| `score` | 80–90 → 8.8% | 100+ → 24% | **saturated and useless** (1,995 of 2,699 are >100) |
+
+Stacked, `fresh burst 30-90 + vol≥3x` lifts the edge ratio 1.19 → **1.56** (mover 23%→40%,
+median MFE 0.99%→1.63%), 4 of 5 months beating baseline. `stale AND thin` is a 3.2%-mover
+pocket (ratio 0.74).
+
+**⚠️ DO NOT SHIP IT. The trade-level check inverts the sign:** the 76 real trades that pass
+`fresh+vol≥3x` made **−$779** while the 364 that fail made **+$463**, and pass is negative in
+5 of 6 months. ⭐ **Mechanism, and it is the finding that matters: the filter raises MFE
+(0.99→1.63) and MAE (−0.83→−1.04) TOGETHER, and our exit stack is stop-dominated, so a better
+opportunity realises a worse outcome.** Better candidate ≠ better trade under this exit stack.
+Same class as the "capture is a trap" lesson, running in reverse.
+
+**⑤ EXIT-STACK SCALE MISMATCH (documented, not acted on).** Every protective threshold sits
+outside the distribution the book lives in: `PCT_TRAIL_ACTIVATE` 1.5% vs median peak 0.99%
+(arms on ~30% of trades) · partial exit at +5% when **2.1% of trades ever reach it — it has
+fired 5 times in 818 trades** · break-even stop at +2.5% (23% of trades) · ATR trail at
++1 ATR ≈ +2% · hard stop 5% vs median MAE −0.83% (the adaptive exits, not the stop, are what
+actually close losers at −1.14% avg). Tightening any of them has been tested and loses,
+because the few trades that do run are the entire profit. Recorded so nobody re-derives it.
+
+**⑥ ENGINE SCOREBOARD (all four alive and scanning, verified live 11:30 ET Sep 18).**
+
+| book | live P&L | n closed | own exits | read |
+|---|---|---|---|---|
+| `auto_trader` | −$603 Sep, −$1,584 life | 810 | 100% | strategy is being measured; negative gross in 5 of 6 months |
+| Wave Rider | **−$893** | 14 | **8** | 5 of 8 own exits are the 8% stop; AEHR/MRVL/ARM were one correlated semis cluster entered the same day (−$676) |
+| Contrarian | **−$375** | 4 | **2** | both own exits are −3.5% 5-day time exits |
+| Clockwork | **−$555** | 70 | 70 | **shadow was +$1,034 over 150 — the live book is −$7.93/night.** First real read of MOC/MOO fills, and the shadow edge did not survive them (and 83% of that shadow edge was one MRNA event) |
+
+Wave Rider and Contrarian still have **8 and 2** own-exit trades — their P&L describes
+plumbing, not strategy. Clockwork is the one with enough nights to say something, and what it
+says is that the auction-fill cost ate the edge. Equity SHORT book confirmed dormant since
+Aug 14 (decommissioned); LONG-only across all four.
+
+**⑦ SHIPPED — `collect_bars.load_bars()` date-boundary bug (third in this family).**
+`ts_utc` holds two string shapes and the bound was built with `isoformat()`, so the
+comparison was made against a `'T'` separator while modern rows use a space. **`'T'`(0x54) >
+`' '`(0x20), so every space-format row on the START day compared BELOW the lower bound and
+was dropped, while rows on the END day compared below the upper bound and leaked in** — the
+first requested day vanished, the last was included despite `end` being documented exclusive,
+and a single-day request returned **nothing at all**. All-`T` before Aug 4 2026, all-space
+after, so it bites hardest on the newest data. Three research files already carried local
+workaround comments ("its range handling is off by a day") and `wave_rider.py:342` carries
+"single-day returns empty" — **the symptom was known and the cause was never found.**
+Fixed by normalising both sides to `'YYYY-MM-DD HH:MM:SS'` (`_to_cmp_str` + a `replace(substr(
+ts_utc,1,19),'T',' ')` predicate); docstring now states that a date-only `end` is midnight so
+`start == end` is a zero-width window. Verified: start day returns, end day excluded,
+T-format and the Mar–Aug overlap window both still load, 18 ms per call.
+**Blast radius checked: `futures_bars_5m` and `bars_1m` are 100% T-format, so no futures
+research is affected.** Live impact measured, not assumed: Clockwork's `consistency_signal()`
+asks for `end=today` and was silently including today — **0 of 92 scores change and the
+top-10 is identical**, because `bars_5m` only fills after the close, so nothing had leaked at
+run time. Behaviour-neutral live; it fixes research windows and honours the documented
+contract.
+
+**VERDICT ON THE USER'S QUESTION.** *"If we keep most of the money a trade sees, we win."*
+Measured and **false for this book**: capture on the movers is already 49–65%, the losses sit
+in trades that never had a peak, and the peak on the median trade (0.99% against a 0.83%
+adverse swing) is noise rather than an achievement. **Do we have an edge? No — gross is
++$57 across 810 trades and negative in 5 of 6 months; May alone carries it.** That is the
+same verdict as [[equity-regime-diagnosis-aug14]], now with the exit side eliminated as a
+suspect and the cost side quantified.
+
+**OPEN / NEXT.** (a) **Minimum position size** is the one arithmetic win available and needs
+no edge: 172 of 440 traced trades were under $1,000 against a flat $2 fee. (b) The
+`fresh+vol≥3x` inversion deserves the real harness — `equity_replay.py` A/B, not a signal-level
+correlation — specifically to test whether it works *paired with a wider stop*, since the
+filter's cost is MAE. (c) `score` is saturated (A+ threshold 80, virtually everything >100):
+the grader no longer grades. (d) Clockwork's live-vs-shadow gap is the most informative number
+any engine has produced — measure realised MOC/MOO slippage per trade before judging it.
+(e) CLAUDE.md's Active Work Board predates the Sep 10–11 session (order-status fix, peak
+measurement fix, `FADE_EXIT_ON_RIDE`) and should be refreshed.
+
+---
+
+## Sep 18 2026 (pm) — Freshness gate A/B REJECTED · commission is a MODEL not a bill · sizing is a multiplier
+
+**① FRESHNESS GATE — A/B RUN, REJECTED.** `equity_replay.py` (real live decision chain),
+Aug 1 → Sep 17, three arms via the new default-off `auto_trader.FRESHNESS_GATE` +
+`--freshness-gate`:
+
+| arm | trades | WR | P&L |
+|---|---|---|---|
+| 0 — off (= live) | 235 | 30.6% | **−$1,061** |
+| 1 — block stale AND thin | 235 | 30.6% | **−$1,061** (byte-identical: a **NO-OP**) |
+| 2 — block stale OR thin | 225 | 31.6% | **−$1,124** (12 trades cut, **$63 worse**) |
+
+Arm 1 changed nothing because **`MIN_VOLUME_RATIO=1.3` already hard-blocks thin volume under
+$100** and the threshold is 1.0 above it, so "stale AND thin" never reaches an entry. Arm 2
+cuts the thin-volume trades, which trade-level data had already shown were not the losers.
+⭐ The signal-level separation is REAL (3.2% vs 23.4% mover rate) and **still does not
+convert** — the same wall every entry-side idea in this repo has hit: candidate quality and
+realised P&L are not the same axis under a stop-dominated exit stack. Flag kept as a disabled
+research hook with the verdict in its own comment; **do not re-run this gate on a different
+window and call it new evidence.**
+
+**② COMMISSION IS A MODEL WE INVENTED, NOT A BILL — verified on a live session.**
+`GET /executions` during Sep 18 trading: **33 of 33 fills charged $0.00**, with the
+`commissionReport` present (a real zero, not a missing value). IBKR does not charge the paper
+account. So the entire **$1,641** of "commission" in trades.db is a Sep-3 model that had never
+been checked. Modelling it is correct — paper P&L should forecast a funded account — but the
+plan must match the one the real account is on, and **the API cannot report that**.
+
+At this book's **median 14 shares/trade the per-share rate is irrelevant — the minimum binds
+on 96% of trades** — so plan choice is a straight 2.6× on friction:
+
+| IBKR Pro plan | per share | min/order | our round trip | 810-trade total |
+|---|---|---|---|---|
+| **FIXED** (what we model) | $0.005 | **$1.00** | $2.00 | **$1,641** |
+| **TIERED** | $0.0035 | **$0.35** | **$0.77** | **$621** |
+
+**⚠️ The live account (`trading-prod/trades.db`) has NEVER placed an order** — 0 rows,
+untouched since May 24 — and IBKR serves executions for the current session only, so there is
+**nothing to measure**. Also found: `trading-prod/bridge.py` is from **Jun 5**, three months
+stale, and has no `/executions`; the prod bridge runs but `connected:false` (its gateway is
+deliberately down, pre-flight item #10). Shipped: `database.IBKR_COMMISSION_PLAN`
+(`'FIXED'|'TIERED'`) + `_IBKR_SCHEDULE`, default FIXED so **nothing changes** until confirmed
+from IBKR Client Portal. ⚠️ Not cosmetic — realized P&L feeds `MAX_DAILY_LOSS` and
+`peak_session_pnl`, so a plan switch moves those by ~$1.20/trade.
+
+**③ FLAT SIZING — REJECTED. Sizing is a multiplier, not an edge.** Last session's +$1,327
+was a whole-book number and it does not survive a period check:
+
+| window | gross as-traded | gross at flat $2,000 | |
+|---|---|---|---|
+| Apr–Sep (all) | +$579 | +$2,818 | amplifies a WIN |
+| May only | +$1,926 | +$3,154 | amplifies a WIN |
+| Jun–Jul | −$670 | −$404 | amplifies a LOSS |
+| **Aug–Sep** | **−$484** | **−$590** | **amplifies a LOSS** |
+
+⭐ **No sizing change can help while gross expectancy is negative — it only magnifies the
+sign that is already there.** The whole-book gain was May being carried into every bucket.
+Same aggregate-hides-the-period trap this file has flagged repeatedly.
+
+**④ WHAT SURVIVES: the catalyst up-size, and it is sign-independent.** `get_position_capital`
+gives `is_catalyst` the most capital, and catalyst is the worse cohort in **all four months
+with data** — and bigger in all four:
+
+| month | catalyst n / gross% / size | non-catalyst n / gross% / size |
+|---|---|---|
+| Jun | 42 / **−0.614%** / $2,093 | 41 / +0.157% / $1,739 |
+| Jul | 20 / **−0.371%** / $1,135 | 49 / +0.134% / $893 |
+| Aug | 20 / **−0.417%** / $1,126 | 9 / −0.466% / $862 |
+| Sep | 17 / **−0.835%** / $1,925 | 12 / −0.231% / $1,690 |
+
+Sizing catalyst the same as non-catalyst is worth **+$428** full book / **+$169** Aug–Sep.
+Unlike flat sizing this is a *relative* reallocation, so it does not depend on the book's
+overall sign. **⚠️ equity_replay CANNOT test it** — the harness has no catalyst/sympathy
+scanning at all (`is_catalyst` is False throughout, a documented v1 gap), so this needs the
+live book or a new harness.
+
+**⑤ A POSITION-SIZE FLOOR IS WRONG — retracting the Sep 18 (am) recommendation.** Cutting
+every trade under $1,000 removes 296 trades worth **+$209 net**; small positions had the
+*best* gross return (+0.54%/trade under $500) and large ones the worst (−0.43% over $2,000).
+The floor sweep is non-monotone ($400 +$37, $700 −$10, $1,000 −$209, $1,400 +$340) = noise.
+The fee is flat per trade, so a floor deletes good trades without saving proportional money.
+
+**⑥ WHAT CAN AND CANNOT BE REPLAYED — decision map, so this is not re-litigated.**
+- **Fee plan: no replay, and a replay would be WORSE.** It changes no decision, so it is exact
+  arithmetic on the trades we took. Replaying it would only add simulation error.
+- **Sizing: no replay needed** for the first-order effect (same trades, re-weighted); only the
+  "did capital run out for a later entry" second-order effect needs one. Verdict is already no.
+- **Catalyst de-weight/removal: replay IMPOSSIBLE** (no catalyst path in the harness).
+- **Freshness gate: replay REQUIRED and DONE** — it changes selection, and slot redistribution
+  is the only thing arithmetic cannot model. Rejected above.
+
+**OPEN / NEXT (unchanged priorities from the am session, minus the two now-rejected ones):**
+(a) fix the scan_log label — `actual_day_high_pct` measures the stock's day from the OPEN, so
+148,388 enriched rows are scored against the wrong outcome; true forward MFE/MAE is
+backfillable from bars, no waiting. (b) make the grade a RANK — 138,139 SKIP / **3,694 A+** /
+92 A / 30 B / 8 C means the grader is a stamp, and the book must choose 5 from ~16 A+ every
+day with no way to order them. (c) all 11 sectors are graded WEAK on 5–35 trades — the sector
+modifier is now a uniform −20 and has stopped discriminating; the learner has emitted
+identical weights (1.0/1.7/1.0/1.0/1.0) for 8+ days. (d) confirm the IBKR plan from the
+portal. (e) selection skill measured at **+0.25pp forward MFE vs the pool we pass over
+(t=+1.17, p=0.25)** — real, not significant, and smaller than the friction it pays.
+
+---
+
+## Sep 18 2026 (pm2) — The grader is provably not a ranker · score components + correct label now LOGGED
+
+User asked to make grade_setup rank candidates instead of stamping them, so the book can pick
+the top 5 of ~16 A+ a day. Labs: `research_equity_rank_lab.py`, `research_equity_component_lab.py`,
+`backfill_scan_forward.py`. **Nothing that affects a trading decision changed.**
+
+**① THE SCORE CARRIES NO RANK INFORMATION — measured, not asserted.**
+Built a per-candidate outcome by replaying auto_trader's own exit stack (hard stop, PCT trail,
+ATR trail, momentum fade, VWAP cross, EOD, hold-to-close suspension) on each candidate's own
+forward bars, then charging commission because `trades.pnl_pct` is NET (`database.py:610`).
+Label validation against the 283 candidates we really traded: **corr +0.668**, mean sim
+−0.028% vs real −0.106%. ⚠️ Win rate 57.6% sim vs 45.6% real — the sim still lacks L3
+stop-to-BE, the dollar circuit breaker, no-move and regime-flip exits, and slippage.
+**Per the Aug 24 rule (correlation is not a calibration gate) this label is trusted to RANK
+— which needs only monotonicity — and NOT to forecast levels.**
+
+| score bucket | n | sim net % | mfe | mae |
+|---|---|---|---|---|
+| 80–100 | 233 | −0.031 | 1.18 | −1.33 |
+| 100–115 | 182 | +0.040 | 1.43 | −1.30 |
+| 115–130 | 283 | +0.285 | 2.00 | −1.47 |
+| 130–150 | 481 | +0.158 | 2.08 | −1.46 |
+| **150+** | **1,447** | **+0.126** | 2.07 | −1.78 |
+
+**Spearman score vs outcome = +0.072 (simulated), +0.088 (real).** The score rises with
+liveliness — mfe climbs 1.18 → 2.07 — but **mae climbs with it (−1.33 → −1.78)**, so it is a
+volatility detector, not a profitability ranker. It also stops helping above ~130 while 54% of
+candidates sit above 150.
+
+**② WHY IT COULD NEVER HAVE BEEN TUNED: the components were never written down.**
+`grade_setup` returns `(grade, reasons, score)` and `log_scan_candidate` stored only the
+TOTAL. For A+ rows `skip_reason` is literally "Qualified — awaiting slot". **3,694 A+
+candidates logged over five months, and not one has its breakdown** — so ORB +30, VWAP reclaim
++25, bull flag +25, HOD break +20, vol +25, RSI +20 have never once been scored against an
+outcome. You cannot tune 15 weights when none of the 15 was recorded.
+
+**③ FEATURE HUNT ON WHAT *WAS* LOGGED — nothing survives.** Scored every logged feature by
+WITHIN-DAY rank (the real decision is "which 5 of today's 16", so a cross-day correlation is
+mostly the market's mood). Only two cleared ≥5/6 months and |rho|≥0.05: `atr_pct` (+0.218,
+**6/6**) and hour-of-signal (−0.100, 5/6). **Both then FAILED against real trades**: atr_pct
++0.228 simulated → **+0.093 real**, hour −0.132 simulated → **+0.020 real**. atr_pct is largely
+an artifact of fixed-% exits in the simulation — a high-ATR stock arms a 1.5% trail more often
+— which is the equity, cross-sectional twin of the Aug 24 futures units finding: *whether a
+trade can arm its trail is set by volatility, not by setup quality.*
+
+**④ FIRST REAL COMPONENT EVIDENCE — reconstructed from bars, same definitions as
+`get_intraday_signals` (auto_trader.py:1556/1579/1617). Metric is `fwd_mfe + fwd_mae`
+(favourable move NET of the adverse swing), on 2,666 candidates:**
+
+| component | weight | n on | edge ON | edge OFF | delta | months better |
+|---|---|---|---|---|---|---|
+| **VWAP reclaim** | +25 | 78 | **+0.685** | +0.167 | **+0.518** | **5/5** ✅ |
+| ORB breakout | **+30** | 1,434 | +0.079 | +0.296 | −0.217 | 3/6 |
+| above VWAP | +10 | 2,333 | +0.170 | +0.269 | −0.099 | 3/6 |
+| **HOD break** | **+20** | 542 | **−0.084** | +0.250 | **−0.334** | **1/6** ❌ |
+
+**HOD break survives every control**: negative in 5 of 6 months, negative inside every
+hour bucket (−0.630 / −0.057 / −0.135), and negative independently of ORB (−0.299 within
+orb=1, −0.314 within orb=0). It is a **−0.288 hit to forward MFE**, i.e. those candidates
+simply go up less. This is the second independent route to the same conclusion — the
+`price_vs_hod_pct` sweep also found candidates pinned at the day high are the WORST movers
+(20%) and those 2–5% below it the best (37–39%). **We pay +20 points for buying the high.**
+⚠️ **AND IT INVERTS ON REAL TRADES**: the 27 real trades with hod_break made **+0.220%** vs
+−0.182% for the 225 without. n=27 settles nothing, but it is the same failure-to-transfer that
+killed every other signal-level finding this session. **NOT SHIPPED. No weight was changed.**
+
+**⑤ SHIPPED — instrumentation only, no decision touched.**
+- `scan_log.score_components` (TEXT/JSON) — `log_scan_candidate(..., reasons=...)` now parses
+  grade_setup's reason list into `{canonical component: points}`. Keys are canonicalised
+  (`2.6x vol` / `11.4x vol` → `vol`) so they aggregate; verified stable across values. Most
+  values are `null` because grade_setup only prints points for penalties — **that is fine and
+  is the point: presence/absence of each component is the regression feature, and the fitted
+  coefficients ARE the new weights.** ⚠️ It parses prose, which is fragile; if anyone reworks
+  `grade_setup`, have it emit a dict directly and delete `_canon_component`.
+- `scan_log.fwd_mfe_pct` / `fwd_mae_pct` / `fwd_window_min` + **`backfill_scan_forward.py`**,
+  the correct learning target: excursions from the SIGNAL price, direction-signed.
+  **Backfilled 145,488 rows over all history** (LONG mfe +0.948 / mae −0.905, mover 11.5%;
+  SHORT mfe +1.319 / mae −1.014, **mover 21.1%** — the decommissioned short book has the
+  better forward edge of the two, worth a look). This replaces `actual_day_high_pct`, which
+  measures the stock's day from the OPEN and reports 94% of candidates as movers against a
+  true 23%.
+- ⚠️ **`auto_trader` NOT RESTARTED** (market open, SECZ still held; entry window shuts at
+  13:00 so nothing was lost today). **Component logging starts at the next restart —
+  `launchctl kickstart -k gui/$(id -u)/com.sushil.trading.autotrader` after the close.**
+
+**⑥ WHERE THIS LEAVES THE RANKER.** Every signal-level finding this session separated
+candidates well and then failed to transfer to realised P&L — freshness gate (A/B, rejected),
+fresh+vol≥3x (inverted), atr_pct (2.4× overstated), hour (vanished), HOD break (inverted at
+n=27). The common cause is now clear and is the thing to fix next: **we can only rank
+candidates on forward price behaviour, and this book's realised outcome is dominated by a
+stop-based exit stack whose thresholds sit outside the distribution those candidates move in.**
+Until real trades carry their own component breakdown there is no way to fit weights against
+what we actually earn — which is exactly what ⑤ now makes possible. **Re-run
+`research_equity_component_lab.py` and the regression once ~4–6 weeks of component-logged
+trades exist; do not hand-tune a weight before then.**
+
+---
+
+## Sep 18 2026 (pm3) — Exit re-scale REJECTED (7th) · engine diagnosis · two of my own claims corrected
+
+**① PARTIAL SCALE-OUT RE-SCALED — REJECTED, and monotonically.** The one exit mechanism that
+WORKED on futures (Jul 25: bank 1 of 2 contracts) and that equity has had wired but dead
+(+5% threshold, fired 5 times in 818 trades). Re-scaled to the real distribution and replayed
+on 431 real LONG trades' own bars (`research_equity_exit_scale_lab.py`), banking half and
+letting the runner finish where the trade really finished:
+
+| partial at | delta vs actual | fired | months better |
+|---|---|---|---|
+| 0.75% | **−$383** | 215 | 3/6 |
+| 1.0% | −$340 | 188 | 2/6 |
+| 1.5% | −$331 | 141 | 2/6 |
+| 2.0% | −$322 | 105 | 0/6 |
+| 3.0% | −$89 | 47 | 0/6 |
+| 5.0% (≈today) | +$4 | 12 | 1/6 |
+
+**Monotone: the closer to the current setting, the less harm.** There is no scale at which
+banking half helps — half a winner costs more than it saves on the faders, because the winners
+are too few. **7th rejection of touching the exit.** ⭐ The unifying principle holds on equity
+exactly as on futures: *more room helps, cutting earlier hurts* — and "partial" is not an
+exception to it. **The exit question is closed. Do not reopen without a new mechanism.**
+
+**② ENGINE DIAGNOSIS — and TWO CORRECTIONS TO MY OWN Sep 18 (am) CLAIMS.**
+- ❌ **RETRACTED: "Clockwork's shadow edge did not survive real fills."** Unsupported.
+  SHADOW ran Aug 17 – Sep 4, LIVE runs Sep 9 – 17 — **zero date overlap**, so the −1.38pp/trade
+  gap is confounded with the market fortnight, not attributed to MOC/MOO fills. Also **2 of 7
+  nights carry 117% of the loss** (Sep 11 −$421, Sep 9 −$230; the other five run −$44…+$145).
+  n=7 nights. Not evaluable either way.
+- ❌ **RETRACTED: the short book as a hidden edge.** At A+/A grade SHORT is WORSE than LONG
+  (edge ratio **0.942 vs 1.150**). The earlier 21.1% mover figure came from ungraded rows, and
+  **SHORT candidates are 99.8% sampled in WEAK regime** — within WEAK, SHORT 1.301 vs LONG
+  1.248, i.e. the apparent gap was almost entirely regime sampling.
+- **Wave Rider: the 8% stop realises −10.64%.** AEHR −15.26 · MRVL −9.68 · ARM −9.80 ·
+  HUT −8.71 · COIN −9.75. It holds 3 days, so overnight gaps jump the stop. **Not a
+  tighter-stop problem — an overnight-exposure/size one.** Its only profits are the 3 time
+  exits (+$207, avg +3.62%); the 5 stops are −$1,033. 9 of its 14 entries landed on one day.
+- **Contrarian: 2 own exits.** Nothing to diagnose.
+
+**③ WEAK-REGIME LONGS and UNKNOWN-REGIME — both confounds, both resolved.** LONG edge ratio by
+regime looks like WEAK 1.248 > STRONG 1.097 > NORMAL 1.010 > CAUTIOUS 0.917 > CHOPPY 0.838
+(so CHOPPY/CAUTIOUS being blocked is the system working). But **WEAK-LONG rows exist only in
+Aug–Sep** (post the Sep 6 REGIME_AS_MODIFIER change) and the 12 real WEAK trades ran −0.475%
+at an 8% win rate. And the one positive real bucket, `UNKNOWN` regime (163 trades, +$276,
+55% win), is **entirely Apr 15 – May 22** — it is a legacy tag for "May", not a signal.
+
+**④ HORIZON — the ratio improves, the consistency does not.** Same A+ candidates, same
+signals, longer window (`research_equity_horizon_edge.py`, n=2,446):
+
+| horizon | mfe | mae | ratio | buy&hold | months +ve |
+|---|---|---|---|---|---|
+| 2h | 1.36 | −1.22 | 1.117 | +0.116% | 2/6 |
+| **1d** | 4.44 | −3.49 | **1.274** | +0.391% | 3/6 |
+| **3d** | 6.67 | −5.44 | 1.226 | **+0.808%** | 2/6 |
+| 5d | 8.35 | −6.81 | 1.225 | +0.373% | 2/6 |
+| 10d | 12.09 | −9.60 | 1.260 | −0.086% | 2/6 |
+
+The Aug-14 "we day-trade a swing edge" read is **half right**: the ratio does lift 1.12 → ~1.25
+once you hold past the session. But every horizon is still carried by May (2–3 of 6 months) and
+the swings triple (mae −1.22 → −5.44). **And we already run that experiment — Wave Rider is a
+3-day-hold engine and is −$893.**
+
+**⑤ THE BOTTOM NUMBER, stated plainly.** Across 145,488 labelled rows the entire logged
+universe has a forward edge ratio of ~1.04, and A+ grading lifts it to ~1.15. That +0.11 is
+the whole of our selection skill, at every horizon tested. Against a flat $2 fee on a $1,300
+position it does not survive. **The material is close to symmetric; no gate, exit, horizon or
+sizing rule tested this session changes that.** The only untried lever left on this book is
+fitting the 15 grader weights to outcomes — instrumented today, needs ~4–6 weeks.
+
+---
+
+## Sep 18 2026 (pm4) — Components BACKFILLED, weights FITTED: we systematically buy extension
+
+User pushed back on "wait 4-6 weeks for live component data" — correctly. Most of
+`grade_setup`'s inputs are price-derived and therefore reconstructable. They were.
+
+**① `backfill_score_components.py` — grade_setup's inputs rebuilt at signal time.**
+Point-in-time by construction: `df1d` aggregated from 5-min bars with the signal day as a
+PARTIAL bar (what live reads intraday), `df5` truncated to the trailing 5 sessions like live's
+`history(period='5d')`. **2,666 of 2,699 A+/A LONG candidates reconstructed.**
+**CALIBRATION GATE PASSED — and this time properly:** `intra_chg` reproduces what live logged
+**exactly (corr +1.000, median |diff| 0.00, 100% within 1pp)**. `rsi` is corr +0.761 /
+median |diff| 0.80 / 87% within 3 points — live reads IBKR daily bars, the reconstruction
+aggregates DataBento 5-min, an irreducible ~1-3pt gap; treat reconstructed RSI as noisy.
+**Found and fixed a definition error before trusting anything**: `today_gain` is *today's
+partial close vs yesterday's close* — verified by testing three candidate definitions against
+the ≥3% gate that every graded row must clear (98.3% vs 34.5% vs 72.4%).
+**NOT reconstructable, and why — these are point-in-time STATE, not price:** `is_catalyst`
+(IBKR scanner output, never persisted), pre-market high (`bars_5m` starts 09:30 ET),
+sector grade / strategy weights (learner state as of that morning), sympathy triggers, VIX
+intraday. Deriving any of them from today's data would leak the future. ⚠️ Also confirmed:
+**`bars_1m` stopped collecting 2026-08-04** (1,838 rows in Aug vs 2.0M in May).
+
+**② `research_equity_fit_ranker.py` — the weights FITTED, walk-forward.** Ridge on 16
+features, demeaned WITHIN DAY (the decision is "which 5 of today's ~16"; a cross-day
+correlation is the market's mood), fit on all months before the test month, two independent
+targets. **15 of 16 features agree in sign across both targets:**
+
+| we PAY most for | current weight | fitted (edge / sim_net) |
+|---|---|---|
+| `today_gain` | **+10/20/30** | **−0.239 / −0.144** ← most negative feature |
+| `hod_break` | +20 | −0.188 / −0.081 |
+| `is_bull_flag` | +25 | −0.153 / −0.080 |
+| `intra_chg` | batting-order sort, DESC | −0.044 / −0.016 |
+| `is_tight` | +10 | −0.035 / −0.094 |
+
+| we UNDER-pay for | current weight | fitted |
+|---|---|---|
+| `rsi_5m` | **−10 if >75** | **+0.146 / +0.045** |
+| `fvg_count` | +10/20/30 | +0.141 / +0.023 |
+| `range_pct` | **unscored** | +0.071 / +0.096 |
+| `vwap_reclaim` | +25 | +0.071 / +0.045 |
+| `orb_break` | **+30** | +0.005 / +0.039 (≈nothing for the biggest weight) |
+
+⭐ **ONE COHERENT READING: every feature measuring "already extended" is negative, every
+feature measuring "room left" is positive — and FOUR separate mechanisms all push the book
+toward the most-extended name**: the ≥3% hard gate, the today_gain bonus, the HOD/bull-flag
+bonuses, and the batting order's `intra_chg` DESC sort plus its at-HOD preference.
+**We are systematically buying extension and paying a premium for it.** This is the fourth
+independent route to the same place — `price_vs_hod_pct` (pinned at the high = 20% movers vs
+37-39% for 2-5% below), the HOD-break component test (−0.334, 1/6 months), and grade_setup's
+own STRONG-day exhaustion gate all said it first.
+
+**OOS decision test (top 5 per day, walk-forward):** fitted beats the current score on
+**62% of days on BOTH targets**, and in 4/4 months (edge) / 3/4 (sim_net).
+⚠️ **But the absolute level stays NEGATIVE** (−0.291 vs −0.594 on edge; −0.216 vs −0.393 on
+sim_net). **This is "lose less", not "make money".** OOS rank correlation is only +0.051
+(edge) and +0.021 (sim_net, where the current score actually scores higher at +0.062).
+
+**③ SHIPPED — `EXTENSION_TILT` A/B switch, default 0 = live unchanged.**
+`1` zeroes the four extension bonuses (the ≥3% hard gate untouched — eligibility does not
+change, only ranking); `2` also reverses the batting order's two extension rungs. Unit-tested:
+a maximally-extended candidate scores 257 at tilt=0 and 172 at tilt=1, **still A+ in both** —
+which is the whole point. `equity_replay.py --extension-tilt N`.
+
+**❌ A/B RESULT — REJECTED (8th).** equity_replay, Aug 3 → Sep 17, read off the replay DB
+(see the bug below — the printed total was wrong):
+
+| arm | n | WR | total | vs live |
+|---|---|---|---|---|
+| 0 — live today | 264 | 35.6% | **+$155** | — |
+| 1 — drop the four extension bonuses | 280 | 33.6% | **−$81** | **−$236** |
+| 2 — + flip the batting order | 278 | 33.5% | **−$148** | **−$303** |
+
+Worse in BOTH months and BOTH variants (Aug +$177 → −$16 / −$97; Sep −$22 → −$64 / −$51).
+The re-rank did what it was built to do — 29-45 of the picks changed — it simply did not help.
+⚠️ **But t=+0.36, p=0.720: the gap is indistinguishable from noise.** Honest verdict is "no
+evidence it helps", not "proof it hurts". **Not shipped; flag left at 0.**
+⭐ So the fitted weights joined every other finding this session: real and month-consistent at
+signal level, gone once the full pipeline and its exit stack are in the loop. That is now
+**8 for 8** — and the consistency of that result is itself the most reliable thing measured.
+
+**⚠️ BUG FOUND AND FIXED — `equity_replay.py`'s printed total was wrong, a REGRESSION of the
+Aug 6-7 2026 fix.** Line 613 summed per-day `get_daily_pnl()` snapshots, each filtered on
+`entry_date = that day`, so a trade entered day N and closed day N+k is invisible to BOTH —
+day N's snapshot (still open) and day N+k's (did not enter that day). Measured here: **29
+multi-day trades worth +$1,216 dropped, printing −$1,061 for a true +$155.** The total is now
+re-derived from the replay DB, and it prints an explicit note when the snapshot sum disagrees.
+⚠️ **This means every A/B run before the fix was read on a biased basis, including this
+session's freshness-gate A/B.** That one's core conclusion survives anyway — gate=1 was
+*byte-identical* to gate=0 (same trade count, same P&L), so "no-op" holds on any basis — but
+its gate=2 margin (−$63) was read off the broken number and is no longer trustworthy. The
+arms' biases are not equal, because each holds a different number of multi-day trades.
+
+**④ WHY NO SHORT TRADES — a real defect, found by the user's question.** Two failures stacked:
+the bear book was RETIRED Aug 15 (Alpha Factory), and that retirement lives inside
+`elif not REGIME_AS_MODIFIER and regime == 'WEAK'` — while `REGIME_AS_MODIFIER = True` since
+Sep 6, so **the branch is unreachable**. The damage is not the missing trades:
+**SHORT scan_log rows stop dead on 2026-07-31** (Apr 5 · May 1,211 · Jun 8,398 · Jul 17,591 ·
+**Aug 0 · Sep 0**). We stopped GRADING short candidates, so the retirement decision can never
+be re-examined for any period after July. That is exactly the defect the same function's own
+docstring warns about ten lines below — *"a gate that stops trading must never also stop
+measuring, or the data needed to judge the gate is destroyed by the gate itself."*
+**SHIPPED (user-approved, same session): `BEAR_OBSERVE_ONLY = True`.** `_scan_and_enter_bear`
+gained `observe_only` mirroring `_scan_and_enter`'s contract, and run_scan now calls it every
+scan inside the entry window — OUTSIDE the `if/elif` routing chain, so no regime branch can
+make it unreachable again. Verified: exactly ONE order path exists in that function and it
+sits inside `for pick in (candidates if _short_book_on else [])`, which `observe_only` empties
+— zero orders are possible regardless of book state.
+⚠️ **Found and fixed the same defect INSIDE the function**: three early `return`s (daily-loss
+brake, afternoon gate, recycled-slot gate) sat BEFORE the grading block, so on a bad day the
+short side would have gone dark again. All three are now `if not observe_only:` — a
+capital-protection brake must never stop measurement when no capital is at risk.
+**Cost:** one extra signal pass over 241 symbols. The bear scan runs first and does the
+`prefetch_df5`, which the long scan then reuses inside `DF5_BATCH_TTL=150s`, so it is one
+extra compute pass, not an extra fetch. Current cycle is 333s of a 300s interval with ~33s of
+work — headroom is large, but **confirm the Monday cycle time**.
+Short TRADING stays retired: at A+ grade the short side measured WORSE (edge ratio 0.942 vs
+1.150). autotrader restarted and verified (market closed, clean startup, 0 positions).
+
+---
+
+## Sep 20 2026 — STRATEGY HUNT: we have been trading the dead half of the clock
+
+Day-1 posture, no assumptions. `research_strategy_hunt.py` (panel + `--control/--select/--stress/--verdict/--config`).
+**Nothing wired. This is a finding, not a change.**
+
+**① THE BENCH IS BIASED — establish this before any backtest.** 113 of our 241 names were
+added Jul 2026 by a screen on `bt_wr` — **backtest win rates of 88–93%** — computed over
+2024-2026, the same window any backtest here uses. Measured: 2024-01 → 2026-09 median
+buy-and-hold was **+95% (added) / +87% (incumbents) vs SPY +60%**. ⇒ **The only honest
+benchmark on this universe is its own equal-weight buy-and-hold, never zero and never SPY.**
+(Our live window Apr 15 – Sep 18 was NOT a tailwind: universe median +0.7%, 51% of names up,
+mean +11.6% — against our book's −15.3%.)
+
+**② THE FINDING — where the return actually accrues (187,731 symbol-days):**
+
+| period | overnight bp/day | intraday bp/day | on win% | id win% |
+|---|---|---|---|---|
+| 2024 | **+18.47** | −2.67 | 56.5 | 49.0 |
+| 2025 | **+11.44** | +5.34 | 54.9 | 50.1 |
+| 2026 | **+12.85** | +2.15 | 52.0 | 49.2 |
+| **ALL** | **+14.36** | **+1.60** | **54.7** | **49.5** |
+
+**91% of the universe's return accrues overnight.** Compounded: overnight +44%/yr vs intraday
++4%/yr. Equal-weight, no selection at all: **overnight Sharpe +2.23, maxDD −19.6%, total
++160%** vs **intraday Sharpe +0.16, total +3.2%** over 2.7 years.
+⭐ **All four of our equity engines trade the intraday window and close before the overnight
+one.** We built the whole system on the half of the clock with a 49.5% win rate.
+
+**③ CONTROL — it is not our universe's selection bias.** Same split on instruments nobody
+selected on performance: SPY +5.98 / +2.47 · QQQ +9.22 / +0.87 · IWM +6.24 / +1.24 ·
+SMH +22.81 / −1.67 · URA +23.21 / **−8.82**. Ten of eleven ETFs show it (only XLF inverts).
+This replicates **Lou, Polk & Skouras (JFE 2019)**, who found on 30 years of US intraday data
+that momentum's entire abnormal return is overnight (3-factor alpha 0.95%/mo, t=3.65) against
+0.11% intraday. Held to **Hou, Xue & Zhang (RFS 2020)**'s bar — 65% of 452 published anomalies
+fail t>1.96 once microcaps are controlled — this one survives on our own tape, in every year,
+and in unselected ETFs.
+
+**④ SELECTION INSIDE THE WINDOW HELPS, and Clockwork already has the best signal.**
+Top-10 each night, held close→open, $20M ADV floor, gross:
+
+| sort | 2024 | 2025 | 2026 | Sharpe (all) | maxDD |
+|---|---|---|---|---|---|
+| **gap consistency (Clockwork's own)** | +18.4 | +16.3 | +17.1 | **+2.30** | **−16.9%** |
+| today's intraday gainers | +26.8 | +14.3 | +17.5 | +2.26 | −17.2% |
+| equal-weight everything | — | — | — | +2.23 | −19.6% |
+
+Gap consistency is the **most stable across years and has the best drawdown**. Name count
+barely matters (5→50 all give 15.5-17.6bp) ⇒ a broad premium with real capacity, not a fragile
+pick. Deflations found and kept: the effect is **largely a volatility premium** (a pure vol
+sort earns +38.1bp vs the gainer sort's +38.9bp unfiltered) and **concentrated in illiquid
+names** (unfiltered +38.9bp → $50M ADV floor +16.0bp). It is a RISK premium, not free money.
+
+**⑤ WHY CLOCKWORK LOSES ANYWAY — and it is neither the signal nor the tape.**
+Fee arithmetic first. 2026 gross edge **+17.12bp/night**:
+
+| position | FIXED net | TIERED net | |
+|---|---|---|---|
+| **$1,000** (what Clockwork runs) | **−2.88bp** | +10.12 | **fee eats it entirely** |
+| $2,000 | +7.12 | +13.62 | marginal |
+| $5,000 | +13.12 | +15.72 | viable either way |
+
+⭐⭐ **But the real killer is EXECUTION.** Matched 62 live Clockwork trades against the panel's
+own 15:55 close and 09:30 open:
+
+| | |
+|---|---|
+| entry fill vs 15:55 close | **+15.7bp** (we pay up to get in) |
+| **exit fill vs 09:30 open** | **−77.2bp** |
+| modelled overnight return | +48.0bp |
+| **actually realised, fill to fill** | **−45.9bp** |
+| **execution drag** | **−94.0bp per night** |
+
+**The edge is 17bp and the execution is losing 94bp — five times the entire edge.** And it
+reconciles: −94 + 17 ≈ −77bp, against Clockwork's live −64bp/trade. **The live loss is almost
+entirely execution.**
+Mechanism, from the exit timestamps: a true MOO fills AT the 09:30 print. Ours fill
+**09:31-09:34 (47 trades, avg −0.380%)**, i.e. after the open, not in the auction — plus
+**23 trades exiting late (09:46-09:48 fallback and a 10:44 cluster) averaging −1.184%**, 3×
+worse. Worst cases sold 3-4% below the opening print (ACLS open 107.41 → filled 103.00;
+PI open 175.55 → 170.00), several at suspiciously round numbers.
+
+**⑥ WHAT THIS MEANS.** We do not need a new engine. We need to (a) move capital from the
+intraday window (Sharpe 0.16) to the overnight one (Sharpe 2.2-2.3), (b) fund it at
+$2,000-5,000 per name instead of $1,000, (c) settle the fee plan, and (d) **fix the auction
+execution, which is currently destroying 5x the edge.** (d) is plumbing and comes first —
+until exits actually clear in the opening auction, no overnight configuration can be judged.
+
+---
+
+## Sep 20 2026 (pm) — Clockwork resized + fee plan settled + the paper simulator caught faking auction fills
+
+**① ⭐⭐ THE −94bp "EXECUTION DRAG" IS LARGELY AN IBKR PAPER ARTIFACT — I had this wrong
+earlier today and the correction matters.** Our order path is CORRECT: MOO is `MKT` with
+`tif='OPG'` (bridge.py:524), submitted 09:01, and the fills land at **09:30:01** — the auction
+path works. But the prices are fabricated. Sep 18, ten MOO sells vs our own 09:30 bar:
+
+| symbol | filled | that bar's open / high / low | |
+|---|---|---|---|
+| PI | **179.00** | 182.29 / 182.29 / **182.29** | never traded there |
+| ACLS | **105.00** | 106.15 / 106.15 / **105.61** | never traded there |
+| VST | **143.00** | 143.40 / 144.45 / **143.20** | never traded there |
+| SMTC | 180.00 | 182.33 / 182.89 / 179.10 | whole dollar |
+
+**Four of ten filled at whole-dollar prices and three were outside the stock's actual traded
+range.** That is not an opening auction print; it is the paper simulator inventing a number.
+The non-round fills average near zero, which is what a real auction fill looks like.
+⇒ **Clockwork's live P&L has never been a measurement of its strategy.** Same family as the
+Sep 3 finding that the two paper gateways fill ~15pts apart on identical signals.
+**Deliberately NOT "fixed" by switching to LIMIT orders** — MOC/MOO is the correct construction
+for real trading, and making paper look better by trading differently than we intend to live
+would be measuring the wrong thing. Instrumented instead (③).
+
+**② SHIPPED — the configuration the data supports.**
+- **Clockwork: 10 x $1,000 → 3 x $3,000**, on its OWN $10,000 (not taken from the intraday
+  book). Measured on 673 nights, $20M ADV floor, gross: 3 names +21.4bp / Sharpe 2.25 /
+  maxDD −13.2% · 5 +17.6 / 2.25 / −16.5 · 10 +17.2 / 2.30 / −16.9 · 20 +16.9 / 2.40 / −16.3.
+  The gross edge is nearly flat in name count, so concentration buys the fee saving almost
+  free — and the **worst single night was better at 3 names (−637bp) than at 10 (−784bp)**.
+- **`IBKR_COMMISSION_PLAN = 'TIERED'`** (user-directed). At 14 shares/trade only the per-order
+  minimum binds, so the plan is a flat 2.6x on all friction: $2.00 → $0.77 round trip.
+  ⚠️ **This is a MODELLING assumption. IBKR does not expose the plan through the API and the
+  live account has never traded, so it cannot be verified from here — enroll in Tiered in
+  Client Portal before funding, or the model understates real cost by ~$1.30/trade.**
+
+**⭐ THE OLD CONFIG COULD NOT HAVE WON.** Same signal, same nights, official prints:
+
+| config | bp/night | Sharpe | maxDD | on $10k/yr | 2024 / 2025 / 2026 |
+|---|---|---|---|---|---|
+| OLD 10 x $1,000, FIXED | **−2.78** | −0.37 | −31.7% | **−$677** | −1.6 / −3.7 / −2.9 |
+| NEW 3 x $3,000, TIERED | **+19.09** | **+2.01** | −13.7% | **+$5,553** | +13.8 / +22.4 / +21.0 |
+
+**Negative in all three years at the old sizing; positive in all three at the new one.** The
+fee exceeded the edge every year. This was never a strategy problem.
+
+**③ SHIPPED — `backfill_overnight_reference.py` + launchd `com.sushil.trading.overnight_reference`
+(17:05 weekdays, after collect_bars writes the session).** Adds `ref_entry` / `ref_exit` /
+`ref_pnl` / `exec_drag` to `overnight_trades`: every night the book is marked BOTH at the
+broker's fill and at the session's official close/open from our own bars, so strategy and
+execution can never be conflated again. Backfilled 216 rows:
+
+| mode | n | actual | **strategy** | exec_drag |
+|---|---|---|---|---|
+| LIVE | 70 | **−$554.89** | **+$223.12** | +$778.01 |
+| SHADOW | 146 | +$1,049.22 | +$798.47 | −$250.75 |
+
+**Clockwork's seven live nights were PROFITABLE at the official prints (+$223).** The −$555 is
+the simulator. (SHADOW's gap is the reverse sign and equals its modelled fees — an arithmetic
+check that the calculation is right.)
+
+**④ REPLAY of the actual live picks, three ways** (`research_clockwork_replay.py`, same
+symbols, same nights, no re-selection): as filled **−$555** · official prints at live size
+**+$132** · official prints at $3,000/TIERED **+$780**. Execution +$687, sizing and fees +$648.
+
+**OPEN.** (a) `TOP_N=3` needs no restart — launchd runs `python -m factory.live.overnight`
+fresh every 300s. (b) **Clockwork still holds 10 positions entered before the resize**; they
+unwind naturally at the next open. (c) The real question is unchanged and unanswerable on
+paper: **does a live MOC/MOO fill at the official print?** Until a funded account places one,
+`ref_pnl` is the honest read on this book and `pnl` is not.
+
+---
+
+## Sep 20 2026 (pm2) — Clockwork audit: one real bug, one missing filter, two traps declined
+
+**TOMORROW'S SEQUENCE (Mon Sep 21), confirmed by tracing `run_once`:** 09:00-09:27 MOO SELL
+submitted for the **10 positions still open** ($9,593 notional, entered Sep 18) → 09:31-09:59
+fills confirm → **15:40-15:49 MOC BUY for the new TOP_N=3 at $3,333 each** → 16:00-16:40
+confirm. No restart needed; launchd runs `python -m factory.live.overnight` fresh every 300s.
+Dry-scan for tomorrow: **CENX, NUTX, P** (all 70% consistency).
+
+**① 🐛 REAL BUG FOUND AND FIXED — capital overcommitment if the morning exits fail.**
+`scan_and_enter()` guarded only on `entered_today()`; it never looked at open positions. If the
+09:00 MOO submissions had failed (gateway down, as happened Aug 9 and Sep 2), the book would
+hold yesterday's names AND buy a full new set at the close — well past its $10,000 budget, with
+no cap anywhere in the path. Now caps at TOP_N **in total**: blocks entirely if already at the
+cap, otherwise enters only the remaining room and logs why.
+
+**② ADDED — earnings blackout (`EARNINGS_BLACKOUT_DAYS = 1`).** This book holds a name through
+exactly one overnight gap, which is when earnings land. Audit of **1,932 held name-nights**:
+only 4 worse than −10%, and the identifiable ones are all earnings — **DELL −12.0% (reported
+2024-11-26) · AMZN −9.4% and AAPL −9.4% (both reported 2024-08-01 after the close) · ABBV
+−10.5%**, plus CEG −15.8% on the Jan-2025 AI selloff. Ten name-nights beyond ±10% carry **15%
+of all P&L**, in both directions.
+Sizing the filter by clipping the tail (upper bound on what a perfect filter buys):
+
+| clip | bp/night | Sharpe | worst night |
+|---|---|---|---|
+| none | 20.56 | 2.16 | −637bp |
+| ±10% | 18.60 | 2.11 | −637bp |
+| **±5%** | **17.97** | **2.26** | **−500bp** |
+
+**It costs 2.6bp of mean and buys ~0.10 of Sharpe and a 137bp better worst night.** On a 3-name
+book one −15.8% gap is −5.3% of the entire book in one night. **This is variance reduction, not
+a P&L improvement — do not expect it to raise returns.** Unknown earnings date ⇒ allow the
+trade (never skip the whole book on a data outage).
+
+**③ TWO TUNE-UPS TESTED AND DECLINED.**
+- **LOOKBACK 30 → 20.** Tempting: 20 gives 23.2bp vs 30's 20.6bp. But per year — 20: 13.9 /
+  27.8 / 28.1 · **30: 15.6 / 23.1 / 23.2** · 40: 22.4 / 11.2 / 16.6. **30 sits in the middle of
+  the plateau: never the best, never the worst, solid in all three years.** 20 is best only in
+  2025-26 and second-worst in 2024. Changing it would be fitting the recent half. **Left at 30.**
+- **Day-of-week.** Tue→Wed (29.5bp) and Wed→Thu (33.4bp) beat Mon→Tue (10.3bp) and Thu→Fri
+  (13.2bp), and the ranking holds in all three years. **Declined anyway:** five buckets of ~130
+  nights sliced after the fact, day-of-week is among the most p-hacked results in finance, and
+  acting on it would cut the book to two nights a week. **Logged as a watch item.**
+
+**④ CONFIRMED CORRECT, no change.** Round-tripping vs holding repeats: **2.27 of 3 names
+repeat each night** (40% of nights the whole top-3 is unchanged), so the book sells and rebuys
+the same names constantly. Holding them through the day instead would save the 2.1bp fee but
+collect their intraday return, which is **−3.44bp** — holding is worse by 1.34bp overall and
+mixed by year (2024 −10.5, 2025 +5.4, 2026 +0.6). ⭐ Note those names' intraday return is
+negative while the universe averages +1.6bp — the "tug of war" showing up directly in our own
+book. **Round-trip stays.** Also: no liquidity floor needed — at $3,333 a name against a $20M
+ADV that is 0.017% of daily volume, so market impact is nil, and the WILD screen already
+implies ≥$10M.
+
+**⑤ ⚠️ THE RISK NOBODY SHOULD MISS: 97% of the total return comes from the best 5% of nights.**
+644 nights, 18 worse than −300bp and 26 better than +300bp. This is a lottery-shaped payoff:
+most nights are ~flat and a handful of big up-gaps carry everything. Consequences — you cannot
+time it, you must be in every night, and a long flat or negative stretch is entirely normal
+and is NOT evidence the edge is gone. Judge this book on months, not days.
+
+**⑥ DO PROS DO THIS? Yes — and the cautionary tale is exact.** NightShares launched ETFs to
+harvest precisely this premium (buy the index at the close, sell at the open) and **closed them
+about a year after launch, explicitly because turning the portfolio over in full twice a day ate
+the return**. Elm Wealth ("Still Working the Night Shift", Mar 2025) tracks the same effect;
+it has been documented again in the Bitcoin ETFs (IBIT ~+200% overnight vs ~+40% buy-and-hold
+since Jan 2024). ⭐ **Our position differs in exactly one way that matters: we trade 3 names at
+$3,333 with a known $0.70 round trip and no market impact, where a fund turning over hundreds
+of millions twice daily pays impact we simply do not.** Being small is the entire edge here —
+which also means it does not scale, and that is worth knowing before anyone grows it.
+
+**Tie note (not acted on):** with a 30-day window the consistency score is quantised (n/30), so
+ties at the cut are common — tomorrow CENX/NUTX/P/SMTC all sit at 70% and the 3rd slot is
+decided by sort order. A secondary tie-break would be a fitted choice; logged, not built.
+
+---
+
+## Sep 20 2026 (pm3) — Is the 3-name pick air-tight? No. But the design survives the challenge.
+
+**① THE PICK BEATS RANDOM — BUT NOT RELIABLY.** Same WILD pool, same $20M ADV floor, same
+fee, 3 names, gross bp/night:
+
+| year | top-3 by consistency | random 3 (15-40 draws) | edge | all eligible WILD, EW |
+|---|---|---|---|---|
+| 2024 | 32.3 | 27.7 | **+4.6** | 27.0 |
+| 2025 | 21.7 | 24.4 | **−2.8** | 21.0 |
+| 2026 | 35.3 | 15.7 | **+19.6** | 18.1 |
+| **ALL** | **29.1** | **21.5** | **+7.5** | 22.0 |
+
+**The selection LOSES to random in 2025 and its whole-sample edge is carried by 2026.** One
+good year in three. That is not air-tight and should not be described as such.
+⭐ **The honest decomposition: roughly three quarters of the value is being in the overnight
+window at all (a random 3 earns 21.5bp), and about a quarter is the pick (+7.5bp).** The
+window is the edge; the pick is a modest, unreliable bonus.
+
+**② CONCENTRATION TO 3 IS FORCED BY FEES, NOT CHOSEN FOR ALPHA.** Equal-weighting all
+eligible WILD names has the best Sharpe of anything tested (1.83 vs our 1.68) — but the median
+night has 30 eligible names, so $10,000 spread across them is $333 each, and at $0.70 a round
+trip the fee is **21bp against a 22bp edge: +1bp net.** Unusable. Three names at $3,333 pay
+2.1bp. **We are concentrated because we are small, not because concentration is better.**
+
+**③ REAL WEAKNESSES IN THE SELECTION, named.**
+- **Ties.** A 30-day window quantises the score to n/30, so ties at the cut are routine —
+  tomorrow CENX / NUTX / P / SMTC all sit at 70% and the third slot goes to sort order.
+- **Sector clustering.** The 3 picks average 2.31 distinct sectors, and on **11% of nights all
+  three are in the same sector.**
+- **Single-name gap risk**, now partly handled by the earnings blackout (pm2 entry).
+
+**④ THE ETF ALTERNATIVE — tested, and it loses for an instructive reason.** A fund would reach
+for a broad instrument (NightShares used index futures). Held overnight, net of a $0.70 fee on
+one $10,000 position:
+
+| implementation | net bp | Sharpe | maxDD |
+|---|---|---|---|
+| **our 3 WILD names** | **26.40** | 1.68 | **−13.2%** |
+| most-volatile ETF each night (a RULE) | 13.11 | 1.17 | −27.5% |
+| 3 most-volatile ETFs | 15.29 | 1.72 | −24.6% |
+| all 11 ETFs equal weight | 10.75 | **1.97** | −16.0% |
+| SPY only (the unbiased default) | 5.47 | 1.35 | −16.2% |
+
+⚠️ **URA tops a per-ticker table at 22.5bp / Sharpe 2.26 — but that is hindsight.** Choosing it
+because it ranked first is the same error as the Jul-2026 universe screen. The RULE version of
+the same idea ("hold the most volatile ETF") earns **13.1bp, not 22.5**, and was −1.1bp in 2025.
+⭐ **Why the ETF route earns less: the overnight premium scales with volatility, and the
+diversification inside an ETF removes exactly the volatility we are being paid for.** Single
+WILD names carry more of it than any sector ETF. That is a real argument for the current design.
+
+**⑤ DO PROS DO THIS? Not with single names — and the reason is size, not principle.** The
+professional instinct is to take a broad premium with a broad instrument, which is what
+NightShares did (index futures) before closing on turnover costs. But a fund running hundreds
+of millions *cannot* hold three small caps overnight; we can. **At $10,000 the single-name
+route is open to us precisely because we are too small to move anything** — the same fact that
+makes our fee tolerable. It does not scale, and it should not be grown without re-testing.
+
+**VERDICT: keep the current design, drop the claim that the pick is proven.** The window is
+doing the work. Track the pick's contribution explicitly — if `ref_pnl` keeps beating a
+random-3 benchmark over the coming months, the selection earns its place; if it does not, the
+book still works, and the honest response would be to widen it rather than defend the sort.
+
+---
+
+## Sep 20 2026 (pm4) — OPTIONS: the book was never a signal problem, it was arithmetic
+
+Deep read of the whole options stack + full re-evaluation. Labs
+`research_options_structure_lab.py` (structure/Edge Budget), VRP test in-session.
+**SHIPPED: 1 real bug fix + delta-anchored structures + the Edge Budget gate + tests.**
+⚠️ **The "entries stay frozen" conclusion in this section was SUPERSEDED the same night —
+see Sep 20 (pm5) below. Spreads are LIVE on paper from Sep 21.** The analysis here stands
+unchanged; what changed is the decision about what to do with it.
+
+**① WHY IT TAKES NO TRADES — three layers, only the first is deliberate.**
+`EQUITY_ECHO_FROZEN = True` (options_trader.py, Aug 16) returns early from BOTH automated
+entry paths — `_check_equity_scan_triggers` and `scalp_scan_loop`. That is the whole answer
+to "why no trades"; everything downstream is untested consequence. Behind it,
+`_book_health_on('SHORT')` is **frozen on Jul 22-31 data** because SHORT `scan_log` rows
+stopped dead 2026-07-31 — the same freeze-forever architecture that bit equity on Jul 21,
+back through a different door. It self-heals from Sep 21 now that `BEAR_OBSERVE_ONLY=True`
+resumes SHORT grading. Watchman EXITS were never frozen; there are **0 open positions**.
+
+**② THE DISEASE, quantified. Median breakeven required: +8.1%.**
+Every debit spread ever traded was anchored at `underlying + EM x 0.33 / 0.67`, putting the
+long leg 8-12% OTM. Across all 22 closed trades: median long leg **+5.6% OTM**, median
+**breakeven move +8.1%**. Against 194,715 symbol-days of our own universe:
+
+| hold | P(move >= +8.1%) | P(>= +4%) | P(>= +2%) |
+|---|---|---|---|
+| 1d | 2.4% | 8.8% | 20.6% |
+| 3d | 7.7% | 19.4% | 32.7% |
+| **7d** | **15.6%** | 29.9% | 40.9% |
+| 21d | 30.1% | 41.9% | 48.7% |
+
+We bought structures needing a 1-in-6.4 event **just to return the premium**, then held them
+~7 days. Realized: **17 of 22 closed trades lost**. The 84% predicted loss rate and the 77%
+actual are the same number. ⭐ **The book performed exactly as its structure dictated.
+Signal quality was never the binding constraint.**
+
+**③ 🐛 REAL BUG FIXED — every strike has been ~20% too far OTM since the calculators were
+written.** `engine.compute_expected_move` used `sqrt(dte/252)` while `days_to_expiry()`
+returns **calendar** days. Mixing a calendar numerator with a trading-day denominator
+overstates every expected move by `sqrt(365/252)` = **1.204x**, and because all four
+calculators anchor strikes on a multiple of it, every strike sat 20% further OTM than the
+template intended. Fixed at source (`engine.py` now delegates to `options/structure.py`).
+Blast radius checked: 4 call sites, all in options_trader — watchman, the backtester, turbo
+and the chain collector never call it.
+
+**④ STRUCTURE LAB — what each structure needs, and the control that matters.**
+Black-Scholes at the universe median IV (74%), friction from our OWN
+`options_chain_snapshots`, forward distribution from `bars_5m`. **Detrended** (universe mean
+move removed) so the 2024-26 bull tide cannot flatter anything — per this file's own
+benchmark rule:
+
+| structure | BE move | detrended exp. return, 21d |
+|---|---|---|
+| debit spr .40/.20 | +5.94% | **-20.32%** <- what we traded |
+| debit spr .60/.35 | +2.03% | -10.22% |
+| debit spr .75/.50 | -0.55% | -5.89% |
+| bull put cr .30/.15 | -3.56% | **-2.22%** <- least bad |
+| shares | +0.02% | -0.02% |
+
+⭐ **No structure is positive once drift is removed — options lose to simply holding the
+shares, on this universe, at every horizon.** But the spread between worst and best is
+**~18pp**, and we had picked the worst available. At <=7 days *every* structure is deeply
+negative, which is the decisive quantitative **NO** to optioning the overnight edge: the
+cheapest 1-day structure needs **+0.79%** to break even and Clockwork's whole edge is
+**+0.19%/night**.
+
+**⑤ THE INPUT THAT SETTLES IT — our signals terminal move, measured.**
+745 unique symbol-days of A+/A LONG candidates since Apr, terminal move vs the universe over
+identical windows (the only honest benchmark on a universe screened on past results):
+
+| horizon | our A+/A LONG | universe | selection |
+|---|---|---|---|
+| 1d | +0.22% | +0.14% | +0.08pp |
+| 3d | +0.01% | +0.37% | -0.36pp |
+| **7d** | **-0.79%** | **+0.81%** | **-1.60pp** |
+| 21d | -4.21% | +2.58% | **-6.79pp** |
+
+⭐ **Beyond one day our graded signals are worse than a name picked at random from the same
+universe** — consistent with the Sep 18 finding that the grader systematically buys
+extension, which mean-reverts over days. A negative expected move cannot clear any positive
+breakeven. **An independent second route to the Aug 16 freeze verdict.**
+
+**⑥ TESTED AND REJECTED — selling premium is not the escape hatch.** If we are the wrong
+side of the volatility premium, invert. Measured on 441 unique symbol-days (`opt_calc_log`
+IV vs realized vol over the next 30d): **VRP +1.67 vol pts, t=+1.77, p=0.078**, and
+month-inconsistent (May -6.96 / Jun +0.53 / Jul +3.61). Not significant, not shippable — the
+index VRP does not survive on 74%-IV small caps. The structure lab agrees independently:
+credit structures are negative detrended too. Two methods, same answer.
+
+**⑦ TURBO (options on Wave Rider) — existing evidence, read honestly.** 45 tickets,
+**5 PASS / 40 SKIP** (89% skip: 18 illiquid, 14 IV<25 — the WILD universe has no option
+market). The 5 passes: leverage premium **-24.19 / +9.24 / -2.96 / -46.64 / +13.31 =
+-51.24pp**. Options on that engine destroyed value vs holding the shares. Leave it SHADOW.
+
+**⑧ SHIPPED.**
+- **`options/structure.py`** (new) — Black-Scholes, correct `expected_move`, delta-anchored
+  strike selection, `breakeven_move_pct`, `edge_budget`. Pure, no I/O.
+- **`options/test_structure.py`** (new) — 33 pinned tests incl. reproducing the real MRVL
+  trade's +12.46% breakeven. **Run after ANY change to strike selection or the gate.**
+- **Delta-anchored strikes** in both debit calculators (`STRUCTURE_MODE='DELTA'`, long 0.70 /
+  short 0.45 delta), falling back to EM anchoring only when a coarse ladder cannot express
+  the structure. Verified end-to-end on a mocked chain: **breakeven +6.40% -> -0.20% on
+  identical inputs, 6.60pp less move required.**
+- **The Edge Budget gate — the permanent admission test, on all FOUR calculators.** A
+  structure may only be traded when the SIGNAL's own expected move over the intended hold
+  clears the structure's breakeven with a 25% buffer. **Fails closed**: an entry path that
+  cannot state the move it expects does not get to trade. Automated paths must pass
+  `signal_move_pct`; manual `OPT BUY`/`OPT SELL` pass `enforce_budget=False` (the human is
+  the decider and already routes through CONFIRM) but still see the budget on screen.
+  Closed a hole found mid-build: the IV>=50 route sends candidates to the **credit**
+  calculators, which were ungated — gated now too.
+  ⚠️ **The gate is necessary, never sufficient** — it asks "can the signal reach breakeven?",
+  not "does this beat holding the shares?" On this universe, detrended, nothing beats shares.
+  Documented in `structure.edge_budget`'s own docstring.
+- Edge Budget line added to the Telegram spread card.
+- options_trader restarted 22:48 ET, clean, 0 open positions, new PID verified.
+
+**⑨ WHY I INITIALLY HELD (SUPERSEDED by pm5 — kept for the reasoning).** Entries stayed frozen. Unfreezing the equity echo would
+produce **zero trades anyway** — the gate rejects a -0.79% signal — and forcing trades by
+lowering the bar would be buying a structure the evidence says loses. **The one source that
+PASSES the gate is Contrarian** (buy the biggest 3-day fallers, 5-day hold): terminal move
+**+2.82% mean / +0.47% median at 5d, alpha +2.02pp vs the universe, positive in all three
+years** (2024 +4.12 / 2025 +2.30 / 2026 +1.70). Not wired, on purpose — it has **2 own-exit
+trades live**, its mean is right-tail driven (a debit spread caps exactly that tail), and its
+backtest carries this file's own acknowledged survivorship bias on precisely the "buy the
+crasher" axis. Wiring options onto a 2-trade engine is how Turbo happened.
+**Precondition to revisit: ~20 Contrarian own-exit trades with positive alpha vs the Tide.**
+
+**TO MAKE IT TRADE ANYWAY** (one line, reversible): set `EQUITY_ECHO_FROZEN = False`. The
+Edge Budget will still refuse the echo; to get fills you would also have to override
+`OPT_ECHO_SIGNAL_MOVE` or set `OPT_EDGE_BUDGET=0`, which means trading a structure against a
+measured negative signal. Recorded so the cost of that choice is explicit.
+
+**OPEN / NEXT.** (a) Contrarian -> options once it has a real sample (above). (b) Wire
+turbo's leverage-premium comparison into the Edge Budget so a PASS also has to beat shares.
+(c) `options_chain_snapshots` covers only held positions — 6 symbols, Aug 10-18; widening it
+is the prerequisite for ever backtesting an options structure on real quotes instead of
+Black-Scholes. (d) The scalp engine (naked ATM weeklies, 7-12 DTE) has no Edge Budget and has
+never had an edge — it should be deleted or rebuilt, not just left frozen.
+
+---
+
+## Sep 20 2026 (pm5) — options UNFROZEN for a paper trial; the gate becomes a scored prediction
+
+Pushback, and it was right: **options is the only book here that cannot be backtested.**
+`options_chain_snapshots` holds **6 symbols over 9 days**, so every structure number in the
+pm4 section is Black-Scholes approximation, never a real quote. A gate that blocks every
+trade also destroys the data needed to judge the gate. The account is paper. So the
+instrument-first doctrine this codebase already applies to Chart Gate, Thesis Check and
+Crest Watch applies here too: **let it trade and score it.**
+
+**WHAT WAS ACTUALLY BLOCKING IT — checked, not assumed:**
+| | state | blocker? |
+|---|---|---|
+| `EQUITY_ECHO_FROZEN` | True | **yes** — gated BOTH spread and scalp paths |
+| Edge Budget | ENFORCE @ −0.79% signal | **yes** — rejected everything |
+| Book Health | LONG ON (+0.69) · SHORT ON (+0.71) | no |
+| capital / slots | $5,000, 4 free | no |
+| entry window | spreads to 14:30 | no |
+| **A+ SHORT candidates** | **0 on every session since Jul 31** | **yes, for the bear side only** |
+
+⭐ The bear path was never blocked by a flag — it had **no fuel**. Both spread calculators
+exist, but `scan_log` has written zero A+ SHORT rows since 2026-07-31. `BEAR_OBSERVE_ONLY`
+(shipped Sep 18) resumes SHORT grading from Sep 21, so **tomorrow is the first day the bear
+put spread has candidates at all.**
+
+**SHIPPED:**
+- **`EQUITY_ECHO_FROZEN = False`** — spread entries live on paper. Max exposure 4 slots ×
+  $500 max-loss = **$2,000**.
+- **`SCALP_FROZEN = True`** (new, separate flag) — the scalp engine stays off. Naked ATM
+  weeklies at 7-12 DTE are the worst structure in the lab, have no Edge Budget wired, and
+  have never shown an edge. Unfreezing spreads is not a reason to unfreeze scalps.
+- **`EDGE_BUDGET_MODE = 'OBSERVE'`** (was ENFORCE). The budget is computed and **persisted**
+  on every candidate but does not block. ⭐ **This converts my objection into a testable
+  prediction instead of a veto** — every trade now carries the gate's PASS/FAIL, so we find
+  out whether the gate is right. Flip to `ENFORCE` (or delete it) on the evidence.
+- **`opt_calc_log` +6 columns** (idempotent ALTER): `be_move_pct`, `signal_move_pct`,
+  `edge_required_pct`, `edge_budget_ok`, `structure_template`, `skip_reason`.
+  ⚠️ **`skip_reason` was never persisted before** — "why did nothing trade" was literally
+  unanswerable from the DB. That is fixed.
+- **`options_trial_report.py`** (new) — scores the trial: funnel, structure + toll-gate
+  pass rate, the **Edge Budget graduation test** (PASS vs FAIL realized P&L), and the
+  **leverage premium vs holding the shares** (the question the Edge Budget cannot answer).
+
+**VERIFIED BEFORE GOING LIVE:**
+- **The Spread Toll Gate does NOT strangle ITM legs** — the real risk of the delta-anchored
+  change. Tested on all 1,724 real call quotes in `options_chain_snapshots`: delta-anchored
+  passes **17/18**, the old EM anchoring **16/17**. Toll is higher in absolute terms
+  (ITM legs cost more) but nowhere near the 12% cap. The single block is JOBY at $8.84 —
+  a $1 strike ladder too coarse to express either structure.
+- Edge-budget fields round-trip to the DB (real `log_calc_run`, row read back, cleaned up).
+- 33 structure tests + the pinned liquidity test pass. options_trader restarted 23:01 ET.
+
+**⭐ THE HISTORICAL NUMBER THIS REPORT IMMEDIATELY PRODUCED.** Run over the August trades,
+options vs simply holding the underlying for the same hold: **mean leverage premium
+−29.9pp over 7 trades** (JOBY −87.6 · INTC −43.0 · PLTR −34.5/−29.3 · MRVL −25.4 · XLE −1.3 ·
+NFLX **+11.6**). MRVL is the thesis in one line: **the stock rose +6.7% and the option still
+lost 18.6%, because the structure needed +12.46%.** Third independent confirmation after
+Turbo's −51pp and the detrended lab.
+
+**HOW TO READ THE TRIAL — this matters more than the P&L.** The signal feeding it measures
+**−0.79% terminal move at 7d** against a universe that did +0.81%. **The signal is expected
+to lose money, so a negative total is NOT a verdict on the structure work.** What this trial
+CAN answer, and analysis could not: (1) do delta-anchored spreads fill at all, (2) what do
+they really cost vs the mid we calculate on, (3) does the toll gate pass ITM legs live,
+(4) is the Edge Budget's verdict predictive. Judge those, not the total.
+
+**WATCH MON SEP 21:** first candidates after 10:00 (cutoff 14:30) — `logs/options_trader.log`
+for `[options] scan trigger`. Expect `Delta-Anchored` templates with breakevens near 0%
+rather than +8%, and **the first bear put spreads since July** once SHORT grading resumes.
+Then `venv/bin/python options_trial_report.py`.
+
+**🐛 PRE-EXISTING BUG FOUND IN THE BUG SWEEP AND FIXED — it sat in the manual escape hatch
+for the book we just turned on.** `_execute_close_bg` (manual `OPT CLOSE` on a
+BULL_SPREAD / BEAR_PUT_SPREAD) called `sqlite3.connect(DB_PATH)` while **neither `sqlite3`
+nor `DB_PATH` is imported at module level** in options_trader.py — every other call site in
+the file imports them locally. The function runs in a **daemon thread with no try/except**,
+so the two-leg close SUCCEEDS, the DB is updated by watchman's closer, and then the
+confirmation line raises `NameError` and the thread dies silently: **no Telegram ever
+arrives and the user concludes OPT CLOSE failed on a position that actually closed.** Same
+failure shape as the Jul 20 2026 USAR retry storm. Found by running pyflakes over the file —
+it was the only undefined name in 5,000 lines. Fixed with local imports plus a fallback
+message when the read-back returns no row.
+
+**REVERT:** `EQUITY_ECHO_FROZEN = True`. **ENFORCE the gate:** `OPT_EDGE_BUDGET_MODE=ENFORCE`.

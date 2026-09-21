@@ -7,7 +7,13 @@ All functions are pure computation — no Telegram, no DB, no side effects.
 """
 
 import math
+import os
+import sys
+
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import structure as _structure
 import yfinance as yf
 from scipy.stats import norm as _norm
 from typing import Optional
@@ -78,11 +84,18 @@ def compute_hv(symbol: str, window: int = 30) -> Optional[float]:
 
 def compute_expected_move(price: float, iv_pct: float, dte: int) -> float:
     """
-    1-SD expected move in dollars.
+    1-SD expected move in dollars over `dte` CALENDAR days.
     iv_pct: IV as percent (e.g. 47.0, not 0.47).
-    Formula: price × (iv/100) × sqrt(dte/252) — Black-Scholes 1-SD.
+
+    FIXED Sep 20 2026 — was sqrt(dte/252). `dte` comes from
+    options_trader.days_to_expiry(), which returns CALENDAR days, so dividing by
+    252 (trading days) mixed two day-counts and overstated every expected move by
+    sqrt(365/252) = 1.204x. Because all four calculators anchored their strikes on
+    a multiple of this number, every strike sat ~20% further OTM than the template
+    intended, on every trade since the calculators were written. Calendar days
+    belong over 365. Single source of truth now lives in options/structure.py.
     """
-    return round(price * (iv_pct / 100) * math.sqrt(dte / 252), 2)
+    return _structure.expected_move(price, iv_pct, dte)
 
 
 # ── Volatility Edge ──────────────────────────────────────────────────────────

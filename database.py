@@ -4,6 +4,7 @@
 
 import sqlite3
 import json
+import re
 from datetime import datetime, date, timedelta
 import os
 
@@ -340,6 +341,22 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    # ── Edge Budget instrumentation (Sep 20 2026) ─────────────────────────
+    # Every options decision now records the structure it chose, the move that
+    # structure needs, the move the signal was expected to deliver, and whether
+    # the Edge Budget would have allowed it. While the gate runs in OBSERVE mode
+    # it does not block, so these columns are a stored PREDICTION we can score
+    # against realized P&L — which is the only way to find out whether the gate
+    # is right. skip_reason was never persisted before, so "why did nothing
+    # trade" could not be answered from the DB at all.
+    for _col, _typ in (('be_move_pct', 'REAL'), ('signal_move_pct', 'REAL'),
+                       ('edge_required_pct', 'REAL'), ('edge_budget_ok', 'INTEGER'),
+                       ('structure_template', 'TEXT'), ('skip_reason', 'TEXT')):
+        try:
+            c.execute(f'ALTER TABLE opt_calc_log ADD COLUMN {_col} {_typ}')
+        except Exception:
+            pass  # column already exists
+
     # ── Daily option chain snapshots (Aug 3 2026) — enables new-strike/
     #    new-expiry detection and IV-rank-from-own-history, both deferred
     #    items from the Aug 3 ideation doc. v1 scope: held-position
@@ -449,6 +466,21 @@ def init_db():
         ('price_vs_hod_pct', 'REAL'),
         ('actual_30m_pct',   'REAL'),
         ('actual_60m_pct',   'REAL'),
+        # Sep 18 2026 -- the grader's own breakdown and a CORRECT forward label.
+        # score_components: JSON {component: points} from grade_setup's `reasons`. Until now
+        #   only the TOTAL was stored, so none of the ~15 hand-assigned weights (ORB +30,
+        #   VWAP reclaim +25, bull flag +25, HOD +20, vol +25, RSI +20 ...) could ever be
+        #   scored against an outcome. 3,694 A+ candidates were logged with the breakdown
+        #   thrown away every scan.
+        # fwd_mfe_pct / fwd_mae_pct: best and worst excursion FROM THE SIGNAL PRICE over the
+        #   next fwd_window_min minutes. These replace actual_day_high_pct as the learning
+        #   target -- that column measures the stock's day from the OPEN (see enrich_scan_log
+        #   below), so it mostly re-reports the MIN_TODAY_GAIN entry gate and reports ~94% of
+        #   candidates as winners when the true forward rate is ~23%.
+        ('score_components', 'TEXT'),
+        ('fwd_mfe_pct',      'REAL'),
+        ('fwd_mae_pct',      'REAL'),
+        ('fwd_window_min',   'INTEGER'),
     ]:
         try:
             c.execute(f'ALTER TABLE scan_log ADD COLUMN {_col} {_typ}')
@@ -545,12 +577,45 @@ def log_trade_entry(symbol, entry_price, shares, target_price,
     return trade_id
 
 # ── Broker friction ────────────────────────────────────────────────────────────
-# IBKR US equities tiered/fixed: $0.005 per share, $1.00 minimum per ORDER. At this
-# account's position sizes ($1k-$2k) the $1.00 minimum dominates and costs ~15-21bps
-# round-trip -- 38% of gross winnings, and it was never being charged anywhere.
-# Added Sep 3 2026.
-IBKR_PER_SHARE = 0.005
-IBKR_MIN_ORDER = 1.00
+# ⚠️ THIS IS A MODEL, NOT A BILL. Verified Sep 18 2026 against GET /executions on a live
+# trading session: IBKR charges the PAPER account $0.00 on every fill (33 of 33, with the
+# commissionReport actually present -- a real zero, not a missing value). So every dollar
+# of commission in trades.db was invented here. That is the correct thing to do -- paper
+# P&L should forecast what a funded account will pay -- but it means the plan below has to
+# match the plan the REAL account is enrolled in, and nothing in the API reports that.
+#
+# IBKR Pro offers two US-equity schedules. At this book's median of 14 shares per trade the
+# PER-SHARE RATE IS IRRELEVANT -- the minimum binds on 96% of trades -- so the choice of
+# plan is a straight 2.6x on total friction:
+#     FIXED   $0.005/share, $1.00 min/order  ->  $2.00 round trip  ->  $1,641 over 810 trades
+#     TIERED  $0.0035/share, $0.35 min/order ->  $0.77 round trip  ->  $  621 over 810 trades
+# (Tiered also passes through exchange/regulatory fees, a few cents at these sizes, and caps
+#  at 0.5% of trade value; Fixed caps at 1%.)
+#
+# ⚠️ WHICH PLAN THIS ACCOUNT IS ON IS UNVERIFIED. It cannot be read from the API and the
+# live account (trading-prod/trades.db) has never placed an order, so there is no fill to
+# measure. Confirm it in IBKR Client Portal, then set IBKR_COMMISSION_PLAN accordingly --
+# that is the only edit needed.
+#
+# NOTE this figure is NOT purely cosmetic: realized P&L feeds the daily-loss brake
+# (MAX_DAILY_LOSS) and peak_session_pnl, so changing the plan shifts those thresholds by
+# roughly $1.20 per trade. Small, but it is a live behaviour change -- make it deliberately.
+# Added Sep 3 2026; made plan-aware and documented Sep 18 2026.
+# Sep 20 2026 — set to TIERED, user-directed. At our median 14 shares/trade the per-share
+# rate is irrelevant and only the per-order MINIMUM binds, so the plan is a straight 2.6x on
+# all friction: FIXED $2.00 round trip vs TIERED $0.77. On the overnight book it is the
+# difference between a dead strategy and a live one (10 x $1,000 FIXED = -2.88bp/night net
+# against a +17.12bp gross edge).
+# ⚠️ THIS IS A MODELLING CHOICE THAT ASSUMES THE REAL ACCOUNT IS ENROLLED IN TIERED.
+# IBKR does not report the plan through the API and the live account has never traded, so it
+# cannot be verified from here. Set it in IBKR Client Portal before funding anything, or this
+# model understates real costs by ~$1.30 per trade.
+IBKR_COMMISSION_PLAN = 'TIERED'         # 'FIXED' | 'TIERED' -- see the warning above
+_IBKR_SCHEDULE = {
+    'FIXED':  (0.005,  1.00),
+    'TIERED': (0.0035, 0.35),
+}
+IBKR_PER_SHARE, IBKR_MIN_ORDER = _IBKR_SCHEDULE[IBKR_COMMISSION_PLAN]
 
 
 def equity_commission(shares: float, round_trip: bool = True) -> float:
@@ -1469,6 +1534,7 @@ def log_calc_run(calc: dict) -> int:
     va = calc.get('vol_analysis', {})
     cv = calc.get('conviction',   {})
     lq = calc.get('liquidity',    {})
+    eb = calc.get('edge_budget',  {}) or {}
 
     c.execute('''INSERT INTO opt_calc_log (
         run_at, symbol, underlying, iv_pct, iv_rank, hv30,
@@ -1477,8 +1543,10 @@ def log_calc_run(calc: dict) -> int:
         momentum_5d, above_200, conviction_tier, conviction_dir, signal_count,
         vol_gate, tech_gate, conviction_gate, liquidity_gate, momentum_gate,
         gates_pass, verdict, net_delta, net_theta, net_vega,
-        velocity_ratio, mc_ev_dollar, mc_win_rate, liq_cost_pct, liq_legacy_max_rel
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        velocity_ratio, mc_ev_dollar, mc_win_rate, liq_cost_pct, liq_legacy_max_rel,
+        be_move_pct, signal_move_pct, edge_required_pct, edge_budget_ok,
+        structure_template, skip_reason
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
     (
         now, calc.get('symbol'), calc.get('underlying'),
         calc.get('current_iv'), calc.get('iv_rank'), calc.get('hv30'),
@@ -1499,6 +1567,9 @@ def log_calc_run(calc: dict) -> int:
         vl.get('velocity_ratio'),
         mc.get('ev_dollar'), mc.get('win_rate'),
         lq.get('cost_pct'), lq.get('legacy_max_rel'),
+        eb.get('breakeven_pct'), eb.get('signal_move_pct'), eb.get('required_pct'),
+        (1 if eb.get('ok') else 0) if eb else None,
+        calc.get('template'), eg.get('skip_reason'),
     ))
     row_id = c.lastrowid
     conn.commit()
@@ -1911,26 +1982,73 @@ def fill_whatif_prices():
 
 # ── Scan log operations ───────────────────────────────────────────────────────
 
+_COMPONENT_PTS = re.compile(r'([+-])(\d+)(?=[,)\s]|$)')
+# Strip every varying value out of a reason string so the same component always yields the
+# same key: numbers, %, x-multiples, $ prices, ticker-ish ALLCAPS prefixes and the ✓ marker.
+_COMPONENT_STRIP = re.compile(r'[-+]?\d+(?:\.\d+)?\s*(?:%|x|m\b|min\b)?|\$|✓|→|:')
+
+
+def _canon_component(txt):
+    """'2.6x vol' -> 'vol' | '+5.2% today' -> 'today' | 'RS +4.1% vs SPY' -> 'RS vs SPY'.
+
+    Prose-parsing is fragile by nature; it is used here because grade_setup() returns its
+    explanation as free text and changing that signature would touch every caller. If anyone
+    reworks grade_setup, have it emit a {component: points} dict directly and delete this.
+    """
+    t = txt.split('(')[0]
+    t = _COMPONENT_STRIP.sub(' ', t)
+    t = ' '.join(t.replace('—', ' ').split())
+    return t.strip(' -')[:40]
+
+
+def _components_json(reasons):
+    """grade_setup()'s reason strings -> compact JSON {canonical component: points or None}.
+
+    Keeps the explicit point value where the reason states one, and the canonical label
+    otherwise -- enough to regress each component against the forward outcome later. Never
+    raises: a logging helper must not be able to kill a scan.
+    """
+    if not reasons:
+        return None
+    try:
+        out = {}
+        for i, raw in enumerate(reasons):
+            txt = str(raw)
+            key = _canon_component(txt) or f'r{i}'
+            m = _COMPONENT_PTS.search(txt)
+            out[key] = int(m.group(1) + m.group(2)) if m else None
+        return json.dumps(out, separators=(',', ':'))[:4000]
+    except Exception:
+        return None
+
+
 def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
                        price, grade, score, skip_reason,
                        vol_ratio, rsi, intra_chg, sector,
                        is_catalyst=False, entered=False, entry_trade_id=None,
                        burst_age_min=None, consec_new_highs=None,
-                       today_hod=None, price_vs_hod_pct=None):
-    """Log every candidate — entered, benched, or skipped — with full energy context."""
+                       today_hod=None, price_vs_hod_pct=None, reasons=None):
+    """Log every candidate — entered, benched, or skipped — with full energy context.
+
+    `reasons` is grade_setup()'s own explanation list. It is parsed into a
+    {component: points} JSON blob so each hand-assigned weight can later be scored against
+    the forward outcome. Without it the score is a single opaque number and the 15 weights
+    inside it are untunable -- which is the state this book was in until Sep 18 2026.
+    """
     conn = get_connection()
     c    = conn.cursor()
     c.execute('''INSERT INTO scan_log
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
          is_catalyst, entered, entry_trade_id,
-         burst_age_min, consec_new_highs, today_hod, price_vs_hod_pct)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         burst_age_min, consec_new_highs, today_hod, price_vs_hod_pct, score_components)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
          int(is_catalyst), int(entered), entry_trade_id,
          burst_age_min if burst_age_min != 999 else None,
-         consec_new_highs, today_hod, price_vs_hod_pct))
+         consec_new_highs, today_hod, price_vs_hod_pct,
+         _components_json(reasons)))
     row_id = c.lastrowid
     conn.commit()
     conn.close()

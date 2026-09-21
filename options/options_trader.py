@@ -38,7 +38,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import engine   # options/engine.py — same directory
+import engine      # options/engine.py — same directory
+import structure   # options/structure.py — strike selection + Edge Budget
 from portfolio_status import format_all as _portfolio_all
 from database import (
     init_db,
@@ -179,6 +180,76 @@ US_HOLIDAYS_2026 = frozenset({
     (2026, 12, 25),
 })
 
+# ── Structure policy + Edge Budget (Sep 20 2026) ─────────────────────────────
+# WHY: every debit spread this book ever traded was anchored at 0.33/0.67 of the
+# expected move, which put the long leg 8-12% OTM and made the BREAKEVEN a median
+# +8.1% move. Measured on 194k symbol-days of our own universe, only 15.6% of
+# 7-day windows and 7.7% of 3-day windows clear +8.1%. We lost 17 of 22 closed
+# trades — almost exactly the rate the structure dictated. It was arithmetic, not
+# signal. Strikes are now chosen by DELTA, which puts the long leg near/inside the
+# money and cuts the breakeven to ~1-2%.
+#   research_options_structure_lab.py, detrended so the 2024-26 bull tide is
+#   removed, friction from our own options_chain_snapshots, 21-day hold:
+#     debit spr .40/.20  BE +5.94%   -20.32%   <- what we traded
+#     debit spr .60/.35  BE +2.03%   -10.22%
+#     debit spr .75/.50  BE -0.55%    -5.89%   <- what we trade now
+# NOTE no structure is positive once drift is removed. That is why the Edge
+# Budget below is a hard gate and not advice.
+STRUCTURE_MODE        = os.getenv('OPT_STRUCTURE_MODE', 'DELTA')  # 'DELTA' | 'EM' (legacy)
+DEBIT_LONG_DELTA      = float(os.getenv('OPT_LONG_DELTA',  '0.70'))
+DEBIT_SHORT_DELTA     = float(os.getenv('OPT_SHORT_DELTA', '0.45'))
+
+# THE ADMISSION TEST. A structure may only be traded when the SIGNAL's own
+# expected move over the holding period clears the structure's breakeven with a
+# buffer. Options convert edge into leverage; they never create it.
+#
+# ⚠️ THE MEASURED INPUT, Sep 20 2026 (terminal move of our own A+/A LONG
+# candidates, 745 unique symbol-days since Apr, vs the universe over the same
+# span — the only honest benchmark on a universe screened on past performance):
+#     horizon   our A+/A LONG      universe      selection
+#        1d        +0.22%           +0.14%         +0.08pp
+#        3d        +0.01%           +0.37%         -0.36pp
+#        7d        -0.79%           +0.81%         -1.60pp
+#       21d        -4.21%           +2.58%         -6.79pp
+# Our signals are not merely edgeless at option horizons — beyond one day they
+# are worse than picking a name at random from the same universe, which is
+# consistent with the Sep 18 finding that the grader systematically buys
+# extension. A negative expected move cannot clear any positive breakeven, so
+# this gate refuses every debit structure fed from the equity echo. That is the
+# gate working, not the gate being broken. Do not "fix" it by lowering the bar.
+#
+# MODE, Sep 20 2026 (pm5) — 'OBSERVE' or 'ENFORCE'.
+#   OBSERVE : the budget is computed and PERSISTED on every candidate and every
+#             trade, but it does not block. The gate becomes a stored PREDICTION
+#             scored against realized P&L instead of a veto nobody can check.
+#   ENFORCE : SKIP whenever the signal cannot clear the structure's breakeven.
+# We start in OBSERVE deliberately. Options is the ONE book here that cannot be
+# backtested — there is no historical chain data (options_chain_snapshots holds
+# 6 symbols over 9 days), so every structure number we have is Black-Scholes
+# approximation, never a real quote. Live paper fills are the only evidence path
+# that exists, and a gate that blocks every trade also destroys the data needed
+# to judge the gate. Same reasoning this codebase already applies to Chart Gate,
+# Thesis Check and Crest Watch: instrument first, gate later.
+# GRADUATION TEST: once ~20-30 closed trades exist, compare realized P&L of
+# edge_budget_ok=1 vs edge_budget_ok=0 (opt_calc_log joins to trades on
+# trade_id). If PASS trades beat FAIL trades, flip to ENFORCE. If they do not,
+# the gate is wrong and belongs in the bin — that is a real outcome too.
+EDGE_BUDGET_MODE      = os.getenv('OPT_EDGE_BUDGET_MODE', 'OBSERVE').upper()
+EDGE_BUDGET_MARGIN    = float(os.getenv('OPT_EDGE_MARGIN', '1.25'))
+# Fail-closed default: an entry path that cannot state the move it expects does
+# not get to trade. Every caller must pass signal_move_pct explicitly.
+SIGNAL_MOVE_PCT_DEFAULT = None
+
+# The move the equity A+ echo actually delivers, over the ~7 calendar days a
+# 30-45 DTE debit structure is held. MEASURED, not assumed: -0.79% (745 unique
+# symbol-days since Apr 2026) against a universe that returned +0.81% over the
+# same windows. It is negative, so the Edge Budget rejects every debit structure
+# fed from this source — which is the correct answer, and the same conclusion the
+# Aug 16 freeze reached by a different route. Re-measure with
+# research_options_structure_lab.py before changing it.
+EQUITY_ECHO_SIGNAL_MOVE_PCT = float(os.getenv('OPT_ECHO_SIGNAL_MOVE', '-0.79'))
+
+
 # ── Equity-echo entry freeze (Aug 16 2026) ───────────────────────────────────
 # Deep-dive (scored all 2,089 opt_calc_log rows vs forward path) proved the
 # equity-A+ echo path has NO tape-independent edge — apparent wins were May's
@@ -191,7 +262,31 @@ US_HOLIDAYS_2026 = frozenset({
 # service): the 4 open positions run their normal exit stack. News→Ghost-Ledger
 # calc logging is unaffected (not an entry path — keeps scoring). Reversible:
 # flip to False. See options-edge-dive-aug16 memory.
-EQUITY_ECHO_FROZEN = True
+EQUITY_ECHO_FROZEN = False   # ← spreads LIVE on paper from Sep 21 2026 (see below)
+# Sep 20 2026 (pm5): unfrozen for a PAPER trial of the corrected structure. The
+# Aug 16 freeze was right about the old book, and the Sep 20 analysis explains
+# exactly why it lost (median breakeven +8.1%, a move this universe makes 15.6%
+# of the time in 7 days). Both of those were reasons to fix the STRUCTURE, which
+# is now done — delta-anchored strikes cut the breakeven to roughly -0.2%, and
+# the expected-move day-count bug that pushed every strike 20% too far OTM is
+# fixed. What no amount of further analysis can settle is what these structures
+# actually FILL at, because no historical chain data exists to backtest against.
+# That only comes from trading them. Account is paper; max exposure is 4 slots x
+# $500 max-loss = $2,000.
+# ⚠️ WHAT THIS TRIAL CAN AND CANNOT SHOW. Our A+/A LONG signals measure -0.79%
+# terminal move at 7d against a universe that did +0.81%, so the SIGNAL is
+# expected to lose money. Do not read a negative P&L as a verdict on the
+# structure work — read `structure_template`, `be_move_pct`, `liq_cost_pct` and
+# the realized-vs-theoretical fill. The questions this trial CAN answer are:
+# do delta-anchored spreads fill at all, what do they really cost, does the
+# Spread Toll Gate pass ITM legs, and is the Edge Budget's verdict predictive.
+# Revert: set this back to True.
+
+# The scalp engine stays frozen, on purpose. Naked ATM weeklies at 7-12 DTE are
+# the worst structure in the lab (max theta, no defined-risk benefit, no short
+# leg to offset carry), it has no Edge Budget wired, and it has never shown an
+# edge. Unfreezing spreads is not a reason to unfreeze this.
+SCALP_FROZEN = True
 
 # ── Global state ──────────────────────────────────────────────────────────────
 _paused          = False
@@ -252,6 +347,25 @@ BOOK_HEALTH_MIN_ROWS    = 30
 # poisoned data for ~10 more days even after equity's own calculation goes clean.
 BOOK_HEALTH_RESET_DATE  = '2026-07-22'
 _opt_book_cache: dict = {'date': None}
+
+def _log_calc_reject(sym: str, direction: str, reason: str) -> None:
+    """
+    Persist a candidate that a calculator rejected BEFORE it could produce a
+    result. Every `return {'error': ...}` in the four calculators fires ahead of
+    log_calc_run, so until now these vanished from the DB entirely and the
+    funnel could not explain itself — "why didn't it trade more" was answerable
+    only by grepping logs. Cheap row, no network, never raises into the caller.
+    """
+    try:
+        log_calc_run({
+            'symbol':       sym,
+            'strategy':     'REJECTED',
+            'entry_gates':  {'verdict': 'REJECT', 'skip_reason': reason[:250]},
+            'conviction':   {'direction': direction},
+        })
+    except Exception:
+        pass
+
 
 def _book_health_on(direction: str) -> bool:
     """True if the equity book for this direction is healthy (or cold start)."""
@@ -1087,13 +1201,15 @@ def _auto_qty_calc(calc: dict) -> dict:
 
 # ── Strategy comparison: pick BULL_SPREAD vs LEAP based on MC EV ─────────────
 
-def run_strategy_comparison(symbol: str, qty: int = 1) -> dict:
+def run_strategy_comparison(symbol: str, qty: int = 1,
+                            signal_move_pct: Optional[float] = SIGNAL_MOVE_PCT_DEFAULT,
+                            enforce_budget: bool = True) -> dict:
     """
     Run BULL_SPREAD (always) and LEAP (when LEAP_ENABLED) calculators.
     Returns the one with higher MC EV, or spread-only when LEAP is disabled.
     """
     sym = symbol.upper()
-    spread_calc = run_calculator(sym, qty)
+    spread_calc = run_calculator(sym, qty, signal_move_pct, enforce_budget)
 
     if not LEAP_ENABLED:
         if 'error' not in spread_calc:
@@ -1142,7 +1258,9 @@ def run_strategy_comparison(symbol: str, qty: int = 1) -> dict:
 
 # ── Evidence-Based Verdict Calculator ────────────────────────────────────────
 
-def run_calculator(symbol: str, qty: int = 1) -> dict:
+def run_calculator(symbol: str, qty: int = 1,
+                   signal_move_pct: Optional[float] = SIGNAL_MOVE_PCT_DEFAULT,
+                   enforce_budget: bool = True) -> dict:
     """
     Evidence-Based Verdict System. Returns a single recommended trade (or SKIP)
     with: HV30 volatility edge, EM-anchored strikes, net Greeks, theta velocity,
@@ -1256,17 +1374,28 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     if not strikes:
         return {'error': f'Cannot fetch strike list for {sym} {expiry}'}
 
-    target_long  = underlying + em * 0.33
-    if iv_for_calc > 60:
-        # High-IV stocks have large EMs; coarse strike spacing inflates OTM distance.
-        # Cap long strike at 8% OTM so delta stays ≥ ~0.38 regardless of IV.
-        target_long = min(target_long, underlying * 1.08)
-    target_short = underlying + em * 0.67   # 0.67 SD OTM → delta ~0.25 (pro standard)
-    long_strike  = _find_nearest_strike(strikes, target_long)
-    short_strike = _find_nearest_strike(strikes, target_short)
+    # Delta-anchored (Sep 20 2026). The EM-anchored version put the long leg
+    # 8-12% OTM and made the breakeven a move the universe clears ~1 time in 7.
+    template_name = 'Delta-Anchored'
+    long_strike = short_strike = None
+    if STRUCTURE_MODE == 'DELTA':
+        long_strike, short_strike = structure.pick_delta_strikes(
+            strikes, underlying, iv_for_calc, dte,
+            DEBIT_LONG_DELTA, DEBIT_SHORT_DELTA, right='C')
 
-    if not long_strike or not short_strike or long_strike >= short_strike:
-        return {'error': f'Cannot determine valid strikes for {sym} (EM=${em}, strikes near ${target_long:.0f}/${target_short:.0f})'}
+    if not long_strike or not short_strike:
+        # Coarse strike ladders (low-priced names) can collapse both deltas onto
+        # one listed strike. Fall back to the legacy EM anchoring rather than
+        # lose the candidate — the Edge Budget gate below still has to pass it.
+        template_name = 'EM-Anchored'
+        target_long  = underlying + em * 0.33
+        if iv_for_calc > 60:
+            target_long = min(target_long, underlying * 1.08)
+        target_short = underlying + em * 0.67
+        long_strike  = _find_nearest_strike(strikes, target_long)
+        short_strike = _find_nearest_strike(strikes, target_short)
+        if not long_strike or not short_strike or long_strike >= short_strike:
+            return {'error': f'Cannot determine valid strikes for {sym} (EM=${em}, strikes near ${target_long:.0f}/${target_short:.0f})'}
 
     # ── Quotes with full Greeks ───────────────────────────────────────────
     lq = get_quote(sym, expiry, long_strike)
@@ -1339,15 +1468,23 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     # opt_calc_log for the nightly what-if scoring — they no longer block.
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+    # Edge Budget (Sep 20 2026) — the move the SIGNAL expects must clear this
+    # structure's breakeven. Fails closed when the caller states no expectation.
+    budget = structure.edge_budget(breakeven_pct, signal_move_pct, EDGE_BUDGET_MARGIN)
+
     entry_gates = dict(entry_gates)
     entry_gates['legacy_verdict'] = entry_gates.get('verdict')
-    if liquidity_gate:
-        entry_gates['verdict']  = 'ENTER'
-        entry_gates['size_adj'] = 1.0
-    else:
+    if not liquidity_gate:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
         entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
+    elif EDGE_BUDGET_MODE == 'ENFORCE' and enforce_budget and not budget['ok']:
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = budget['reason']
+    else:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
 
     # ── Trade dict for execution (consumed by _execute_spread_bg) ─────────
     verdict     = entry_gates['verdict']
@@ -1363,7 +1500,7 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         'iv_rank':       iv_rank,
         'iv_pct':        current_iv,
         'grade':         grade_label,
-        'template':      'EM-Anchored',
+        'template':      template_name,
         'right':         'C',
         'delta_long':    lq.get('delta'),
         'catalyst_id':   catalyst_id,
@@ -1390,6 +1527,8 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
         'max_loss_$':   max_loss_dollar,
         'breakeven':    breakeven,
         'breakeven_pct': breakeven_pct,
+        'edge_budget':  budget,
+        'template':     template_name,
         'long_ba':      long_ba,
         'short_ba':     short_ba,
         'entry_gates':  entry_gates,
@@ -1416,7 +1555,9 @@ def run_calculator(symbol: str, qty: int = 1) -> dict:
     return result
 
 
-def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
+def run_put_spread_calc(symbol: str, qty: int = 1,
+                        signal_move_pct: Optional[float] = SIGNAL_MOVE_PCT_DEFAULT,
+                        enforce_budget: bool = True) -> dict:
     """
     Bear put spread calculator — mirror of run_calculator() for bullish call spreads.
     30-45 DTE, long put 0.33 SD OTM, short put at 0.67 SD OTM.
@@ -1512,16 +1653,25 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     if not put_strikes:
         return {'error': f'Cannot fetch put strike list for {sym} {expiry}'}
 
-    target_long  = underlying - em * 0.33
-    if iv_for_calc > 60:
-        target_long = max(target_long, underlying * 0.92)
-    target_short = underlying - em * 0.67
+    # Delta-anchored (Sep 20 2026) — mirror of the bull side. See the
+    # STRUCTURE_MODE config block for the evidence.
+    template_name = 'Delta-Anchored-PUT'
+    long_strike = short_strike = None
+    if STRUCTURE_MODE == 'DELTA':
+        long_strike, short_strike = structure.pick_delta_strikes(
+            put_strikes, underlying, iv_for_calc, dte,
+            DEBIT_LONG_DELTA, DEBIT_SHORT_DELTA, right='P')
 
-    long_strike  = _find_nearest_strike(put_strikes, target_long)
-    short_strike = _find_nearest_strike(put_strikes, target_short)
-
-    if not long_strike or not short_strike or long_strike <= short_strike:
-        return {'error': f'Cannot determine valid put strikes for {sym} (EM=${em:.2f}, targets ${target_long:.0f}/${target_short:.0f})'}
+    if not long_strike or not short_strike:
+        template_name = 'EM-Anchored-PUT'
+        target_long  = underlying - em * 0.33
+        if iv_for_calc > 60:
+            target_long = max(target_long, underlying * 0.92)
+        target_short = underlying - em * 0.67
+        long_strike  = _find_nearest_strike(put_strikes, target_long)
+        short_strike = _find_nearest_strike(put_strikes, target_short)
+        if not long_strike or not short_strike or long_strike <= short_strike:
+            return {'error': f'Cannot determine valid put strikes for {sym} (EM=${em:.2f}, targets ${target_long:.0f}/${target_short:.0f})'}
 
     lq = get_quote(sym, expiry, long_strike,  'P')
     sq = get_quote(sym, expiry, short_strike, 'P')
@@ -1584,15 +1734,25 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
     # 5-gate verdict + MC keep logging for nightly what-if scoring.
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+    # Edge Budget — for a bear put spread the breakeven is a move DOWN, and
+    # `signal_move_pct` must be stated the same way (positive = in our favour).
+    budget = structure.edge_budget(
+        structure.breakeven_move_pct(underlying, long_strike, short_strike, net_debit, 'P'),
+        signal_move_pct, EDGE_BUDGET_MARGIN)
+
     entry_gates = dict(entry_gates)
     entry_gates['legacy_verdict'] = entry_gates.get('verdict')
-    if liquidity_gate:
-        entry_gates['verdict']  = 'ENTER'
-        entry_gates['size_adj'] = 1.0
-    else:
+    if not liquidity_gate:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
         entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
+    elif EDGE_BUDGET_MODE == 'ENFORCE' and enforce_budget and not budget['ok']:
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = budget['reason']
+    else:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
 
     verdict     = entry_gates['verdict']
     grade_label = {'ENTER': 'ENTER', 'ENTER_REDUCED': 'ENTER(R)', 'SKIP': 'SKIP'}.get(verdict, verdict)
@@ -1608,7 +1768,7 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
         'iv_rank':       iv_rank,
         'iv_pct':        current_iv,
         'grade':         grade_label,
-        'template':      'EM-Anchored-PUT',
+        'template':      template_name,
         'right':         'P',
         'delta_long':    lq.get('delta'),
         'catalyst_id':   catalyst_id,
@@ -1635,6 +1795,8 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
         'max_loss_$':    max_loss_dollar,
         'breakeven':     breakeven,
         'breakeven_pct': breakeven_pct,
+        'edge_budget':   budget,
+        'template':      template_name,
         'long_ba':       long_ba,
         'short_ba':      short_ba,
         'entry_gates':   entry_gates,
@@ -1662,7 +1824,9 @@ def run_put_spread_calc(symbol: str, qty: int = 1) -> dict:
 
 # ── Credit spread calculators ─────────────────────────────────────────────────
 
-def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
+def run_bull_put_credit_calc(symbol: str, qty: int = 1,
+                             signal_move_pct: Optional[float] = SIGNAL_MOVE_PCT_DEFAULT,
+                             enforce_budget: bool = True) -> dict:
     """
     Bull put CREDIT spread: sell higher put + buy lower put = receive premium.
     Win condition: stock stays above short put strike (theta burns the spread away).
@@ -1814,15 +1978,27 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
     #    5-gate verdict + MC keep logging for nightly what-if scoring ─────────
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+    # Edge Budget. For a CREDIT structure the breakeven sits AGAINST us: the
+    # stock may move -breakeven_pct and the credit is still kept, so the move
+    # "needed in our favour" is negative. ⚠️ This gate is far weaker on credit
+    # than on debit — a distant breakeven passes easily while the tail loss is
+    # what actually kills a short-premium book. See structure.edge_budget's
+    # limitation note: necessary, never sufficient.
+    budget = structure.edge_budget(-breakeven_pct, signal_move_pct, EDGE_BUDGET_MARGIN)
+
     entry_gates = dict(entry_gates)
     entry_gates['legacy_verdict'] = entry_gates.get('verdict')
-    if liquidity_gate:
-        entry_gates['verdict']  = 'ENTER'
-        entry_gates['size_adj'] = 1.0
-    else:
+    if not liquidity_gate:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
         entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
+    elif EDGE_BUDGET_MODE == 'ENFORCE' and enforce_budget and not budget['ok']:
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = budget['reason']
+    else:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
 
     # ── Build calc log entry ──────────────────────────────────────────────────
     result = {
@@ -1849,6 +2025,7 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
         'max_loss':     max_loss_dollar,
         'breakeven':    breakeven,
         'breakeven_pct': breakeven_pct,
+        'edge_budget':  budget,
         'qty':          qty,
         'entry_gates':  entry_gates,
         'mc_ev':        mc_ev,
@@ -1870,7 +2047,9 @@ def run_bull_put_credit_calc(symbol: str, qty: int = 1) -> dict:
     return result
 
 
-def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
+def run_bear_call_credit_calc(symbol: str, qty: int = 1,
+                              signal_move_pct: Optional[float] = SIGNAL_MOVE_PCT_DEFAULT,
+                              enforce_budget: bool = True) -> dict:
     """
     Bear call CREDIT spread: sell lower call + buy higher call = receive premium.
     Win condition: stock stays below short call strike (theta burns the spread away).
@@ -2015,15 +2194,27 @@ def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
     # Verdict policy (Jul 18 2026 redesign) — liquidity decides; legacy logged
     mc_wr        = (mc_ev or {}).get('win_rate', 0)
     mc_ev_dollar = (mc_ev or {}).get('ev_dollar', 0)
+    # Edge Budget. For a CREDIT structure the breakeven sits AGAINST us: the
+    # stock may move -breakeven_pct and the credit is still kept, so the move
+    # "needed in our favour" is negative. ⚠️ This gate is far weaker on credit
+    # than on debit — a distant breakeven passes easily while the tail loss is
+    # what actually kills a short-premium book. See structure.edge_budget's
+    # limitation note: necessary, never sufficient.
+    budget = structure.edge_budget(-breakeven_pct, signal_move_pct, EDGE_BUDGET_MARGIN)
+
     entry_gates = dict(entry_gates)
     entry_gates['legacy_verdict'] = entry_gates.get('verdict')
-    if liquidity_gate:
-        entry_gates['verdict']  = 'ENTER'
-        entry_gates['size_adj'] = 1.0
-    else:
+    if not liquidity_gate:
         entry_gates['verdict']  = 'SKIP'
         entry_gates['size_adj'] = 0.0
         entry_gates['skip_reason'] = f"liquidity: spread cost {liq['cost_pct']}% of width > {LIQ_COST_PCT_MAX}%"
+    elif EDGE_BUDGET_MODE == 'ENFORCE' and enforce_budget and not budget['ok']:
+        entry_gates['verdict']  = 'SKIP'
+        entry_gates['size_adj'] = 0.0
+        entry_gates['skip_reason'] = budget['reason']
+    else:
+        entry_gates['verdict']  = 'ENTER'
+        entry_gates['size_adj'] = 1.0
 
     result = {
         'strategy':     'BEAR_CALL_CREDIT',
@@ -2049,6 +2240,7 @@ def run_bear_call_credit_calc(symbol: str, qty: int = 1) -> dict:
         'max_loss':     max_loss_dollar,
         'breakeven':    breakeven,
         'breakeven_pct': breakeven_pct,
+        'edge_budget':  budget,
         'qty':          qty,
         'entry_gates':  entry_gates,
         'mc_ev':        mc_ev,
@@ -2490,6 +2682,16 @@ def format_calc_message(calc: dict) -> str:
 
     lines.append(f"{nd_str} · {th_str} · {vg_str}")
 
+    # Edge Budget — the number that decides whether this structure can pay at all.
+    eb = calc.get('edge_budget') or {}
+    if eb.get('breakeven_pct') is not None:
+        eb_icon = "✅" if eb.get('ok') else "⛔"
+        sig = eb.get('signal_move_pct')
+        sig_s = f"{sig:+.2f}%" if sig is not None else "not stated"
+        lines.append(
+            f"{eb_icon} Edge Budget: needs {eb['required_pct']:+.2f}% · signal {sig_s}"
+        )
+
     if vel.get('required_pct_day') is not None and vel.get('hv30_daily') is not None:
         ach_icon = "✅" if vel.get('achievable') else "⚠️"
         lines.append(
@@ -2833,9 +3035,22 @@ def _execute_close_bg(trade: dict, chat_id: str):
         if not ok:
             send_telegram(f"❌ {sym} two-leg close did not complete — check `OPT POSITIONS` / IBKR manually.", chat_id)
             return
-        conn = sqlite3.connect(DB_PATH)
+        # Sep 20 2026 BUGFIX: neither `sqlite3` nor `DB_PATH` is imported at module
+        # level in this file — every other call site imports them locally. Without
+        # this, the two-leg close SUCCEEDS and then this line raises NameError in a
+        # daemon thread with no try/except, so the confirmation Telegram never
+        # arrives and the user is left assuming OPT CLOSE failed on a position that
+        # actually closed. Same failure shape as the Jul 20 2026 USAR retry storm,
+        # and it sits in the manual escape hatch for the spread book.
+        import sqlite3 as _sq3
+        from database import DB_PATH as _dbpath
+        conn = _sq3.connect(_dbpath)
         row = conn.execute("SELECT exit_value, return_pct FROM options_trades WHERE id=?", (tid,)).fetchone()
         conn.close()
+        if not row:
+            send_telegram(f"✅ {sym} {strat} legs closed [trade #{tid}] — "
+                          f"could not read back P&L; check `OPT POSITIONS`.", chat_id)
+            return
         exit_value, return_pct = row
         sign = '+' if return_pct >= 0 else ''
         send_telegram(
@@ -3494,7 +3709,7 @@ def scalp_scan_loop():
     if _paused:
         return
 
-    if EQUITY_ECHO_FROZEN:   # Aug 16 2026 stand-down — no edge, see module header
+    if SCALP_FROZEN:   # naked ATM weeklies — see SCALP_FROZEN for why this stays off
         return
 
     # Book Health gate (Jul 18 2026): scalps are bullish ATM calls — only trade
@@ -3608,7 +3823,9 @@ def cmd_buy(sym: str, qty: int, chat_id: str):
         + f"\n_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
         chat_id,
     )
-    calc = run_strategy_comparison(sym, qty)
+    # Manual OPT BUY: the human is the decider and cmd_buy already routes through
+    # a CONFIRM prompt, so the Edge Budget is shown but does not hard-block.
+    calc = run_strategy_comparison(sym, qty, enforce_budget=False)
     if 'error' in calc:
         send_telegram(f"❌ {calc['error']}", chat_id)
         return
@@ -3677,7 +3894,7 @@ def cmd_sell(sym: str, qty: int, chat_id: str):
         f"_Capital: ${cs['available']:.0f} available · {cs['slots_free']} slot(s) free_",
         chat_id,
     )
-    calc = run_put_spread_calc(sym, qty)
+    calc = run_put_spread_calc(sym, qty, enforce_budget=False)
     if 'error' in calc:
         send_telegram(f"❌ {calc['error']}", chat_id)
         return
@@ -3747,9 +3964,9 @@ def cmd_credit(sym: str, direction: str, qty: int, chat_id: str):
     )
 
     if direction == 'BULL':
-        calc = run_bull_put_credit_calc(sym, qty)
+        calc = run_bull_put_credit_calc(sym, qty, enforce_budget=False)
     else:
-        calc = run_bear_call_credit_calc(sym, qty)
+        calc = run_bear_call_credit_calc(sym, qty, enforce_budget=False)
 
     if 'error' in calc:
         send_telegram(f"❌ {calc['error']}", chat_id)
@@ -4815,23 +5032,24 @@ def _check_equity_scan_triggers(OPT_CHAT: str) -> bool:
 
         if direction == 'LONG':
             if iv_rnk >= 50:
-                calc        = run_bull_put_credit_calc(sym, 1)
+                calc        = run_bull_put_credit_calc(sym, 1, EQUITY_ECHO_SIGNAL_MOVE_PCT)
                 strat_label = 'BULL PUT CREDIT'
             else:
-                calc        = run_calculator(sym, 1)
+                calc        = run_calculator(sym, 1, EQUITY_ECHO_SIGNAL_MOVE_PCT)
                 strat_label = 'CALL SPREAD'
         elif direction == 'SHORT':
             if iv_rnk >= 50:
-                calc        = run_bear_call_credit_calc(sym, 1)
+                calc        = run_bear_call_credit_calc(sym, 1, EQUITY_ECHO_SIGNAL_MOVE_PCT)
                 strat_label = 'BEAR CALL CREDIT'
             else:
-                calc        = run_put_spread_calc(sym, 1)
+                calc        = run_put_spread_calc(sym, 1, EQUITY_ECHO_SIGNAL_MOVE_PCT)
                 strat_label = 'PUT SPREAD'
         else:
             continue
 
         if 'error' in calc:
             print(f"[options] scan trigger {sym} error: {calc['error']}")
+            _log_calc_reject(sym, direction, calc['error'])
             continue
 
         calc        = _auto_qty_calc(calc)
