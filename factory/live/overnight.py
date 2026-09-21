@@ -28,6 +28,55 @@ from collect_bars import load_bars  # noqa: E402
 from factory.live._fills import (place_verified, position_qty, last_fill_price,  # noqa: E402
                                    fill_by_order_id)
 
+# ── Earnings blackout ────────────────────────────────────────────────────────────
+# Added Sep 20 2026. This book holds a name through exactly one overnight gap, which is
+# precisely when an earnings release lands. Audit of 1,932 held name-nights: only 4 were
+# worse than -10%, and the identifiable ones are all earnings reactions --
+#     DELL -12.0% (reported 2024-11-26) · AMZN -9.4% and AAPL -9.4% (both reported
+#     2024-08-01, after the close) · ABBV -10.5% · plus CEG -15.8% on the Jan-2025 AI selloff.
+# Ten name-nights beyond +/-10% carry 15% of all P&L, in both directions. Clipping the tail
+# at +/-5% costs 2.6bp of mean (20.56 -> 17.97) but lifts Sharpe 2.16 -> 2.26 and improves the
+# worst night from -637bp to -500bp. On a 3-name book one -15.8% gap is -5.3% of the entire
+# book in a single night, so the trade is worth making: this is variance reduction, NOT a
+# P&L improvement, and it should not be expected to raise returns.
+EARNINGS_BLACKOUT_DAYS = 1     # skip a name reporting tonight or tomorrow morning
+_earn_cache: dict = {}
+
+
+def days_to_earnings(sym):
+    """Calendar days until the next earnings date, or None when unknown.
+    Mirrors auto_trader.get_days_to_earnings. None means UNKNOWN -- the caller decides, and
+    here we allow the trade rather than skip the whole book on a data outage."""
+    key = (sym, dt.date.today().isoformat())
+    if key in _earn_cache:
+        return _earn_cache[key]
+    days = None
+    try:
+        import yfinance as yf
+        cal = yf.Ticker(sym).calendar
+        vals = []
+        if isinstance(cal, dict):
+            for k in ("Earnings Date", "earningsDate"):
+                v = cal.get(k)
+                if v:
+                    vals = v if isinstance(v, list) else [v]
+                    break
+        elif cal is not None and hasattr(cal, "columns") and len(cal.columns):
+            vals = list(cal.columns)
+        for v in vals:
+            try:
+                d = (pd.Timestamp(v).date() - dt.date.today()).days
+                if d >= -1:
+                    days = d
+                    break
+            except Exception:
+                continue
+    except Exception:
+        days = None
+    _earn_cache[key] = days
+    return days
+
+
 LOCK = "/tmp/clockwork.lock"
 MODE = os.environ.get("CLOCKWORK_MODE", "SHADOW").upper()   # SHADOW | LIVE
 BRIDGE = "http://localhost:8000"
@@ -39,9 +88,20 @@ try:
 except Exception:
     ET = None
 
-CAPITAL = 10_000.0
-TOP_N = 10                 # top decile of the 100 WILD names, equal-weighted
-PER_NAME = CAPITAL / TOP_N
+# Sep 20 2026 — resized on the overnight panel study (research_strategy_hunt.py --config).
+# This book has its OWN $10,000; it is not funded out of the intraday book's capital.
+# Concentration was measured, not assumed, on 673 nights with a $20M ADV floor:
+#     3 x $3,000  ->  +19.09bp/night  Sharpe 2.01  maxDD -13.7%   (2026: +20.98bp)
+#     5 x $2,000  ->  +14.12bp/night  Sharpe 1.80  maxDD -18.9%
+#    10 x $1,000  ->  +10.22bp/night  Sharpe 1.36  maxDD -20.4%   <- the old config
+# Fewer, larger positions win here because the fee is charged PER TRADE and 96% of our
+# orders hit the broker's per-order minimum: at $1,000 a name the round trip costs 7.0bp of
+# a ~17bp edge, at $3,000 it costs 2.3bp. The gross edge is nearly flat from 3 to 50 names
+# (21.4 -> 16.9bp), so concentration buys the fee saving almost for free — and the worst
+# single night was actually BETTER at 3 names (-637bp) than at 10 (-784bp).
+CAPITAL = 10_000.0         # this strategy's own budget, separate from the intraday book
+TOP_N = 3                  # was 10 — see the table above
+PER_NAME = CAPITAL / TOP_N # $3,333
 LOOKBACK = 30              # up-night consistency window (validated plateau 20-40)
 PRICE_LO, PRICE_HI = 5.0, 800.0
 # Auction windows (Sep 5 2026). The backtest prices entries at the daily CLOSE and exits at
@@ -253,9 +313,26 @@ def scan_and_enter():
     funnel = {"wild_scanned": len(sig), "top_n": TOP_N, "entered": 0, "mode": MODE}
     picks_log = []
     entered = 0
+    # Never exceed TOP_N positions IN TOTAL. scan_and_enter used to check only
+    # entered_today(), so if the morning MOO sells had failed (gateway down at 09:00, say)
+    # the book would hold yesterday's names AND buy a full new set on top -- committing well
+    # over its $10,000 budget with no cap anywhere in the path. Found in the Sep 20 audit.
+    already = len(get_open())
+    if already >= TOP_N:
+        log(f"{already} position(s) still open (>= TOP_N {TOP_N}) — no new entries; "
+            f"yesterday's exits have not cleared")
+        record_scan({**funnel, "blocked": "positions_still_open"}, picks_log); return
+    room = TOP_N - already
+    if already:
+        log(f"{already} position(s) still open — entering only {room} to stay within TOP_N")
+
     for sym, cons in ranked:
-        if entered >= TOP_N:
+        if entered >= room:
             picks_log.append((sym, cons, "RANKED_BELOW_CUT")); break
+        dte = days_to_earnings(sym)
+        if dte is not None and 0 <= dte <= EARNINGS_BLACKOUT_DAYS:
+            log(f"SKIP {sym} — earnings in {dte}d, not holding it through the print")
+            picks_log.append((sym, cons, "EARNINGS_BLACKOUT")); continue
         price = bridge_quote(sym)
         if price is None or not (PRICE_LO <= float(price) <= PRICE_HI):
             picks_log.append((sym, cons, "NO_PRICE")); continue

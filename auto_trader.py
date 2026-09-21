@@ -112,6 +112,76 @@ MIN_REGIME_SCANS  = 2        # regime must be confirmed for N consecutive scans 
 # catalyst/sympathy flags and sector_strength, so it under-represents CATALYST_OVERRIDE.
 # REVERT: set this False. Nothing else needs changing.
 REGIME_AS_MODIFIER = True
+
+# ── FRESHNESS GATE — A/B SWITCH, default OFF (live behaviour unchanged) ───────
+# Sep 18 2026. Measured at signal level on 2,699 enriched A+/A LONG candidates using
+# TRUE forward MFE from the signal (NOT actual_day_high_pct, which measures the stock's
+# day from the OPEN — database.py:1993 — and therefore mostly re-reports the
+# MIN_TODAY_GAIN gate): a candidate whose ignition bar is >150 min old AND whose volume
+# is under 1.5x reaches +2% only 3.2% of the time versus 23.4% for the population, with
+# a median forward MFE of 0.49% against a 0.67% adverse swing — edge ratio 0.74, the
+# only cohort found below 1.0. Monotone in burst age in every one of the 5 months where
+# burst data exists.
+#
+# The existing burst scoring already penalises this (-20, see grade_setup) but it cannot
+# change a decision: the score is SATURATED — 1,995 of those 2,699 candidates land above
+# 100 against an A+ threshold of 80, so -20 moves nothing. That saturation, not the
+# penalty's sign, is why stale candidates still get bought.
+#
+#   0 = off (live today)   1 = block stale AND thin   2 = block stale OR thin
+#
+# ❌ VERDICT: REJECTED — A/B run Sep 18 2026 through equity_replay (the real live decision
+# chain), Aug 1 -> Sep 17, three arms:
+#     gate=0 (live)            235 trades  WR 30.6%  -$1,061
+#     gate=1 (stale AND thin)  235 trades  WR 30.6%  -$1,061   <- byte-identical: a NO-OP
+#     gate=2 (stale OR thin)   225 trades  WR 31.6%  -$1,124   <- 12 trades removed, $63 WORSE
+# gate=1 changed nothing at all because MIN_VOLUME_RATIO (1.3) already hard-blocks thin
+# volume under $100 and the threshold is 1.0 above it, so "stale AND thin" never survives
+# to an entry in the first place. gate=2 removes the thin-volume trades, which the
+# trade-level data had already shown were NOT the losers — and the book gets worse.
+#
+# The signal-level separation is REAL (3.2% vs 23.4% mover rate) and still does not convert,
+# which is the same wall every entry-side idea has hit in this repo: candidate quality and
+# realised P&L are not the same axis under a stop-dominated exit stack.
+# Kept as a disabled research hook (0 reproduces live exactly). Do not re-run without a new
+# mechanism — re-running this exact gate on a different window is not new evidence.
+FRESHNESS_GATE = 0
+
+# ── EXTENSION TILT — A/B SWITCH, default OFF (live behaviour unchanged) ───────
+# Sep 18 2026. Fitted on 2,663 A+/A LONG candidates carrying a calibration-gated
+# reconstruction of grade_setup's own inputs (backfill_score_components.py -- intra_chg
+# reproduces what live logged EXACTLY, corr 1.000) plus the corrected forward label. Walk-
+# forward by month, two independent targets, and 15 of 16 features agree in sign across both:
+#
+#   WE PAY MOST FOR   fitted sign        WE UNDER-PAY FOR      fitted sign
+#   today_gain +30    -0.239 / -0.144    rsi_5m  (-10 if >75)  +0.146 / +0.045
+#   is_bull_flag +25  -0.153 / -0.080    range_pct (unscored)  +0.071 / +0.096
+#   hod_break  +20    -0.188 / -0.081    vwap_reclaim +25      +0.071 / +0.045
+#   is_tight   +10    -0.035 / -0.094    orb_break    +30      +0.005 / +0.039
+#   intra_chg (batting-order sort key, DESC)  -0.044 / -0.016
+#
+# ONE coherent reading: every feature that measures "already extended" is negative and every
+# feature that measures "room left" is positive -- and FOUR separate mechanisms all push the
+# book toward the most-extended name (the >=3% gate, the today_gain bonus, the HOD/flag
+# bonuses, and the batting order's intra_chg DESC sort). This is the same conclusion reached
+# independently three times: price_vs_hod_pct (pinned at the high = worst movers, 20% vs
+# 37-39%), the HOD-break component test (-0.334 edge, 1/6 months), and the STRONG-day
+# exhaustion gate that already exists in grade_setup.
+#
+#   0 = off (live today)
+#   1 = stop PAYING for extension (zero the four bonuses; the >=3% hard gate is untouched)
+#   2 = 1 + rank the batting order by LEAST extended first instead of most
+#
+# Out-of-sample top-5-per-day, both targets, fitted vs the current score: better on 62% of
+# days and in 4/4 (edge) and 3/4 (sim_net) months -- but still NEGATIVE in absolute terms.
+# This is "lose less", not "make money". A/B it in equity_replay before it goes anywhere near
+# live. Flag reproduces live exactly at 0.
+EXTENSION_TILT = 0
+
+# Short side is GRADED AND LOGGED every scan but never traded — see the call site in
+# run_scan() for why. False restores the Aug 15 2026 state where the short side was invisible.
+BEAR_OBSERVE_ONLY = True
+
 MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
@@ -1920,6 +1990,19 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
         return 'SKIP', [f'Volume {sig["vol_ratio"]:.1f}x too low'], 0
     if rr < MIN_RR:
         return 'SKIP', [f'R:R 1:{rr} below min 1:{MIN_RR}'], 0
+    # Freshness gate — off unless FRESHNESS_GATE is set; see its comment at the top of
+    # this file for the measurement and for why it is a proposal, not a shipped rule.
+    if FRESHNESS_GATE:
+        _fb = sig.get('burst_age_min', 999)
+        _fv = sig.get('vol_ratio', 1) or 1
+        # 999 means no ignition bar was FOUND, which is not the same as a stale one —
+        # early-session signals never have a burst history and are the best cohort
+        # measured (48% mover rate before 10:00), so they must not be caught here.
+        _stale = 150 < _fb < 999
+        _thin  = _fv < 1.5
+        if ((FRESHNESS_GATE == 1 and _stale and _thin)
+                or (FRESHNESS_GATE == 2 and (_stale or _thin))):
+            return 'SKIP', [f'Freshness gate: burst {_fb:.0f}m / vol {_fv:.1f}x'], 0
     if regime in ('CHOPPY', 'CAUTIOUS'):
         if is_catalyst:
             pass  # Fix 1: catalyst stocks bypass CAUTIOUS/CHOPPY — market-independent move
@@ -2016,10 +2099,19 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
         score -= round(10 * w['rsi']); reasons.append(f'5m RSI {rsi5m} elevated (-10)')
 
     if sig['is_tight']:
-        score += 10; reasons.append(f'Tight range {sig["range_pct"]:.1f}%')
+        # Fitted -0.035/-0.094 while range_pct itself is POSITIVE (+0.071/+0.096): a tight
+        # 3-day range means the move is compressed, not that it is about to expand.
+        if not EXTENSION_TILT:
+            score += 10
+        reasons.append(f'Tight range {sig["range_pct"]:.1f}%')
 
-    # Reward stocks already moving strongly today
-    if today_gain >= 5.0:
+    # Reward stocks already moving strongly today.
+    # EXTENSION_TILT: this is the most negative feature in the fitted model (-0.239/-0.144)
+    # -- the stock has already made its move. The >=3% hard gate above is untouched; only the
+    # extra reward for having run FURTHER is removed.
+    if EXTENSION_TILT:
+        reasons.append(f'+{today_gain:.1f}% today (extension bonus off)')
+    elif today_gain >= 5.0:
         score += 30; reasons.append(f'+{today_gain:.1f}% today')
     elif today_gain >= 3.0:
         score += 20; reasons.append(f'+{today_gain:.1f}% today')
@@ -2045,10 +2137,16 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
         score += 10; reasons.append('Above VWAP')
 
     if sig.get('is_bull_flag'):
-        score += 25; reasons.append('Bull flag ✓')
+        if not EXTENSION_TILT:
+            score += 25
+        reasons.append('Bull flag ✓')
 
     if sig.get('hod_break'):
-        score += 20; reasons.append('HOD break ✓')
+        # Fitted -0.188/-0.081, and the component test found it negative in 5 of 6 months,
+        # inside every hour bucket and independently of ORB. Buying the day's high.
+        if not EXTENSION_TILT:
+            score += 20
+        reasons.append('HOD break ✓')
 
     # ── DNA cluster modifier (Layer 1) ────────────────────────
     # HIGH_VOL: gaps fill 70% intraday. ORB at gap high = likely entering before pullback.
@@ -4088,6 +4186,24 @@ def run_scan():
         _scan_regime_adaptive(regime, open_trades)
         open_trades = get_open_trades()
 
+    # ── Short side: GRADE AND LOG ONLY, never trade (Sep 18 2026) ─────────────────────
+    # The bear book was retired Aug 15 2026, but its retirement lives inside the
+    # `not REGIME_AS_MODIFIER and regime == 'WEAK'` branch below -- and REGIME_AS_MODIFIER has
+    # been True since Sep 6, so that branch is unreachable and the short side went dark
+    # entirely. SHORT scan_log rows: Jun 8,398 | Jul 17,591 | Aug 0 | Sep 0. We stopped
+    # MEASURING, which means the retirement decision can never be re-examined -- the exact
+    # failure the observe-only branches below were created to prevent.
+    #
+    # This restores measurement only. book_is_on('SHORT') is bypassed by observe_only, so not
+    # one order can be placed from here regardless of book state. Short TRADING stays retired
+    # on the evidence: at A+ grade the short side measured WORSE than the long side
+    # (forward edge ratio 0.942 vs 1.150, Sep 18 2026).
+    if BEAR_OBSERVE_ONLY and _entries_allowed and is_entry_window() and not is_trading_blocked()[0]:
+        try:
+            _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans, observe_only=True)
+        except Exception as _be:
+            log(f"bear observe-only scan failed: {_be}")
+
     if not _entries_allowed:
         log("Gateway unstable / position mismatch — monitoring only, no new entries")
         exits = monitor_open_trades(regime, confirmed_scans)
@@ -4971,8 +5087,12 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         2 if (x['is_catalyst'] and x['grade'] == 'A')  else
         3 if x['grade'] == 'A+' else 4,
         _SLOT_SECTOR_PRIORITY.get(x.get('sector', 'OTHER'), 1),  # pitch report
-        0 if x.get('price_vs_hod_pct', -99) >= -0.3 else 1,     # wave position: at HOD beats below
-        -x['intra_chg'],   # player form: harder mover goes first
+        # EXTENSION_TILT >= 2 reverses the two rungs that select for extension. Measured:
+        # candidates pinned at the day high reach +2% only 20% of the time vs 37-39% for
+        # those 2-5% BELOW it, and intra_chg's fitted sign is negative on both targets.
+        (1 if x.get('price_vs_hod_pct', -99) >= -0.3 else 0) if EXTENSION_TILT >= 2
+        else (0 if x.get('price_vs_hod_pct', -99) >= -0.3 else 1),
+        x['intra_chg'] if EXTENSION_TILT >= 2 else -x['intra_chg'],
         -x['vol_ratio'],   # fitness: volume conviction
         -x['score'],       # player rating: tiebreaker only
     ))
@@ -4998,6 +5118,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
                 consec_new_highs=_c.get('consec_new_highs', 0),
                 today_hod=_c['today_hod'],
                 price_vs_hod_pct=_c['price_vs_hod_pct'],
+                reasons=_c.get('reasons'),
             )
         except Exception:
             pass
@@ -5155,7 +5276,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
 # ─────────────────────────────────────────────────────────
 # BEAR SCAN — WEAK days: scan for short setups
 # ─────────────────────────────────────────────────────────
-def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
+def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1, observe_only=False):
+    """observe_only=True: grade every short candidate and write scan_log as normal, but
+    never place an order. Mirrors _scan_and_enter's own observe_only contract."""
     global daily_bear_count, traded_today
 
     # Jul 21 2026: book_is_on('SHORT') no longer gates here — moved to just before the
@@ -5177,7 +5300,10 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
         if not _daily_loss_alerted:
             send_telegram(f"⛔ Daily loss limit hit: ${daily_total:.0f} (limit -${MAX_DAILY_LOSS})\nNo new entries for rest of day.")
             _daily_loss_alerted = True
-        return monitor_open_trades(regime, confirmed_scans)
+        # observe_only commits no capital, so a capital-protection brake must not stop the
+        # GRADING here -- that is the very defect this observe-only path exists to fix.
+        if not observe_only:
+            return monitor_open_trades(regime, confirmed_scans)
 
     # ── Afternoon gate: no new shorts after 12pm if morning was profitable ────
     # Afternoon SHORT: 18.2% WR / -$6.56 avg — catastrophic vs 51.5% morning
@@ -5190,7 +5316,10 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     morning_pnl = _morning_pnl_snap if _morning_pnl_snap is not None else peak_session_pnl
     if now_et.hour >= AFTERNOON_GATE_HOUR and morning_pnl >= AFTERNOON_GATE_THRESHOLD:
         log(f"⏰ Afternoon gate: morning peak ${morning_pnl:.0f} ≥ ${AFTERNOON_GATE_THRESHOLD:.0f} ({AFTERNOON_GATE_PCT:.1f}% of capital) — no new shorts after 12pm")
-        return monitor_open_trades(regime, confirmed_scans)
+        # observe_only commits no capital, so a capital-protection brake must not stop the
+        # GRADING here -- that is the very defect this observe-only path exists to fix.
+        if not observe_only:
+            return monitor_open_trades(regime, confirmed_scans)
 
     # ── Recycled slot gate: block new shorts after 12:30 if any slot was vacated ──
     # Recycled SHORT after 12:30: 16-20% WR (vs 60.7% at 10am, May 2026)
@@ -5200,6 +5329,9 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
         open_count = len(open_trades)
         if daily_bear_count > open_count:  # a slot was vacated today
             log(f"⏰ Recycled slot gate: {daily_bear_count} short entries today, {open_count} open — no new shorts after 12:30")
+            # observe_only commits no capital, so a capital-protection brake must not stop the
+        # GRADING here -- that is the very defect this observe-only path exists to fix.
+        if not observe_only:
             return monitor_open_trades(regime, confirmed_scans)
 
     scan_order = catalyst_priority + [s for s in FULL_UNIVERSE if s not in catalyst_priority]
@@ -5312,6 +5444,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
                 consec_new_highs=_c.get('consec_new_highs', 0),
                 today_hod=_c['today_hod'],
                 price_vs_hod_pct=_c['price_vs_hod_pct'],
+                reasons=_c.get('reasons'),
             )
         except Exception:
             pass
@@ -5325,8 +5458,11 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1):
     # Jul 21 2026: moved here from the top of the function — grading/logging above this
     # point now always runs, so the health measurement never goes blind. This is the ONLY
     # gate that blocks committing real capital; nothing above it places an order.
-    _short_book_on = book_is_on('SHORT')
-    if not _short_book_on:
+    _short_book_on = book_is_on('SHORT') and not observe_only
+    if observe_only:
+        log(f"👁️  OBSERVE-ONLY bear scan ({regime}) — {len(candidates)} short candidates graded "
+            f"and logged, no entries")
+    elif not _short_book_on:
         log("📖 SHORT book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
 
     for pick in (candidates if _short_book_on else []):

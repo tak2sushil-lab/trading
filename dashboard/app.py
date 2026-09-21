@@ -1140,12 +1140,23 @@ def _turbo_ladder(pick):
         return []
 
 
+# Display names + a plain-English analogy shown INLINE in the table, so the scoreboard is
+# readable without a trip to /glossary. These are DISPLAY labels only — code identifiers, DB
+# tables and launchd names are never renamed (GLOSSARY.md rule). Analogies for Wave Rider and
+# Contrarian are taken from GLOSSARY.md §8 verbatim; Day Trader and Clockwork had none, so
+# they are named here in the same style.
 ENGINE_SPECS = [
-    # label,        table,               mode col?, the book's own docstring in one line
-    ('auto_trader', 'trades',             False, 'intraday catalyst/momentum, EOD close'),
-    ('Wave Rider',  'wave_trades',        True,  'momentum swing, 3-day hold, 8% stop'),
-    ('Contrarian',  'contrarian_trades',  True,  'buys the biggest 3-day fallers, 5-day hold'),
-    ('Clockwork',   'overnight_trades',   True,  'MOC in / MOO out, overnight gap'),
+    # display name,  analogy (shown inline),                 table,               mode col?, detail (tooltip)
+    ('Day Trader',   'in by morning, out by the close',       'trades',            False,
+     'The original intraday book: catalyst and momentum names, closed the same day at 15:45.'),
+    ('Wave Rider',   'rides a stock already moving',          'wave_trades',       True,
+     'Momentum swing — buys WILD names that popped, holds 3 days, 8% stop.'),
+    ('Contrarian',   'buys what just fell hardest',           'contrarian_trades', True,
+     'Mean reversion — buys the biggest 3-day fallers, holds 5 days, 15% stop. Long-only, so '
+     'judge it on alpha vs the tide rather than raw P&L.'),
+    ('Clockwork',    'buys the close, sells the open',        'overnight_trades',  True,
+     'Overnight gap book — ranks names by how consistently they gap up, buys the top 10 at the '
+     'closing auction, sells at the next opening auction.'),
 ]
 
 
@@ -1165,8 +1176,8 @@ def get_engine_scoreboard():
     try:
         conn = sqlite3.connect(TRADES_DB)
         conn.row_factory = sqlite3.Row
-        for label, tbl, has_mode, desc in ENGINE_SPECS:
-            row = {'engine': label, 'desc': desc, 'table': tbl, 'mode': 'LIVE',
+        for label, analogy, tbl, has_mode, desc in ENGINE_SPECS:
+            row = {'engine': label, 'analogy': analogy, 'desc': desc, 'table': tbl, 'mode': 'LIVE',
                    'open': 0, 'today_n': 0, 'today_pnl': 0.0, 'wk_n': 0, 'wk_pnl': 0.0,
                    'wk_win': None, 'self_exits': None, 'last': None, 'err': None}
             try:

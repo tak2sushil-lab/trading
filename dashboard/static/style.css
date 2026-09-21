@@ -494,3 +494,4 @@ html, body {
 .warn { color: #d29922; }
 #engines-table .positions-table { width: 100%; }
 #engines-table td, #engines-table th { white-space: nowrap; }
+.engine-analogy { color: var(--muted); font-size: 10px; font-weight: 400; margin-top: 2px; }

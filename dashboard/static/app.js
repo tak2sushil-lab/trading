@@ -101,7 +101,8 @@ function renderEngines(rows) {
       <th title="exits the engine made itself vs forced by reconcile/manual">own exits</th>
       <th>last</th></tr></thead><tbody>` +
     rows.map(r => `<tr title="${r.desc || ''}">
-      <td><b>${r.engine}</b>${r.err ? ' <span class="neg" title="' + r.err + '">!</span>' : ''}</td>
+      <td><b>${r.engine}</b>${r.err ? ' <span class="neg" title="' + r.err + '">!</span>' : ''}
+          <div class="engine-analogy">${r.analogy || ''}</div></td>
       <td>${r.open}</td>
       <td>${r.today_n}t ${money(r.today_pnl)}</td>
       <td>${r.wk_n}t ${money(r.wk_pnl)}</td>

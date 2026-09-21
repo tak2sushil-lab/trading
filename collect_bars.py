@@ -274,7 +274,9 @@ def load_bars(
     start  : str | None
         ISO date or datetime string, e.g. '2026-04-01'. Inclusive.
     end    : str | None
-        ISO date or datetime string. Exclusive (bars strictly before this ts).
+        ISO date or datetime string. Exclusive (bars strictly before this ts). A date-only
+        value means midnight, so `start == end` is a zero-width window and returns no rows;
+        pass the NEXT day to include the start day's session.
 
     Returns
     -------
@@ -285,14 +287,25 @@ def load_bars(
     """
     conn = sqlite3.connect(db_path, check_same_thread=False)
 
+    # ts_utc holds TWO string shapes that must be compared on equal terms --
+    # '2024-01-02T14:30:00' (DataBento backfill, no offset) and
+    # '2026-05-28 13:30:00+00:00' (daily collector). A raw string comparison against an
+    # isoformat() bound silently mis-sorts them, because 'T' (0x54) > ' ' (0x20): every
+    # space-format row on the START day compares BELOW a 'T'-format lower bound and was
+    # dropped, while rows on the END day compared below the upper bound and leaked in.
+    # Net effect before this fix: the first requested day vanished and the last was
+    # included despite `end` being documented exclusive -- so a single-day request
+    # returned nothing at all, and every window was shifted one day later. Normalising
+    # both sides to 'YYYY-MM-DD HH:MM:SS' makes the comparison format-blind.
     clauses = ["symbol = ?"]
     params: list = [symbol]
+    ts_norm = "replace(substr(ts_utc,1,19),'T',' ')"
     if start:
-        clauses.append("ts_utc >= ?")
-        params.append(_to_utc_str(start))
+        clauses.append(f"{ts_norm} >= ?")
+        params.append(_to_cmp_str(start))
     if end:
-        clauses.append("ts_utc < ?")
-        params.append(_to_utc_str(end))
+        clauses.append(f"{ts_norm} < ?")
+        params.append(_to_cmp_str(end))
 
     where = " AND ".join(clauses)
     sql   = f"SELECT ts_utc,open,high,low,close,volume FROM bars_5m WHERE {where} ORDER BY ts_utc"
@@ -333,6 +346,15 @@ def load_multi(
 ) -> dict[str, pd.DataFrame]:
     """Load bars for multiple symbols. Returns {symbol: DataFrame}."""
     return {sym: load_bars(sym, start=start, end=end, db_path=db_path) for sym in symbols}
+
+
+def _to_cmp_str(dt_str: str) -> str:
+    """UTC bound in the normalised 'YYYY-MM-DD HH:MM:SS' shape used for DB comparison.
+
+    Must match the SQL side of the comparison in load_bars() exactly: no 'T', no offset,
+    second precision. See the comment there for why a plain isoformat() bound is unsafe.
+    """
+    return _to_utc_str(dt_str)[:19].replace('T', ' ')
 
 
 def _to_utc_str(dt_str: str) -> str:

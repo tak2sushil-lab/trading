@@ -571,6 +571,10 @@ def main():
     ap.add_argument('--no-book-health', action='store_true')
     ap.add_argument('--hard-router', action='store_true',
                     help='force the OLD hard regime router (pre-Sep-6 behaviour), for A/Bs')
+    ap.add_argument('--extension-tilt', type=int, default=0, choices=[0, 1, 2],
+                    help='A/B auto_trader.EXTENSION_TILT: 0 off, 1 drop extension bonuses, 2 also flip the batting order')
+    ap.add_argument('--freshness-gate', type=int, default=0, choices=[0, 1, 2],
+                    help='A/B auto_trader.FRESHNESS_GATE: 0 off, 1 stale AND thin, 2 stale OR thin')
     ap.add_argument('--regime-as-modifier', action='store_true',
                     help='A/B: demote the market regime from router to modifier')
     a = ap.parse_args()
@@ -587,6 +591,13 @@ def main():
     if a.no_book_health:
         at.book_is_on = lambda direction: True
 
+    at.EXTENSION_TILT = a.extension_tilt
+    if a.extension_tilt:
+        print(f'EXTENSION_TILT = {a.extension_tilt} — A/B variant')
+    at.FRESHNESS_GATE = a.freshness_gate
+    if a.freshness_gate:
+        print(f'FRESHNESS_GATE = {a.freshness_gate} '
+              f'({"stale AND thin" if a.freshness_gate == 1 else "stale OR thin"}) — A/B variant')
     global REGIME_AS_MODIFIER
     if a.hard_router:
         REGIME_AS_MODIFIER = False
@@ -599,12 +610,29 @@ def main():
         with sqlite_guard():
             summaries = replay_run(start, end)
 
-            n     = sum(s['trades'] for s in summaries)
-            wins  = sum(s['wins'] for s in summaries)
-            total = sum(s['pnl'] for s in summaries)
+            # ⚠️ The grand total MUST come from the replay DB, not from summing the per-day
+            # summaries. Each day's summary is a get_daily_pnl() snapshot filtered on
+            # entry_date = that day, so a trade entered on day N and closed on day N+k is
+            # invisible to BOTH — day N's snapshot (still open when taken) and day N+k's
+            # (it did not ENTER that day). CLAUDE.md records this exact bug as found and
+            # fixed on Aug 6-7 2026; it regressed. Measured on the Sep 18 A/B: 29 multi-day
+            # trades worth +$1,216 were dropped, turning a true +$155 into a printed -$1,061.
+            # Re-deriving from the DB also keeps the number comparable across A/B arms, which
+            # can hold different numbers of multi-day trades and so carry different biases.
+            _sum_con = _REAL_CONNECT(REPLAY_DB_PATH)
+            _row = _sum_con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(pnl), 0), "
+                "       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) "
+                "FROM trades WHERE pnl IS NOT NULL").fetchone()
+            _sum_con.close()
+            n, total, wins = int(_row[0]), float(_row[1]), int(_row[2] or 0)
+            _snap = sum(s['pnl'] for s in summaries)
             print('─' * 60)
             print(f'Trades: {n} | WR: {wins}/{n} = {wins / n * 100:.1f}%' if n else 'Trades: 0')
-            print(f'Total P&L: ${total:+,.0f}')
+            print(f'Total P&L: ${total:+,.0f}   (closed trades in the replay DB)')
+            if abs(_snap - total) > 1:
+                print(f'  note: per-day snapshots sum to ${_snap:+,.0f} — the ${total - _snap:+,.0f} '
+                      f'difference is trades held across sessions, which daily snapshots cannot see')
 
             if a.parity:
                 sim_con = _REAL_CONNECT(REPLAY_DB_PATH)
