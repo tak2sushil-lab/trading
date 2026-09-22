@@ -281,7 +281,64 @@ def get_equity_positions():
             'unreal_pnl':    round(unreal_pnl, 2) if unreal_pnl is not None else None,
             'unreal_pct':    round(unreal_pct, 2),
             'status':        status,
+            'book':          'Day Trader',
+            'exit_plan':     'closes today 15:45 (or holds overnight if >+1.5% and above VWAP)',
         })
+
+    # Sep 22 2026: this table listed the Day Trader book only, so the other three
+    # live equity books — which hold real shares in the SAME account — were visible
+    # nowhere except /factory. VICR made that concrete: Wave Rider held 9 shares of
+    # it while this table showed only auto_trader's 8. Each row now says which book
+    # owns it and when that book intends to get out, because "when does this close"
+    # is the question the table was failing to answer.
+    _ENGINES = (
+        ('Wave Rider', 'wave_trades',        'momentum swing · 3-day hold · 8% stop'),
+        ('Contrarian', 'contrarian_trades',  'mean reversion · 5-day hold · 15% stop'),
+        ('Clockwork',  'overnight_trades',   'overnight gap · sells at the next open'),
+    )
+    try:
+        with _db() as c:
+            for _book, _tbl, _desc in _ENGINES:
+                try:
+                    cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
+                    if not cols:
+                        continue
+                    mode_f = " AND mode='LIVE'" if 'mode' in cols else ''
+                    for row in c.execute(
+                        f"SELECT * FROM {_tbl} WHERE status IN "
+                        f"('OPEN','PENDING_ENTRY','PENDING_EXIT'){mode_f} "
+                        f"ORDER BY entry_date DESC").fetchall():
+                        sym = row['symbol']
+                        ep  = row['entry_price'] or 0
+                        sh  = row['shares'] or 0
+                        lp  = live_map.get(sym, {})
+                        cp  = (lp.get('marketPrice') or ep) if (bridge_connected and lp) else ep
+                        # Own shares and own entry only — never the broker's blended
+                        # figure, which merges every book holding the same symbol.
+                        upnl = (cp - ep) * sh if (bridge_connected and lp and ep) else None
+                        upct = ((cp - ep) / ep * 100) if (ep and bridge_connected and lp) else None
+                        exit_on = row['exit_on_date'] if 'exit_on_date' in cols else None
+                        plan = (f"{_desc} · exits {exit_on[5:].replace('-', '/')}"
+                                if exit_on else _desc)
+                        stop = row['stop_price'] if 'stop_price' in cols else None
+                        st = 'OK'
+                        if stop and ep and cp:
+                            buf = (cp - stop) / ep * 100
+                            st = 'REVIEW' if buf < 0.5 else ('WARN' if buf < 2.0 else 'OK')
+                        result.append({
+                            'symbol': sym, 'entry_date': row['entry_date'],
+                            'entry_time': row['entry_time'] if 'entry_time' in cols else None,
+                            'entry_price': ep, 'current_price': cp, 'shares': sh,
+                            'side': 'LONG', 'target_price': None, 'stop_price': stop,
+                            'setup_type': None, 'sector': None, 'confidence': None,
+                            'unreal_pnl': round(upnl, 2) if upnl is not None else None,
+                            'unreal_pct': round(upct, 2) if upct is not None else None,
+                            'status': st, 'book': _book, 'exit_plan': plan,
+                        })
+                except Exception:
+                    continue      # one engine's table must not blank the whole panel
+    except Exception:
+        pass
     return result
 
 

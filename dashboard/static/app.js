@@ -452,11 +452,15 @@ function renderEquityTable(positions) {
     el.innerHTML = '<div class="empty-state">No open equity positions</div>';
     return;
   }
+  // Sep 22 2026: leads with the BOOK, because four engines hold shares in the same
+  // account and a symbol can be owned by two of them at once (VICR was). "Plan" is
+  // the column that answers the question this table kept failing: when does it close?
+  // Sector / setup / target moved into the row tooltip to keep it readable.
   el.innerHTML = `<table class="positions-table">
     <thead><tr>
-      <th>Symbol</th><th>Side</th><th>Entry</th><th>Now</th>
-      <th>Unreal P&amp;L</th><th>%</th><th>Stop</th><th>Target</th>
-      <th>Sector</th><th>Setup</th><th>Since</th><th>Status</th>
+      <th>Book</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Now</th>
+      <th>Unreal P&amp;L</th><th>%</th><th>Stop</th>
+      <th title="when this book intends to exit">Plan</th><th>Since</th><th>Status</th>
     </tr></thead>
     <tbody>${positions.map(renderEquityRow).join('')}</tbody>
   </table>`;
@@ -466,8 +470,14 @@ function renderEquityRow(p) {
   const pnlCls = (p.unreal_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
   const pnlSign = (p.unreal_pnl || 0) >= 0 ? '+' : '';
   const pctCls  = (p.unreal_pct || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
-  const since = p.entry_time ? p.entry_time.slice(0, 5) : '—';
-  return `<tr>
+  const since = p.entry_date ? p.entry_date.slice(5).replace('-', '/') : '—';
+  const at    = p.entry_time ? ' ' + p.entry_time.slice(0, 5) : '';
+  const tip   = [p.setup_type ? 'setup ' + p.setup_type : '',
+                 p.sector ? 'sector ' + p.sector : '',
+                 p.target_price ? 'target $' + p.target_price.toFixed(2) : '',
+                 p.shares ? p.shares + ' shares' : ''].filter(Boolean).join('  ·  ');
+  return `<tr title="${tip}">
+    <td><small><strong>${p.book || 'Day Trader'}</strong></small></td>
     <td><strong>${p.symbol}</strong></td>
     <td><span class="side-${(p.side||'').toLowerCase()}">${p.side||'—'}</span></td>
     <td>$${(p.entry_price||0).toFixed(2)}</td>
@@ -475,15 +485,12 @@ function renderEquityRow(p) {
     <td class="${pnlCls}">${p.unreal_pnl != null ? `${pnlSign}$${Math.abs(p.unreal_pnl).toFixed(2)}` : '—'}</td>
     <td class="${pctCls}">${p.unreal_pct != null ? `${p.unreal_pct >= 0 ? '+' : ''}${p.unreal_pct.toFixed(2)}%` : '—'}</td>
     <td>${p.stop_price ? '$'+p.stop_price.toFixed(2) : '—'}</td>
-    <td>${p.target_price ? '$'+p.target_price.toFixed(2) : '—'}</td>
-    <td><small>${p.sector||'—'}</small></td>
-    <td><small>${p.setup_type||'—'}</small></td>
-    <td><small>${p.entry_date||''} ${since}</small></td>
-    <td><span class="status-badge ${p.status}">${p.status}</span></td>
+    <td><small class="muted-text">${p.exit_plan || '—'}</small></td>
+    <td><small>${since}${at}</small></td>
+    <td><span class="status-${(p.status||'ok').toLowerCase()}">${p.status||'OK'}</span></td>
   </tr>`;
 }
 
-// ── Options table ──────────────────────────────────────────
 function renderOptionsTable(positions, health) {
   const el = document.getElementById('options-table');
   document.getElementById('opt-count').textContent = `${positions?.length ?? 0} open`;
