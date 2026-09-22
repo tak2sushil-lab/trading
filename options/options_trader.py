@@ -79,6 +79,25 @@ TG_API           = f"https://api.telegram.org/bot{OPT_TG_TOKEN}"
 # Dedicated options capital allocation ($5K start; 30% max deployed = $1.5K cap)
 OPTIONS_ACCOUNT_SIZE    = float(os.getenv('OPTIONS_ACCOUNT_SIZE', '5000'))
 OPTIONS_CIRCUIT_BREAKER = float(os.getenv('OPTIONS_CIRCUIT_BREAKER', '5000'))  # max realized loss (paper: raised from $2K — $2,935 lost to OPRA blindness Jun 5)
+# ── Circuit-breaker scope (Sep 22 2026) ──────────────────────────────────────
+# The breaker counts CLOSED options P&L against OPTIONS_CIRCUIT_BREAKER. Lifetime
+# realized was -$5,333 — past the $5,000 limit — so check_circuit_breaker() returned
+# False on EVERY cycle and _check_equity_scan_triggers bailed before it looked at a
+# single candidate. The whole Sep 20 rebuild (delta-anchored strikes, Edge Budget,
+# unfreezing the echo) sat downstream of a gate that was already shut, and nobody
+# could see it because the breaker state was never surfaced anywhere.
+#
+# That -$5,333 is not a verdict on the current system. It is dominated by damage from
+# code that no longer exists: the pre-Jun-23 build, the SYSTEM_RESET closes, and the
+# Jul 20-21 USAR incident where a fill-detection race sold the same contract ten times
+# and left the book short 15 calls. The logic has been rewritten twice since.
+#
+# So the breaker is now SCOPED, not raised — the limit stays $5,000, it simply measures
+# the system that is actually running. Same precedent as BOOK_HEALTH_RESET_DATE, which
+# scopes Book Health past its own poisoned window for exactly this reason.
+# ⚠️ Raising OPTIONS_CIRCUIT_BREAKER instead would hide the next real drawdown. Don't.
+# To re-arm against the full history, set this to None.
+OPTIONS_CB_SINCE = os.getenv('OPTIONS_CB_SINCE', '2026-09-21')   # first session of the corrected structure
 OPTIONS_TOTAL_CAPITAL   = float(os.getenv('OPTIONS_TOTAL_CAPITAL',   '5000'))  # total pool
 MAX_OPTIONS_POSITIONS   = int(os.getenv('MAX_OPTIONS_POSITIONS',     '4'))     # max concurrent
 LEAP_ENABLED            = True    # re-enabled Jun 29 2026 — auto-qty caps LEAP at ~$1,200/position like spreads, same pool/slot limits apply
@@ -663,15 +682,16 @@ def check_circuit_breaker(chat_id: str) -> bool:
     """
     global _cb_alerted_date
     from datetime import date as _date
-    total_pnl = get_options_total_pnl()
+    total_pnl = get_options_total_pnl(OPTIONS_CB_SINCE)
     if total_pnl < -OPTIONS_CIRCUIT_BREAKER:
         today = str(_date.today())
         if _cb_alerted_date != today:
             _cb_alerted_date = today
             send_telegram(
                 f"🛑 *Options circuit breaker tripped*\n"
-                f"Cumulative realized loss: ${abs(total_pnl):,.0f} "
-                f"exceeds ${OPTIONS_CIRCUIT_BREAKER:,.0f} limit\n"
+                f"Realized loss ${abs(total_pnl):,.0f} since "
+                f"{OPTIONS_CB_SINCE or 'inception'} exceeds the "
+                f"${OPTIONS_CIRCUIT_BREAKER:,.0f} limit\n"
                 f"No new entries until losses recover. Review open positions.",
                 chat_id,
             )

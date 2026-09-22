@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 22 2026
+Last updated: Sep 22 2026 (pm)
 
 ---
 
@@ -4748,3 +4748,54 @@ test (`pnl>1.5% AND above VWAP`) would have passed, so it was on track to be hel
 exited on the 1-business-day stop — exactly META's path. User closed it manually via
 `SELL VICR` at 12:02 for **+$90.66 (+4.64%)**; the command correctly sold `min(own 8, broker 17)`
 and left Wave Rider's 9 untouched.
+
+---
+
+## Sep 22 2026 (pm) — options breaker SCOPED (book can finally trade) + dashboard health/chart/colour pass
+
+**① OPTIONS CIRCUIT BREAKER SCOPED — the book can actually trade now.** User-approved.
+Lifetime realized options P&L was **−$5,333** against a **$5,000** limit, so
+`check_circuit_breaker()` returned False on every cycle and the whole Sep-20 rebuild sat
+behind a shut gate. That −$5,333 is damage from code that no longer exists (pre-Jun-23
+build, SYSTEM_RESET closes, the Jul 20-21 USAR fill-race that sold the same contract ten
+times). The logic has been rewritten twice since.
+**The limit was NOT raised — it was scoped.** `get_options_total_pnl(since=)` +
+`OPTIONS_CB_SINCE = '2026-09-21'` (first session of the corrected structure). Same precedent
+as `BOOK_HEALTH_RESET_DATE`. ⚠️ **Raising `OPTIONS_CIRCUIT_BREAKER` instead would hide the
+next real drawdown — don't.** Set `OPTIONS_CB_SINCE=None` to re-arm against full history.
+Verified the entire echo chain is now open: not paused · echo unfrozen · scalps still frozen ·
+slots free · **breaker OK** · LONG book on · structure DELTA · Edge Budget OBSERVE.
+
+**② SYSTEM HEALTH — stale data was being presented as live.**
+- **Book Health now carries the AGE of its reading.** A side that stops producing A+ signals
+  freezes its window silently: **SHORT was reporting "ON +0.71%/sig" from data last written
+  2026-07-31 — 53 days old.** Chips now show `STALE 53d` with the last-signal date.
+  (The bear scan IS running — 4,225 rows today — it simply grades nothing A+ in this tape.
+  That part is honest.)
+- **Options row now shows the circuit breaker** (`breaker OK · $5,000 room` / `BREAKER
+  TRIPPED`) and an `ENTRIES FROZEN` chip. A gate that can stop the book is now visible on
+  the book — the invisibility is what let this run unnoticed for the whole trial.
+  ⚠️ Needed a `sys.path` fix: `options/` is not importable from the dashboard process by
+  default, and the bare `except` was swallowing it — the chip would have silently vanished.
+- **NEW: Fleet capital** — cost basis per book vs its allocation (**$26,991 of $40,000**).
+  "How much is actually invested" had no answer anywhere.
+- **NEW: Scoring loop** — components / labels / **real trades fittable (552)** and the newest
+  label date, so the nightly `scan_forward_label` job's health is visible.
+- **REMOVED: dead `renderFishFinderHealth`** — Fish Finder was decommissioned Aug 15 2026 and
+  this renderer had no call site since.
+
+**③ CHART** — `.chart-tall` 150px → **260px**, bars widened (`categoryPercentage 0.92`,
+`barPercentage 0.96`), y-axis `grace: '8%'` + `maxTicksLimit: 9`. A $21 equity segment next to
+$1,300 of futures was a hairline you could not attribute to a book.
+
+**④ ENGINE COLOUR SYSTEM** — one hue per engine (Day Trader green / Wave Rider blue /
+Contrarian gold / Clockwork purple) used identically in the positions table, the ENGINES
+scoreboard, the 15-day scorecard and the Fleet chips. ⭐ **Colour always travels WITH the
+name** (`engBadge()` renders a colour bar + the name) — a second channel, never the only one,
+so the tables stay readable under red/green colour-vision deficiency.
+
+**BUG SWEEP before commit:** pyflakes clean (no undefined names across app.py, database.py,
+options_trader.py, auto_trader.py) · all 4 files parse · JS braces/parens/backticks balanced,
+every referenced renderer defined, dead renderer gone · **all 9 dashboard data functions
+return and JSON-serialise** · full `/api/data` payload round-trips (25 keys, new keys
+present) · 3 test suites pass · 4 services verified running.

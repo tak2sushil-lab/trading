@@ -1106,12 +1106,27 @@ def get_system_health():
                     continue
                 drifts = [(-r[0] if d == 'SHORT' else r[0]) for r in rows]
                 h = sum(drifts) / len(drifts)
+                # Sep 22 2026: show how OLD this reading is. Book Health reads the last 10
+                # days that produced enriched A+ signals — if a side stops generating them
+                # the window silently freezes and the panel keeps reporting a months-old
+                # verdict as if it were live. SHORT has produced no A+ signal since
+                # 2026-07-31, so it was showing "ON +0.71%" from July data.
+                _age = None
+                try:
+                    _age = (datetime.strptime(today, '%Y-%m-%d')
+                            - datetime.strptime(max(days), '%Y-%m-%d')).days
+                except Exception:
+                    pass
                 out['books'][d] = {
                     'state': 'ON' if h > 0 else 'OFF',
                     'drift': round(h, 2), 'n': len(rows),
+                    'age_days': _age, 'last_signal': max(days) if days else None,
+                    'stale': (_age is not None and _age > 10),
                     'desc': (f"Own A+ {d} signals {'gained' if h > 0 else 'faded'} "
                              f"{h:+.2f}% per signal after firing, over the last 10 sessions "
-                             f"({len(rows)} signals). Book trades only while this is positive."),
+                             f"that produced signals ({len(rows)} signals, newest "
+                             f"{max(days) if days else '?'}). Book trades only while this "
+                             f"is positive."),
                 }
             # Signal funnel — equity A+ counts + futures entries/blocks today
             eq = dict(c.execute(
@@ -1170,6 +1185,92 @@ def get_system_health():
                    FROM options_trades WHERE status='CLOSED'
                      AND exit_date >= date('now','-14 day')""").fetchone()
             opt['closed_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0}
+            # Options circuit breaker (Sep 22 2026). This blocked EVERY options entry
+            # for the whole paper trial and was visible nowhere: lifetime realized was
+            # -$5,333 against a $5,000 limit, so the echo bailed before looking at a
+            # single candidate. Scoped to OPTIONS_CB_SINCE now, and surfaced here so a
+            # tripped breaker can never again be mistaken for "no opportunities".
+            try:
+                # options/ is not on the path by default in this process — same
+                # pattern as get_turbo_ladder() below. Without it the import fails,
+                # the except swallows it, and the breaker chip silently disappears:
+                # exactly the invisibility that let a tripped breaker block the whole
+                # options trial unnoticed.
+                import sys as _sys, importlib
+                _op = os.path.join(BASE_DIR, 'options')
+                if _op not in _sys.path:
+                    _sys.path.insert(0, _op)
+                _ot = importlib.import_module('options_trader')
+                _since = getattr(_ot, 'OPTIONS_CB_SINCE', None)
+                _lim = getattr(_ot, 'OPTIONS_CIRCUIT_BREAKER', 5000.0)
+                _sql = ("SELECT COALESCE(SUM(CASE WHEN strategy IN "
+                        "('BULL_PUT_CREDIT','BEAR_CALL_CREDIT') THEN premium_paid - exit_value "
+                        "ELSE exit_value - premium_paid END),0.0) FROM options_trades "
+                        "WHERE status='CLOSED'")
+                _a = ()
+                if _since:
+                    _sql += " AND exit_date >= ?"; _a = (_since,)
+                _scoped = round(float(c.execute(_sql, _a).fetchone()[0]), 2)
+                opt['breaker'] = {
+                    'tripped': _scoped < -_lim, 'pnl': _scoped, 'limit': _lim,
+                    'since': _since, 'frozen': bool(getattr(_ot, 'EQUITY_ECHO_FROZEN', False)),
+                    'gate_mode': getattr(_ot, 'EDGE_BUDGET_MODE', '?'),
+                }
+            except Exception as _be:
+                opt['breaker'] = {'tripped': None, 'err': str(_be)[:80]}
+
+            # Fleet capital — what each book has at risk vs what it was allocated.
+            # Added Sep 22 2026: "how much is actually invested" had no answer on the
+            # dashboard, and four books trading one account makes it non-obvious.
+            fleet = []
+            for _name, _tbl, _alloc, _st in (
+                    ('Day Trader', 'trades', 10000.0, "status='OPEN' AND setup_type!='RECONCILED'"),
+                    ('Wave Rider', 'wave_trades', 10000.0, "status='OPEN'"),
+                    ('Contrarian', 'contrarian_trades', 10000.0, "status='OPEN'"),
+                    ('Clockwork', 'overnight_trades', 10000.0,
+                     "status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')")):
+                try:
+                    _cols = {r[1] for r in c.execute('PRAGMA table_info(' + _tbl + ')')}
+                    if not _cols:
+                        continue
+                    _m = " AND mode='LIVE'" if 'mode' in _cols else ''
+                    _r = c.execute("SELECT COUNT(*), COALESCE(SUM(shares*entry_price),0) "
+                                   "FROM " + _tbl + " WHERE " + _st + _m).fetchone()
+                    fleet.append({'name': _name, 'n': _r[0] or 0,
+                                  'deployed': round(float(_r[1] or 0), 0), 'alloc': _alloc})
+                except Exception:
+                    continue
+            out['fleet'] = {'books': fleet,
+                            'deployed': round(sum(f['deployed'] for f in fleet), 0),
+                            'alloc': round(sum(f['alloc'] for f in fleet), 0)}
+
+            # Scoring loop (Sep 22 2026) — the grader's inputs and the outcome label it
+            # gets scored against. Both must keep accumulating or the weight fit that
+            # this instrumentation exists for can never be run. The forward label is
+            # written by com.sushil.trading.scan_forward_label at 17:15 weekdays.
+            try:
+                _r = c.execute(
+                    """SELECT COUNT(*),
+                              SUM(score_components IS NOT NULL),
+                              SUM(fwd_mfe_pct IS NOT NULL)
+                       FROM scan_log WHERE grade IN ('A+','A') AND direction='LONG'"""
+                ).fetchone()
+                _lbl = c.execute(
+                    "SELECT MAX(scan_date) FROM scan_log WHERE fwd_mfe_pct IS NOT NULL"
+                ).fetchone()[0]
+                _tr = c.execute(
+                    """SELECT COUNT(*) FROM trades t JOIN scan_log s
+                         ON s.symbol=t.symbol AND s.scan_date=t.entry_date
+                        AND s.direction='LONG' AND s.grade IN ('A+','A')
+                        AND s.score_components IS NOT NULL
+                       WHERE t.status IN ('WIN','LOSS') AND t.setup_type!='RECONCILED'"""
+                ).fetchone()[0]
+                out['scoring'] = {'graded': _r[0] or 0, 'with_components': _r[1] or 0,
+                                  'with_label': _r[2] or 0, 'last_label': _lbl,
+                                  'trades_scorable': _tr or 0}
+            except Exception:
+                out['scoring'] = {}
+
             # Book-level Greeks — latest watchman snapshot (Aug 3 2026).
             # Only shown when fresh (today) so a stale row can't masquerade
             # as live exposure.

@@ -206,7 +206,38 @@ html, body {
 
 /* ── CHART ───────────────────────────────────────────────── */
 .chart-wrap { height: 90px; }
-.chart-tall { height: 150px; }
+/* Sep 22 2026: the 15-session P&L chart was 150px tall, which left a $21 equity
+   segment as a hairline next to $1,300 of futures. Taller frame + the wider bars
+   set in app.js give every stacked segment enough area to identify its book. */
+/* (height set on the real .chart-tall rule below) */
+
+/* ── Engine colour system (Sep 22 2026) ──────────────────────────────────────
+   Four equity books trade one account, so the FIRST thing to read on any row is
+   which engine owns it. One hue per engine, used identically in the positions
+   table, the ENGINES scoreboard and the Fleet-capital chips. Hues are chosen to
+   stay distinct for the common red/green colour-vision deficiencies, and every
+   use is paired with the engine's NAME — colour is never the only signal. */
+.eng-dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+           margin-right:6px; vertical-align:middle; background:#8b949e; }
+.eng-name { display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+            font-weight:600; }
+.eng-name .eng-bar { width:3px; height:14px; border-radius:2px; background:#8b949e; }
+[data-eng="Day Trader"] .eng-bar, .eng-dot[data-eng="Day Trader"] { background:#3fb950; }
+[data-eng="Wave Rider"] .eng-bar, .eng-dot[data-eng="Wave Rider"] { background:#4f9cf6; }
+[data-eng="Contrarian"] .eng-bar, .eng-dot[data-eng="Contrarian"] { background:#e3b341; }
+[data-eng="Clockwork"]  .eng-bar, .eng-dot[data-eng="Clockwork"]  { background:#a371f7; }
+[data-eng="Day Trader"] { color:#7ee18b; }
+[data-eng="Wave Rider"] { color:#84bdfa; }
+[data-eng="Contrarian"] { color:#f0cf74; }
+[data-eng="Clockwork"]  { color:#c4a2f9; }
+
+/* a reading that is no longer describing the market now */
+.stale-flag { font-size:9px; font-weight:700; letter-spacing:.4px; padding:1px 5px;
+              border-radius:3px; background:rgba(227,179,65,.16); color:#e3b341;
+              border:1px solid rgba(227,179,65,.35); margin-left:4px; }
+.health-chip.warn { background:rgba(227,179,65,.14); color:#e3b341;
+                    border-color:rgba(227,179,65,.35); }
+.chart-tall { height: 260px; }
 
 /* ── TABLES ──────────────────────────────────────────────── */
 /* Every table-holding section scrolls horizontally within itself — the

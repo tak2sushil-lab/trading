@@ -101,7 +101,7 @@ function renderEngines(rows) {
       <th title="exits the engine made itself vs forced by reconcile/manual">own exits</th>
       <th>last</th></tr></thead><tbody>` +
     rows.map(r => `<tr title="${r.desc || ''}">
-      <td><b>${r.engine}</b>${r.err ? ' <span class="neg" title="' + r.err + '">!</span>' : ''}
+      <td>${engBadge(r.engine)}${r.err ? ' <span class="neg" title="' + r.err + '">!</span>' : ''}
           <div class="engine-analogy">${r.analogy || ''}</div></td>
       <td>${r.open}</td>
       <td>${r.today_n}t ${money(r.today_pnl)}</td>
@@ -120,11 +120,18 @@ function renderSystemHealth(h) {
   if (!h) { el.innerHTML = '<div class="empty-msg">no health data</div>'; return; }
   document.getElementById('sh-universe').textContent = (h.universe || '—') + ' names';
 
+  // Sep 22 2026: a side that stops producing A+ signals freezes its Book Health
+  // window, and the panel kept reporting a months-old verdict as if it were live —
+  // SHORT was showing "ON +0.71%/sig" from data last written 2026-07-31. The age of
+  // the reading is now on the chip itself.
   const bookChip = (name, b) => {
     if (!b) return '';
-    const cls = b.state === 'ON' ? 'pos' : (b.state === 'OFF' ? 'neg' : '');
+    const cls = b.stale ? 'warn' : (b.state === 'ON' ? 'pos' : (b.state === 'OFF' ? 'neg' : ''));
     const drift = b.drift == null ? '' : ` ${b.drift > 0 ? '+' : ''}${b.drift}%/sig`;
-    return `<span class="health-chip ${cls}" title="${b.desc || ''}"><b>${name}</b> ${b.state}${drift}</span>`;
+    const age = b.stale
+      ? ` <span class="stale-flag" title="Newest signal behind this reading is ${b.last_signal}. It is not describing the market now.">STALE ${b.age_days}d</span>`
+      : '';
+    return `<span class="health-chip ${cls}" title="${b.desc || ''}"><b>${name}</b> ${b.state}${drift}</span>${age}`;
   };
   const booksNote = (h.books?.LONG?.state === 'OFF' && h.books?.SHORT?.state === 'OFF')
     ? '<span class="health-detail">both books standing down — own signals not working; flat is intentional</span>'
@@ -166,69 +173,51 @@ function renderSystemHealth(h) {
       <span class="health-label" title="Shadow-only book that fades the Black Box Recorder's LONG signals. Places NO orders — needs 30+ green days before promotion is discussed (review ~Aug 17)">Mirror Book</span>
       <span title="Shadow paper result — 1 MNQ contract equivalent, no real orders">${s.n ?? 0} shadow trades · ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts all-time · ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts last 14d</span>
     </div>
+    ${renderFleet(h.fleet)}
+    ${renderScoring(h.scoring)}
     ${renderOptionsHealth(h.options)}
     ${renderFieldReport(h.field_report)}`;
 }
 
-// ── Fish Finder row inside SYSTEM HEALTH (Aug 8 2026 redesign) ──────────
-// Replaces the original single-template Regime-Adaptive Suite. Gate states
-// come from fishfinder_gate_log (written live by auto_trader.py) — NOT an
-// in-memory read, since the dashboard is a separate process from autotrader.
-function renderFishFinderHealth(ff) {
-  if (!ff) return '';
-  const cg = ff.crowd_gauge || {};
-  const bc = ff.bite_check || {};
-  const cgCls = cg.state === 'BLOCKING' ? 'neg' : (cg.state === 'OK' ? 'pos' : '');
-  const bcCls = bc.state === 'OFF' ? 'neg' : (bc.state === 'ON' ? 'pos' : '');
-  const f = ff.funnel || {};
-  const TEMPLATES = [
-    ['FISHFINDER_ADX_TREND', 'ADX Trend'],
-    ['FISHFINDER_KELTNER_REVERT', 'Keltner Revert'],
-    ['FISHFINDER_RSI_REVERT', 'RSI Revert'],
-  ];
-  const money = v => `${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(0)}`;
-  const funnelStr = bucket => {
-    if (!bucket) return '—';
-    const parts = TEMPLATES.map(([key, name]) => {
-      const x = bucket[key] || { n: 0, pnl: 0 };
-      return `${name} ${x.n}t ${money(x.pnl)}`;
-    });
-    return parts.join(' · ');
-  };
+// ── Fleet capital (Sep 22 2026) ────────────────────────────────────────────
+// "How much is actually invested" had no answer anywhere on the dashboard, and
+// four books sharing one brokerage account makes it genuinely non-obvious.
+function renderFleet(fl) {
+  if (!fl || !fl.books || !fl.books.length) return '';
+  const pct = fl.alloc ? (fl.deployed / fl.alloc * 100) : 0;
+  const parts = fl.books.map(b => {
+    const cls = b.deployed > b.alloc ? 'neg' : '';
+    return `<span class="gate-chip ${cls}" title="${b.name}: ${b.n} open position(s), $${Math.round(b.deployed).toLocaleString()} at cost against a $${Math.round(b.alloc).toLocaleString()} allocation">`
+         + `<span class="eng-dot" data-eng="${b.name}"></span>${b.name} $${Math.round(b.deployed).toLocaleString()}</span>`;
+  }).join(' ');
   return `
     <div class="health-row">
-      <span class="health-label" title="Fish Finder: tests every symbol against all 3 templates (ADX Trend / Keltner Revert / RSI Revert) on its own signals every scan, instead of one market regime picking a single template for all 241 symbols. Replaced the original single-template design Aug 8 2026 — see GLOSSARY.md.">Fish Finder</span>
-      <span class="health-chip ${cgCls}" title="Crowd Gauge: blocks trend-calls when the ~60-symbol universe sample's correlation exceeds 0.35 (herd/panic move, not a real idiosyncratic trend). Daily-frequency, cached once/day.">Crowd Gauge ${cg.corr != null ? cg.corr : '—'} / ${cg.max ?? 0.35}</span>
-      <span class="health-chip ${bcCls}" title="Bite Check: pauses new WEAK-regime ADX Trend entries if the trailing 7 trading days of those trades have net-lost money. Only evaluated on WEAK-regime scans — shows N/A otherwise.">Bite Check ${bc.state || '—'}</span>
-    </div>
-    <div class="health-row">
-      <span class="health-label" title="Per-template trade count and P&amp;L split, today / trailing 7d / trailing 30d">Fish Finder P&amp;L</span>
-      <span class="health-detail-inline">today: ${funnelStr(f.today)}</span>
-    </div>
-    <div class="health-row">
-      <span class="health-label"></span>
-      <span class="health-detail-inline">7d: ${funnelStr(f['7d'])}</span>
-    </div>
-    <div class="health-row">
-      <span class="health-label"></span>
-      <span class="health-detail-inline">30d: ${funnelStr(f['30d'])}</span>
+      <span class="health-label" title="Cost basis of every open equity position, per book, against the capital each book was allocated. Unrealised P&L is not included — this is money committed, not money made.">Fleet capital</span>
+      <span class="health-chip ${pct > 100 ? 'neg' : ''}">$${Math.round(fl.deployed).toLocaleString()} of $${Math.round(fl.alloc).toLocaleString()} (${pct.toFixed(0)}%)</span>
+      <span class="health-detail-inline">${parts}</span>
     </div>`;
 }
 
-// ── Field Report row (market_context.py — log-only pre-market brief) ────
-function renderFieldReport(fr) {
-  if (!fr) return '';
-  const cls = fr.stance === 'RISK_ON' ? 'pos' : (fr.stance === 'RISK_OFF' ? 'neg' : '');
-  const themes = (fr.themes || []).slice(0, 4).join(', ');
+// ── Scoring loop (Sep 22 2026) ─────────────────────────────────────────────
+// The grader's inputs and the outcome they get scored against. Both have to keep
+// accumulating or the weight fit this instrumentation exists for can never run.
+// The label is written nightly by com.sushil.trading.scan_forward_label (17:15).
+function renderScoring(sc) {
+  if (!sc || !sc.graded) return '';
+  const lagDays = sc.last_label
+    ? Math.round((Date.now() - new Date(sc.last_label + 'T23:59:59')) / 86400000) : null;
+  const stale = lagDays != null && lagDays > 3;
   return `
     <div class="health-row">
-      <span class="health-label" title="Pre-market Field Report: mechanical trend/levels + one Claude call synthesizing headlines and the event calendar. LOG-ONLY — no gate reads it. Scored nightly vs actual outcomes after ~4 weeks; graduates to a sizing tilt or event stand-down only if it earns it.">Field Report</span>
-      <span class="health-chip ${cls}" title="${fr.one_line || ''}">${fr.stance || '?'} (${fr.confidence || '?'})</span>
-      <span class="health-detail-inline">${fr.date} · event risk ${fr.event_risk || '?'}${themes ? ' · ' + themes : ''}</span>
+      <span class="health-label" title="Every graded candidate stores the components that produced its score, and a forward outcome label computed from real bars. Fitting the 15 hand-assigned grader weights against real outcomes needs both — this row shows whether they are still being collected.">Scoring loop</span>
+      <span class="health-chip ${stale ? 'warn' : 'pos'}" title="Newest forward label is for ${sc.last_label}. Written nightly at 17:15 after the session's bars land.">label thru ${sc.last_label || '—'}</span>
+      <span class="health-detail-inline">${(sc.with_components ?? 0).toLocaleString()} candidates scored · ${(sc.with_label ?? 0).toLocaleString()} labelled · <b>${(sc.trades_scorable ?? 0).toLocaleString()} real trades fittable</b></span>
     </div>`;
 }
 
-// ── Options row inside SYSTEM HEALTH (Jul 18 2026 redesign) ─────────────
+// Fish Finder health row removed Sep 22 2026 — the engine was decommissioned
+// Aug 15 2026 (Alpha Factory pivot) and this renderer had no call site since.
+
 function renderOptionsHealth(o) {
   if (!o) return '';
   const c = o.calcs_today || {};
@@ -238,12 +227,26 @@ function renderOptionsHealth(o) {
     .map(t => `${t.symbol} ${t.strategy} ($${Math.round(t.premium)})`)
     .join(', ') || 'none';
   const wPnl = w.pnl ?? 0;
+  // Sep 22 2026: the circuit breaker blocked EVERY options entry for the whole paper
+  // trial and appeared nowhere on this page — the row just read "0 calcs" and looked
+  // like a quiet market. A gate that can stop the book must be visible on the book.
+  const b = o.breaker || {};
+  let brkChip = '';
+  const bLim = b.limit ?? 0, bPnl = b.pnl ?? 0;
+  if (b.tripped === true) {
+    brkChip = `<span class="health-chip neg" title="Realized loss $${Math.abs(bPnl).toLocaleString()} since ${b.since || 'inception'} exceeds the $${bLim.toLocaleString()} limit. NO new entries are possible until this recovers.">BREAKER TRIPPED</span>`;
+  } else if (b.tripped === false) {
+    const room = (bLim + bPnl);
+    brkChip = `<span class="health-chip pos" title="Realized $${bPnl.toLocaleString()} since ${b.since || 'inception'} against a $${bLim.toLocaleString()} limit — $${Math.round(room).toLocaleString()} of room left. Edge Budget is in ${b.gate_mode} mode.">breaker OK · $${Math.round(room).toLocaleString()} room</span>`;
+  }
+  if (b.frozen) brkChip += ` <span class="health-chip neg" title="EQUITY_ECHO_FROZEN is True — automated options entries are switched off in code.">ENTRIES FROZEN</span>`;
   // Book-level Greeks + concentration moved to the Options Positions card
   // (Aug 4 2026) — they describe the positions, so they live next to them.
   // This row stays focused on the gating/funnel story specifically.
   return `
     <div class="health-row">
       <span class="health-label" title="Options trade only in directions whose equity book is healthy (same Books row above). Funnel = calculator runs today; Ghost Ledger = what the suggestions we did NOT take would have made (scored nightly). Full Greeks + concentration are in the Options Positions card below.">Options</span>
+      ${brkChip}
       <span>open: ${openList}</span>
       <span class="health-detail-inline">funnel today: ${c.total ?? 0} calcs / ${c.enter ?? 0} enter · closed 14d: ${cl.n ?? 0} for ${(cl.pnl ?? 0) >= 0 ? '+' : ''}$${cl.pnl ?? 0} · ghost ledger 14d: ${w.n ?? 0} skips ${wPnl >= 0 ? '+' : ''}$${wPnl}</span>
     </div>`;
@@ -267,7 +270,8 @@ function renderScorecard(rows) {
     <tbody>${rows.map(r => {
       if (!r.n) return `<tr><td>${r.book}</td><td>0</td><td colspan="5" class="muted-text">no closed trades</td></tr>`;
       return `<tr>
-        <td><strong>${r.book}</strong></td>
+        <td>${['Day Trader','Wave Rider','Contrarian','Clockwork'].includes(r.book)
+              ? engBadge(r.book) : `<strong>${r.book}</strong>`}</td>
         <td>${r.n}</td>
         <td>${r.wr}%</td>
         <td>${money(r.pnl)}</td>
@@ -407,6 +411,11 @@ function renderPnlChart(history) {
         backgroundColor: BOOK_COLORS[s.key].fill,
         borderColor: BOOK_COLORS[s.key].border,
         borderWidth: 1, borderRadius: 2,
+        // Sep 22 2026: bars were thin enough that a small segment (a $21 equity day
+        // next to $1,300 of futures) was a hairline you could not attribute to a
+        // book. Wider bars give every segment enough area to read its colour.
+        categoryPercentage: 0.92,
+        barPercentage: 0.96,
       })),
     },
     options: {
@@ -436,12 +445,26 @@ function renderPnlChart(history) {
             color:     c => c.tick.value === 0 ? '#8b949e' : '#21262d',
             lineWidth: c => c.tick.value === 0 ? 2 : 1,
           },
-          ticks: { color: '#7d8590', font: { size: 10 },
+          // `grace` keeps the biggest day off the frame; more ticks make small bars
+          // measurable instead of just visible.
+          grace: '8%',
+          ticks: { color: '#7d8590', font: { size: 10 }, maxTicksLimit: 9,
                    callback: v => `$${v >= 0 ? '+' : ''}${v.toFixed(0)}` }
         }
       }
     }
   });
+}
+
+// ── Engine badge (Sep 22 2026) ────────────────────────────
+// Four equity books trade the same account, so "which engine owns this row" is the
+// first thing to read. One hue per engine (see style.css), used identically in the
+// positions table, the ENGINES scoreboard and the Fleet-capital chips. The colour
+// always travels WITH the name — it is a second channel, never the only one, so the
+// table stays readable for red/green colour-vision deficiency and in print.
+function engBadge(name) {
+  const n = name || 'Day Trader';
+  return `<span class="eng-name" data-eng="${n}"><span class="eng-bar"></span>${n}</span>`;
 }
 
 // ── Equity table ──────────────────────────────────────────
@@ -477,7 +500,7 @@ function renderEquityRow(p) {
                  p.target_price ? 'target $' + p.target_price.toFixed(2) : '',
                  p.shares ? p.shares + ' shares' : ''].filter(Boolean).join('  ·  ');
   return `<tr title="${tip}">
-    <td><small><strong>${p.book || 'Day Trader'}</strong></small></td>
+    <td><small>${engBadge(p.book)}</small></td>
     <td><strong>${p.symbol}</strong></td>
     <td><span class="side-${(p.side||'').toLowerCase()}">${p.side||'—'}</span></td>
     <td>$${(p.entry_price||0).toFixed(2)}</td>

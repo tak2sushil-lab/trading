@@ -1166,17 +1166,28 @@ def log_options_news(symbol, headline, source, published_at, relevance,
     conn.close()
     return news_id
 
-def get_options_total_pnl() -> float:
-    """Net P&L across all CLOSED options trades. Used by the $2K circuit breaker.
+def get_options_total_pnl(since: str = None) -> float:
+    """Net P&L across CLOSED options trades. Used by the options circuit breaker.
     Credit spreads: P&L = premium_paid - exit_value (credit received minus buyback cost).
-    Debit spreads/LEAPs/scalps: P&L = exit_value - premium_paid."""
+    Debit spreads/LEAPs/scalps: P&L = exit_value - premium_paid.
+
+    `since` (YYYY-MM-DD, on exit_date) scopes the total to trades closed on or after that
+    date. Added Sep 22 2026 so the circuit breaker can measure the CURRENT system rather
+    than lifetime damage — see options_trader.OPTIONS_CB_SINCE. Passing None keeps the
+    lifetime figure, which is still what the dashboard and OPT STATUS report.
+    """
     conn = get_connection()
     c    = conn.cursor()
-    c.execute('''SELECT COALESCE(SUM(
+    sql = """SELECT COALESCE(SUM(
         CASE WHEN strategy IN ('BULL_PUT_CREDIT','BEAR_CALL_CREDIT')
              THEN premium_paid - exit_value
              ELSE exit_value - premium_paid END
-    ), 0.0) FROM options_trades WHERE status='CLOSED' ''')
+    ), 0.0) FROM options_trades WHERE status='CLOSED'"""
+    args = ()
+    if since:
+        sql += " AND exit_date >= ?"
+        args = (since,)
+    c.execute(sql, args)
     val = c.fetchone()[0]
     conn.close()
     return round(float(val), 2)
