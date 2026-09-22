@@ -4684,8 +4684,46 @@ old EM anchoring needed **+8%**. The blockage is upstream of everything built on
 Not changed — the catalyst rule is data-backed and removing it is a strategy decision, not a
 bug fix. Flagged for a deliberate call.
 
+**⑥ THE DASHBOARD REPORTED ONE EQUITY BOOK AS IF IT WERE ALL FOUR.**
+Found by asking why Wave Rider showed nothing in the Today column. Wave Rider's blank was
+honest — it closed nothing that day (its exits are 15:45). The real defect was underneath:
+**three of the four live equity books were absent from every headline panel.** Wave Rider,
+Contrarian and Clockwork trade the SAME real IBKR account through their own tables
+(`wave_trades` / `contrarian_trades` / `overnight_trades`), and `get_today_summary()`,
+`get_pnl_by_book()` and `get_scorecard()` all read `trades` alone.
+
+Measured the moment it was found: the Today card showed **+$70.57** when the true equity
+figure was **+$21.52** — Clockwork's **−$49.05** simply was not counted. The per-engine
+breakdown has existed since Sep 11 in the ENGINES scoreboard; the headline never caught up.
+
+- **Today card** — now the total across all four books, plus an `eq.books` composition
+  rendered on the card itself (`Day Trader +$71 / Clockwork −$49`) and in its tooltip, so a
+  book can never go missing from this number invisibly again.
+- **15-day chart** — the three engines folded into the `equity` series (this chart is P&L per
+  VERTICAL; per-engine detail belongs in the scoreboard).
+- **15-day scorecard** — `Equity` renamed **`Day Trader`** and the other three given their own
+  rows, because this table exists to COMPARE books. Each row now wrapped so one missing table
+  cannot blank the whole panel.
+- Verified: chart equity series and the scorecard's four equity rows reconcile to the dollar
+  (−$1,841.84 over the window), and both agree with the Today card.
+
+⭐ **The rule this keeps proving: a number that reads from one table while the system trades
+from four is not a summary, it is a sample.** Same shape as the Sep 2026 reconcile gap, where
+`_other_book_symbols()` had to be taught the other engines exist.
+
 **Still open:** (a) the equity exit stack is chop-calibrated and this is a trend tape — a real
 question, needs a test that survives both regimes; (b) two books can hold the same name with
 no shared concentration limit; (c) the options catalyst filter starves the funnel; (d) DB exit
 prices are the *intended* price, not the fill (META: recorded 731.60, filled 732.94) — the
-futures side solved this Sep 3 with `_get_fill_price()`; equity has no equivalent.
+futures side solved this Sep 3 with `_get_fill_price()`; equity has no equivalent;
+(e) the Equity Positions TABLE still lists only `trades`, so the other books' open positions
+appear in the count but not the table — the ENGINES scoreboard carries their open counts.
+
+**Live note (Sep 22):** VICR was held by Wave Rider (9 sh @ 212.88, +19%) AND auto_trader
+(8 sh @ 244.00). auto_trader's slice was **entered 09:38, before the 10:00 `HOLD_TO_CLOSE_BEFORE`
+cutoff, which makes it a `_ride` trade — ATR trail, PCT trail, break-even stop and momentum
+fade are ALL disabled by design**, leaving only the hard stop 9% away. At 15:45 the overnight
+test (`pnl>1.5% AND above VWAP`) would have passed, so it was on track to be held overnight and
+exited on the 1-business-day stop — exactly META's path. User closed it manually via
+`SELL VICR` at 12:02 for **+$90.66 (+4.64%)**; the command correctly sold `min(own 8, broker 17)`
+and left Wave Rider's 9 untouched.

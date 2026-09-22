@@ -564,6 +564,42 @@ def get_today_summary():
             eq['open'] = c.execute(
                 "SELECT COUNT(*) as n FROM trades WHERE status='OPEN' AND setup_type!='RECONCILED'"
             ).fetchone()['n']
+            eq['books'] = [{'name': 'Day Trader', 'pnl': eq['pnl'], 'trades': eq['trades'],
+                            'open': eq['open']}]
+
+            # Sep 22 2026: this card read the `trades` table ONLY, so it reported
+            # the Day Trader book as if it were the whole equity side. Wave Rider,
+            # Contrarian and Clockwork trade the SAME real account through their own
+            # tables and were invisible here — on the day this was found the card
+            # showed +$70.57 while the true equity figure was +$21.52, because
+            # Clockwork's -$49.05 simply was not counted. The per-engine breakdown
+            # has existed since Sep 11 in the ENGINES scoreboard; the headline never
+            # caught up. `books` carries the composition so a book can never again go
+            # missing from this number without it being visible on the card itself.
+            for _name, _tbl in (('Wave Rider', 'wave_trades'),
+                                ('Contrarian', 'contrarian_trades'),
+                                ('Clockwork',  'overnight_trades')):
+                try:
+                    _cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
+                    if not _cols:
+                        continue          # table not created yet — engine never ran
+                    _mode = " AND mode='LIVE'" if 'mode' in _cols else ''
+                    _cl = c.execute(
+                        f"SELECT pnl FROM {_tbl} WHERE exit_date=? AND status='CLOSED'{_mode}",
+                        (today,)).fetchall()
+                    _op = c.execute(
+                        f"SELECT COUNT(*) AS n FROM {_tbl} WHERE status IN "
+                        f"('OPEN','PENDING_ENTRY','PENDING_EXIT'){_mode}").fetchone()['n']
+                    _pnl = round(sum(r['pnl'] or 0 for r in _cl), 2)
+                    eq['pnl']    = round(eq['pnl'] + _pnl, 2)
+                    eq['trades'] += len(_cl)
+                    eq['wins']   += sum(1 for r in _cl if (r['pnl'] or 0) > 0)
+                    eq['open']   += _op
+                    eq['books'].append({'name': _name, 'pnl': _pnl,
+                                        'trades': len(_cl), 'open': _op})
+                except Exception:
+                    continue              # one bad table must not blank the whole card
+            eq['wr'] = round(eq['wins'] / eq['trades'] * 100, 1) if eq['trades'] else None
 
             opt_open = c.execute(
                 "SELECT delta_entry FROM options_trades "
@@ -619,6 +655,24 @@ def get_pnl_by_book(sessions=15):
                 "SELECT exit_date, SUM(pnl) FROM trades "
                 "WHERE exit_date>=? AND setup_type!='RECONCILED' GROUP BY exit_date",
                 (cutoff,)).fetchall(), 'equity')
+            # Sep 22 2026: the 'equity' bar was the Day Trader table alone. Wave
+            # Rider, Contrarian and Clockwork trade the same real account and were
+            # missing from this chart entirely — the same omission found in the
+            # Today card. Folded into 'equity' rather than given their own series:
+            # this chart is P&L per VERTICAL, and per-engine detail already lives
+            # in the ENGINES scoreboard.
+            for _tbl in ('wave_trades', 'contrarian_trades', 'overnight_trades'):
+                try:
+                    _cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
+                    if not _cols:
+                        continue
+                    _mode = " AND mode='LIVE'" if 'mode' in _cols else ''
+                    add(c.execute(
+                        f"SELECT exit_date, SUM(pnl) FROM {_tbl} "
+                        f"WHERE exit_date>=? AND status='CLOSED'{_mode} GROUP BY exit_date",
+                        (cutoff,)).fetchall(), 'equity')
+                except Exception:
+                    continue
             add(c.execute(
                 "SELECT exit_date, SUM(exit_value - premium_paid) FROM options_trades "
                 "WHERE exit_date>=? AND exit_value IS NOT NULL GROUP BY exit_date",
@@ -666,8 +720,21 @@ def get_scorecard(since_date=None, days=21):
     trades on both, so it needs the same account split NY already had)."""
     cutoff = since_date or (datetime.now(tz=ET) - timedelta(days=days)).strftime('%Y-%m-%d')
     books = [
-        ('Equity',        "SELECT exit_date, pnl FROM trades "
+        # Sep 22 2026: 'Equity' was the Day Trader table alone, so three live books
+        # that trade the same real account had no row here at all. Renamed to match
+        # the ENGINES scoreboard, and the others given their own rows — this table
+        # exists to COMPARE books, so folding them together would defeat it.
+        ('Day Trader',    "SELECT exit_date, pnl FROM trades "
                           "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL"),
+        ('Wave Rider',    "SELECT exit_date, pnl FROM wave_trades "
+                          "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
+                          "AND pnl IS NOT NULL"),
+        ('Contrarian',    "SELECT exit_date, pnl FROM contrarian_trades "
+                          "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
+                          "AND pnl IS NOT NULL"),
+        ('Clockwork',     "SELECT exit_date, pnl FROM overnight_trades "
+                          "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
+                          "AND pnl IS NOT NULL"),
         ('Options',       "SELECT exit_date, exit_value - premium_paid FROM options_trades "
                           "WHERE exit_date>=? AND exit_value IS NOT NULL"),
         ('IBKR NY',       "SELECT exit_date, pnl FROM futures_trades "
@@ -685,7 +752,11 @@ def get_scorecard(since_date=None, days=21):
     try:
         with _db() as c:
             for name, sql in books:
-                rows = c.execute(sql, (cutoff,)).fetchall()
+                try:
+                    rows = c.execute(sql, (cutoff,)).fetchall()
+                except Exception:
+                    out.append({'book': name, 'n': 0})   # table absent — engine never ran
+                    continue
                 pnls = [r[1] or 0 for r in rows]
                 if not pnls:
                     out.append({'book': name, 'n': 0})

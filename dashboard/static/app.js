@@ -327,11 +327,30 @@ function renderSummaryCards(eq, opt, futIbkr, futTc) {
   const sign = v => v >= 0 ? '+' : '';
   const fmt = v => v != null ? `<span class="${pnlClass(v)}">${sign(v)}$${Math.abs(v).toFixed(2)}</span>` : '<span class="pnl-zero">—</span>';
 
-  // Equity
+  // Equity — the TOTAL across all four equity books (Day Trader, Wave Rider,
+  // Contrarian, Clockwork). Until Sep 22 2026 this read the Day Trader table
+  // alone and silently dropped the other three; `eq.books` now carries the
+  // composition so a missing book is visible on the card instead of hidden.
   document.getElementById('eq-pnl').innerHTML = fmt(eq?.pnl);
-  document.getElementById('eq-sub').textContent =
+  const eqSub = document.getElementById('eq-sub');
+  eqSub.textContent =
     `${eq?.open ?? 0} open  ·  ${eq?.trades ?? 0} closed today` +
     (eq?.wr != null ? `  ·  ${eq.wr}% WR` : '');
+  if (eq?.books?.length) {
+    const active = eq.books.filter(b => b.trades > 0 || b.open > 0);
+    eqSub.title = 'All equity books:\n' + eq.books.map(b =>
+      `${b.name}: ${b.pnl >= 0 ? '+' : '-'}$${Math.abs(b.pnl).toFixed(2)}` +
+      `  (${b.trades} closed, ${b.open} open)`).join('\n');
+    // Name the books that actually moved the number, so a single-book day is
+    // never mistaken for the whole equity side.
+    const movers = eq.books.filter(b => b.trades > 0);
+    if (movers.length) {
+      eqSub.textContent += '  ·  ' + movers.map(b =>
+        `${b.name.split(' ')[0]} ${b.pnl >= 0 ? '+' : '-'}$${Math.abs(b.pnl).toFixed(0)}`
+      ).join(' / ');
+    }
+    void active;
+  }
 
   // Options
   document.getElementById('opt-pnl').innerHTML = fmt(opt?.pnl);
