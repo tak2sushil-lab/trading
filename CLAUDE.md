@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 20 2026 (pm5)
+Last updated: Sep 22 2026
 
 ---
 
@@ -4588,3 +4588,104 @@ it was the only undefined name in 5,000 lines. Fixed with local imports plus a f
 message when the read-back returns no row.
 
 **REVERT:** `EQUITY_ECHO_FROZEN = True`. **ENFORCE the gate:** `OPT_EDGE_BUDGET_MODE=ENFORCE`.
+
+---
+
+## Sep 22 2026 — META oversell root-caused and fixed · 5 latent bugs · scoring loop finally closed
+
+Postmortem of the first days after the Sep 20 options work. **Five bugs found, all five
+fixed, all verified. One of them cost real money.**
+
+**① 🚨 THE META OVERSELL — the only one that cost money.**
+META was held overnight (by design) and was the week's best call. At **09:23 PRE-MARKET** its
+trailing stop fired. Every strategy exit in `auto_trader.py` writes the DB row CLOSED
+**before** submitting the order — the comment says *"DB write first, reconcile corrects
+state"*. The instant that row closed, the still-real 2-share position looked like an **orphan**
+to `reconcile_with_ibkr()`, which fired **six more closes across three attempts** (each attempt
+sent a MARKET order, waited **2 seconds**, re-read the portfolio, saw it unchanged because
+nothing can fill pre-market, and sent a LIMIT too).
+
+All seven landed together at the 09:30 open:
+
+| | |
+|---|---|
+| DB records | **+$63.22** ✅ WIN |
+| Broker actually did | SOLD **14** @ 732.94, then BOT **12** @ 748.88 |
+| Real result | **−$123.38** |
+| Oversell cost | **−$191.28** |
+
+⭐ Same failure family as the Jul 20 2026 USAR storm and the Sep 2026 28-symbol incident.
+The earlier fix ("verify against the real portfolio after a close attempt") **cannot work
+pre-market** — the verification reads "still there", concludes the order failed, and fires
+again. **Three independent fixes, all pinned by tests:**
+- **`_exit_in_flight` registry** — every strategy exit stamps the symbol *before* the POST
+  (before, because a POST that times out may still have placed the order). Reconcile never
+  races a working exit. The flag **never ages out while the market is closed**, because a
+  resting order cannot fill so elapsed time says nothing. Cleared the moment IBKR reports flat.
+- **Reconcile places no orders outside regular hours** — it logs once per symbol and waits.
+- **One order per cycle.** The market→limit escalation now happens *across* cycles (90s
+  apart, verified each time), not inside one. Three attempts used to mean six live orders.
+- `tests_reconcile_guards.py` — 10 pinned tests including a full replay of the META
+  pre-market window (**0 orders** where the old code fired 6), plus proof the genuine orphan
+  safety net and the other-book guard still work. **Run after any reconcile or exit change.**
+
+**② VICR — the dashboard showed two different positions as one row.**
+Wave Rider held 9 @ $212.88; auto_trader bought 8 @ $244.00. IBKR blends them: **17 @
+$227.64**. The dashboard reported the **broker's** blended `unrealizedPnL` next to a **%
+computed from this book's own entry** — hence "+0.95% / +$300". Both numbers were individually
+right and described different positions. Now the dollar figure is derived from the row's own
+shares and entry, so $ and % always agree (verified live: 8 sh, +3.86%, **+$75.44**).
+⚠️ **Not fixed, flagged:** two books independently sizing the same name is real concentration
+nobody accounts for. Exits are safe — every engine sells its own recorded shares
+(`min(shares, ibkr_qty)`), never the broker position.
+
+**③ 🐛 `sys` was never imported** — yet `reset_daily_state()` calls `sys.exit()` twice: the
+duplicate-instance guard and the **`PROD_EQUITY_ENABLED` live-mode guard**. Both raised
+NameError instead of exiting cleanly. Fail-safe in effect (the process died either way), but
+the live-mode guard is a **go-live checklist item that had never once executed as written**.
+
+**④ 🐛 The evening signal-funnel line has never rendered — not once since Jul 18 2026.**
+`evening_summary()` calls `get_connection()`, which was never imported there; the NameError
+was swallowed by a bare `except Exception`. **Zero occurrences in the entire log.** Same shape
+as the Aug 8 Chart Gate discovery: built, shipped, silently dead. Now verified rendering:
+`📖 Books: LONG ON / SHORT ON | A+ signals: 8L / 0S`.
+
+**⑤ THE SCORING LOOP WAS OPEN AT BOTH ENDS.** `backfill_scan_forward.py` (the CORRECT forward
+label, built Sep 18) **was never scheduled** — so `fwd_mfe_pct` went blank from Sep 18 onward
+while `score_components` kept logging. We were recording the guesses and not the answers.
+**SHIPPED: `com.sushil.trading.scan_forward_label`, 17:15 weekdays** (after collect_bars
+writes the session at 16:30; ~20s/day). Caught up on the spot: **12,505 rows labelled**,
+Sep 15-21 now 95-100% covered. Clockwork's `ref_pnl` was blank for the same reason (bars not
+yet written when it ran) — re-ran, 10 more rows.
+
+**⭐ SCORING IS NOW LIVE AND CLOSED.** Components + correct outcome label both accumulate
+automatically. Re-run `research_equity_component_lab.py` and the weight regression at ~4-6
+weeks of data. Do not hand-tune a weight before then.
+
+**THE WEEK, honestly (Sep 21-22, a strongly trending tape):**
+- auto_trader **+$109** / 17 trades / **41% WR**
+- Captured **26% of peak**. Same entries held to the close: **+$314 vs our +$59** — the exit
+  stack **cost $254 this week**.
+  ⚠️ **Do not over-read this.** "Exit later" has now been tested 7 times across 668 trades and
+  loses on average. The honest reading is a **regime mismatch**: these exits are calibrated for
+  chop and this was a trend week. It is not evidence the stops are wrong, and it is not
+  licence to loosen them without a test that survives a non-trending sample.
+- Wave Rider −$589 (16 closed, 4 open) · Contrarian −$375 closed but **2 open well up**
+  (ONTO +$510, SITM +$186) · Clockwork Mon −$49, resize confirmed working (~$3.3k/name).
+- **Clockwork at official prints: +$452 strategy vs −$413 actual** across 80 LIVE trades. The
+  paper simulator's fabricated auction fills remain the whole gap, exactly as Sep 20 found.
+
+**WHY OPTIONS STILL HAS NOT TRADED — and it is NOT the new gate.**
+**One** calculator run in two sessions. Of 33 distinct A+ names Monday, **20 were
+catalyst-flagged and auto-skipped** by a Jun 20 rule (catalyst ⇒ IV already elevated). Of the
+14 survivors only ARM reached a calculator, and it **failed the liquidity toll (15% vs 12%
+cap)**. ⭐ The structure work IS functioning: ARM priced at a **−2.00% breakeven** where the
+old EM anchoring needed **+8%**. The blockage is upstream of everything built on Sep 20.
+Not changed — the catalyst rule is data-backed and removing it is a strategy decision, not a
+bug fix. Flagged for a deliberate call.
+
+**Still open:** (a) the equity exit stack is chop-calibrated and this is a trend tape — a real
+question, needs a test that survives both regimes; (b) two books can hold the same name with
+no shared concentration limit; (c) the options catalyst filter starves the funnel; (d) DB exit
+prices are the *intended* price, not the fill (META: recorded 731.60, filled 732.94) — the
+futures side solved this Sep 3 with `_get_fill_price()`; equity has no equivalent.

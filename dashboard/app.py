@@ -243,9 +243,15 @@ def get_equity_positions():
         # so the dashboard displays "---" instead of misleading $0 unrealized P&L
         if bridge_connected and lp:
             cp = lp.get('marketPrice') or ep
-            unreal_pnl = lp.get('unrealizedPnL')
-            if unreal_pnl is None and ep:
-                unreal_pnl = (cp - ep) * shares
+            # Sep 22 2026: this used to report the BROKER's unrealizedPnL, which is
+            # blended across every book that happens to hold the symbol, while the
+            # % below is computed from THIS book's own entry. When two engines own
+            # the same name the two numbers describe different positions — VICR
+            # showed "+0.95%" next to "+$300" because Wave Rider held 9 shares from
+            # $212.88 and auto_trader 8 from $244.00 (IBKR: 17 @ $227.64). Always
+            # derive the dollar figure from this row's own shares and entry so $ and
+            # % agree and both describe the position this book actually owns.
+            unreal_pnl = (cp - ep) * shares if ep else None
         else:
             cp = ep
             unreal_pnl = None  # will render as "---" in frontend

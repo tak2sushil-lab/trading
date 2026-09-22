@@ -23,6 +23,13 @@ matplotlib.use('Agg')
 import mplfinance as mpf
 import anthropic
 from apscheduler.schedulers.background import BackgroundScheduler
+# Sep 22 2026: `sys` was never imported, yet reset_daily_state() calls sys.exit()
+# twice — the duplicate-instance guard and the PROD_EQUITY_ENABLED live-mode guard.
+# Both raised NameError instead of exiting cleanly. Fail-safe in effect (the process
+# died either way) but the live-mode guard is a go-live checklist item that had
+# never once executed as written.
+import sys
+
 from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
@@ -978,6 +985,52 @@ ORPHAN_CLOSE_COOLDOWN_S   = 90    # min seconds between close attempts on the sa
 MAX_DAILY_ORPHAN_ATTEMPTS = 5     # then alert once and stop auto-retrying (mirrors watchman.py)
 ORPHAN_GRACE_S            = 120   # a position must be unaccounted for THIS long before we act
 _orphan_first_seen        = {}    # sym → epoch when it first looked unaccounted
+_orphan_closed_market_logged = set()   # symbols already logged as 'market closed' this session
+
+# ── Exit-in-flight registry (Sep 22 2026) ────────────────────────────────────
+# THE META INCIDENT. Every strategy exit writes the DB row CLOSED *before* it
+# submits the order ("DB write first — reconcile corrects state"). The instant
+# that row closes, the still-real IBKR position looks like an orphan to
+# reconcile_with_ibkr(). That is harmless when fills are instant and lethal when
+# they are not: on Sep 22 META's trailing stop fired at 09:23 PRE-MARKET, the
+# sell could not fill before 09:30, and reconcile fired six more closes across
+# three attempts. All seven landed together at the open — a 2-share long became
+# a 12-share SHORT, bought back five minutes later $16 higher. Real cost -$191
+# on a trade the DB still records as +$63.
+#
+# Two independent guards now, because either alone leaves a hole:
+#   1. this registry — reconcile never races an exit order a strategy already
+#      has working, in or out of hours;
+#   2. is_market_open() gating below — reconcile does not place orders when
+#      nothing can fill, because its own verification step (re-read the
+#      portfolio a few seconds later) is meaningless then and it concludes
+#      "that didn't work, try again".
+EXIT_IN_FLIGHT_S = 900   # 15 min of regular-hours life for a submitted exit
+_exit_in_flight  = {}    # sym → epoch when a strategy last submitted an exit order
+
+
+def _mark_exit_in_flight(sym: str) -> None:
+    """Call IMMEDIATELY BEFORE submitting any strategy exit order.
+
+    Before, not after, deliberately: a POST that times out may still have placed
+    the order, and the dangerous case is precisely the one where we do not get a
+    clean response back.
+    """
+    _exit_in_flight[sym] = time.time()
+
+
+def _exit_in_flight_active(sym: str) -> bool:
+    """True while a strategy exit for `sym` should still be considered working.
+
+    While the market is CLOSED the guard never ages out — a resting order cannot
+    fill, so elapsed time says nothing about whether it is still live.
+    """
+    ts = _exit_in_flight.get(sym)
+    if ts is None:
+        return False
+    if not is_market_open():
+        return True
+    return (time.time() - ts) < EXIT_IN_FLIGHT_S
 
 def _my_unrealized(portfolio):
     """Unrealized P&L of THIS book's positions only.
@@ -1066,6 +1119,9 @@ def reconcile_with_ibkr():
     if not ibkr:
         return  # bridge unreachable — skip, don't corrupt DB
 
+    if is_market_open():
+        _orphan_closed_market_logged.clear()   # fresh session, allow one log per symbol again
+
     db_trades  = get_open_trades()
     db_symbols = {t['symbol']: t for t in db_trades}
     other_books = _other_book_symbols()
@@ -1078,6 +1134,15 @@ def reconcile_with_ibkr():
         qty = int(pos['qty'])
         if sym in db_symbols or sym in other_books or qty == 0:
             _orphan_first_seen.pop(sym, None)     # accounted for — reset the grace clock
+            _exit_in_flight.pop(sym, None)        # flat (or re-owned) — the exit is done
+            continue
+
+        # GUARD 1 (Sep 22 2026): a strategy already has an exit order working on
+        # this symbol. The DB row is closed, so it LOOKS like an orphan — it is
+        # not. Racing it is what turned META's 2-share long into a 12-share
+        # short. Wait for the order to land; the loop above clears the flag the
+        # moment IBKR reports flat.
+        if _exit_in_flight_active(sym):
             continue
 
         # RACE GUARD (Sep 10 2026). Wave Rider / Contrarian / Clockwork write their DB row only
@@ -1089,6 +1154,17 @@ def reconcile_with_ibkr():
         if time.time() - _first < ORPHAN_GRACE_S:
             log(f"Reconcile: {sym} unaccounted (qty={qty}) — within {ORPHAN_GRACE_S}s grace, "
                 f"another book may still be recording it; not acting yet")
+            continue
+
+        # GUARD 2 (Sep 22 2026): outside regular hours an order cannot fill, so
+        # the post-close verification below ("is it flat yet?") always reads
+        # "no" and this function keeps firing. Three pre-market attempts is
+        # exactly how META ended up oversold. Log it and wait for the open.
+        if not is_market_open():
+            if sym not in _orphan_closed_market_logged:
+                _orphan_closed_market_logged.add(sym)
+                log(f"Reconcile: {sym} unaccounted (qty={qty}) but market is CLOSED — "
+                    f"not placing orders that cannot fill; will act after the open")
             continue
 
         st = _orphan_close_state.get(sym)
@@ -1119,38 +1195,49 @@ def reconcile_with_ibkr():
         send_telegram(f"⚠️ Reconcile: {sym} orphan position ({qty} shares) found — closing "
                        f"now (attempt {st['attempts']}/{MAX_DAILY_ORPHAN_ATTEMPTS})")
 
-        try:
-            requests.post(f"{BRIDGE}/order", json={'symbol': sym, 'qty': close_qty,
-                          'side': close_side, 'order_type': 'MARKET'}, timeout=10)
-        except Exception as _re:
-            log(f"Reconcile: {sym} market order failed ({_re})")
+        # ONE ORDER PER CYCLE (Sep 22 2026). This used to fire a MARKET order, wait
+        # 2 seconds, re-read the portfolio, and — if it still looked unchanged —
+        # fire a LIMIT order in the SAME cycle. Two seconds is nowhere near enough
+        # for IBKR to reflect a fill even in liquid hours, so the second order was
+        # routine rather than exceptional: three attempts meant SIX live orders.
+        # That is what oversold META. The escalation still exists, it just happens
+        # across cycles (90s apart, verified each time) instead of inside one.
+        if st['attempts'] == 1:
+            try:
+                requests.post(f"{BRIDGE}/order", json={'symbol': sym, 'qty': close_qty,
+                              'side': close_side, 'order_type': 'MARKET'}, timeout=10)
+                log(f"Reconcile: {sym} market close submitted (qty={close_qty})")
+            except Exception as _re:
+                log(f"Reconcile: {sym} market order failed ({_re})")
+        else:
+            # The market order from a previous cycle did not clear it — escalate.
+            price = get_live_price(sym)
+            if price:
+                lmt = round(price * 1.005 if close_side == 'BUY' else price * 0.995, 2)
+                try:
+                    requests.post(f"{BRIDGE}/order", json={'symbol': sym, 'qty': close_qty,
+                                  'side': close_side, 'order_type': 'LIMIT', 'limit_price': lmt},
+                                  timeout=10)
+                    log(f"Reconcile: {sym} limit close @ {lmt} submitted (attempt {st['attempts']})")
+                except Exception as _re2:
+                    log(f"Reconcile: {sym} limit order failed ({_re2})")
+            else:
+                log(f"Reconcile: {sym} no price available for limit escalation — waiting")
 
-        time.sleep(2)   # give a liquid-name market order time to actually register
+        # Informational only now: whatever this reads, the next cycle re-verifies
+        # against the real portfolio before placing anything else.
+        time.sleep(2)
         remaining = int(get_ibkr_positions().get(sym, {}).get('qty', 0) or 0)
-
         if remaining == 0:
             log(f"Reconcile: {sym} confirmed flat after close")
             send_telegram(f"✅ Reconcile: {sym} confirmed flat")
             _orphan_close_state.pop(sym, None)
             _orphan_first_seen.pop(sym, None)
-            continue
-        if remaining != qty:
-            log(f"Reconcile: {sym} partial fill — qty {qty} → {remaining}, will retry next cycle")
-            continue
-
-        # Genuinely unchanged (verified against the real portfolio, not the status field) —
-        # only now is the limit fallback warranted.
-        log(f"Reconcile: {sym} still shows qty={remaining} after market order — trying a limit order")
-        price = get_live_price(sym)
-        if price:
-            lmt = round(price * 1.005 if close_side == 'BUY' else price * 0.995, 2)
-            try:
-                requests.post(f"{BRIDGE}/order", json={'symbol': sym, 'qty': close_qty,
-                              'side': close_side, 'order_type': 'LIMIT', 'limit_price': lmt},
-                              timeout=10)
-                log(f"Reconcile: {sym} limit close @ {lmt} submitted")
-            except Exception as _re2:
-                log(f"Reconcile: {sym} limit order failed ({_re2})")
+        elif remaining != qty:
+            log(f"Reconcile: {sym} partial fill — qty {qty} → {remaining}, will re-verify next cycle")
+        else:
+            log(f"Reconcile: {sym} still qty={remaining} — will re-verify next cycle "
+                f"(no second order fired this cycle)")
 
     # DB has open trade, IBKR doesn't → closed externally (manual close, partial fill, etc.)
     for sym, trade in db_symbols.items():
@@ -2976,6 +3063,7 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                 # reconcile_with_ibkr() is now a verified safety net for that, but flying blind
                 # here is still how the failure stays invisible in this log.
                 try:
+                    _mark_exit_in_flight(sym)   # before the POST — see _mark_exit_in_flight
                     _xr = requests.post(f"{BRIDGE}/order", json={
                         'symbol': sym, 'qty': close_qty,
                         'side': close_side, 'order_type': 'MARKET'
@@ -3056,6 +3144,7 @@ def fast_monitor_positions():
                     # safety net for this (real portfolio check + cooldown + attempt cap), so
                     # the DB-write-first ordering here is fine — just stop flying blind.
                     try:
+                        _mark_exit_in_flight(sym)   # before the POST — see _mark_exit_in_flight
                         r = requests.post(f"{BRIDGE}/order", json={
                             'symbol': sym, 'qty': min(shares, int(ibkr_qty)),
                             'side': close_side, 'order_type': 'MARKET'
@@ -3572,6 +3661,7 @@ def poll_telegram_commands():
                             pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
                             pnl_pct = ((t['entry_price'] - price) if is_short else (price - t['entry_price'])) / t['entry_price'] * 100
                             if ibkr_qty > 0:
+                                _mark_exit_in_flight(sym)
                                 requests.post(f"{BRIDGE}/order",
                                               json={'symbol': sym, 'qty': qty,
                                                     'side': close_side, 'order_type': 'MARKET'},
@@ -3611,6 +3701,7 @@ def poll_telegram_commands():
                             pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
                             pnl_pct = ((t['entry_price'] - price) if is_short else (price - t['entry_price'])) / t['entry_price'] * 100
                             if ibkr_qty > 0:
+                                _mark_exit_in_flight(sym)
                                 requests.post(f"{BRIDGE}/order",
                                               json={'symbol': sym, 'qty': qty,
                                                     'side': close_side, 'order_type': 'MARKET'},
@@ -5904,6 +5995,11 @@ def evening_summary():
     # direction and whether each book was open — the "what did we see vs take" pulse.
     funnel = ''
     try:
+        # Sep 22 2026: `get_connection` was never imported here. The NameError was
+        # swallowed by the `except Exception` below, so this line — the "what did we
+        # see vs what did we take" pulse added Jul 18 2026 — has silently never
+        # rendered in any evening summary. Verified: zero occurrences in the log.
+        from database import get_connection
         conn = get_connection()
         rows = conn.execute(
             """SELECT direction, COUNT(*) FROM scan_log
