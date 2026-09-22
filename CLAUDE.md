@@ -4570,6 +4570,27 @@ CAN answer, and analysis could not: (1) do delta-anchored spreads fill at all, (
 they really cost vs the mid we calculate on, (3) does the toll gate pass ITM legs live,
 (4) is the Edge Budget's verdict predictive. Judge those, not the total.
 
+**❌ CORRECTED Sep 22 — THE TRIAL NEVER STARTED. The options CIRCUIT BREAKER is tripped.**
+`check_circuit_breaker()` blocks new entries once cumulative realized options P&L is worse
+than `OPTIONS_CIRCUIT_BREAKER` ($5,000). Lifetime realized is **−$5,333.08**, so it returns
+False and `_check_equity_scan_triggers` bails on EVERY cycle, before it looks at a single
+candidate. Everything shipped Sep 20 — delta-anchored strikes, the Edge Budget, unfreezing
+`EQUITY_ECHO_FROZEN` — sits DOWNSTREAM of a gate that was already shut. The one opt_calc_log
+row (ARM, Sep 21) came from the **news Ghost-Ledger path**, which runs before the breaker
+check; it was never the echo.
+⭐ **And the earlier "the catalyst filter starves the funnel" diagnosis was WRONG.** Measured
+on Mon Sep 21's 25 A+ names, close→next-day: catalyst-blocked names averaged **+0.50%**,
+eligible names **+1.85%** — the filter is selecting correctly. There WAS opportunity
+(MRNA +5.56%, QBTS +5.37%, OUST +5.25%, all three **eligible**, none blocked); the breaker
+is why none of them was ever priced.
+**DECISION NEEDED (user's call, not to be taken unilaterally):** the breaker is a real risk
+control working as designed — the book HAS lost $5.3k. But that total is dominated by
+pre-rebuild damage (SYSTEM_RESET closes, the Jul USAR short-15 incident) rather than by the
+current logic. The precedent for scoping it to the rebuild exists —
+`BOOK_HEALTH_RESET_DATE = '2026-07-22'` does exactly that for Book Health. Options: (a) leave
+it tripped; (b) add an `OPTIONS_CB_SINCE` date so the breaker measures the CURRENT system.
+Do not simply raise the limit.
+
 **WATCH MON SEP 21:** first candidates after 10:00 (cutoff 14:30) — `logs/options_trader.log`
 for `[options] scan trigger`. Expect `Delta-Anchored` templates with breakevens near 0%
 rather than +8%, and **the first bear put spreads since July** once SHORT grading resumes.
