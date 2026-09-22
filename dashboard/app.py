@@ -910,6 +910,37 @@ def get_activity(sessions=5):
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
 
+            # Sep 22 2026: the feed showed the Day Trader book only, which is why a
+            # +$478 Wave Rider exit could land in the day total with no matching line
+            # anywhere on the page. Fourth panel with the same omission, after the
+            # Today card, the 15-day chart and the scorecard. `setup` carries the book
+            # name so every row says which engine did it.
+            for _book, _tbl in (('Wave Rider', 'wave_trades'),
+                                ('Contrarian', 'contrarian_trades'),
+                                ('Clockwork',  'overnight_trades')):
+                try:
+                    _cols = {r[1] for r in c.execute('PRAGMA table_info(' + _tbl + ')')}
+                    if not _cols:
+                        continue
+                    _mode = " AND mode='LIVE'" if 'mode' in _cols else ''
+                    _tm = 'entry_time' if 'entry_time' in _cols else 'NULL'
+                    _xtm = 'exit_time' if 'exit_time' in _cols else 'NULL'
+                    _xr = 'exit_reason' if 'exit_reason' in _cols else 'NULL'
+                    _sql = (
+                        "SELECT 'ENTRY' as ev, 'EQUITY' as vert, symbol, entry_date as dt, "
+                        + _tm + " as tm, entry_price as price, '" + _book + "' as setup, "
+                        "NULL as sector, 'LONG' as side, shares, NULL as pnl, NULL as reason "
+                        "FROM " + _tbl + " WHERE entry_date >= ?" + _mode +
+                        " UNION ALL "
+                        "SELECT 'EXIT', 'EQUITY', symbol, exit_date, " + _xtm + ", exit_price, '"
+                        + _book + "', NULL, 'LONG', shares, pnl, " + _xr + " "
+                        "FROM " + _tbl + " WHERE exit_date >= ? AND exit_date IS NOT NULL "
+                        "AND status='CLOSED'" + _mode
+                    )
+                    result.extend([dict(r) for r in c.execute(_sql, (cutoff, cutoff)).fetchall()])
+                except Exception:
+                    continue      # one engine table must not blank the feed
+
             # Options
             rows = c.execute("""
                 SELECT 'ENTRY' as ev, 'OPTIONS' as vert, symbol, entry_date as dt,
