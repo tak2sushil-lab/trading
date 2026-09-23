@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 22 2026 (pm2)
+Last updated: Sep 22 2026 (pm3)
 
 ---
 
@@ -4843,3 +4843,35 @@ fresh, and is anything frozen?"** Added:
 **BUG SWEEP:** pyflakes clean · 4 Python files parse · app.js syntax-checked in a real JS
 engine · **all renderers executed against the live payload** · all 10 dashboard data
 functions JSON-serialise · 3 test suites pass · dashboard restarted and serving.
+
+---
+
+## Sep 22 2026 (pm3) — service row covered 13 of 36 jobs, including none of the factory engines
+
+**① THE SERVICE PILLS LISTED 13 OF 36 LOADED JOBS — and the omissions were the ones that
+matter.** Missing: **`wave_rider`, `contrarian` and `clockwork`** — all three factory engines
+whose open positions the dashboard now displays. Any of them could have died and the page
+would have said nothing while continuing to show their positions as if live. Also missing:
+**`heartbeat`** (the watchdog itself — built Sep 3 precisely because a silent death cost a
+London session), **`scan_forward_label`** (the scoring job scheduled this morning),
+`market_context` (Field Report), `overnight_reference` (Clockwork's honest-price marks),
+`turbo`, and **`parity_check`** — which was sitting on a non-zero exit.
+Rebuilt to **22 services** grouped by what they do: brokers/bridges · the books that place
+orders · the data they depend on · instrumentation · watchdogs. Each row now carries its
+`kind` (daemon vs scheduled) and a note saying what a non-zero exit actually MEANS for that
+job, instead of a generic "failed".
+
+**② `parity_check` exit 1 is a FINDING, not a crash.** It exits non-zero when it detects a
+divergence — that is its designed signal. It shows amber with "found a divergence — by
+design, read logs/parity.log" rather than being mislabelled as a failure. (It is currently
+amber for real: Sep 21 flagged entry-window violations on AXTI/BNC and a trade with no graded
+scan_log signal behind it — worth reading.)
+
+**③ "6t" was unlabelled jargon.** Nothing on the page defined `t`. The ENGINES table now
+reads "6 trades" / "1 trade", muted so the P&L beside it stays the thing the eye lands on,
+and the TODAY / 7-DAY / WIN headers carry tooltips stating that they count **closed** trades
+only — open positions are not in those numbers.
+
+**SWEEP:** pyflakes clean · app.js syntax-checked in a real JS engine · every renderer
+executed against the live payload · all 10 data functions JSON-serialise · 3 test suites
+pass · dashboard restarted and serving.

@@ -539,3 +539,7 @@ html, body {
 #engines-table .positions-table { width: 100%; }
 #engines-table td, #engines-table th { white-space: nowrap; }
 .engine-analogy { color: var(--muted); font-size: 10px; font-weight: 400; margin-top: 2px; }
+
+/* Sep 22 2026: the engines table showed "6t" with nothing on the page defining t.
+   Now spelled out; muted so the P&L beside it stays the thing your eye lands on. */
+.trade-n { color: var(--text-muted, #8b949e); font-size: 11px; }

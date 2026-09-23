@@ -97,15 +97,18 @@ function renderEngines(rows) {
     return `<span class="${cls}" title="${tip}">${s}</span>`;
   };
   el.innerHTML = `<table class="positions-table"><thead><tr>
-      <th>engine</th><th>open</th><th>today</th><th>7-day</th><th>win</th>
+      <th>engine</th><th title="Positions this book is holding right now">open</th>
+      <th title="Trades this book CLOSED today, and the realised P&L from them. Open positions are not counted here.">today</th>
+      <th title="Trades closed in the last 7 days and their realised P&L">7-day</th>
+      <th title="Share of the last 7 days' closed trades that made money">win</th>
       <th title="exits the engine made itself vs forced by reconcile/manual">own exits</th>
       <th>last</th></tr></thead><tbody>` +
     rows.map(r => `<tr title="${r.desc || ''}">
       <td>${engBadge(r.engine)}${r.err ? ' <span class="neg" title="' + r.err + '">!</span>' : ''}
           <div class="engine-analogy">${r.analogy || ''}</div></td>
       <td>${r.open}</td>
-      <td>${r.today_n}t ${money(r.today_pnl)}</td>
-      <td>${r.wk_n}t ${money(r.wk_pnl)}</td>
+      <td>${tradeCount(r.today_n)} ${money(r.today_pnl)}</td>
+      <td>${tradeCount(r.wk_n)} ${money(r.wk_pnl)}</td>
       <td>${r.wk_win == null ? '—' : r.wk_win + '%'}</td>
       <td>${selfCell(r.self_exits)}</td>
       <td class="muted-text">${r.last || '—'}</td></tr>`).join('') +
@@ -525,6 +528,13 @@ function renderPnlChart(history) {
 // positions table, the ENGINES scoreboard and the Fleet-capital chips. The colour
 // always travels WITH the name — it is a second channel, never the only one, so the
 // table stays readable for red/green colour-vision deficiency and in print.
+// "6t" was unlabelled jargon — nothing on the page said t meant trades. Spelling it
+// out costs a few pixels and removes a question.
+function tradeCount(n) {
+  const v = n ?? 0;
+  return `<span class="trade-n">${v} ${v === 1 ? 'trade' : 'trades'}</span>`;
+}
+
 function engBadge(name) {
   const n = name || 'Day Trader';
   return `<span class="eng-name" data-eng="${n}"><span class="eng-bar"></span>${n}</span>`;

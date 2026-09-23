@@ -23,24 +23,47 @@ PROD_BRIDGE_URL = None   # set to 'http://localhost:8001' when prod bridge is li
 PORT            = 8080
 ET              = ZoneInfo('America/New_York')
 
+# (name shown, launchd label, kind, what a non-zero last-exit means)
+#   kind 'daemon'    — must hold a PID; no PID is a real alarm
+#   kind 'scheduled' — idle between runs is NORMAL; judge it by its last exit code
+#
+# Sep 22 2026: this listed 13 of 36 loaded jobs and was missing, among others, all
+# THREE factory engines whose positions the dashboard now shows. Wave Rider,
+# Contrarian or Clockwork could have died and nothing on the page would have said
+# so — while their open positions carried on being displayed as if live. The
+# watchdog itself (heartbeat) and the scoring job were invisible too.
 SERVICES = [
-    ('bridge',       'com.sushil.trading.bridge'),
-    ('autotrader',   'com.sushil.trading.autotrader'),
-    ('watchman',     'com.sushil.trading.watchman'),
-    ('news_engine',  'com.sushil.trading.news_engine'),
-    ('options',      'com.sushil.trading.options_trader'),
-    ('collect_bars', 'com.sushil.trading.collect_bars'),
-    ('graphify',     'com.sushil.trading.graphify_watch'),
-    # Aug 9 2026: futures services were missing entirely from this row — a
-    # stopped futures_personal or futures_trader (TC) would have shown zero
-    # indication here, despite this session's entire focus being TC readiness.
-    ('gateway',      'com.sushil.trading.gateway'),          # IBKR TWS/Gateway (equity+options bridge depends on this)
-    ('futures_ibkr', 'com.sushil.trading.futures_personal'), # futures_trader.py — IBKR NY + London
-    ('tc_gateway',   'com.sushil.trading.tc_gateway'),        # TC's IB Gateway process (DUQ640500 stand-in, for now)
-    ('tc_bridge',    'com.sushil.trading.tc_bridge'),         # TC's port-8002 bridge (bridge.py/DUQ640500 until re-hooked to bridge_projectx.py)
-    ('futures_tc',   'com.sushil.trading.futures_trader'),   # tc_trader.py — TC NY + London
-    ('futures_bars', 'com.sushil.trading.futures_collect_bars'),
+    # ── brokers and bridges: everything else is dead without these ──
+    ('gateway',      'com.sushil.trading.gateway',        'daemon',    ''),
+    ('bridge',       'com.sushil.trading.bridge',         'daemon',    ''),
+    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    ''),
+    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    ''),
+    # ── the books that place orders ──
+    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    ''),
+    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored'),
+    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored'),
+    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored'),
+    ('options',      'com.sushil.trading.options_trader', 'daemon',    ''),
+    ('watchman',     'com.sushil.trading.watchman',       'daemon',    ''),
+    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  ''),
+    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    ''),
+    # ── data the books depend on ──
+    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed'),
+    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed'),
+    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    ''),
+    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed'),
+    # ── instrumentation: silent failure here costs evidence, not money ──
+    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written'),
+    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written'),
+    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored'),
+    # ── watchdogs. parity_check exits 1 when it FINDS a divergence — that is its
+    #    designed signal, not a crash, so amber here means "read the report". ──
+    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored'),
+    ('trade_cop',    'com.sushil.trading.parity_check',   'scheduled',
+     'found a divergence — by design, read logs/parity.log'),
+    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    ''),
 ]
+
 
 # 2026 key macro dates — update annually
 MACRO_EVENTS = [
@@ -158,7 +181,7 @@ def get_bridge_info(url=None):
 # Which services are long-running daemons (must hold a PID) and which are scheduled
 # jobs that are SUPPOSED to be idle between runs. Judging them the same way is what
 # made this row meaningless — see get_services().
-SCHEDULED_SERVICES = {'collect_bars', 'futures_bars', 'graphify'}
+# (kind now lives in the SERVICES table itself)
 
 
 def get_services():
@@ -187,14 +210,14 @@ def get_services():
             parts = line.split('\t')
             if len(parts) >= 3:
                 table[parts[2].strip()] = (parts[0].strip(), parts[1].strip())
-        for name, label in SERVICES:
+        for name, label, kind, note in SERVICES:
             if label not in table:
                 states[name] = {'state': 'missing', 'ok': False,
                                 'detail': 'not loaded in launchd'}
                 continue
             pid, rc = table[label]
             running = pid not in ('-', '')
-            scheduled = name in SCHEDULED_SERVICES
+            scheduled = (kind == 'scheduled')
             if running:
                 states[name] = {'state': 'up', 'ok': True, 'pid': pid,
                                 'detail': f'running (pid {pid})'}
@@ -202,14 +225,14 @@ def get_services():
                 bad = rc not in ('0', '')
                 states[name] = {
                     'state': 'failing' if bad else 'idle', 'ok': not bad, 'rc': rc,
-                    'detail': (f'last run exited {rc}' if bad
+                    'detail': ((note or f'last run exited {rc}') if bad
                                else 'idle between scheduled runs (normal)')}
             else:
                 states[name] = {'state': 'down', 'ok': False, 'rc': rc,
                                 'detail': f'NOT RUNNING — last exit {rc}'}
     except Exception as e:
-        for name, _ in SERVICES:
-            states[name] = {'state': 'unknown', 'ok': False, 'detail': str(e)[:60]}
+        for row in SERVICES:
+            states[row[0]] = {'state': 'unknown', 'ok': False, 'detail': str(e)[:60]}
     return states
 
 
