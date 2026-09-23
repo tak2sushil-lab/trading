@@ -4354,6 +4354,92 @@ def cmd_close(sym: str, chat_id: str):
     }
 
 
+def _control_close_worker(trades: list, request_id: int, chat_id: str):
+    """Run the real close for each trade, then report the true outcome to the queue.
+
+    Runs in a thread because _execute_close_bg does blocking bridge work (quotes, order
+    polls, sleeps) and the main loop must keep its 10s cadence — the same reason the
+    Telegram YES path threads it.
+
+    Trades are closed ONE AT A TIME on purpose. Two concurrent multi-leg closes against
+    the same account is exactly the kind of overlapping order traffic that produced the
+    Jul 20 2026 USAR storm.
+
+    _execute_close_bg reports to Telegram but returns nothing, so success is read back
+    from the DB — the position is closed only if the row actually says so.
+    """
+    import sqlite3 as _sq3
+    from database import DB_PATH as _dbpath, complete_control_request
+    done, failed = [], []
+    for t in trades:
+        try:
+            _execute_close_bg(t, chat_id)
+        except Exception as e:
+            failed.append(f"{t['symbol']}: {e}")
+            continue
+        try:
+            conn = _sq3.connect(_dbpath)
+            row = conn.execute('SELECT status, return_pct FROM options_trades WHERE id=?',
+                               (t['id'],)).fetchone()
+            conn.close()
+        except Exception as e:
+            failed.append(f"{t['symbol']}: closed but could not read back ({e})")
+            continue
+        if row and row[0] == 'CLOSED':
+            done.append(f"{t['symbol']} {t['strategy']} "
+                        f"({(row[1] or 0):+.1f}%)")
+        else:
+            failed.append(f"{t['symbol']}: still {row[0] if row else 'unknown'} — check IBKR")
+    parts = []
+    if done:
+        parts.append('closed ' + ', '.join(done))
+    if failed:
+        parts.append('FAILED ' + '; '.join(failed))
+    try:
+        complete_control_request(request_id, 'FAILED' if failed else 'DONE',
+                                 ' | '.join(parts) or 'nothing to close')
+    except Exception as e:
+        print(f"[options_trader] could not record control outcome: {e}")
+
+
+def _drain_control_queue():
+    """Execute dashboard close requests for the options book.
+
+    The dashboard never places an order (see the note above control_queue in
+    database.py). It records an intent; this drains it on the existing 10s loop and
+    closes through _execute_close_bg — the path that delegates debit spreads to
+    watchman's two-leg closer (IBKR blocks combo closes on a profitable spread with
+    Error 201) and prices credit/scalp/LEAP exits marketably.
+    """
+    try:
+        from database import claim_control_requests, complete_control_request
+        reqs = claim_control_requests('options')
+    except Exception as e:
+        print(f"[options_trader] control claim failed: {e}")
+        return
+    for r in reqs:
+        try:
+            trades = get_open_options_trades()
+            if r['action'] == 'CLOSE_ONE':
+                trades = [t for t in trades
+                          if t['symbol'] == (r['symbol'] or '')
+                          and (r['trade_id'] is None or t['id'] == r['trade_id'])]
+            if not trades:
+                complete_control_request(r['id'], 'DONE', 'no matching open position')
+                continue
+            print(f"[options_trader] control #{r['id']}: closing "
+                  f"{', '.join(t['symbol'] for t in trades)}")
+            threading.Thread(target=_control_close_worker,
+                             args=(trades, r['id'], str(OPT_TG_CHAT_ID)),
+                             daemon=True).start()
+        except Exception as e:
+            print(f"[options_trader] control request {r['id']} failed: {e}")
+            try:
+                complete_control_request(r['id'], 'FAILED', str(e))
+            except Exception:
+                pass
+
+
 def cmd_pause(chat_id: str):
     global _paused
     _paused = True
@@ -5136,6 +5222,11 @@ def main():
                     scalp_scan_loop()
                 except Exception as _sce:
                     print(f"[options_trader] scalp scan error: {_sce}")
+
+            # Dashboard close requests ride this same 10s loop. Drained before the
+            # Telegram fetch because that fetch backs off to 60s during an outage, and
+            # a close button must not inherit that delay.
+            _drain_control_queue()
 
             updates = poll_telegram()
             for update in updates:

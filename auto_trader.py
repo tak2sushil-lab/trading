@@ -1032,6 +1032,104 @@ def _exit_in_flight_active(sym: str) -> bool:
         return True
     return (time.time() - ts) < EXIT_IN_FLIGHT_S
 
+def _close_equity_trade(t, reason):
+    """Close ONE open `trades` row: DB first, then the broker, then in-memory state.
+
+    Extracted Sep 22 2026 so the Telegram SELL/CLOSEALL commands and the dashboard's
+    close button run the SAME code. They used to be two inline copies of these steps;
+    a third copy for the dashboard is exactly how the IBKR/TC futures pair drifted into
+    three silent divergences (see the Sep 2 2026 AST diff), so there is now one.
+
+    Order of operations is deliberate and unchanged from the Telegram path:
+      1. DB row closed FIRST — if the broker call then fails, reconcile_with_ibkr()
+         sees a real position with no open row and corrects it.
+      2. _mark_exit_in_flight BEFORE the POST, never after — a POST that times out may
+         still have placed the order, and that is precisely the case where reconcile
+         must not race us. This is the META fix (Sep 22 2026).
+      3. Size to min(our shares, what IBKR actually holds): the account is shared with
+         Wave Rider / Contrarian / Clockwork, so the broker figure can exceed ours and
+         selling it would eat another book's position.
+
+    Returns (ok, message).
+    """
+    sym   = t['symbol']
+    price = get_live_price(sym)
+    if not price:
+        return False, f"{sym}: could not get live price — nothing closed"
+
+    is_short   = t.get('side', 'LONG') == 'SHORT'
+    close_side = 'BUY' if is_short else 'SELL'
+    ibkr_pos   = get_ibkr_positions()
+    ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
+    qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty > 0 else t['shares']
+    try:
+        pnl     = log_trade_exit(t['id'], price, reason)
+        pnl_pct = ((t['entry_price'] - price) if is_short
+                   else (price - t['entry_price'])) / t['entry_price'] * 100
+        if ibkr_qty > 0:
+            _mark_exit_in_flight(sym)
+            requests.post(f"{BRIDGE}/order",
+                          json={'symbol': sym, 'qty': qty,
+                                'side': close_side, 'order_type': 'MARKET'},
+                          timeout=10)
+        else:
+            log(f"{reason}: {sym} has no IBKR position — DB-only close")
+        for d in (price_history, session_high, session_low):
+            d.pop(t['id'], None)
+        open_positions.pop(sym, None)
+        return True, (f"{sym} {qty}sh @ ${price} | P&L ${pnl:+.2f} ({pnl_pct:+.1f}%)")
+    except Exception as ex:
+        return False, f"{sym}: error — {ex}"
+
+
+def _drain_control_queue():
+    """Execute close requests the dashboard queued for THIS book.
+
+    The dashboard never places an order (see the note above control_queue in
+    database.py). It records an intent; this runs on the existing 15s Telegram poll
+    and closes through _close_equity_trade, the same path SELL uses.
+    """
+    try:
+        from database import claim_control_requests, complete_control_request
+        reqs = claim_control_requests('equity')
+    except Exception as e:
+        log(f"[control] claim failed: {e}")
+        return
+    for r in reqs:
+        try:
+            trades = get_open_trades()
+            if r['action'] == 'CLOSE_ONE':
+                match = [t for t in trades
+                         if t['symbol'] == (r['symbol'] or '')
+                         and (r['trade_id'] is None or t['id'] == r['trade_id'])]
+                if not match:
+                    complete_control_request(r['id'], 'FAILED',
+                                             f"{r['symbol']}: no open position")
+                    continue
+                ok, msg = _close_equity_trade(match[0], 'Manual close via dashboard')
+                complete_control_request(r['id'], 'DONE' if ok else 'FAILED', msg)
+                send_telegram(f"🖥 Dashboard close — {msg}")
+            elif r['action'] == 'CLOSE_ALL':
+                if not trades:
+                    complete_control_request(r['id'], 'DONE', 'no open positions')
+                    continue
+                lines, closed = [], 0
+                for t in trades:
+                    ok, msg = _close_equity_trade(t, 'Manual CLOSEALL via dashboard')
+                    lines.append(('  ' if ok else '  ! ') + msg)
+                    closed += 1 if ok else 0
+                complete_control_request(
+                    r['id'], 'DONE' if closed else 'FAILED',
+                    f"closed {closed}/{len(trades)}\n" + '\n'.join(lines))
+                send_telegram("🖥 Dashboard CLOSEALL (Day Trader)\n" + '\n'.join(lines))
+        except Exception as e:
+            log(f"[control] request {r['id']} failed: {e}")
+            try:
+                complete_control_request(r['id'], 'FAILED', str(e))
+            except Exception:
+                pass
+
+
 def _my_unrealized(portfolio):
     """Unrealized P&L of THIS book's positions only.
 
@@ -3412,6 +3510,10 @@ def thesis_check_weekly_review():
 def poll_telegram_commands():
     global tg_update_id, daily_bull_count, daily_sympathy_count
     global _longs_paused, _watch_mode, _watch_last_sent
+    # Dashboard close requests ride this same 15s job, but are drained BEFORE the
+    # Telegram fetch on purpose: that fetch backs off to 60s during a Telegram
+    # outage, and a close button must not inherit that delay.
+    _drain_control_queue()
     try:
         r = requests.get(f"{TG_API}/getUpdates",
                          params={'offset': tg_update_id, 'timeout': 0},
@@ -3646,76 +3748,19 @@ def poll_telegram_commands():
                 if not match:
                     send_telegram(f"SELL {sym}: no open position found.")
                 else:
-                    t     = match[0]
-                    price = get_live_price(sym)
-                    if not price:
-                        send_telegram(f"SELL {sym}: could not get live price.")
-                    else:
-                        is_short   = t.get('side', 'LONG') == 'SHORT'
-                        close_side = 'BUY' if is_short else 'SELL'
-                        ibkr_pos   = get_ibkr_positions()
-                        ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
-                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty > 0 else t['shares']
-                        try:
-                            # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
-                            pnl     = log_trade_exit(t['id'], price, 'Manual close via Telegram SELL')
-                            pnl_pct = ((t['entry_price'] - price) if is_short else (price - t['entry_price'])) / t['entry_price'] * 100
-                            if ibkr_qty > 0:
-                                _mark_exit_in_flight(sym)
-                                requests.post(f"{BRIDGE}/order",
-                                              json={'symbol': sym, 'qty': qty,
-                                                    'side': close_side, 'order_type': 'MARKET'},
-                                              timeout=10)
-                            else:
-                                log(f"SELL {sym}: no IBKR position — DB-only close")
-                            for d in (price_history, session_high, session_low):
-                                d.pop(t['id'], None)
-                            open_positions.pop(sym, None)
-                            send_telegram(
-                                f"SOLD {sym} | {qty}sh @ ${price}\n"
-                                f"Entry: ${t['entry_price']} | P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)"
-                            )
-                        except Exception as ex:
-                            send_telegram(f"SELL {sym}: error — {ex}")
+                    # Shared with the dashboard close button — see _close_equity_trade.
+                    ok, msg = _close_equity_trade(match[0], 'Manual close via Telegram SELL')
+                    send_telegram(("SOLD " if ok else "SELL ") + msg)
 
             elif text == 'CLOSEALL':
                 trades = get_open_trades()
                 if not trades:
                     send_telegram("No open positions to close.")
                 else:
-                    ibkr_pos = get_ibkr_positions()
-                    lines    = ["CLOSEALL"]
-                    total_pnl = 0.0
+                    lines = ["CLOSEALL"]
                     for t in trades:
-                        sym   = t['symbol']
-                        price = get_live_price(sym)
-                        if not price:
-                            lines.append(f"  {sym}: skip (no price)")
-                            continue
-                        is_short   = t.get('side', 'LONG') == 'SHORT'
-                        close_side = 'BUY' if is_short else 'SELL'
-                        ibkr_qty   = abs(ibkr_pos.get(sym, {}).get('qty', 0) or 0)
-                        qty        = min(t['shares'], int(ibkr_qty)) if ibkr_qty > 0 else t['shares']
-                        try:
-                            # DB first — if IBKR call fails, reconcile_with_ibkr() corrects state
-                            pnl     = log_trade_exit(t['id'], price, 'Manual CLOSEALL via Telegram')
-                            pnl_pct = ((t['entry_price'] - price) if is_short else (price - t['entry_price'])) / t['entry_price'] * 100
-                            if ibkr_qty > 0:
-                                _mark_exit_in_flight(sym)
-                                requests.post(f"{BRIDGE}/order",
-                                              json={'symbol': sym, 'qty': qty,
-                                                    'side': close_side, 'order_type': 'MARKET'},
-                                              timeout=10)
-                            else:
-                                log(f"CLOSEALL {sym}: no IBKR position — DB-only close")
-                            for d in (price_history, session_high, session_low):
-                                d.pop(t['id'], None)
-                            open_positions.pop(sym, None)
-                            total_pnl += pnl or 0
-                            lines.append(f"  {sym}: ${price} | ${pnl:+.2f} ({pnl_pct:+.1f}%)")
-                        except Exception as ex:
-                            lines.append(f"  {sym}: ERROR {ex}")
-                    lines.append(f"Total P&L: ${total_pnl:+.2f}")
+                        ok, msg = _close_equity_trade(t, 'Manual CLOSEALL via Telegram')
+                        lines.append(('  ' if ok else '  ! ') + msg)
                     send_telegram('\n'.join(lines))
 
             elif text == 'REGIME':

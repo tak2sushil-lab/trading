@@ -42,10 +42,28 @@ var sandbox = "var document={getElementById:function(){return EL;},"
   + "var window={addEventListener:function(){}};"
   + "var Chart=function(){this.data={labels:[],datasets:[{},{},{},{}]};"
   + "this.update=function(){};};"
-  + src + "; return {renderAll:renderAll};";
+  + src + "; return {renderAll:renderAll,wireCloseControls:wireCloseControls,"
+  + "closeBtn:closeBtn,renderEquityRow:renderEquityRow};";
 try {
-  new Function('EL', sandbox)(EL).renderAll(d);
-  'OK';
+  var api = new Function('EL', sandbox)(EL);
+  api.renderAll(d);
+  // The close buttons must actually be produced, and wiring them must not throw.
+  // renderAll exercises closeBtn via the three tables; this asserts the output rather
+  // than merely that nothing crashed, because a silently-empty button is the failure
+  // mode that matters here.
+  api.wireCloseControls();
+  var pos = (d.equity_positions || []).concat(d.options_positions || [],
+                                              d.futures_positions || []);
+  var bad = [];
+  for (var i = 0; i < pos.length; i++) {
+    var html = api.closeBtn(pos[i]);
+    if (html.indexOf('<button') !== 0) bad.push(pos[i].symbol + ': no button');
+    if ((pos[i].row_status || 'OPEN') === 'OPEN' && html.indexOf('data-close=') < 0)
+      bad.push(pos[i].symbol + ': OPEN row has no close payload');
+    if ((pos[i].row_status || 'OPEN') !== 'OPEN' && html.indexOf('disabled') < 0)
+      bad.push(pos[i].symbol + ': non-OPEN row is still clickable');
+  }
+  bad.length ? ('FAIL: ' + bad.join('; ')) : ('OK ' + pos.length);
 } catch (e) {
   'FAIL: ' + e.name + ': ' + e.message;
 }
@@ -81,8 +99,10 @@ def main():
             except OSError: pass
 
     res = (out.stdout or out.stderr).strip()
-    if res == 'OK':
+    if res.startswith('OK'):
+        n = res.split()[1] if len(res.split()) > 1 else '?'
         print("  PASS  every renderer executed against the live payload")
+        print(f"  PASS  close buttons rendered + wired for all {n} open position(s)")
         return 0
     print(f"  FAIL  {res}")
     return 1

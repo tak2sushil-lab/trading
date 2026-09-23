@@ -293,14 +293,79 @@ def monitor():
         record_exit(t["id"], price, reason)
 
 
+def _manual_close(t):
+    """Close ONE position on an explicit dashboard instruction. Returns (ok, message).
+
+    SHADOW marks out at the quote and places nothing. LIVE goes through the engine's own
+    verified order path and — this is the load-bearing part — only books the exit if the
+    SELL actually confirmed a fill. An unconfirmed sell leaves the row OPEN so the position
+    is never recorded as closed on a price we did not get (the Jul 20 2026 USAR lesson, and
+    the Sep 10-11 2026 oversell that followed from getting this exact check backwards).
+    """
+    sym = t["symbol"]
+    px = bridge_quote(sym)
+    if px is None and "live_signal" in globals():
+        sig = live_signal(sym)
+        px = sig["price"] if sig else None
+    if px is None:
+        return False, sym + ": no price available — nothing closed"
+    px = float(px)
+    if MODE == "LIVE":
+        ok, fill, _ = place_paper_order(sym, t["shares"], "SELL")
+        if not ok:
+            return False, (sym + ": SELL not confirmed filled — position left OPEN "
+                           "rather than booked at a price we may not have got")
+        if fill:
+            px = float(fill)
+    record_exit(t["id"], px, "Manual close via dashboard")
+    return True, f"{sym} x{t['shares']} @ ${px:.2f}"
+
+
+def _drain_control_queue():
+    from factory.live import _control
+    _control.drain("contrarian", get_open, _manual_close, log, MODE)
+
+
+LOCK_TTL = 900   # seconds; matches run_once()'s own stale-lock window
+
+
+def drain_only():
+    """Serve dashboard close requests and NOTHING else.
+
+    Separate entry point on purpose. run_once() also scans and can ENTER a position, so
+    spawning it to serve a close request could open one — pressing "close" must never open
+    anything. This takes the engine's own lock first, because a concurrent scheduled pass
+    could otherwise read the same OPEN row into monitor() and submit a second exit for a
+    position we are already closing.
+    """
+    init_db()
+    waited = 0.0
+    while os.path.exists(LOCK) and (time.time() - os.path.getmtime(LOCK)) < LOCK_TTL:
+        if waited >= 20:
+            log("a scheduled pass is holding the lock — close request left pending, "
+                "it will be served by that pass or the next one")
+            return
+        time.sleep(1.0); waited += 1.0
+    open(LOCK, "w").close()
+    try:
+        _drain_control_queue()
+    finally:
+        try:
+            os.remove(LOCK)
+        except OSError:
+            pass
+
+
 def run_once():
     init_db()
+    # Answered before the market-hours guard below — see factory/live/_control.py.
+    _drain_control_queue()
     n = now_et()
     if not is_market_day(n.date()):
         log("market closed — no action"); return
     if n.time() < dt.time(9, 30) or n.time() > dt.time(16, 0):
         log("outside market hours — no action"); return
-    if os.path.exists(LOCK) and (time.time() - os.path.getmtime(LOCK)) < 900:
+    if os.path.exists(LOCK) and (time.time() - os.path.getmtime(LOCK)) < LOCK_TTL:
         log("previous pass still active — skipping"); return
     open(LOCK, "w").close()
     try:
@@ -335,5 +400,7 @@ def dryscan():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--dryscan":
         dryscan()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--drain-only":
+        drain_only()
     else:
         run_once()

@@ -3108,6 +3108,10 @@ def eod_snapshot():
 def poll_telegram_commands():
     """Poll for Telegram commands — PAUSE, RESUME, STATUS, CLOSE."""
     global _trading_paused, _tg_offset, _daily_macro_bias, _overnight_skip_day
+    # Dashboard close requests ride this same 10s job. Drained FIRST and outside the
+    # Telegram guard below: if the Telegram token is missing or the API is down, a close
+    # button must still work.
+    _drain_control_queue()
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -3200,6 +3204,62 @@ def poll_telegram_commands():
                 send_telegram(_portfolio_all())
     except Exception as e:
         log(f"[TG poll error] {e}")
+
+
+def _drain_control_queue():
+    """Execute dashboard close requests for THIS account's NY futures book.
+
+    The dashboard never places an order (see the note above control_queue in
+    database.py). It records an intent; this runs on the existing 10s Telegram poll and
+    closes through _force_close_all() — the only path that sizes the closing order off
+    the REAL broker position rather than the sum of DB rows (Jul 23 2026 incident).
+
+    Requests are claimed with this trader's ACCOUNT_MODE, so the IBKR and TC processes —
+    which poll this same table 10s apart — can never execute each other's request.
+    """
+    try:
+        from database import claim_control_requests, complete_control_request
+        reqs = claim_control_requests('futures_ny', ACCOUNT_MODE)
+    except Exception as e:
+        log(f"[control] claim failed: {e}")
+        return
+    for r in reqs:
+        try:
+            trades = get_open_futures_trades()
+            if not trades:
+                complete_control_request(r['id'], 'DONE',
+                                         f'{ACCOUNT_MODE} NY: no open position')
+                continue
+            if r['action'] == 'CLOSE_ONE':
+                # This book runs MAX_OPEN_TRADES=1, so "close this one" and "flatten" are
+                # the same action — and _force_close_all is the only close that verifies
+                # against the broker. If there is somehow more than one row, refuse rather
+                # than improvise a partial close: per-row sizing is exactly what over-bought
+                # and opened a phantom position on Jul 23 2026.
+                if len(trades) > 1:
+                    complete_control_request(
+                        r['id'], 'FAILED',
+                        f'{len(trades)} open rows — use Close all so the order is sized '
+                        f'off the real broker position')
+                    continue
+                if r['trade_id'] is not None and trades[0]['id'] != r['trade_id']:
+                    complete_control_request(
+                        r['id'], 'FAILED',
+                        f"trade #{r['trade_id']} is not open on {ACCOUNT_MODE}")
+                    continue
+            _force_close_all()
+            still = get_open_futures_trades()
+            ok = not still
+            complete_control_request(
+                r['id'], 'DONE' if ok else 'FAILED',
+                f'{ACCOUNT_MODE} NY flattened' if ok
+                else f'{len(still)} row(s) still open — check the broker')
+        except Exception as e:
+            log(f"[control] request {r['id']} failed: {e}")
+            try:
+                complete_control_request(r['id'], 'FAILED', str(e))
+            except Exception:
+                pass
 
 
 def _force_close_all():

@@ -9,6 +9,7 @@ let calView = 'earnings';
 // ── Bootstrap ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadData();
+  wireCloseControls();
   setInterval(loadData, 30000);
 });
 
@@ -58,7 +59,177 @@ function filterActivity(vert) {
 }
 
 // ── Master render ──────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CLOSE CONTROLS
+// ══════════════════════════════════════════════════════════════════════════════
+// Nothing here places an order. Each button POSTs an intent to /api/close; the process
+// that OWNS that book picks it up and closes through its own tested exit path. We then
+// poll for the real outcome, because "the button was pressed" is not the same thing as
+// "the position closed" — and reporting the first as the second is how you end up
+// believing a book is flat when it is not.
+let CSRF = null;
+let _pendingClose = null;
+
+function closeBtn(p) {
+  // A row whose exit order is already working must not offer another one. Clockwork's
+  // PENDING_EXIT rows have an MOO in the market; sending a second sell is precisely the
+  // Sep 10-11 2026 oversell.
+  const st = p.row_status || 'OPEN';
+  if (st !== 'OPEN') {
+    return `<button class="sell-btn" disabled title="An exit order is already working on this position (${st}) — sending another would oversell it.">${st === 'PENDING_EXIT' ? 'exiting' : st.toLowerCase()}</button>`;
+  }
+  const label = (p.side === 'SHORT') ? 'Cover' : 'Sell';
+  const spec = encodeURIComponent(JSON.stringify(p));
+  return `<button class="sell-btn" data-close="${spec}" title="Ask the owning book to close this position now">${label}</button>`;
+}
+
+function openCloseModal(opts) {
+  _pendingClose = opts;
+  document.getElementById('close-modal-title').textContent = opts.title;
+  document.getElementById('close-modal-body').innerHTML = opts.body;
+  const pw = document.getElementById('close-modal-pwwrap');
+  pw.hidden = !opts.needPassword;
+  document.getElementById('close-modal-pw').value = '';
+  const err = document.getElementById('close-modal-err');
+  err.hidden = true; err.textContent = '';
+  const go = document.getElementById('close-modal-go');
+  go.textContent = opts.cta || 'Close position';
+  go.disabled = false;
+  document.getElementById('close-modal').hidden = false;
+}
+
+function hideCloseModal() {
+  document.getElementById('close-modal').hidden = true;
+  _pendingClose = null;
+}
+
+async function submitClose() {
+  if (!_pendingClose) return;
+  const go  = document.getElementById('close-modal-go');
+  const err = document.getElementById('close-modal-err');
+  const payload = Object.assign({ csrf: CSRF }, _pendingClose.payload);
+  if (_pendingClose.needPassword) {
+    payload.password = document.getElementById('close-modal-pw').value;
+    if (!payload.password) {
+      err.hidden = false; err.textContent = 'Enter the dashboard password to confirm.';
+      return;
+    }
+  }
+  go.disabled = true; go.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/close', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      err.hidden = false; err.textContent = d.error || 'request refused';
+      go.disabled = false; go.textContent = _pendingClose.cta || 'Close position';
+      return;
+    }
+    hideCloseModal();
+    toastClose(d.message, 'pending');
+    pollCloseResult(d.request_id, d.owner);
+  } catch (e) {
+    err.hidden = false; err.textContent = String(e);
+    go.disabled = false;
+  }
+}
+
+async function pollCloseResult(id, owner) {
+  // Poll until the owner reports back, or until the request's own TTL has passed.
+  // A request that expires unexecuted is reported as such rather than silently forgotten.
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const d = await (await fetch('/api/close/status?ids=' + id)).json();
+      const req = (d.requests || [])[0];
+      if (!req) continue;
+      if (req.status === 'DONE') {
+        toastClose(`${owner}: ${req.result || 'closed'}`, 'done'); loadData(); return;
+      }
+      if (req.status === 'FAILED') {
+        toastClose(`${owner} could not close: ${req.result}`, 'fail'); loadData(); return;
+      }
+      if (req.status === 'EXPIRED') {
+        toastClose(`${owner} never picked it up — ${req.result}. Nothing was sent to the broker.`, 'fail');
+        return;
+      }
+    } catch (e) { /* keep polling */ }
+  }
+  toastClose(`${owner}: no outcome reported yet — check the service log before assuming it closed.`, 'fail');
+}
+
+function toastClose(msg, kind) {
+  let box = document.getElementById('close-toasts');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'close-toasts'; box.className = 'close-toasts';
+    document.body.appendChild(box);
+  }
+  const t = document.createElement('div');
+  t.className = 'close-toast ' + kind;
+  t.textContent = msg;
+  box.appendChild(t);
+  setTimeout(() => t.remove(), kind === 'pending' ? 8000 : 20000);
+}
+
+function wireCloseControls() {
+  // Row buttons are delegated, so they survive every table re-render.
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-close]');
+    if (!b) return;
+    const p = JSON.parse(decodeURIComponent(b.dataset.close));
+    const what = p.kind === 'options'
+      ? `${p.symbol} ${p.strategy || ''} · ${p.contracts} contract(s)`
+      : (p.kind === 'futures'
+         ? `${p.account_mode} ${p.session} · ${p.side} ${p.qty} ${p.symbol}`
+         : `${p.symbol} · ${p.shares} shares`);
+    openCloseModal({
+      title: `Close ${p.symbol}?`,
+      body: `<strong>${what}</strong><br><span class="muted-text">${p.book || p.owner_label || ''}</span>`,
+      needPassword: false,
+      cta: (p.side === 'SHORT') ? 'Cover now' : 'Close now',
+      payload: {
+        action: 'CLOSE_ONE', target: p.target, symbol: p.symbol,
+        trade_id: p.id, book: p.book, account_mode: p.account_mode || null
+      }
+    });
+  });
+
+  const bulk = [
+    ['closeall-equity', 'equity', null, 'Close the whole Day Trader book?',
+     'Only the <strong>Day Trader</strong> book. Wave Rider, Contrarian and Clockwork are separate books and are <strong>not</strong> touched — close those from their own rows.'],
+    ['closeall-options', 'options', null, 'Close every options position?',
+     'Every open options position, closed through options_trader\'s own two-leg path.'],
+    ['closeall-fut-ibkr', 'futures_ny', 'IBKR', 'Flatten NY futures on IBKR?',
+     'The <strong>NY</strong> book on <strong>IBKR</strong> only. London is a separate book and is <strong>not</strong> included.'],
+    ['closeall-fut-tc', 'futures_ny', 'TC', 'Flatten NY futures on TC?',
+     'The <strong>NY</strong> book on <strong>TC</strong> only. London is a separate book and is <strong>not</strong> included.'],
+  ];
+  bulk.forEach(([id, target, acct, title, body]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', () => openCloseModal({
+      title, body, needPassword: true, cta: 'Yes — close them',
+      payload: { action: 'CLOSE_ALL', target, account_mode: acct }
+    }));
+  });
+
+  document.getElementById('close-modal-cancel')?.addEventListener('click', hideCloseModal);
+  document.getElementById('close-modal-go')?.addEventListener('click', submitClose);
+  document.getElementById('close-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'close-modal') hideCloseModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideCloseModal();
+    if (e.key === 'Enter' && _pendingClose) submitClose();
+  });
+}
+
 function renderAll(d) {
+  CSRF = d.csrf || CSRF;
   document.getElementById('last-refresh').textContent = d.ts || '—';
   renderModeBadge(d.mode);
   renderServices(d.services);
@@ -577,6 +748,7 @@ function renderEquityTable(positions) {
       <th>Book</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Now</th>
       <th>Unreal P&amp;L</th><th>%</th><th>Stop</th>
       <th title="when this book intends to exit">Plan</th><th>Since</th><th>Status</th>
+      <th title="Asks the book that owns this position to close it now, through its own exit path.">Close</th>
     </tr></thead>
     <tbody>${positions.map(renderEquityRow).join('')}</tbody>
   </table>`;
@@ -604,6 +776,7 @@ function renderEquityRow(p) {
     <td><small class="muted-text">${p.exit_plan || '—'}</small></td>
     <td><small>${since}${at}</small></td>
     <td><span class="status-${(p.status||'ok').toLowerCase()}">${p.status||'OK'}</span></td>
+    <td>${closeBtn(p)}</td>
   </tr>`;
 }
 
@@ -656,6 +829,7 @@ function renderOptionsTable(positions, health) {
       <th>Symbol</th><th>Strategy</th><th>Expiry / DTE</th><th>Strikes</th>
       <th>Paid</th><th>Now</th><th>Unreal P&amp;L</th><th>%</th>
       <th>Δ</th><th>Θ/day</th><th>Earnings</th><th>Grade</th><th>Status</th>
+      <th title="Asks options_trader to close this position through its own OPT CLOSE path.">Close</th>
     </tr></thead>
     <tbody>${positions.map(renderOptionsRow).join('')}</tbody>
   </table>
@@ -693,6 +867,7 @@ function renderOptionsRow(p) {
     <td>${earningsBadge}</td>
     <td>${p.grade ? `<span class="tag">${p.grade}</span>` : '—'}</td>
     <td><span class="status-badge ${p.status}">${p.status}</span></td>
+    <td>${closeBtn(p)}</td>
   </tr>`;
 }
 
@@ -716,6 +891,7 @@ function renderFuturesTable(positions, session) {
       <th>Contracts</th><th>Entry</th><th>Now</th><th>Stop</th>
       <th title="BASE_TARGET_PTS backstop — 1500pts out. Has fired 0 times in 951 trades over 5.5yr; the best trade ever ran 378pts. It is a disaster cap and the numerator of the MIN_RR gate, NOT a level being chased.">Cap<sup>?</sup></th>
       <th>Unreal P&amp;L</th><th>Nearest real exit</th><th>Status</th><th>Crest Watch</th>
+      <th title="Asks the trader that owns this position to flatten it, through _force_close_all (NY) or its own exit (London).">Close</th>
     </tr></thead>
     <tbody>${positions.map(p => {
       const pnlCls = (p.unreal_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
@@ -735,6 +911,7 @@ function renderFuturesTable(positions, session) {
         <td>${renderExitMap(p.exit_map)}</td>
         <td><span class="status-badge ${p.status||'OK'}">${p.status||'OK'}</span></td>
         <td>${renderCrestBadge(p.crest_watch)}</td>
+        <td>${closeBtn(p)}</td>
       </tr>`;
     }).join('')}</tbody>
   </table>`;

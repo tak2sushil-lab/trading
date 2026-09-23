@@ -51,8 +51,12 @@ TRADE_RE = re.compile(
 
 
 def log(msg):
+    """Write once. The launchd plist redirects stdout AND stderr into this same file, so
+    printing as well duplicated every single line — which is why parity.log reads as if
+    each run happened twice. Print only when stdout is a terminal (a manual run)."""
     line = f"[{datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-    print(line)
+    if sys.stdout.isatty():
+        print(line)
     with open(LOG, 'a') as f:
         f.write(line + '\n')
 
@@ -156,11 +160,20 @@ def london_sim_trades(day):
              'entry': float(r['entry'])} for _, r in tr.iterrows()]
 
 
+LONDON_COP_ACCOUNT = 'IBKR'   # london_v2_sim models ONE book; compare against one account
+
 def london_live_trades(day):
+    """Sep 22 2026 — this had no account_mode filter, and london_trader runs in BOTH the
+    IBKR and TC processes off the same signal. Every London day therefore reported
+    live = 2x sim and a permanent DIVERGENCE: Sep 17 "sim=2 live=4" was literally two
+    trades times two accounts (rows 129/130 and 131/132, same minute, same price).
+    The sim is a one-book model, so the honest comparison is against one account.
+    Documented as a known gap on Aug 9 2026 and never fixed until now."""
     con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
     rows = con.execute(
         """select entry_time, side, entry from london_trades
-           where entry_date=?""", (day,)).fetchall()
+           where entry_date=? and coalesce(account_mode,'IBKR')=?""",
+        (day, LONDON_COP_ACCOUNT)).fetchall()
     con.close()
     return [{'time': (r[0] or '')[:5], 'side': r[1], 'setup': 'LONDON',
              'entry': r[2]} for r in rows]
@@ -255,29 +268,71 @@ def equity_invariants(day):
     """Decision-level equity cop (Jul 18 2026). Full bar-level equity replay is a
     separate build; until then, verify the invariants live decisions must satisfy:
       1. every live trade traces to a scan_log row (same symbol+day) that was
-         graded A+/A — no trade without a graded signal behind it
-      2. entry times inside the legal window (10:00-15:00 ET; pre-market module
-         entries 9:20-9:29 exempt)
+         graded A+/A — no trade without a graded signal behind it, EXCEPT on the
+         scanner paths that structurally never write one (see NO_SCANLOG_SETUPS)
+      2. entry times inside the legal window, READ FROM auto_trader's own constants
       3. daily per-direction caps respected
-    Returns list of violation strings (empty = clean)."""
+    Returns list of violation strings (empty = clean).
+
+    Sep 22 2026 — this function had been crying wolf since Sep 4 and was simultaneously
+    blind to the thing it exists to catch. Three fixes:
+
+    (a) The window was HARDCODED 10:00-15:00. Live moved to 09:30-13:00 on Sep 4 2026.
+        So every legitimate 09:30-09:59 entry was reported as a violation (six on Sep 21
+        alone) — and, far worse, a genuine 13:00-15:00 entry would have passed SILENTLY.
+        A cop with the wrong rule book does not merely annoy; it clears the guilty.
+        The window is now imported from auto_trader, so it cannot drift again.
+
+    (b) "no graded scan_log signal" fired on every CATALYST_OVERRIDE and PREMARKET trade
+        because _scan_catalyst_override and _scan_premarket_catalyst call
+        log_scan_candidate() ZERO times — grep-verified. A rule that is guaranteed to
+        fail is not a test, it is noise, and noise is what makes a real alert invisible.
+        Those paths are now reported once, as a known instrumentation gap, not per trade.
+    """
     v = []
     try:
+        # Read the live window rather than restating it. This is the whole fix for (a).
+        try:
+            sys.path.insert(0, ROOT)
+            import auto_trader as _at
+            win_lo = f"{_at.NO_ENTRY_BEFORE:02d}:{_at.NO_ENTRY_BEFORE_MIN:02d}"
+            win_hi = f"{_at.NO_ENTRY_AFTER:02d}:00"
+            win_src = "auto_trader"
+        except Exception as e:
+            return [f"equity invariant check error: cannot read the live entry window "
+                    f"from auto_trader ({e}) — refusing to check against a guessed one"]
+
+        # Paths that place trades without ever grading a candidate into scan_log. This is
+        # a real gap in instrumentation (those trades have no recorded reasoning) but it
+        # is a FIXED property of the code, so it is stated once rather than per trade.
+        NO_SCANLOG_SETUPS = ('CATALYST_OVERRIDE', 'PREMARKET')
+
         con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
         trades = con.execute(
             """select symbol, entry_time, side, setup_type from trades
                where entry_date=? and setup_type!='RECONCILED'""", (day,)).fetchall()
+        ungraded_by_design = []
         for sym, etime, side, setup in trades:
             t = (etime or '')[:5]
-            if t and not ('10:00' <= t <= '15:00') and not ('09:20' <= t <= '09:29') \
+            if t and not (win_lo <= t < win_hi) and not ('09:20' <= t <= '09:29') \
                     and 'PREMARKET' not in (setup or ''):
-                v.append(f"entry-window violation: {sym} {side} at {etime} ({setup})")
+                v.append(f"entry-window violation: {sym} {side} at {etime} ({setup}) "
+                         f"— live window is {win_lo}-{win_hi} per {win_src}")
             direction = 'SHORT' if (side or '').upper() == 'SHORT' else 'LONG'
             row = con.execute(
                 """select count(*) from scan_log where scan_date=? and symbol=?
                    and direction=? and grade in ('A+','A')""",
                 (day, sym, direction)).fetchone()[0]
             if row == 0:
-                v.append(f"no graded scan_log signal behind trade: {sym} {direction} ({setup})")
+                if any(s in (setup or '') for s in NO_SCANLOG_SETUPS):
+                    ungraded_by_design.append(f"{sym} ({setup})")
+                else:
+                    v.append(f"no graded scan_log signal behind trade: {sym} {direction} ({setup})")
+        if ungraded_by_design:
+            v.append("NOTE (not a divergence): "
+                     f"{len(ungraded_by_design)} trade(s) from scanner paths that never "
+                     f"write scan_log — {', '.join(ungraded_by_design)}. Known gap: "
+                     f"_scan_catalyst_override/_scan_premarket_catalyst do not grade.")
         for d, cap in (('LONG', 20), ('SHORT', 20)):
             n = con.execute(
                 """select count(*) from trades where entry_date=? and setup_type!='RECONCILED'
@@ -342,11 +397,17 @@ def main():
 
     log(equity_context(day))
     eq_v = equity_invariants(day)
+    # A NOTE line is context, not a finding — equity_invariants emits one for the scanner
+    # paths that structurally never write scan_log. Counting it as a divergence is what
+    # kept this job on exit code 1 every day, which is how a real divergence would go
+    # unnoticed: an alarm that is always on is not an alarm.
+    eq_real = [x for x in eq_v if not x.startswith('NOTE ')]
     if eq_v:
-        status = 'DIVERGENCE'
         for line in eq_v:
             log(f"  equity invariant: {line}")
-    else:
+    if eq_real:
+        status = 'DIVERGENCE'
+    elif not eq_v:
         log("equity invariants: clean")
 
     opt_v = options_invariants(day)
@@ -362,7 +423,7 @@ def main():
             f"🚓 Trade Cop DIVERGENCE {day}\n"
             f"Futures NY: sim={len(sim)} live={len(live)} matched={matched}\n"
             f"London entry mismatches: {lon_issues}\n"
-            f"Equity invariant issues: {len(eq_v)} | Options: {len(opt_v)}\n"
+            f"Equity invariant issues: {len(eq_real)} | Options: {len(opt_v)}\n"
             f"Details: logs/parity.log — investigate before trusting backtests."
         )
     return 0 if status == 'OK' else 1

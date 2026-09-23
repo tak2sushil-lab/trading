@@ -2304,6 +2304,190 @@ def backfill_scan_log_from_trades():
     return inserted
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONTROL QUEUE — how the dashboard asks a trading process to close something
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# WHY A QUEUE AND NOT A DIRECT ORDER (Sep 22 2026).
+#
+# The dashboard is a separate Flask process. It can reach the bridge, so it COULD
+# place a closing order itself. It must not, and the reason is written all over
+# this codebase's incident history — four separate incidents, one shape:
+#
+#   Jul 20-21 2026  options/watchman.py  a retry loop raced its own fill      -> 15 phantom shorts
+#   Aug  3 2026     manual FUT CLOSE     ran outside the launch env           -> closed IBKR, booked TC
+#   Sep 10-11 2026  factory/live/*.py    re-sent a sell on an ambiguous read  -> -396 shares
+#   Sep 22 2026     auto_trader reconcile raced a pre-market exit             -> META 2 long -> 12 short
+#
+# Every one is a SECOND ACTOR acting on a position a FIRST ACTOR believes it owns.
+# A dashboard that posts orders directly is that second actor, and it is worse than
+# the others, because the owning processes hold state the dashboard cannot see or
+# update: auto_trader's open_positions/session_high, the futures traders' in-memory
+# peak (_session_high, on which the Reversal Exit depends), and — worst — london_trader's
+# entire position, which lives ONLY in a module global. Flattening London at the broker
+# from outside would leave its 15s monitor managing a phantom and closing it again.
+#
+# So the dashboard WRITES A REQUEST and the owning process EXECUTES IT, through the
+# same close path its Telegram command already uses. The dashboard never places an order.
+#
+# TWO PROPERTIES THIS TABLE MUST HAVE, both learned the hard way:
+#
+#  1. CLAIMING IS ATOMIC. The IBKR and TC futures traders poll the SAME queue, 10s
+#     apart, in two processes. `claim_control_requests` claims by UPDATE ... WHERE
+#     status='PENDING' and trusts rowcount, so exactly one process can win a row.
+#     Futures rows additionally carry account_mode so TC can never execute IBKR's request.
+#
+#  2. REQUESTS EXPIRE. A request that has sat unclaimed longer than REQUEST_TTL_SEC is
+#     dead, not pending. Without this, a close queued while a trader is down would fire
+#     whenever it next started — possibly hours later, into a different market, against a
+#     position the user has long since dealt with. Same reasoning as ORPHAN_GRACE_S in
+#     auto_trader: time-since-request is information, and ignoring it is how stale
+#     intentions become live orders.
+
+CONTROL_TARGETS = {
+    'equity',        # auto_trader's own book ('trades')  — drained by auto_trader
+    'wave_rider',    # factory/live/wave_rider.py         — drained by its own one-shot
+    'contrarian',    # factory/live/contrarian.py         — drained by its own one-shot
+    'clockwork',     # factory/live/overnight.py          — drained by its own one-shot
+    'options',       # options/options_trader.py          — drained by options_trader
+    'futures_ny',    # futures/{futures,tc}_trader.py     — drained per account_mode
+    'london',        # futures/london_trader.py           — drained by run_monitor
+}
+CONTROL_ACTIONS = {'CLOSE_ONE', 'CLOSE_ALL'}
+
+# How long a request stays actionable. Five minutes is long enough to survive a slow
+# poll, a service restart or a brief bridge outage, and short enough that nothing the
+# user asked for in one market can execute in another.
+REQUEST_TTL_SEC = 300
+
+
+def init_control_queue(conn=None):
+    """Idempotent — safe to call from every process at startup, like the ALTERs above."""
+    own = conn is None
+    conn = conn or get_connection()
+    conn.execute('''CREATE TABLE IF NOT EXISTS control_queue (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at    TEXT NOT NULL,
+        target        TEXT NOT NULL,
+        account_mode  TEXT,
+        action        TEXT NOT NULL,
+        book          TEXT,
+        symbol        TEXT,
+        trade_id      INTEGER,
+        source        TEXT,
+        requested_by  TEXT,
+        status        TEXT NOT NULL DEFAULT 'PENDING',
+        claimed_at    TEXT,
+        completed_at  TEXT,
+        result        TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_control_pending '
+                 'ON control_queue(status, target)')
+    if own:
+        conn.commit()
+        conn.close()
+
+
+def queue_control_request(target, action, symbol=None, trade_id=None, book=None,
+                          account_mode=None, source='dashboard', requested_by=None):
+    """Record an intent to close. Returns the request id. Places no order."""
+    if target not in CONTROL_TARGETS:
+        raise ValueError(f'unknown control target: {target}')
+    if action not in CONTROL_ACTIONS:
+        raise ValueError(f'unknown control action: {action}')
+    init_control_queue()
+    conn = get_connection()
+    cur = conn.execute(
+        'INSERT INTO control_queue (created_at, target, account_mode, action, book, '
+        'symbol, trade_id, source, requested_by, status) '
+        "VALUES (?,?,?,?,?,?,?,?,?,'PENDING')",
+        (datetime.now().isoformat(timespec='seconds'), target, account_mode, action,
+         book, (symbol or '').upper() or None, trade_id, source, requested_by))
+    rid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return rid
+
+
+def claim_control_requests(target, account_mode=None):
+    """Atomically take ownership of every actionable request for this target.
+
+    Returns claimed rows as dicts. Anything past REQUEST_TTL_SEC is marked EXPIRED
+    instead of returned — see the note at the top of this section for why a stale
+    request must never execute.
+
+    The claim is `UPDATE ... WHERE id=? AND status='PENDING'` with a rowcount check,
+    which is atomic under SQLite's write lock. That matters because the IBKR and TC
+    futures traders poll this same table from two processes.
+    """
+    init_control_queue()
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    now = datetime.now()
+    claimed = []
+    try:
+        sql = "SELECT * FROM control_queue WHERE status='PENDING' AND target=?"
+        args = [target]
+        if account_mode is not None:
+            # A NULL account_mode means "whoever owns this target"; a set one is scoped.
+            sql += ' AND (account_mode IS NULL OR account_mode=?)'
+            args.append(account_mode)
+        for row in conn.execute(sql + ' ORDER BY id', args).fetchall():
+            row = dict(row)
+            try:
+                age = (now - datetime.fromisoformat(row['created_at'])).total_seconds()
+            except Exception:
+                age = REQUEST_TTL_SEC + 1      # unparseable timestamp: treat as stale
+            if age > REQUEST_TTL_SEC:
+                conn.execute(
+                    "UPDATE control_queue SET status='EXPIRED', completed_at=?, "
+                    "result=? WHERE id=? AND status='PENDING'",
+                    (now.isoformat(timespec='seconds'),
+                     f'expired unclaimed after {int(age)}s (limit {REQUEST_TTL_SEC}s)',
+                     row['id']))
+                continue
+            cur = conn.execute(
+                "UPDATE control_queue SET status='CLAIMED', claimed_at=? "
+                "WHERE id=? AND status='PENDING'",
+                (now.isoformat(timespec='seconds'), row['id']))
+            if cur.rowcount == 1:          # we won it; another poller cannot
+                claimed.append(row)
+        conn.commit()
+    finally:
+        conn.close()
+    return claimed
+
+
+def complete_control_request(request_id, status, result=''):
+    """Close out a claimed request. status: 'DONE' | 'FAILED'."""
+    conn = get_connection()
+    conn.execute(
+        'UPDATE control_queue SET status=?, completed_at=?, result=? WHERE id=?',
+        (status, datetime.now().isoformat(timespec='seconds'), str(result)[:500], request_id))
+    conn.commit()
+    conn.close()
+
+
+def get_control_requests(ids=None, limit=25):
+    """Read back outcomes — used by the dashboard to report what actually happened."""
+    init_control_queue()
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    try:
+        if ids:
+            marks = ','.join('?' * len(ids))
+            rows = conn.execute(
+                f'SELECT * FROM control_queue WHERE id IN ({marks}) ORDER BY id',
+                list(ids)).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT * FROM control_queue ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     init_db()
     print("Database ready at:", DB_PATH)

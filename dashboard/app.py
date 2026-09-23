@@ -325,7 +325,7 @@ def get_equity_positions():
     try:
         with _db() as c:
             rows = c.execute("""
-                SELECT symbol, entry_date, entry_time, entry_price, shares, side,
+                SELECT id, symbol, entry_date, entry_time, entry_price, shares, side,
                        target_price, stop_price, setup_type, sector, confidence,
                        max_gain_pct, hod_at_entry
                 FROM trades
@@ -375,6 +375,10 @@ def get_equity_positions():
             status = 'OK'
 
         result.append({
+            # id + book identify the row a close button targets. Symbol alone is not
+            # enough: four books share this account and two can hold the same name.
+            'id':            row['id'],
+            'row_status':    'OPEN',
             'symbol':        sym,
             'entry_date':    row['entry_date'],
             'entry_time':    row['entry_time'],
@@ -391,6 +395,8 @@ def get_equity_positions():
             'unreal_pct':    round(unreal_pct, 2),
             'status':        status,
             'book':          'Day Trader',
+            'kind':          'equity',
+            'target':        'equity',
             'exit_plan':     'closes today 15:45 (or holds overnight if >+1.5% and above VWAP)',
         })
 
@@ -435,6 +441,7 @@ def get_equity_positions():
                             buf = (cp - stop) / ep * 100
                             st = 'REVIEW' if buf < 0.5 else ('WARN' if buf < 2.0 else 'OK')
                         result.append({
+                            'id': row['id'], 'row_status': row['status'],
                             'symbol': sym, 'entry_date': row['entry_date'],
                             'entry_time': row['entry_time'] if 'entry_time' in cols else None,
                             'entry_price': ep, 'current_price': cp, 'shares': sh,
@@ -443,6 +450,7 @@ def get_equity_positions():
                             'unreal_pnl': round(upnl, 2) if upnl is not None else None,
                             'unreal_pct': round(upct, 2) if upct is not None else None,
                             'status': st, 'book': _book, 'exit_plan': plan,
+                            'kind': 'equity', 'target': _BOOK_TARGET.get(_book),
                         })
                 except Exception:
                     continue      # one engine's table must not blank the whole panel
@@ -545,6 +553,9 @@ def get_options_positions():
             'max_loss':      row['max_loss'],
             'grade':         row['entry_grade'],
             'status':        status,
+            'kind':          'options',
+            'target':        'options',
+            'row_status':    'OPEN',
         })
     return result
 
@@ -677,6 +688,9 @@ def get_futures_positions():
             'status':         'OK',
             'crest_watch':    _crest_watch('NY', row['id']),
             'exit_map':       _exit_map(row['account_mode'], row['id']),
+            'kind':           'futures',
+            'target':         'futures_ny',
+            'row_status':     'OPEN',
         })
     for row in london_rows:
         sym, ep, qty = 'MNQ', row['entry'] or 0, row['contracts'] or 1
@@ -700,6 +714,11 @@ def get_futures_positions():
             'account_mode':   row['account_mode'],
             'status':         'OK',
             'crest_watch':    _crest_watch('LONDON', row['id']),
+            # London is its own book with its own owner — FUT CLOSE does not cover it,
+            # which is exactly why it needs a per-row button.
+            'kind':           'futures',
+            'target':         'london',
+            'row_status':     'OPEN',
         })
 
     result.sort(key=lambda r: (r['entry_date'] or '', r['entry_time'] or ''), reverse=True)
@@ -1608,30 +1627,61 @@ def get_system_health():
                 pass
     except Exception:
         pass
-    # Trade Cop — last parity verdict, decoded into a readable sentence
+    # Trade Cop — the verdict for the WHOLE run, not one leg of it.
+    #
+    # Sep 22 2026: this read only lines containing an arrow, which is emitted by the
+    # futures NY and London legs alone. The equity and options invariant lines have no
+    # arrow, so they were invisible here — which is why this card could report
+    # "in agreement" on the very day the cop exited 1 over six equity findings. It was
+    # not wrong about futures; it simply never looked at three quarters of the report.
     try:
         import re as _re
         with open(os.path.join(BASE_DIR, 'logs', 'parity.log')) as f:
-            lines = [l.strip() for l in f if 'parity ' in l and '→' in l]
-        if lines:
-            last = lines[-1]
-            status = 'DIVERGENCE' if 'DIVERGENCE' in last else 'OK'
-            detail = last.split('] ')[-1]
-            m = _re.search(r'parity (\S+) .*?sim=(\d+) live=(\d+) matched=(\d+)', last)
-            if m:
-                day, sim, live, matched = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))
-                if status == 'OK':
-                    if sim == 0 and live == 0:
-                        friendly = f"{day}: replay and live both took 0 trades — in agreement"
-                    else:
-                        friendly = f"{day}: replay matched all live trades ({matched}/{live})"
-                else:
-                    friendly = (f"{day}: replay and live DISAGREE — sim {sim} vs live {live} "
-                                f"trades, only {matched} matched. Check logs/parity.log before "
-                                f"trusting any backtest.")
-            else:
-                friendly = detail
-            out['parity'] = {'status': status, 'detail': detail, 'friendly': friendly}
+            raw = [l.strip() for l in f if l.strip()]
+        # Take the LAST run only. Runs are delimited by a futures-NY line, which every
+        # non-weekend run emits first.
+        starts = [i for i, l in enumerate(raw) if '[futures NY]' in l or 'weekend — skip' in l]
+        run = raw[starts[-1]:] if starts else raw[-40:]
+
+        legs, findings = [], []
+        for l in run:
+            body = l.split('] ', 1)[-1]
+            if '→' in body:
+                leg = _re.search(r'\[([^\]]+)\]', body)
+                legs.append((leg.group(1) if leg else 'futures',
+                             'DIVERGENCE' if 'DIVERGENCE' in body else 'OK'))
+            elif body.startswith('equity invariant:') or body.startswith('options invariant:'):
+                findings.append(body)
+            elif body.startswith('NOTE'):
+                pass   # informational, never a divergence
+
+        # A NOTE line is carried by equity_invariants but is explicitly not a finding.
+        real = [f for f in findings if 'NOTE (not a divergence)' not in f]
+        bad_legs = [n for n, s in legs if s == 'DIVERGENCE']
+        status = 'DIVERGENCE' if (bad_legs or real) else 'OK'
+
+        day = ''
+        m = _re.search(r'parity (\S+)', run[0] if run else '')
+        if m:
+            day = m.group(1)
+
+        if status == 'OK':
+            friendly = (f"{day}: all legs agree — "
+                        f"{', '.join(n for n, _ in legs) or 'no legs ran'}")
+        else:
+            bits = []
+            if bad_legs:
+                bits.append('replay disagrees on ' + ', '.join(bad_legs))
+            if real:
+                bits.append(f"{len(real)} invariant finding(s)")
+            friendly = (f"{day}: " + '; '.join(bits) +
+                        ". Read logs/parity.log before trusting a backtest.")
+        out['parity'] = {
+            'status': status,
+            'detail': ' | '.join(f'{n}:{s}' for n, s in legs) or 'no legs ran',
+            'friendly': friendly,
+            'findings': real[:8],
+        }
     except Exception:
         pass
     try:
@@ -1905,6 +1955,162 @@ def factory():
     return render_template('factory.html', f=get_factory_state())
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLOSE CONTROLS — the dashboard asks; the owning process acts
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Read the long note above control_queue in database.py before changing anything here.
+# The short version: this file must never place an order. Every book below is owned by a
+# process that holds state the dashboard cannot see — auto_trader's open_positions and
+# session_high, the futures traders' in-memory running peak (which the Reversal Exit is
+# computed from), and london_trader's entire position, which exists only as a module
+# global. Closing any of those from here would leave the owner managing a phantom and
+# closing it again. That is the shape of all four order incidents in this codebase.
+#
+# So: we write an intent, the owner executes it through the same path its Telegram
+# command uses, and we report back what actually happened.
+
+# Books owned by a long-running daemon that polls control_queue on its own loop.
+_DAEMON_TARGETS = {
+    'equity':     ('Day Trader', 15),   # auto_trader, 15s poll
+    'options':    ('Options',    10),   # options_trader, 10s loop
+    'futures_ny': ('Futures NY', 10),   # futures_trader / tc_trader, 10s poll
+    'london':     ('London',     15),   # london_trader, 15s monitor
+}
+
+# Books run as one-shots by launchd every 5 minutes. Queuing alone would mean waiting up
+# to five minutes for a panic button, so after queuing we start the engine's own
+# --drain-only entry point immediately. That entry point does NOT scan or enter.
+_ENGINE_TARGETS = {
+    'wave_rider': ('Wave Rider', 'com.sushil.trading.wave_rider',  'factory.live.wave_rider'),
+    'contrarian': ('Contrarian', 'com.sushil.trading.contrarian',  'factory.live.contrarian'),
+    'clockwork':  ('Clockwork',  'com.sushil.trading.clockwork',   'factory.live.overnight'),
+}
+
+# book label (as get_equity_positions stamps it) -> control target
+_BOOK_TARGET = {
+    'Day Trader': 'equity', 'Wave Rider': 'wave_rider',
+    'Contrarian': 'contrarian', 'Clockwork': 'clockwork',
+}
+
+
+def _engine_env(label):
+    """The engine's env READ FROM ITS OWN PLIST, never hardcoded here.
+
+    This is load-bearing, not tidiness. Every engine resolves MODE from an environment
+    variable and its get_open() filters on `mode=MODE`, so an engine started without it
+    defaults to SHADOW and sees none of the LIVE positions — it would report "no matching
+    open position" and close nothing, while the UI said the request was sent.
+
+    Hardcoding the value instead is precisely the Aug 3 2026 incident: a manual close run
+    outside the real launch environment had ACCOUNT_MODE silently default to TC while the
+    bridge still pointed at IBKR. Reading the plist means this can never drift from what
+    launchd actually runs.
+    """
+    env, logpath = dict(os.environ), None
+    try:
+        out = subprocess.run(
+            ['plutil', '-convert', 'json', '-o', '-',
+             os.path.expanduser(f'~/Library/LaunchAgents/{label}.plist')],
+            capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            d = json.loads(out.stdout)
+            env.update(d.get('EnvironmentVariables') or {})
+            # Also take the log destination from the plist, so a close we start lands in
+            # the SAME file as the scheduled runs. Sending it to DEVNULL instead leaves a
+            # real order with no trace in the place anyone would look for it.
+            logpath = d.get('StandardOutPath')
+    except Exception:
+        pass
+    return env, logpath
+
+
+def _csrf_token():
+    """Per-session token. The dashboard is reachable on a public ngrok URL behind one
+    password and a 30-day cookie, so a close endpoint must not be triggerable by a
+    cross-site form post from a page the user happens to have open."""
+    tok = session.get('csrf')
+    if not tok:
+        tok = base64.urlsafe_b64encode(os.urandom(24)).decode()
+        session['csrf'] = tok
+    return tok
+
+
+@app.route('/api/close', methods=['POST'])
+def api_close():
+    """Queue a close. Never places an order — see the note at the top of this section."""
+    body = request.get_json(silent=True) or {}
+
+    if body.get('csrf') != session.get('csrf'):
+        return jsonify({'ok': False, 'error': 'stale page — reload and try again'}), 403
+
+    action = (body.get('action') or '').upper()
+    if action not in ('CLOSE_ONE', 'CLOSE_ALL'):
+        return jsonify({'ok': False, 'error': 'bad action'}), 400
+
+    # CLOSE_ALL re-authenticates. A single position is a contained mistake; flattening a
+    # book from a phone left unlocked, or a session cookie lifted from a public URL, is not.
+    if action == 'CLOSE_ALL' and _DASH_PASSWORD:
+        if body.get('password') != _DASH_PASSWORD:
+            return jsonify({'ok': False, 'error': 'password incorrect'}), 403
+
+    target = (body.get('target') or '').strip()
+    from database import (CONTROL_TARGETS, queue_control_request,
+                          get_control_requests, REQUEST_TTL_SEC)
+    if target not in CONTROL_TARGETS:
+        return jsonify({'ok': False, 'error': f'unknown target {target}'}), 400
+
+    who = request.headers.get('X-Forwarded-For') or request.remote_addr or '?'
+    try:
+        rid = queue_control_request(
+            target, action,
+            symbol=body.get('symbol'),
+            trade_id=body.get('trade_id'),
+            book=body.get('book'),
+            account_mode=body.get('account_mode'),
+            source='dashboard', requested_by=who[:60])
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+    # One-shot engines: start the drain now rather than wait for the 5-min tick.
+    spawned = None
+    if target in _ENGINE_TARGETS:
+        _name, label, module = _ENGINE_TARGETS[target]
+        try:
+            env, logpath = _engine_env(label)
+            sink = open(logpath, 'a') if logpath else subprocess.DEVNULL
+            subprocess.Popen(
+                [sys.executable, '-m', module, '--drain-only'],
+                cwd=BASE_DIR, env=env, stdout=sink, stderr=sink)
+            spawned = True
+        except Exception:
+            spawned = False   # still queued; the engine's next scheduled pass serves it
+
+    owner = (_DAEMON_TARGETS.get(target, (None, None))[0]
+             or _ENGINE_TARGETS.get(target, (None,))[0] or target)
+    wait_s = _DAEMON_TARGETS.get(target, (None, 15))[1]
+    return jsonify({
+        'ok': True, 'request_id': rid, 'owner': owner, 'spawned': spawned,
+        'expires_in_s': REQUEST_TTL_SEC,
+        'message': (f'Sent to {owner}. It closes through its own exit path; '
+                    f'this page never places orders.'
+                    + ('' if spawned else f' Expect it within ~{wait_s}s.')),
+        'request': get_control_requests([rid])[0],
+    })
+
+
+@app.route('/api/close/status')
+def api_close_status():
+    """Poll the outcome of queued requests so the UI reports what REALLY happened —
+    not merely that the button was pressed."""
+    ids = [int(i) for i in (request.args.get('ids') or '').split(',') if i.strip().isdigit()]
+    if not ids:
+        return jsonify({'requests': []})
+    from database import get_control_requests
+    return jsonify({'requests': get_control_requests(ids)})
+
+
 @app.route('/api/data')
 def api_data():
     bridge     = get_bridge_info()
@@ -1928,6 +2134,7 @@ def api_data():
     prod_bridge = get_bridge_info(PROD_BRIDGE_URL) if prod_avail else None
 
     return jsonify({
+        'csrf':         _csrf_token(),
         'ts':           datetime.now(tz=ET).strftime('%Y-%m-%d %H:%M:%S ET'),
         'mode':         bridge.get('mode', 'UNKNOWN'),
         'bridge':       bridge,

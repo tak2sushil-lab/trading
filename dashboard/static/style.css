@@ -566,3 +566,91 @@ html, body {
 .svc-pill.stale { color:#e3b341; background:rgba(227,179,65,.12);
                   border:1px solid rgba(227,179,65,.32); }
 .svc-pill.stale .dot { background:#e3b341; }
+
+/* ── Close controls (Sep 22 2026) ─────────────────────────────────────────────
+   Deliberately understated. These buttons close real positions, so they must be
+   easy to find when wanted and hard to hit by accident — muted until hovered,
+   never the brightest thing in the row, and every one of them opens a
+   confirmation before anything is sent. */
+.sell-btn {
+  font: 600 10px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  letter-spacing: .4px; text-transform: uppercase;
+  padding: 4px 9px; border-radius: var(--radius-sm); cursor: pointer;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--border2);
+  transition: all .12s ease;
+}
+.sell-btn:hover:not(:disabled) {
+  color: #fff; background: var(--red); border-color: var(--red-bright);
+}
+.sell-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+.closeall-btn {
+  font: 600 10px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  letter-spacing: .4px;
+  margin-left: 8px; padding: 4px 10px; border-radius: var(--radius-sm);
+  cursor: pointer; color: var(--muted); background: transparent;
+  border: 1px solid var(--border2); transition: all .12s ease;
+}
+.closeall-btn:hover { color: #fff; background: var(--red); border-color: var(--red-bright); }
+
+/* Confirmation modal */
+.close-modal {
+  position: fixed; inset: 0; z-index: 900;
+  background: rgba(1, 4, 9, .78);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.close-modal[hidden] { display: none !important; }
+.close-modal-box {
+  width: 100%; max-width: 430px;
+  background: var(--card); border: 1px solid var(--border2);
+  border-radius: var(--radius); padding: 20px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.6);
+}
+.close-modal-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; color: var(--text); }
+.close-modal-body  { font-size: 13px; color: var(--text); line-height: 1.55; margin-bottom: 14px; }
+.close-modal-note  {
+  font-size: 11px; color: var(--muted); line-height: 1.5;
+  border-left: 2px solid var(--border2); padding-left: 9px; margin: 12px 0;
+}
+.close-modal-err {
+  font-size: 12px; color: var(--red-bright); margin-bottom: 10px;
+  background: rgba(218,54,51,.1); border: 1px solid var(--red);
+  border-radius: var(--radius-sm); padding: 7px 9px;
+}
+.close-modal-err[hidden] { display: none !important; }
+#close-modal-pwwrap[hidden] { display: none !important; }
+#close-modal-pwwrap label {
+  display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px;
+}
+#close-modal-pw {
+  width: 100%; padding: 8px 10px; font-size: 13px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border2); border-radius: var(--radius-sm);
+}
+.close-modal-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 6px; }
+.close-modal-actions button {
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  padding: 9px 15px; border-radius: var(--radius-sm); cursor: pointer;
+}
+.btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
+.btn-cancel:hover { color: var(--text); border-color: var(--muted); }
+.btn-danger { background: var(--red); color: #fff; border: 1px solid var(--red-bright); }
+.btn-danger:hover:not(:disabled) { background: var(--red-bright); }
+.btn-danger:disabled { opacity: .55; cursor: wait; }
+
+/* Outcome toasts — these report what the OWNING SERVICE said happened, which is
+   not the same thing as "the button was pressed". */
+.close-toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 950;
+  display: flex; flex-direction: column; gap: 8px; max-width: 380px;
+}
+.close-toast {
+  font-size: 12px; line-height: 1.5; padding: 10px 13px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border2);
+  background: var(--card); color: var(--text);
+  box-shadow: 0 6px 22px rgba(0,0,0,.5);
+}
+.close-toast.pending { border-left: 3px solid var(--yellow-bright); }
+.close-toast.done    { border-left: 3px solid var(--green-bright); }
+.close-toast.fail    { border-left: 3px solid var(--red-bright); }

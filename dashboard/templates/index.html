@@ -126,6 +126,8 @@
       <div class="section-title">
         EQUITY POSITIONS
         <span class="count-chip" id="eq-count">0 open</span>
+        <button class="closeall-btn" id="closeall-equity"
+                title="Closes the Day Trader book only — the same scope as the CLOSEALL Telegram command. Wave Rider, Contrarian and Clockwork positions are closed individually from their own rows.">Close all · Day Trader</button>
       </div>
       <div id="equity-table"></div>
     </div>
@@ -136,6 +138,8 @@
         OPTIONS POSITIONS
         <span class="count-chip" id="opt-count">0 open</span>
         <span class="theta-chip" id="opt-theta"></span>
+        <button class="closeall-btn" id="closeall-options"
+                title="Closes every open options position through options_trader's own OPT CLOSE path (two-leg closer for spreads).">Close all · Options</button>
       </div>
       <div id="options-table"></div>
     </div>
@@ -146,8 +150,35 @@
         FUTURES POSITIONS
         <span class="count-chip" id="fut-count">0 open</span>
         <span class="session-chip" id="session-chip">—</span>
+        <button class="closeall-btn" id="closeall-fut-ibkr"
+                title="Flattens the NY futures book on IBKR — the same scope as FUT CLOSE. London is NOT included; close a London row from the row itself.">Flatten · NY IBKR</button>
+        <button class="closeall-btn" id="closeall-fut-tc"
+                title="Flattens the NY futures book on TC — the same scope as FUT CLOSE. London is NOT included; close a London row from the row itself.">Flatten · NY TC</button>
       </div>
       <div id="futures-table"></div>
+    </div>
+
+    <!-- Close confirmation. Every close request in the UI goes through here; there is
+         no path that fires on a single click. -->
+    <div id="close-modal" class="close-modal" hidden>
+      <div class="close-modal-box">
+        <div class="close-modal-title" id="close-modal-title">Close position</div>
+        <div class="close-modal-body" id="close-modal-body"></div>
+        <div id="close-modal-pwwrap" hidden>
+          <label for="close-modal-pw">Dashboard password</label>
+          <input type="password" id="close-modal-pw" autocomplete="current-password"
+                 placeholder="re-enter to confirm">
+        </div>
+        <div class="close-modal-note">
+          This asks the owning service to close using its own exit path.
+          The dashboard never places orders itself.
+        </div>
+        <div class="close-modal-err" id="close-modal-err" hidden></div>
+        <div class="close-modal-actions">
+          <button class="btn-cancel" id="close-modal-cancel">Cancel</button>
+          <button class="btn-danger" id="close-modal-go">Close position</button>
+        </div>
+      </div>
     </div>
 
     <!-- Sector grades -->

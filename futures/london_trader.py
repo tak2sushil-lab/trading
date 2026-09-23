@@ -152,6 +152,13 @@ _ovn_skip:       bool             = False
 _atr:            float            = 10.0
 
 _position:       dict | None      = None
+# Pending dashboard close request id (see _drain_control_queue below). Deliberately a
+# FLAG, not a second exit path: the monitor turns it into an exit REASON and the existing,
+# tested execute-exit block does the work — cancel the backup stop, send one market order,
+# check it was accepted, log the exit, clear _position. A separate close routine here
+# would be a second actor on a position this module owns in memory, which is the exact
+# shape of every order incident in this codebase.
+_manual_close_req: int | None = None
 _trade_count:    int              = 0
 _daily_pnl:      float            = 0.0
 _last_exit_time: datetime | None  = None
@@ -791,7 +798,14 @@ def _monitor_position_locked(df: pd.DataFrame):
             )
             _position       = None
             _last_exit_time = now_et
+            _finish_manual_close('DONE', f'already flat at broker — booked ${realized:+.2f}')
             return
+
+    # 1b. Manual close from the dashboard. Placed after the IBKR-flat check above
+    # (if the broker is already flat, that branch books it correctly and returns) and
+    # before every automatic rule, so an explicit human instruction wins over the trail.
+    if _manual_close_req is not None:
+        exit_price, exit_reason = price, 'manual_dashboard'
 
     # 2. Software stop (in case bar ticked through before monitor ran)
     if not exit_reason:
@@ -842,6 +856,7 @@ def _monitor_position_locked(df: pd.DataFrame):
                 'order_type': 'STOP_MARKET', 'stop_price': sl,
             })
             send_telegram(f'⚠️ LONDON EXIT FAILED — retrying. Check IBKR if persists.')
+            _finish_manual_close('FAILED', f'broker rejected the closing order: {exit_result}')
             return
 
         realized = _pnl_usd(entry, exit_price, pos['side'], contracts)
@@ -858,6 +873,8 @@ def _monitor_position_locked(df: pd.DataFrame):
         log(msg)
         send_telegram(msg)
         _position = None
+        _finish_manual_close('DONE', f'{ACCOUNT_MODE} London closed @ {exit_price:.2f} '
+                                     f'| P&L ${realized:+.2f}')
         return
 
     # ── Update trail (no exit — still open) ──────────────────────────────────
@@ -1106,8 +1123,64 @@ def run_scan():
         break  # one entry per scan
 
 
+def _finish_manual_close(status: str, result: str):
+    """Close out a pending dashboard request and clear the flag.
+
+    Always clears, including on failure: the alternative is an automatic retry every
+    15 seconds against a position whose close we could not confirm, which is precisely
+    the USAR retry storm (Jul 20 2026). The user is told it failed and can press again.
+    """
+    global _manual_close_req
+    rid, _manual_close_req = _manual_close_req, None
+    if rid is None:
+        return
+    try:
+        from database import complete_control_request
+        complete_control_request(rid, status, result)
+    except Exception as e:
+        log(f'  [control] could not record outcome for #{rid}: {e}')
+
+
+def _drain_control_queue():
+    """Pick up dashboard close requests for the London book on THIS account.
+
+    Only ever sets a flag. If there is nothing open, the request is completed here —
+    reporting "nothing to close" is a real answer, and leaving it PENDING would let it
+    fire against a position opened minutes later.
+    """
+    global _manual_close_req
+    try:
+        from database import claim_control_requests, complete_control_request
+        reqs = claim_control_requests('london', ACCOUNT_MODE)
+    except Exception as e:
+        log(f'  [control] claim failed: {e}')
+        return
+    for r in reqs:
+        try:
+            if _position is None:
+                complete_control_request(r['id'], 'DONE',
+                                         f'{ACCOUNT_MODE} London: no open position')
+                continue
+            if _manual_close_req is not None:
+                complete_control_request(r['id'], 'DONE',
+                                         'close already in progress for this position')
+                continue
+            _manual_close_req = r['id']
+            log(f'  [control] manual close requested (#{r["id"]}) — '
+                f'will exit on the next monitor tick')
+        except Exception as e:
+            log(f'  [control] request {r["id"]} failed: {e}')
+            try:
+                complete_control_request(r['id'], 'FAILED', str(e))
+            except Exception:
+                pass
+
+
 def run_monitor():
     """Fast monitor loop (every MONITOR_INTERVAL seconds). Manages open position only."""
+    # Before the _position guard: a close request against a flat book must still be
+    # answered, not left pending until something opens.
+    _drain_control_queue()
     if _position is None:
         return
     if _cached_df.empty:
