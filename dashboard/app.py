@@ -23,9 +23,14 @@ PROD_BRIDGE_URL = None   # set to 'http://localhost:8001' when prod bridge is li
 PORT            = 8080
 ET              = ZoneInfo('America/New_York')
 
-# (name, launchd label, kind, meaning of a non-zero exit, role, log file, max age hrs)
+# (name, launchd label, kind, meaning of a non-zero exit, role, log file, max age hrs, what)
 #   kind 'daemon'    — must hold a PID; no PID is a real alarm
 #   kind 'scheduled' — idle between runs is NORMAL; judge it by its last exit code
+#   what             — one line of plain English: what this thing IS and whether it can
+#                      place an order. Added Sep 22 2026 because the pills answered
+#                      "how is it doing" while the recurring question is "what is it" —
+#                      turbo, ref_prices and heartbeat in particular. It is the same
+#                      question /glossary exists for, answered where it gets asked.
 #
 # Sep 22 2026: this listed 13 of 36 loaded jobs and was missing, among others, all
 # THREE factory engines whose positions the dashboard now shows. Wave Rider,
@@ -34,34 +39,37 @@ ET              = ZoneInfo('America/New_York')
 # watchdog itself (heartbeat) and the scoring job were invisible too.
 SERVICES = [
     # ── brokers and bridges: everything else is dead without these ──
-    ('gateway',      'com.sushil.trading.gateway',        'daemon',    '', 'Brokers', None, None),
-    ('bridge',       'com.sushil.trading.bridge',         'daemon',    '', 'Brokers', None, None),
-    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    '', 'Brokers', None, None),
-    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    '', 'Brokers', None, None),
+    ('gateway',      'com.sushil.trading.gateway',        'daemon',    '', 'Brokers', None, None, 'IB Gateway for the IBKR paper account (DU9952463). Logs itself out nightly at 23:45 and is restarted by launchd — everything downstream is dead without it.'),
+    ('bridge',       'com.sushil.trading.bridge',         'daemon',    '', 'Brokers', None, None, 'FastAPI translator between our code and IBKR on port 8000. Every order, quote and portfolio read goes through it.'),
+    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    '', 'Brokers', None, None, 'IB Gateway for the TC account (DUQ640500). Its 02:50 start is what finally gave TC London its full 04:00-08:00 window.'),
+    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    '', 'Brokers', None, None, 'The same bridge, port 8002, pointed at the TC account.'),
     # ── the books that place orders ──
-    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    '', 'Books', None, None),
-    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored', 'Books', 'wave_rider.log', 24),
-    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books', 'contrarian.log', 24),
-    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books', 'clockwork.log', 24),
-    ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books', None, None),
-    ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books', None, None),
-    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books', None, None),
-    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    '', 'Books', None, None),
+    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    '', 'Books', None, None, 'The Day Trader book — intraday catalyst and momentum names, in after 09:30 and out by 15:45. PLACES REAL ORDERS.'),
+    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored', 'Books', 'wave_rider.log', 24, 'Swing book — buys names already moving hard, holds 3 days, 8% stop. PLACES REAL ORDERS.'),
+    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books', 'contrarian.log', 24, 'Mean-reversion book — buys the biggest 3-day fallers, holds 5 days, 15% stop. Long-only, so judge it on alpha vs the tide, not raw P&L. PLACES REAL ORDERS.'),
+    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books', 'clockwork.log', 24, "Overnight book — buys at the closing auction, sells at the next opening auction, 3 names. This is the book that trades the overnight window where 91% of the universe's return actually accrues. PLACES REAL ORDERS."),
+    ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books', None, None, 'The options book — spread entries, the calculator and the OPT commands. PLACES REAL ORDERS.'),
+    ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books', None, None, 'Monitors open options positions every 15 min and runs their exits (targets, stops, two-leg closes). PLACES REAL ORDERS.'),
+    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books', None, None, 'MNQ futures on IBKR — the NY session plus London threaded inside it. PLACES REAL ORDERS.'),
+    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    '', 'Books', None, None, 'The same futures code on the TC account, which is the one heading for a TopStep evaluation. PLACES REAL ORDERS.'),
     # ── data the books depend on ──
-    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed', 'Data', 'collect_bars.log', 96),
-    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed', 'Data', 'futures_collect_bars.log', 96),
-    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    '', 'Data', None, None),
-    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data', 'market_context.log', 96),
+    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed', 'Data', 'collect_bars.log', 96, "Pulls the day's 5-min equity bars into market_data.db after the close. Book Health, every signal and every backtest read these — if it stops, the system degrades quietly rather than failing loudly."),
+    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed', 'Data', 'futures_collect_bars.log', 96, 'The same collector for MNQ/ES/RTY futures bars.'),
+    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    '', 'Data', None, None, 'Scans headlines every 30 min via Groq/Llama and writes the catalyst calendar. Log-only for trading since Jul 19 2026 — it feeds the Ghost Ledger, never an entry.'),
+    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data', 'market_context.log', 96, 'Pre-market market-context brief at 09:15 — trend, S/R levels, macro dates, plus one Claude call for a stance. LOG-ONLY: no trader reads it.'),
     # ── instrumentation: silent failure here costs evidence, not money ──
-    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments', 'scan_forward_label.log', 96),
-    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96),
-    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments', 'turbo.log', 24),
+    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments', 'scan_forward_label.log', 96, 'Writes the forward outcome label (what each graded signal actually went on to do) onto scan_log each evening. This is the answer key for the grader — without it we record the guesses and never the answers. Places no orders.'),
+    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96, "Marks Clockwork twice a night: once at the broker's fill, once at the session's OFFICIAL close and open from our own bars. IBKR paper fabricates auction fills, so ref_pnl is the honest read on the strategy and pnl is the read on the plumbing. Places no orders."),
+    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments', 'turbo.log', 24, 'Asks, for each Wave Rider pick, whether an options structure would beat simply holding the shares. So far the answer is almost always no (5 passes in 45, and those lost 51pp vs shares). SHADOW ONLY — places no orders.'),
     # ── watchdogs. parity_check exits 1 when it FINDS a divergence — that is its
     #    designed signal, not a crash, so amber here means "read the report". ──
-    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored', 'Watchdogs', 'heartbeat.log', 24),
+    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored', 'Watchdogs', 'heartbeat.log', 24, 'The watchdog. Each trader stamps a file every scan; this checks staleness and both bridges from OUTSIDE the traders, because a watchdog inside a process cannot report that process dying. Built after a reboot silently cost a whole London session. Places no orders.'),
     ('trade_cop',    'com.sushil.trading.parity_check',   'scheduled',
-     'found a divergence — by design, read logs/parity.log', 'Watchdogs', 'parity.log', 96),
-    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    '', 'Watchdogs', None, None),
+     'found a divergence — by design, read logs/parity.log', 'Watchdogs', 'parity.log', 96,
+     'Replays the day through the simulator and diffs it against what live actually did, '
+     'across all four books. Amber means it FOUND something — read logs/parity.log. '
+     'It only reports; it never corrects anything itself.'),
+    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    '', 'Watchdogs', None, None, 'Keeps the codebase knowledge graph in sync on every .py save. Nothing to do with trading.'),
 ]
 
 
@@ -214,17 +222,17 @@ def get_services():
             parts = line.split('\t')
             if len(parts) >= 3:
                 table[parts[2].strip()] = (parts[0].strip(), parts[1].strip())
-        for name, label, kind, note, role, logf, max_h in SERVICES:
+        for name, label, kind, note, role, logf, max_h, what in SERVICES:
             if label not in table:
                 states[name] = {'state': 'missing', 'ok': False, 'role': role,
-                                'detail': 'not loaded in launchd'}
+                                'what': what, 'detail': 'not loaded in launchd'}
                 continue
             pid, rc = table[label]
             running = pid not in ('-', '')
             scheduled = (kind == 'scheduled')
             if running:
                 states[name] = {'state': 'up', 'ok': True, 'pid': pid, 'role': role,
-                                'detail': f'running (pid {pid})'}
+                                'what': what, 'detail': f'running (pid {pid})'}
             elif scheduled:
                 bad = rc not in ('0', '')
                 # Sep 22 2026: a bare "idle" chip reads as "off", which is alarming
@@ -247,7 +255,7 @@ def get_services():
                 states[name] = {
                     'state': 'failing' if bad else ('stale' if overdue else 'idle'),
                     'ok': not (bad or overdue), 'rc': rc, 'role': role,
-                    'ago': ago, 'age_s': age_s,
+                    'what': what, 'ago': ago, 'age_s': age_s,
                     'detail': ((note or f'last run exited {rc}') if bad
                                else (f'has not run for {ago} — expected at least every '
                                      f'{max_h}h' if overdue
@@ -255,18 +263,28 @@ def get_services():
                                           if ago else 'idle between scheduled runs (normal)'))}
             else:
                 states[name] = {'state': 'down', 'ok': False, 'rc': rc, 'role': role,
-                                'detail': f'NOT RUNNING — last exit {rc}'}
+                                'what': what, 'detail': f'NOT RUNNING — last exit {rc}'}
     except Exception as e:
         for row in SERVICES:
             states[row[0]] = {'state': 'unknown', 'ok': False, 'role': row[4],
-                              'detail': str(e)[:60]}
+                              'what': row[7], 'detail': str(e)[:60]}
     # Return ORDERED GROUPS, not a dict. Flask's jsonify sorts dict keys, which
     # silently alphabetised this row and destroyed the role grouping entirely.
+    ROLE_WHAT = {
+        'Brokers':     'The connection to the broker. Everything below is dead without these.',
+        'Books':       'The things that place real orders. A red pill here means a book is not trading.',
+        'Data':        'The bars and headlines every book reads. These fail quietly — a book keeps '
+                       'running on stale data rather than stopping, so watch the ages.',
+        'Instruments': 'Measurement only. Nothing here can place an order; silent failure here '
+                       'costs EVIDENCE, not money — which is why it is easy to miss.',
+        'Watchdogs':   'They watch the rest and report. None of them corrects anything on its own; '
+                       'amber means read the log, not that something was fixed.',
+    }
     groups, seen = [], {}
     for row in SERVICES:
         role = row[4]
         if role not in seen:
-            seen[role] = {'role': role, 'items': []}
+            seen[role] = {'role': role, 'what': ROLE_WHAT.get(role, ''), 'items': []}
             groups.append(seen[role])
         seen[role]['items'].append(dict(states[row[0]], name=row[0]))
     return groups

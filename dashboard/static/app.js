@@ -526,6 +526,15 @@ function renderModeBadge(mode) {
 }
 
 // ── Services ───────────────────────────────────────────────
+// Prose destined for a title="" attribute. These strings contain quotes, apostrophes
+// and angle brackets; interpolating them raw silently truncates the tooltip at the
+// first quote (or worse).
+function attrEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function renderServices(svcs) {
   const row = document.getElementById('services-row');
   if (!svcs) { row.innerHTML = ''; return; }
@@ -549,12 +558,21 @@ function renderServices(svcs) {
                  : st.state === 'stale' ? ' ⏱' : '';
       const ago = (st.state === 'idle' && st.ago)
         ? `<span class="svc-ago">${st.ago}</span>` : '';
-      return `<div class="svc-pill ${st.state}" title="${st.name}: ${st.detail || st.state}">
+      // Purpose FIRST, run-state second. The pill already shows how it is doing;
+      // the question these rows kept raising is what the thing actually IS — turbo,
+      // ref_prices and heartbeat especially. Escaped, because these sentences contain
+      // quotes and apostrophes that would otherwise break out of the title attribute.
+      const tip = attrEsc(
+        (st.what ? st.what + '\n\n' : '') + (st.detail || st.state));
+      return `<div class="svc-pill ${st.state}" title="${tip}">
          <span class="dot"></span>${st.name}${flag}${ago}
        </div>`;
     }).join('');
+    const roleTip = attrEsc(
+      (g.what ? g.what + '\n\n' : '') +
+      `${(g.items||[]).length} services, ${bad} needing attention`);
     return `<div class="svc-line" data-role="${g.role}">
-        <span class="svc-role" title="${g.role}: ${(g.items||[]).length} services, ${bad} needing attention">${g.role}</span>
+        <span class="svc-role" title="${roleTip}">${g.role}</span>
         <span class="svc-pills">${pills}</span>
       </div>`;
   }).join('');
