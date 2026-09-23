@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 22 2026 (pm4)
+Last updated: Sep 22 2026 (pm5)
 
 ---
 
@@ -4926,3 +4926,43 @@ only **4 future entries** — October CPI/NFP are missing.
 **SWEEP:** pyflakes clean · app.js syntax-checked in a real JS engine · every renderer
 executed against the live payload · 3 test suites pass · both collectors re-run to exit 0 ·
 dashboard restarted and serving.
+
+---
+
+## Sep 22 2026 (pm5) — service row restructured: one line per layer, and "idle" now says when it last ran
+
+**① "WHY ARE THE ENGINES GREY?" — a fair question, and the chip was the problem.**
+`idle` is correct for Wave Rider / Contrarian / Clockwork: they are scheduled jobs between
+runs, not daemons. But a bare grey chip reads as **off**, which is alarming for a trading
+engine. Grey alone also could not separate *"ran 35 seconds ago"* from *"has not run in
+three days"* — and only one of those is healthy.
+Every scheduled service now reports **when it last ran**, from its log mtime, with a
+per-service staleness budget (5-minute jobs: 24h · daily jobs: 96h, to survive a long
+weekend). A new `stale` state (amber ⏱) fires when a job is overdue.
+
+    BOOKS   ● autotrader  ○ wave_rider 35s  ○ contrarian 2m  ○ clockwork 54s  ● options …
+    DATA    ○ collect_bars 12m  ○ futures_bars 9m  ● news_engine  ○ field_report 12h
+
+**② ONE ROW PER LAYER, each with its own colour.** 22 pills on a single wrapping line was
+unreadable. Now five labelled rows — **Brokers** (blue) · **Books** (green) · **Data** (cyan) ·
+**Instruments** (purple) · **Watchdogs** (amber) — in a `86px + 1fr` grid so the pills align.
+`.statusbar` switched to `align-items: flex-start` since services is a five-row block now.
+Verified in a real JS engine: 5 rows, 5 roles, 11 `up` / 10 `idle` / 1 `failing`, 10
+"ran ago" chips.
+
+**THE CHIP VOCABULARY, in one place:**
+| chip | means |
+|---|---|
+| **green ●** | daemon holding a PID — genuinely alive |
+| **grey ○ + age** | scheduled job between runs, and when it last ran. **Normal.** |
+| **amber ⏱** | scheduled job overdue against its own budget |
+| **amber !** | last run exited non-zero (for `trade_cop`, that means it FOUND a divergence) |
+| **red ✕** | daemon with no PID — **not running** |
+
+**SWEEP:** pyflakes clean · app.js syntax-checked in a real JS engine · every renderer
+executed against the live payload · rendered HTML structurally verified · 3 test suites pass ·
+dashboard restarted and serving.
+
+**NEXT SESSION:** work the alerts — currently two, both real: the **Trade Cop divergence**
+(Sep 21: entry-window violations on AXTI/BNC, and INTC with no graded scan_log signal behind
+it) and **SHORT book health 53 days stale**.

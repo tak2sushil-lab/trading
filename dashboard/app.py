@@ -23,7 +23,7 @@ PROD_BRIDGE_URL = None   # set to 'http://localhost:8001' when prod bridge is li
 PORT            = 8080
 ET              = ZoneInfo('America/New_York')
 
-# (name shown, launchd label, kind, what a non-zero last-exit means, role group)
+# (name, launchd label, kind, meaning of a non-zero exit, role, log file, max age hrs)
 #   kind 'daemon'    — must hold a PID; no PID is a real alarm
 #   kind 'scheduled' — idle between runs is NORMAL; judge it by its last exit code
 #
@@ -34,34 +34,34 @@ ET              = ZoneInfo('America/New_York')
 # watchdog itself (heartbeat) and the scoring job were invisible too.
 SERVICES = [
     # ── brokers and bridges: everything else is dead without these ──
-    ('gateway',      'com.sushil.trading.gateway',        'daemon',    '', 'Brokers'),
-    ('bridge',       'com.sushil.trading.bridge',         'daemon',    '', 'Brokers'),
-    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    '', 'Brokers'),
-    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    '', 'Brokers'),
+    ('gateway',      'com.sushil.trading.gateway',        'daemon',    '', 'Brokers', None, None),
+    ('bridge',       'com.sushil.trading.bridge',         'daemon',    '', 'Brokers', None, None),
+    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    '', 'Brokers', None, None),
+    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    '', 'Brokers', None, None),
     # ── the books that place orders ──
-    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    '', 'Books'),
-    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored', 'Books'),
-    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books'),
-    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books'),
-    ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books'),
-    ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books'),
-    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books'),
-    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    '', 'Books'),
+    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    '', 'Books', None, None),
+    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored', 'Books', 'wave_rider.log', 24),
+    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books', 'contrarian.log', 24),
+    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books', 'clockwork.log', 24),
+    ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books', None, None),
+    ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books', None, None),
+    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books', None, None),
+    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    '', 'Books', None, None),
     # ── data the books depend on ──
-    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed', 'Data'),
-    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed', 'Data'),
-    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    '', 'Data'),
-    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data'),
+    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed', 'Data', 'collect_bars.log', 96),
+    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed', 'Data', 'futures_collect_bars.log', 96),
+    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    '', 'Data', None, None),
+    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data', 'market_context.log', 96),
     # ── instrumentation: silent failure here costs evidence, not money ──
-    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments'),
-    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments'),
-    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments'),
+    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments', 'scan_forward_label.log', 96),
+    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96),
+    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments', 'turbo.log', 24),
     # ── watchdogs. parity_check exits 1 when it FINDS a divergence — that is its
     #    designed signal, not a crash, so amber here means "read the report". ──
-    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored', 'Watchdogs'),
+    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored', 'Watchdogs', 'heartbeat.log', 24),
     ('trade_cop',    'com.sushil.trading.parity_check',   'scheduled',
-     'found a divergence — by design, read logs/parity.log', 'Watchdogs'),
-    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    '', 'Watchdogs'),
+     'found a divergence — by design, read logs/parity.log', 'Watchdogs', 'parity.log', 96),
+    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    '', 'Watchdogs', None, None),
 ]
 
 
@@ -214,7 +214,7 @@ def get_services():
             parts = line.split('\t')
             if len(parts) >= 3:
                 table[parts[2].strip()] = (parts[0].strip(), parts[1].strip())
-        for name, label, kind, note, role in SERVICES:
+        for name, label, kind, note, role, logf, max_h in SERVICES:
             if label not in table:
                 states[name] = {'state': 'missing', 'ok': False, 'role': role,
                                 'detail': 'not loaded in launchd'}
@@ -227,10 +227,32 @@ def get_services():
                                 'detail': f'running (pid {pid})'}
             elif scheduled:
                 bad = rc not in ('0', '')
+                # Sep 22 2026: a bare "idle" chip reads as "off", which is alarming
+                # for a trading engine that is simply between scheduled runs. Show
+                # WHEN it last ran instead — a scheduled job that ran 5 minutes ago
+                # is healthy; one that has not run in days is broken, and only the
+                # age distinguishes them.
+                age_s, ago = None, None
+                if logf:
+                    try:
+                        age_s = int(time.time() - os.path.getmtime(
+                            os.path.join(BASE_DIR, 'logs', logf)))
+                        ago = (f'{age_s}s' if age_s < 120 else
+                               f'{age_s // 60}m' if age_s < 7200 else
+                               f'{age_s // 3600}h' if age_s < 172800 else
+                               f'{age_s // 86400}d')
+                    except Exception:
+                        pass
+                overdue = (age_s is not None and max_h and age_s > max_h * 3600)
                 states[name] = {
-                    'state': 'failing' if bad else 'idle', 'ok': not bad, 'rc': rc, 'role': role,
+                    'state': 'failing' if bad else ('stale' if overdue else 'idle'),
+                    'ok': not (bad or overdue), 'rc': rc, 'role': role,
+                    'ago': ago, 'age_s': age_s,
                     'detail': ((note or f'last run exited {rc}') if bad
-                               else 'idle between scheduled runs (normal)')}
+                               else (f'has not run for {ago} — expected at least every '
+                                     f'{max_h}h' if overdue
+                                     else f'ran {ago} ago; waiting for its next scheduled run'
+                                          if ago else 'idle between scheduled runs (normal)'))}
             else:
                 states[name] = {'state': 'down', 'ok': False, 'rc': rc, 'role': role,
                                 'detail': f'NOT RUNNING — last exit {rc}'}

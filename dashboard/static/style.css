@@ -119,7 +119,7 @@ html, body {
 /* ── STATUS BAR ─────────────────────────────────────────── */
 .statusbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;   /* services is a 5-row block now, not one line */
   justify-content: space-between;
   padding: 8px 20px;
   background: var(--card);
@@ -547,10 +547,22 @@ html, body {
 /* Sep 22 2026: services are grouped by role — Brokers / Books / Data /
    Instruments / Watchdogs — so "which layer is broken" reads at a glance
    instead of hunting an alphabetical list of 22 pills. */
-.svc-group { display:flex; align-items:center; gap:6px; flex-wrap:wrap;
-             padding:2px 8px 2px 0; margin-right:4px;
-             border-right:1px solid rgba(139,148,158,.18); }
-.svc-group:last-child { border-right:none; }
-.svc-role  { font-size:9px; font-weight:700; letter-spacing:.6px;
-             text-transform:uppercase; color:var(--text-muted,#8b949e);
-             margin-right:2px; white-space:nowrap; }
+/* One ROW per role — 22 pills on a single wrapping line was unreadable. Each
+   layer gets its own line and its own colour so a problem is located, not hunted. */
+.services  { display:flex; flex-direction:column; gap:3px; }
+.svc-line  { display:grid; grid-template-columns:86px 1fr; align-items:start; gap:8px; }
+.svc-pills { display:flex; gap:5px; flex-wrap:wrap; }
+.svc-role  { font-size:9px; font-weight:700; letter-spacing:.7px;
+             text-transform:uppercase; white-space:nowrap; text-align:right;
+             padding-top:3px; opacity:.9; }
+.svc-line[data-role="Brokers"]     .svc-role { color:#4f9cf6; }
+.svc-line[data-role="Books"]       .svc-role { color:#3fb950; }
+.svc-line[data-role="Data"]        .svc-role { color:#39c5cf; }
+.svc-line[data-role="Instruments"] .svc-role { color:#a371f7; }
+.svc-line[data-role="Watchdogs"]   .svc-role { color:#e3b341; }
+/* how long ago a scheduled job last ran — the thing that makes "idle" legible */
+.svc-ago   { margin-left:4px; font-weight:500; opacity:.65; text-transform:none;
+             letter-spacing:0; }
+.svc-pill.stale { color:#e3b341; background:rgba(227,179,65,.12);
+                  border:1px solid rgba(227,179,65,.32); }
+.svc-pill.stale .dot { background:#e3b341; }

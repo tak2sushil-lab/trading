@@ -362,24 +362,33 @@ function renderServices(svcs) {
   // true for a crashed daemon and for a scheduled job that is correctly idle. They
   // could not report a failure. Now four states, and `idle` is styled apart from
   // `up` so a dormant scheduled job never reads as a live process.
-  // Sep 22 2026: this took a dict, and Flask's jsonify SORTS dict keys — which
-  // silently alphabetised the row and destroyed the role grouping. The API now
-  // sends ordered groups, so "which layer is broken" is readable at a glance.
+  // Sep 22 2026: one ROW per role instead of 22 pills on one wrapping line —
+  // Brokers / Books / Data / Instruments / Watchdogs each get their own line and
+  // their own colour, so "which layer is broken" is a glance, not a search.
+  // Scheduled jobs show when they last RAN: a bare grey "idle" chip reads as
+  // "off", which is alarming for a trading engine that is simply between runs.
   const groups = Array.isArray(svcs) ? svcs
     : [{ role: '', items: Object.entries(svcs).map(([name, v]) =>
         (v && typeof v === 'object') ? { ...v, name } : { name, state: v ? 'up' : 'down' }) }];
   row.innerHTML = groups.map(g => {
-    const pills = (g.items || []).map(st =>
-      `<div class="svc-pill ${st.state}" title="${st.name}: ${st.detail || st.state}">
-         <span class="dot"></span>${st.name}${st.state === 'down' ? ' ✕' : (st.state === 'failing' ? ' !' : '')}
-       </div>`).join('');
     const bad = (g.items || []).filter(i => !i.ok).length;
-    return `<div class="svc-group">
+    const pills = (g.items || []).map(st => {
+      const flag = st.state === 'down' ? ' ✕'
+                 : st.state === 'failing' ? ' !'
+                 : st.state === 'stale' ? ' ⏱' : '';
+      const ago = (st.state === 'idle' && st.ago)
+        ? `<span class="svc-ago">${st.ago}</span>` : '';
+      return `<div class="svc-pill ${st.state}" title="${st.name}: ${st.detail || st.state}">
+         <span class="dot"></span>${st.name}${flag}${ago}
+       </div>`;
+    }).join('');
+    return `<div class="svc-line" data-role="${g.role}">
         <span class="svc-role" title="${g.role}: ${(g.items||[]).length} services, ${bad} needing attention">${g.role}</span>
-        ${pills}
+        <span class="svc-pills">${pills}</span>
       </div>`;
   }).join('');
 }
+
 
 // ── Regime chip ────────────────────────────────────────────
 function renderRegime(regime) {
