@@ -35,6 +35,5 @@ python-dotenv
 pytz
 
 # Voice (optional — may need system audio setup on Mac)
-pyttsx3
 SpeechRecognition
 hmmlearn

@@ -17,7 +17,7 @@ load_dotenv()
 
 import os, json, time, requests, yfinance as yf, pandas as pd, numpy as np, subprocess
 from datetime import datetime, date, timedelta
-import pytz, pyttsx3, io, base64, threading
+import pytz, io, base64, threading   # pyttsx3 dropped Sep 22 2026 with the spoken summary
 import matplotlib
 matplotlib.use('Agg')
 import mplfinance as mpf
@@ -677,15 +677,6 @@ def send_telegram_to(chat_id, msg):
         log(f"TG→{chat_id}: {msg[:80]}")
     except Exception as e:
         log(f"TG error (to {chat_id}): {e}")
-
-def speak(text):
-    try:
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 165)
-        engine.say(text)
-        engine.runAndWait()
-    except Exception as e:
-        log(f"Voice error: {e}")
 
 # ─────────────────────────────────────────────────────────
 # MARKET TIMING
@@ -5999,31 +5990,6 @@ def morning_catalyst_scan():
 
     send_telegram('\n\n'.join(msg_parts))
 
-def morning_voice_summary():
-    if date.today() in US_HOLIDAYS_2026:
-        return
-    log("Morning voice summary")
-    try:
-        r       = requests.get(f"{BRIDGE}/account", timeout=10)
-        account = r.json()
-        pnl     = account.get('UnrealizedPnL', 0) or 0
-        net_liq = account.get('NetLiquidation', 0) or 0
-        buying  = account.get('BuyingPower', 0) or 0
-        wr_30d  = get_win_rate(days=30)
-        positions = get_ibkr_positions()
-        pnl_word  = "up" if pnl >= 0 else "down"
-        speak(
-            f"Good morning! Auto trader active. "
-            f"Account value {net_liq:,.0f} dollars. "
-            f"You are {pnl_word} {abs(pnl):,.0f} dollars unrealized. "
-            f"Buying power {buying:,.0f} dollars. "
-            f"Holding {len(positions)} positions. "
-            f"30 day win rate is {wr_30d:.0f} percent. "
-            f"Good luck today!"
-        )
-    except Exception as e:
-        log(f"Voice summary error: {e}")
-
 def evening_summary():
     if date.today() in US_HOLIDAYS_2026:
         log("Evening summary skipped — market holiday")
@@ -6321,7 +6287,7 @@ if __name__ == '__main__':
     print(f"Entry patterns:   ORB | VWAP reclaim | Bull flag | HOD break | RS vs SPY")
     print(f"Entry cutoff:     {NO_ENTRY_AFTER}:00 ET | Min R:R 1:{MIN_RR}")
     print("=" * 55)
-    print("Scheduled: pre-mkt 4:30am | catalyst 8:15am | voice 9am | EOD 4:30pm | learning 11pm | reset midnight")
+    print("Scheduled: pre-mkt 4:30am | catalyst 8:15am | EOD 4:30pm | learning 11pm | reset midnight")
     print("Telegram:  HELP | STATUS | REGIME | TODAY | BUY <SYM> [%] | SELL <SYM> | CLOSEALL | PAUSE | RESUME | BLOCK <SYM>")
     print("Press CTRL+C to stop\n")
 
@@ -6329,7 +6295,6 @@ if __name__ == '__main__':
     sched = BackgroundScheduler(timezone=ET)
     sched.add_job(premarket_early_scan,   'cron',     day_of_week='mon-fri', hour=4,  minute=30)
     sched.add_job(morning_catalyst_scan,  'cron',     day_of_week='mon-fri', hour=8,  minute=15)
-    sched.add_job(morning_voice_summary,  'cron',     day_of_week='mon-fri', hour=9,  minute=0)
     sched.add_job(evening_summary,        'cron',     day_of_week='mon-fri', hour=16, minute=30)
     sched.add_job(chart_gate_weekly_review, 'cron',   day_of_week='fri',     hour=16, minute=35)
     sched.add_job(thesis_check_weekly_review, 'cron', day_of_week='fri',     hour=16, minute=36)

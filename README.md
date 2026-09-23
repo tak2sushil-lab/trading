@@ -66,7 +66,6 @@ graph TB
 
     subgraph Notify["Notifications"]
         WA[WhatsApp<br/>Alerts + Commands]
-        VOICE[pyttsx3<br/>Voice Summaries]
     end
 
     IBKR <-->|ib_async| BRIDGE
@@ -89,7 +88,7 @@ graph TB
     DG --> DB
 
     BRIDGE --> WA
-    AT --> WA & VOICE
+    AT --> WA
     TUNNEL --> BRIDGE
     WA -->|YES/NO commands| BRIDGE
 ```
@@ -149,8 +148,7 @@ flowchart TD
     end
 
     subgraph Evening["Nightly Cycle — 4:30–11:00pm ET"]
-        G1[EOD Summary<br/>4:30pm] --> G2[Voice P&L Report<br/>pyttsx3]
-        G2 --> G3[WhatsApp Day Summary]
+        G1[EOD Summary<br/>4:30pm] --> G3[WhatsApp Day Summary]
         G3 --> G4[learner.py runs 11pm<br/>Analyze all today's trades]
         G4 --> G5[RSI range performance<br/>Volume level performance<br/>Sector wins/losses<br/>Earnings proximity]
         G5 --> G6[Update strategy_weights<br/>in trades.db]
@@ -276,7 +274,6 @@ gantt
 | Scheduling | APScheduler | Cron-style task automation |
 | Persistence | SQLite3 | Trades, P&L, strategy weights |
 | Data Processing | pandas + numpy | OHLCV manipulation, statistics |
-| Voice | pyttsx3 | End-of-day spoken summaries |
 | Backtesting | `backtesting` library + matplotlib | Historical strategy validation |
 | Config | python-dotenv (.env) | API keys, IBKR settings |
 

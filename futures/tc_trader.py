@@ -1228,6 +1228,34 @@ def tide_agrees(side: str) -> bool:
         return True
     return above if side == 'LONG' else (not above)
 
+def tide_observe(side: str, price: float, session: str) -> None:
+    """Score the Daily Tide against EVERY A+ signal, log-only.
+
+    Sep 22 2026 — why this exists as a separate observation point. The gate itself lives
+    in place_trade(), which is correct for a GATE: that is where a block must happen. But
+    place_trade is only reached by signals that have already cleared the hero gate, RVOL,
+    HTF, the entry cooldown and MAX_OPEN_TRADES=1. Measuring there meant the log-only
+    trial could only ever see the handful of trades the book was about to take anyway —
+    15 in three weeks, 13 of them LONG into an up-tide, so almost nothing to score. A
+    bouncer stationed at the VIP door cannot tell you who is out on the street.
+
+    This runs at the A+ seam instead, before any downstream gate, so every candidate the
+    rule has an opinion about gets recorded and scored by gate_audit's 15/30/60m
+    follow-up. It changes no decision: it places nothing, blocks nothing, and returns
+    None. The gate in place_trade is untouched and remains the only thing that can act.
+    """
+    try:
+        above, close, ma = get_daily_tide()
+        if above is None or tide_agrees(side):
+            return
+        dist = (close / ma - 1) * 100
+        log_block(ACCOUNT_MODE, SYMBOL, side, 'TIDE_INFO',
+                  f'prev_close={close:.0f} ma{TIDE_MA_DAYS}={ma:.0f} dist={dist:+.1f}%',
+                  price, session)
+    except Exception as e:
+        log(f"  [TIDE] observation failed: {e}")
+
+
 # ── Database helpers ──────────────────────────────────────
 
 def get_open_futures_trades() -> list:
@@ -1496,6 +1524,9 @@ def place_trade(side: str, sig: dict, regime: str,
         log(f"  [TIDE] {_verdict}: {side} while prev close {_tide_c:,.0f} is "
             f"{'above' if _tide_above else 'below'} the {TIDE_MA_DAYS}d MA "
             f"{_tide_m:,.0f} ({_dist:+.1f}%)")
+        # Scoring rows are written by tide_observe() at the A+ seam, which sees every
+        # candidate rather than only the few that reach here. Write from this path ONLY
+        # when the gate actually blocks, so the same signal is never counted twice.
         try:
             # get_session() rather than `session`: that local is not assigned until ~55
             # lines BELOW this point, so this call raised UnboundLocalError every time and
@@ -1506,10 +1537,10 @@ def place_trade(side: str, sig: dict, regime: str,
             # (TypeError on None, Aug 9) and the dead evening funnel line (NameError,
             # Sep 22) were the first two. A bare `except: pass` around instrumentation
             # turns a crash into a silent, permanent hole in the evidence.
-            log_block(ACCOUNT_MODE, SYMBOL, side,
-                      'TIDE' if TIDE_GATE_ENABLED else 'TIDE_INFO',
-                      f'prev_close={_tide_c:.0f} ma{TIDE_MA_DAYS}={_tide_m:.0f} '
-                      f'dist={_dist:+.1f}%', price, get_session())
+            if TIDE_GATE_ENABLED:
+                log_block(ACCOUNT_MODE, SYMBOL, side, 'TIDE',
+                          f'prev_close={_tide_c:.0f} ma{TIDE_MA_DAYS}={_tide_m:.0f} '
+                          f'dist={_dist:+.1f}%', price, get_session())
         except Exception as _te:
             log(f"  [TIDE] could not record the block: {_te}")
         if TIDE_GATE_ENABLED:
@@ -2311,6 +2342,9 @@ def run_scan():
             try: log_block('TC', 'MNQ', 'LONG', 'GRADE', f'{grade}({score})', price, session)
             except Exception: pass
         else:
+            # Every A+ candidate is scored against the Daily Tide here —
+            # log-only, decides nothing. See tide_observe().
+            tide_observe('LONG', price_now, session)
             h_score, h_flags = score_entry_regime(price_now, atr_now, 'LONG',
                                                    bars_hist, prev_rth, hero_regime)
             contracts_hero = contracts_from_regime_score(h_score, hero_regime, 2)
@@ -2362,6 +2396,9 @@ def run_scan():
             try: log_block('TC', 'MNQ', 'SHORT', 'GRADE', f'{grade}({score})', price, session)
             except Exception: pass
         else:
+            # Every A+ candidate is scored against the Daily Tide here —
+            # log-only, decides nothing. See tide_observe().
+            tide_observe('SHORT', price_now, session)
             h_score, h_flags = score_entry_regime(price_now, atr_now, 'SHORT',
                                                    bars_hist, prev_rth, hero_regime)
             contracts_hero = contracts_from_regime_score(h_score, hero_regime, 2)
