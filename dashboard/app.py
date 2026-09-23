@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TriVega Trading Dashboard — Flask server, port 8080."""
 
-import os, sys, sqlite3, subprocess, json, base64, functools
+import os, sys, sqlite3, subprocess, json, base64, functools, time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -155,12 +155,62 @@ def get_bridge_info(url=None):
     return data
 
 
+# Which services are long-running daemons (must hold a PID) and which are scheduled
+# jobs that are SUPPOSED to be idle between runs. Judging them the same way is what
+# made this row meaningless — see get_services().
+SCHEDULED_SERVICES = {'collect_bars', 'futures_bars', 'graphify'}
+
+
 def get_services():
+    """Real run-state per service, not just "is the plist loaded".
+
+    Sep 22 2026: this used to be `label in launchctl_list_output`, which is True for
+    every LOADED job whether or not it is running, has ever run, or exited non-zero.
+    A crashed daemon showed green; a scheduled job that is correctly idle showed green;
+    parity_check sitting on exit code 1 showed green. The row could not report a
+    failure of any kind.
+
+    `launchctl list` prints three columns: PID, last exit status, label.
+      - daemon with a PID      -> up
+      - daemon without a PID   -> DOWN (the real alarm)
+      - scheduled job, exit 0  -> idle (normal between runs)
+      - scheduled job, exit !=0-> failing (its last run errored)
+    A daemon's exit status is ignored when it holds a PID: -15 is just SIGTERM from
+    the last `launchctl kickstart -k` restart, which is routine here.
+    """
+    states = {}
     try:
-        out = subprocess.run(['launchctl', 'list'], capture_output=True, text=True, timeout=5).stdout
-        return {name: (label in out) for name, label in SERVICES}
-    except Exception:
-        return {name: False for name, _ in SERVICES}
+        out = subprocess.run(['launchctl', 'list'], capture_output=True,
+                             text=True, timeout=5).stdout
+        table = {}
+        for line in out.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                table[parts[2].strip()] = (parts[0].strip(), parts[1].strip())
+        for name, label in SERVICES:
+            if label not in table:
+                states[name] = {'state': 'missing', 'ok': False,
+                                'detail': 'not loaded in launchd'}
+                continue
+            pid, rc = table[label]
+            running = pid not in ('-', '')
+            scheduled = name in SCHEDULED_SERVICES
+            if running:
+                states[name] = {'state': 'up', 'ok': True, 'pid': pid,
+                                'detail': f'running (pid {pid})'}
+            elif scheduled:
+                bad = rc not in ('0', '')
+                states[name] = {
+                    'state': 'failing' if bad else 'idle', 'ok': not bad, 'rc': rc,
+                    'detail': (f'last run exited {rc}' if bad
+                               else 'idle between scheduled runs (normal)')}
+            else:
+                states[name] = {'state': 'down', 'ok': False, 'rc': rc,
+                                'detail': f'NOT RUNNING — last exit {rc}'}
+    except Exception as e:
+        for name, _ in SERVICES:
+            states[name] = {'state': 'unknown', 'ok': False, 'detail': str(e)[:60]}
+    return states
 
 
 def get_regime():
@@ -1270,6 +1320,60 @@ def get_system_health():
                                   'trades_scorable': _tr or 0}
             except Exception:
                 out['scoring'] = {}
+
+            # Data feed + watchdog (Sep 22 2026). Everything downstream degrades
+            # silently if the 5-min bars stop arriving or a trader's loop dies:
+            # Book Health, the forward label, the swing engines' signals and every
+            # backtest all read bars_5m. The heartbeat files are written by
+            # futures/heartbeat.py on every scan — silence means the LOOP stopped,
+            # not that no trade qualified.
+            feed = {}
+            try:
+                _md = os.path.join(BASE_DIR, 'market_data.db')
+                _mc = sqlite3.connect(f'file:{_md}?mode=ro', uri=True, timeout=4)
+                _last = _mc.execute(
+                    "SELECT MAX(replace(ts_utc,'T',' ')) FROM bars_5m").fetchone()[0]
+                _mc.close()
+                feed['bars_last'] = (_last or '')[:16]
+                if _last:
+                    _d = datetime.strptime(_last[:10], '%Y-%m-%d')
+                    feed['bars_age_days'] = (datetime.now() - _d).days
+            except Exception as _fe:
+                feed['err'] = str(_fe)[:60]
+            beats = []
+            try:
+                _hb = os.path.join(BASE_DIR, 'logs', 'heartbeat')
+                for _f in sorted(os.listdir(_hb)) if os.path.isdir(_hb) else []:
+                    if not _f.endswith('.json') or _f.startswith('_') or 'exitmap' in _f:
+                        continue
+                    _age = int(time.time() - os.path.getmtime(os.path.join(_hb, _f)))
+                    beats.append({'name': _f[:-5], 'age_s': _age})
+            except Exception:
+                pass
+            feed['beats'] = beats
+            out['feed'] = feed
+
+            # Prop-account room (Sep 22 2026). TC runs under a trailing Max Loss
+            # Limit, and on Sep 3 it froze itself out of trading by $45 with no
+            # indication anywhere — check_can_trade() refuses everything once
+            # balance+unrealised drops under (high_water_mark - MLL + buffer), and
+            # it cannot earn its way back because it cannot trade. Surfacing the
+            # remaining room is the whole warning.
+            try:
+                import json as _json
+                with open(os.path.join(BASE_DIR, 'futures', 'prop_state.json')) as _pf:
+                    _ps = _json.load(_pf)
+                _hwm = float(_ps.get('high_water_mark') or 0)
+                _bal = float(_ps.get('balance') or 0)
+                _floor = _hwm - 2000.0            # TopStep $50k trailing MLL
+                out['prop'] = {
+                    'mode': _ps.get('mode'), 'balance': round(_bal, 2),
+                    'hwm': round(_hwm, 2), 'floor': round(_floor, 2),
+                    'room': round(_bal - _floor - 300.0, 2),   # 300 = SOFT_STOP_BUFFER
+                    'target': round(float(_ps.get('total_profit') or 0), 2),
+                }
+            except Exception:
+                out['prop'] = {}
 
             # Book-level Greeks — latest watchman snapshot (Aug 3 2026).
             # Only shown when fresh (today) so a stale row can't masquerade

@@ -141,6 +141,19 @@ html, body {
 .svc-pill .dot { width:5px; height:5px; border-radius:50%; }
 .svc-pill.up .dot   { background: var(--green-bright); }
 .svc-pill.down .dot { background: var(--red-bright); }
+/* Sep 22 2026: four real states instead of a boolean. `idle` is a scheduled job
+   correctly waiting for its next run — muted, not green, so it never reads as a
+   live process. `failing` is a scheduled job whose last run exited non-zero
+   (parity_check was sitting on exit 1 and showing green). */
+.svc-pill.idle    { color: var(--text-muted, #8b949e); background: rgba(139,148,158,.08);
+                    border: 1px solid rgba(139,148,158,.18); }
+.svc-pill.idle .dot { background: #8b949e; }
+.svc-pill.failing { color: #e3b341; background: rgba(227,179,65,.12);
+                    border: 1px solid rgba(227,179,65,.32); }
+.svc-pill.failing .dot { background: #e3b341; }
+.svc-pill.missing, .svc-pill.unknown { color: var(--red-bright);
+                    background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.25); }
+.svc-pill.missing .dot, .svc-pill.unknown .dot { background: var(--red-bright); }
 
 .status-right { display: flex; align-items: center; gap: 12px; }
 

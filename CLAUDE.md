@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 22 2026 (pm)
+Last updated: Sep 22 2026 (pm2)
 
 ---
 
@@ -4799,3 +4799,47 @@ options_trader.py, auto_trader.py) · all 4 files parse · JS braces/parens/back
 every referenced renderer defined, dead renderer gone · **all 9 dashboard data functions
 return and JSON-serialise** · full `/api/data` payload round-trips (25 keys, new keys
 present) · 3 test suites pass · 4 services verified running.
+
+---
+
+## Sep 22 2026 (pm2) — my splice broke two cards · service pills were meaningless · health card rebuilt
+
+**① 🐛 I BROKE IT, AND THE WAY I CHECKED COULD NOT HAVE CAUGHT IT.** Removing the dead
+`renderFishFinderHealth` by splicing between two markers also deleted **`renderFieldReport`**,
+which sat between them. `app.js` still parsed — delimiters balanced, a real JavaScriptCore
+syntax check passed — but `renderSystemHealth()` threw `ReferenceError` at runtime, and
+because `renderAll()` calls renderers in sequence, **SYSTEM HEALTH and every card after it
+(RECENT ACTIVITY) rendered blank.**
+⭐ **Counting braces cannot catch a missing function. Running it can.**
+**SHIPPED: `dashboard/test_render.py`** — executes EVERY renderer against the live
+`/api/data` payload in a real JS engine (JavaScriptCore via `osascript`). **Run it after any
+change to `app.js`.** It found this in one shot and would have prevented it.
+
+**② SERVICE PILLS WERE REPORTING "IS THE PLIST LOADED", NOT "IS IT RUNNING".**
+`get_services()` was `label in launchctl_list_output`, which is True for a crashed daemon,
+for a scheduled job correctly idle, and for a job sitting on a non-zero exit. **The row could
+not report a failure of any kind** — `parity_check` was on exit code 1 and showed green.
+Now parses `launchctl list`'s PID and exit-status columns into four real states:
+`up` (daemon holds a PID) · `down` (daemon with no PID — the real alarm) · `idle` (scheduled
+job between runs, styled muted so it never reads as live) · `failing` (scheduled job whose
+last run exited non-zero). A daemon's exit code is ignored while it holds a PID — `-15` is
+just SIGTERM from the last `kickstart -k`.
+
+**③ SYSTEM HEALTH REBUILT around what this system actually is** — four equity books, an
+options book and two futures accounts sharing one broker, all on paper, all building
+evidence. The card should answer **"can each book trade right now, is the data feeding it
+fresh, and is anything frozen?"** Added:
+- **Data feed** — newest `bars_5m` timestamp + per-trader heartbeat ages. Everything
+  downstream reads those bars (Book Health, the forward label, the swing engines, every
+  backtest); if the feed stops the system degrades quietly instead of failing loudly.
+  London's beat is expected to be stale outside 03:00-08:59 ET and is not flagged.
+- **Prop room (TC)** — balance vs the trailing-MLL floor. On Sep 3 TC locked itself out of
+  trading **by $45** with nothing on this page saying so, and it could not earn its way back
+  because it could not trade. The remaining room IS the warning.
+- **Book Health age** (pm), **options circuit breaker** (pm), **Fleet capital** (pm),
+  **Scoring loop** (pm).
+- Mirror Book kept, tooltip now explains that gaps are normal for a low-frequency shadow book.
+
+**BUG SWEEP:** pyflakes clean · 4 Python files parse · app.js syntax-checked in a real JS
+engine · **all renderers executed against the live payload** · all 10 dashboard data
+functions JSON-serialise · 3 test suites pass · dashboard restarted and serving.

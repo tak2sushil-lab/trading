@@ -171,12 +171,54 @@ function renderSystemHealth(h) {
     </div>
     <div class="health-row">
       <span class="health-label" title="Shadow-only book that fades the Black Box Recorder's LONG signals. Places NO orders — needs 30+ green days before promotion is discussed (review ~Aug 17)">Mirror Book</span>
-      <span title="Shadow paper result — 1 MNQ contract equivalent, no real orders">${s.n ?? 0} shadow trades · ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts all-time · ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts last 14d</span>
+      <span title="Shadow paper result — 1 MNQ contract equivalent, no real orders. Low-frequency: gaps between entries are normal, but check the date if 14d reads 0.">${s.n ?? 0} shadow trades · ${(s.pts_total ?? 0) >= 0 ? '+' : ''}${s.pts_total ?? 0} pts all-time · ${(s.pts_14d ?? 0) >= 0 ? '+' : ''}${s.pts_14d ?? 0} pts last 14d</span>
     </div>
+    ${renderFeed(h.feed)}
+    ${renderProp(h.prop)}
     ${renderFleet(h.fleet)}
     ${renderScoring(h.scoring)}
     ${renderOptionsHealth(h.options)}
     ${renderFieldReport(h.field_report)}`;
+}
+
+// ── Data feed + watchdog (Sep 22 2026) ─────────────────────────────────────
+// Everything downstream reads bars_5m — Book Health, the forward label, the swing
+// engines' signals, every backtest. If the feed stops, the whole system degrades
+// quietly rather than failing loudly. Heartbeats are written on every trader scan,
+// so silence means the LOOP stopped, not that nothing qualified.
+function renderFeed(fd) {
+  if (!fd || (!fd.bars_last && !(fd.beats || []).length)) return '';
+  const stale = (fd.bars_age_days ?? 0) > 1;
+  const beats = (fd.beats || []).map(b => {
+    // London only runs 03:00-08:59 ET, so an old beat there is expected, not a fault.
+    const lon = b.name.indexOf('london') !== -1;
+    const bad = b.age_s > 600 && !lon;
+    const mins = Math.round(b.age_s / 60);
+    const ago = b.age_s < 120 ? `${b.age_s}s` : `${mins}m`;
+    return `<span class="gate-chip ${bad ? 'neg' : ''}" title="${b.name} last wrote a heartbeat ${ago} ago.${lon ? ' London only runs 03:00-08:59 ET — a stale beat outside that window is normal.' : ' Over 10 minutes means the scan loop has stopped.'}">${b.name} ${ago}</span>`;
+  }).join(' ');
+  return `
+    <div class="health-row">
+      <span class="health-label" title="5-min bars are the input to Book Health, the forward outcome label, the swing engines and every backtest. Heartbeats are written by each trader on every scan — silence means the loop stopped, not that no trade qualified.">Data feed</span>
+      <span class="health-chip ${stale ? 'warn' : 'pos'}" title="Newest 5-min bar in market_data.db. Written by collect_bars at 16:30 ET, so during a session the newest bar is yesterday's close — that is normal.">bars thru ${fd.bars_last || '—'}</span>
+      <span class="health-detail-inline">${beats || 'no heartbeats'}</span>
+    </div>`;
+}
+
+// ── Prop-account room (Sep 22 2026) ────────────────────────────────────────
+// TC trades under a trailing Max Loss Limit. On Sep 3 it locked itself out of
+// trading by $45 and nothing on this page said so — and it cannot earn its way
+// back, because it cannot trade. The remaining room IS the warning.
+function renderProp(pr) {
+  if (!pr || pr.room == null) return '';
+  const cls = pr.room < 0 ? 'neg' : (pr.room < 500 ? 'warn' : 'pos');
+  const msg = pr.room < 0 ? 'LOCKED OUT' : `$${Math.round(pr.room).toLocaleString()} room`;
+  return `
+    <div class="health-row">
+      <span class="health-label" title="TopStep-style trailing Max Loss Limit on the TC account. check_can_trade() refuses every entry once balance falls below (high-water mark − $2,000 MLL + $300 buffer). It froze here once, by $45, and could not trade its way out.">Prop room (TC)</span>
+      <span class="health-chip ${cls}" title="Balance $${pr.balance.toLocaleString()} · high-water $${pr.hwm.toLocaleString()} · MLL floor $${pr.floor.toLocaleString()} · $300 soft buffer on top.">${msg}</span>
+      <span class="health-detail-inline">balance $${pr.balance.toLocaleString()} vs floor $${pr.floor.toLocaleString()} · P&L to target ${pr.target >= 0 ? '+' : '−'}$${Math.abs(pr.target).toLocaleString()}</span>
+    </div>`;
 }
 
 // ── Fleet capital (Sep 22 2026) ────────────────────────────────────────────
@@ -217,6 +259,22 @@ function renderScoring(sc) {
 
 // Fish Finder health row removed Sep 22 2026 — the engine was decommissioned
 // Aug 15 2026 (Alpha Factory pivot) and this renderer had no call site since.
+
+
+// ── Field Report row (market_context.py — log-only pre-market brief) ────
+function renderFieldReport(fr) {
+  if (!fr) return '';
+  const cls = fr.stance === 'RISK_ON' ? 'pos' : (fr.stance === 'RISK_OFF' ? 'neg' : '');
+  const themes = (fr.themes || []).slice(0, 4).join(', ');
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Pre-market Field Report: mechanical trend/levels + one Claude call synthesizing headlines and the event calendar. LOG-ONLY — no gate reads it. Scored nightly vs actual outcomes after ~4 weeks; graduates to a sizing tilt or event stand-down only if it earns it.">Field Report</span>
+      <span class="health-chip ${cls}" title="${fr.one_line || ''}">${fr.stance || '?'} (${fr.confidence || '?'})</span>
+      <span class="health-detail-inline">${fr.date} · event risk ${fr.event_risk || '?'}${themes ? ' · ' + themes : ''}</span>
+    </div>`;
+}
+
+// ── Options row inside SYSTEM HEALTH (Jul 18 2026 redesign) ─────────────
 
 function renderOptionsHealth(o) {
   if (!o) return '';
@@ -297,11 +355,16 @@ function renderModeBadge(mode) {
 function renderServices(svcs) {
   const row = document.getElementById('services-row');
   if (!svcs) { row.innerHTML = ''; return; }
-  row.innerHTML = Object.entries(svcs).map(([name, up]) =>
-    `<div class="svc-pill ${up ? 'up' : 'down'}">
-       <span class="dot"></span>${name}
-     </div>`
-  ).join('');
+  // Sep 22 2026: these pills used to be a boolean "is the plist loaded", which is
+  // true for a crashed daemon and for a scheduled job that is correctly idle. They
+  // could not report a failure. Now four states, and `idle` is styled apart from
+  // `up` so a dormant scheduled job never reads as a live process.
+  row.innerHTML = Object.entries(svcs).map(([name, v]) => {
+    const st = (v && typeof v === 'object') ? v : { state: v ? 'up' : 'down', ok: !!v, detail: '' };
+    return `<div class="svc-pill ${st.state}" title="${name}: ${st.detail || st.state}">
+       <span class="dot"></span>${name}${st.state === 'down' ? ' ✕' : (st.state === 'failing' ? ' !' : '')}
+     </div>`;
+  }).join('');
 }
 
 // ── Regime chip ────────────────────────────────────────────
