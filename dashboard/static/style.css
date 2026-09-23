@@ -543,3 +543,14 @@ html, body {
 /* Sep 22 2026: the engines table showed "6t" with nothing on the page defining t.
    Now spelled out; muted so the P&L beside it stays the thing your eye lands on. */
 .trade-n { color: var(--text-muted, #8b949e); font-size: 11px; }
+
+/* Sep 22 2026: services are grouped by role — Brokers / Books / Data /
+   Instruments / Watchdogs — so "which layer is broken" reads at a glance
+   instead of hunting an alphabetical list of 22 pills. */
+.svc-group { display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+             padding:2px 8px 2px 0; margin-right:4px;
+             border-right:1px solid rgba(139,148,158,.18); }
+.svc-group:last-child { border-right:none; }
+.svc-role  { font-size:9px; font-weight:700; letter-spacing:.6px;
+             text-transform:uppercase; color:var(--text-muted,#8b949e);
+             margin-right:2px; white-space:nowrap; }

@@ -23,7 +23,7 @@ PROD_BRIDGE_URL = None   # set to 'http://localhost:8001' when prod bridge is li
 PORT            = 8080
 ET              = ZoneInfo('America/New_York')
 
-# (name shown, launchd label, kind, what a non-zero last-exit means)
+# (name shown, launchd label, kind, what a non-zero last-exit means, role group)
 #   kind 'daemon'    — must hold a PID; no PID is a real alarm
 #   kind 'scheduled' — idle between runs is NORMAL; judge it by its last exit code
 #
@@ -34,34 +34,34 @@ ET              = ZoneInfo('America/New_York')
 # watchdog itself (heartbeat) and the scoring job were invisible too.
 SERVICES = [
     # ── brokers and bridges: everything else is dead without these ──
-    ('gateway',      'com.sushil.trading.gateway',        'daemon',    ''),
-    ('bridge',       'com.sushil.trading.bridge',         'daemon',    ''),
-    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    ''),
-    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    ''),
+    ('gateway',      'com.sushil.trading.gateway',        'daemon',    '', 'Brokers'),
+    ('bridge',       'com.sushil.trading.bridge',         'daemon',    '', 'Brokers'),
+    ('tc_gateway',   'com.sushil.trading.tc_gateway',     'daemon',    '', 'Brokers'),
+    ('tc_bridge',    'com.sushil.trading.tc_bridge',      'daemon',    '', 'Brokers'),
     # ── the books that place orders ──
-    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    ''),
-    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored'),
-    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored'),
-    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored'),
-    ('options',      'com.sushil.trading.options_trader', 'daemon',    ''),
-    ('watchman',     'com.sushil.trading.watchman',       'daemon',    ''),
-    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  ''),
-    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    ''),
+    ('autotrader',   'com.sushil.trading.autotrader',     'daemon',    '', 'Books'),
+    ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored', 'Books'),
+    ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books'),
+    ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books'),
+    ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books'),
+    ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books'),
+    ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books'),
+    ('futures_tc',   'com.sushil.trading.futures_trader', 'daemon',    '', 'Books'),
     # ── data the books depend on ──
-    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed'),
-    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed'),
-    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    ''),
-    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed'),
+    ('collect_bars', 'com.sushil.trading.collect_bars',   'scheduled', 'last collection failed', 'Data'),
+    ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed', 'Data'),
+    ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    '', 'Data'),
+    ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data'),
     # ── instrumentation: silent failure here costs evidence, not money ──
-    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written'),
-    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written'),
-    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored'),
+    ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments'),
+    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments'),
+    ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments'),
     # ── watchdogs. parity_check exits 1 when it FINDS a divergence — that is its
     #    designed signal, not a crash, so amber here means "read the report". ──
-    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored'),
+    ('heartbeat',    'com.sushil.trading.heartbeat',      'scheduled', 'watchdog check errored', 'Watchdogs'),
     ('trade_cop',    'com.sushil.trading.parity_check',   'scheduled',
-     'found a divergence — by design, read logs/parity.log'),
-    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    ''),
+     'found a divergence — by design, read logs/parity.log', 'Watchdogs'),
+    ('graphify',     'com.sushil.trading.graphify_watch', 'daemon',    '', 'Watchdogs'),
 ]
 
 
@@ -183,6 +183,10 @@ def get_bridge_info(url=None):
 # made this row meaningless — see get_services().
 # (kind now lives in the SERVICES table itself)
 
+# Newest 5-min bar, cached — see the comment at its use site for why this
+# must never be queried per request.
+_BARS_CACHE = {'at': 0.0, 'last': ''}
+
 
 def get_services():
     """Real run-state per service, not just "is the plist loaded".
@@ -210,30 +214,40 @@ def get_services():
             parts = line.split('\t')
             if len(parts) >= 3:
                 table[parts[2].strip()] = (parts[0].strip(), parts[1].strip())
-        for name, label, kind, note in SERVICES:
+        for name, label, kind, note, role in SERVICES:
             if label not in table:
-                states[name] = {'state': 'missing', 'ok': False,
+                states[name] = {'state': 'missing', 'ok': False, 'role': role,
                                 'detail': 'not loaded in launchd'}
                 continue
             pid, rc = table[label]
             running = pid not in ('-', '')
             scheduled = (kind == 'scheduled')
             if running:
-                states[name] = {'state': 'up', 'ok': True, 'pid': pid,
+                states[name] = {'state': 'up', 'ok': True, 'pid': pid, 'role': role,
                                 'detail': f'running (pid {pid})'}
             elif scheduled:
                 bad = rc not in ('0', '')
                 states[name] = {
-                    'state': 'failing' if bad else 'idle', 'ok': not bad, 'rc': rc,
+                    'state': 'failing' if bad else 'idle', 'ok': not bad, 'rc': rc, 'role': role,
                     'detail': ((note or f'last run exited {rc}') if bad
                                else 'idle between scheduled runs (normal)')}
             else:
-                states[name] = {'state': 'down', 'ok': False, 'rc': rc,
+                states[name] = {'state': 'down', 'ok': False, 'rc': rc, 'role': role,
                                 'detail': f'NOT RUNNING — last exit {rc}'}
     except Exception as e:
         for row in SERVICES:
-            states[row[0]] = {'state': 'unknown', 'ok': False, 'detail': str(e)[:60]}
-    return states
+            states[row[0]] = {'state': 'unknown', 'ok': False, 'role': row[4],
+                              'detail': str(e)[:60]}
+    # Return ORDERED GROUPS, not a dict. Flask's jsonify sorts dict keys, which
+    # silently alphabetised this row and destroyed the role grouping entirely.
+    groups, seen = [], {}
+    for row in SERVICES:
+        role = row[4]
+        if role not in seen:
+            seen[role] = {'role': role, 'items': []}
+            groups.append(seen[role])
+        seen[role]['items'].append(dict(states[row[0]], name=row[0]))
+    return groups
 
 
 def get_regime():
@@ -910,9 +924,71 @@ def get_scorecard(since_date=None, days=21):
     return out
 
 
-def get_alerts(eq_pos, opt_pos):
+def get_alerts(eq_pos, opt_pos, health=None, services=None):
+    """Things worth a human look.
+
+    Sep 22 2026: this only ever watched position stops, so with every stop far away
+    it rendered empty while the Trade Cop was flagging a real divergence, SHORT book
+    health was 53 days stale, and the options circuit breaker had silently blocked an
+    entire paper trial. An alerts card that can only see stops is not an alerts card.
+    It now also reads the system-health payload it is rendered beside.
+    """
     alerts = []
     now_et = datetime.now(tz=ET)
+    hhmm = now_et.strftime('%H:%M')
+
+    def add(level, typ, vert, sym, msg):
+        alerts.append({'level': level, 'type': typ, 'vertical': vert,
+                       'symbol': sym, 'time': hhmm, 'message': msg})
+
+    h = health or {}
+    # a daemon that is not running, or a scheduled job whose last run errored
+    for grp in (services or []):
+        for it in grp.get('items', []):
+            if it.get('state') == 'down':
+                add('HIGH', 'SERVICE_DOWN', 'SYSTEM', it['name'],
+                    f"{it['name']} is NOT RUNNING — {it.get('detail', '')}")
+            elif it.get('state') in ('missing', 'failing'):
+                add('WARN', 'SERVICE', 'SYSTEM', it['name'],
+                    f"{it['name']}: {it.get('detail', '')}")
+    # a Book Health verdict that is no longer describing the market
+    for side, b in (h.get('books') or {}).items():
+        if b.get('stale'):
+            add('WARN', 'STALE_HEALTH', 'EQUITY', side,
+                f"{side} book health is {b.get('age_days')}d old (newest signal "
+                f"{b.get('last_signal')}) — it is not describing the market now")
+    # options circuit breaker / entries switched off in code
+    brk = (h.get('options') or {}).get('breaker') or {}
+    if brk.get('tripped') is True:
+        add('HIGH', 'BREAKER', 'OPTIONS', '—',
+            f"Options circuit breaker TRIPPED — no entries possible "
+            f"(realized ${brk.get('pnl', 0):,.0f} since {brk.get('since') or 'inception'})")
+    if brk.get('frozen'):
+        add('WARN', 'FROZEN', 'OPTIONS', '—',
+            'Options automated entries are frozen in code (EQUITY_ECHO_FROZEN)')
+    # the prop account can lock itself out — it froze by $45 once
+    pr = h.get('prop') or {}
+    if pr.get('room') is not None and pr['room'] < 500:
+        lvl = 'HIGH' if pr['room'] < 0 else 'WARN'
+        add(lvl, 'PROP_ROOM', 'FUTURES', pr.get('mode', 'TC'),
+            f"TC has ${pr['room']:,.0f} before the trailing MLL floor blocks all entries")
+    # the data every book reads
+    fd = h.get('feed') or {}
+    if (fd.get('bars_age_days') or 0) > 3:
+        add('WARN', 'STALE_DATA', 'SYSTEM', 'bars_5m',
+            f"5-min bars are {fd['bars_age_days']}d old (newest {fd.get('bars_last')}) — "
+            f"book health, signals and backtests all read these")
+    for b in fd.get('beats', []):
+        if b.get('age_s', 0) > 600 and 'london' not in b.get('name', ''):
+            add('HIGH', 'NO_HEARTBEAT', 'FUTURES', b['name'],
+                f"{b['name']} has not written a heartbeat for {b['age_s'] // 60}m — "
+                f"its scan loop has stopped")
+    # Trade Cop verdict
+    par = h.get('parity') or {}
+    if par.get('status') and par['status'] != 'OK':
+        add('WARN', 'TRADE_COP', 'SYSTEM', '—',
+            f"Trade Cop: {par.get('friendly') or par.get('detail') or par['status']}")
+
 
     for p in eq_pos:
         if p['status'] == 'REVIEW':
@@ -1076,12 +1152,30 @@ def get_calendar(opt_pos, eq_pos):
         with _db() as c:
             if all_syms:
                 ph = ','.join('?' * len(all_syms))
+                # Sep 22 2026: this read `earnings_calendar`, which has been EMPTY
+                # (0 rows) the whole time — so the card was permanently blank while
+                # `catalyst_calendar` sat beside it with 2,437 rows and 915 upcoming
+                # events, actively written by news_engine. Query that instead, and
+                # keep earnings_calendar as a fallback in case it is ever populated.
+                # catalyst_calendar holds several rows per event (one per news pass),
+                # so dedupe on symbol+date and keep the highest-confidence name.
                 rows = c.execute(
-                    f"SELECT symbol, earnings_date FROM earnings_calendar "
-                    f"WHERE symbol IN ({ph}) AND earnings_date >= ? "
-                    f"ORDER BY earnings_date ASC",
+                    f"""SELECT symbol, event_date AS earnings_date,
+                               MIN(event_name) AS event_name,
+                               MIN(catalyst_type) AS catalyst_type
+                        FROM catalyst_calendar
+                        WHERE symbol IN ({ph}) AND event_date >= ?
+                        GROUP BY symbol, event_date
+                        ORDER BY event_date ASC""",
                     list(all_syms) + [today.strftime('%Y-%m-%d')]
                 ).fetchall()
+                if not rows:
+                    rows = c.execute(
+                        f"SELECT symbol, earnings_date FROM earnings_calendar "
+                        f"WHERE symbol IN ({ph}) AND earnings_date >= ? "
+                        f"ORDER BY earnings_date ASC",
+                        list(all_syms) + [today.strftime('%Y-%m-%d')]
+                    ).fetchall()
                 for r in rows:
                     try:
                         ed = datetime.strptime(r['earnings_date'], '%Y-%m-%d').date()
@@ -1090,10 +1184,15 @@ def get_calendar(opt_pos, eq_pos):
                             if r['symbol'] in eq_syms:  verts.append('EQ')
                             if r['symbol'] in opt_syms: verts.append('OPT')
                             days_to = (ed - today).days
+                            try:
+                                _ev = r['event_name']
+                            except Exception:
+                                _ev = None
                             earnings.append({
                                 'symbol':   r['symbol'],
                                 'date':     r['earnings_date'],
                                 'days_to':  days_to,
+                                'event':    _ev,
                                 'verticals': ' + '.join(verts),
                                 'urgency':  'HIGH' if days_to <= 7 else ('WARN' if days_to <= 14 else 'INFO'),
                             })
@@ -1102,15 +1201,47 @@ def get_calendar(opt_pos, eq_pos):
     except Exception:
         pass
 
+    # Sep 22 2026: this was capped at the same 30-day cutoff as earnings, and
+    # MACRO_EVENTS' nearest future entry is 2026-11-04 — so the card rendered empty
+    # while four real events sat in the list. Show the next few regardless of
+    # distance; "nothing for six weeks" is itself worth knowing, and an empty card
+    # does not say that.
     macro = []
     for evt in MACRO_EVENTS:
         try:
             ed = datetime.strptime(evt['date'], '%Y-%m-%d').date()
-            if today <= ed <= cutoff:
+            if ed >= today:
                 macro.append({**evt, 'days_to': (ed - today).days})
         except Exception:
             pass
     macro.sort(key=lambda x: x['date'])
+    macro = macro[:4]
+
+    # If nothing dated is pending for the symbols we actually hold, fall back to the
+    # next catalysts anywhere in the universe rather than rendering a blank card.
+    # catalyst_calendar's event_date is written by an LLM and is free text half the
+    # time ("TBD", "ongoing", "tonight"), so only well-formed dates are usable —
+    # 1,221 of 2,437 rows qualify.
+    if not earnings:
+        try:
+            with _db() as c:
+                rows = c.execute(
+                    """SELECT symbol, event_date, MIN(event_name) AS event_name
+                       FROM catalyst_calendar
+                       WHERE event_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                         AND event_date >= ?
+                       GROUP BY symbol, event_date
+                       ORDER BY event_date ASC LIMIT 6""",
+                    (today.strftime('%Y-%m-%d'),)).fetchall()
+            for r in rows:
+                ed = datetime.strptime(r['event_date'], '%Y-%m-%d').date()
+                earnings.append({
+                    'symbol': r['symbol'], 'date': r['event_date'],
+                    'days_to': (ed - today).days, 'event': r['event_name'],
+                    'verticals': 'watch', 'held': False,
+                })
+        except Exception:
+            pass
 
     return earnings, macro
 
@@ -1351,13 +1482,24 @@ def get_system_health():
             # futures/heartbeat.py on every scan — silence means the LOOP stopped,
             # not that no trade qualified.
             feed = {}
+            # ⚠️ CACHED ON PURPOSE. market_data.db is ~12 GB and ts_utc only exists
+            # inside a composite (symbol, ts_utc) index, so ANY max-over-all-symbols
+            # is a full scan taking ~5-6 seconds. Running that on every dashboard
+            # poll held a read lock long enough to make collect_bars fail its commit
+            # with "database is locked" — it lost half of Sep 22's bars that way.
+            # The value changes once a day, when the collector runs, so a 10-minute
+            # cache costs nothing and removes the contention entirely.
             try:
-                _md = os.path.join(BASE_DIR, 'market_data.db')
-                _mc = sqlite3.connect(f'file:{_md}?mode=ro', uri=True, timeout=4)
-                _last = _mc.execute(
-                    "SELECT MAX(replace(ts_utc,'T',' ')) FROM bars_5m").fetchone()[0]
-                _mc.close()
-                feed['bars_last'] = (_last or '')[:16]
+                _now = time.time()
+                if _now - _BARS_CACHE.get('at', 0) > 600:
+                    _md = os.path.join(BASE_DIR, 'market_data.db')
+                    _mc = sqlite3.connect(f'file:{_md}?mode=ro', uri=True, timeout=2)
+                    _mc.execute('PRAGMA query_only = 1')
+                    _last = _mc.execute("SELECT MAX(ts_utc) FROM bars_5m").fetchone()[0]
+                    _mc.close()
+                    _BARS_CACHE.update(at=_now, last=(_last or ''))
+                _last = _BARS_CACHE.get('last') or ''
+                feed['bars_last'] = _last.replace('T', ' ')[:16]
                 if _last:
                     _d = datetime.strptime(_last[:10], '%Y-%m-%d')
                     feed['bars_age_days'] = (datetime.now() - _d).days
@@ -1752,11 +1894,12 @@ def api_data():
     eq_sum, opt_sum, fut_ibkr_sum, fut_tc_sum = get_today_summary()
     pnl_books  = get_pnl_by_book(15)
     scorecard  = get_scorecard(since_date=pnl_books[0]['date'] if pnl_books else None)
-    alerts     = get_alerts(eq_pos, opt_pos)
+    # health must be computed BEFORE alerts — get_alerts() now reads it
+    health     = get_system_health()
+    alerts     = get_alerts(eq_pos, opt_pos, health, services)
     activity   = get_activity(5)
     earnings, macro = get_calendar(opt_pos, eq_pos)
     sectors    = get_sector_grades()
-    health     = get_system_health()
     engines    = get_engine_scoreboard()
 
     prod_avail = PROD_BRIDGE_URL is not None

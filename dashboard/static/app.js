@@ -362,11 +362,22 @@ function renderServices(svcs) {
   // true for a crashed daemon and for a scheduled job that is correctly idle. They
   // could not report a failure. Now four states, and `idle` is styled apart from
   // `up` so a dormant scheduled job never reads as a live process.
-  row.innerHTML = Object.entries(svcs).map(([name, v]) => {
-    const st = (v && typeof v === 'object') ? v : { state: v ? 'up' : 'down', ok: !!v, detail: '' };
-    return `<div class="svc-pill ${st.state}" title="${name}: ${st.detail || st.state}">
-       <span class="dot"></span>${name}${st.state === 'down' ? ' ✕' : (st.state === 'failing' ? ' !' : '')}
-     </div>`;
+  // Sep 22 2026: this took a dict, and Flask's jsonify SORTS dict keys — which
+  // silently alphabetised the row and destroyed the role grouping. The API now
+  // sends ordered groups, so "which layer is broken" is readable at a glance.
+  const groups = Array.isArray(svcs) ? svcs
+    : [{ role: '', items: Object.entries(svcs).map(([name, v]) =>
+        (v && typeof v === 'object') ? { ...v, name } : { name, state: v ? 'up' : 'down' }) }];
+  row.innerHTML = groups.map(g => {
+    const pills = (g.items || []).map(st =>
+      `<div class="svc-pill ${st.state}" title="${st.name}: ${st.detail || st.state}">
+         <span class="dot"></span>${st.name}${st.state === 'down' ? ' ✕' : (st.state === 'failing' ? ' !' : '')}
+       </div>`).join('');
+    const bad = (g.items || []).filter(i => !i.ok).length;
+    return `<div class="svc-group">
+        <span class="svc-role" title="${g.role}: ${(g.items||[]).length} services, ${bad} needing attention">${g.role}</span>
+        ${pills}
+      </div>`;
   }).join('');
 }
 

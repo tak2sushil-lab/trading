@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 22 2026 (pm3)
+Last updated: Sep 22 2026 (pm4)
 
 ---
 
@@ -4875,3 +4875,54 @@ only — open positions are not in those numbers.
 **SWEEP:** pyflakes clean · app.js syntax-checked in a real JS engine · every renderer
 executed against the live payload · all 10 data functions JSON-serialise · 3 test suites
 pass · dashboard restarted and serving.
+
+---
+
+## Sep 22 2026 (pm4) — service roles · alerts that can see the system · dead calendar table · ⚠️ a query I added cost half a day of bars
+
+**① ⚠️ MY OWN CHANGE BROKE BAR COLLECTION — caught by the alert card I had just built.**
+The Data-feed row I added earlier ran `SELECT MAX(replace(ts_utc,'T',' ')) FROM bars_5m`
+on **every** `/api/data` poll. `market_data.db` is **~12 GB** and `ts_utc` only exists inside
+a composite `(symbol, ts_utc)` index, so that is a **full scan taking ~6 seconds** — fired
+**every 30 seconds** by the dashboard's refresh. The read lock it held made `collect_bars`
+fail its commit with `database is locked`: **Sep 22 finished with 9,110 of ~18,500 rows**, and
+`futures_collect_bars` died the same way.
+**Fixed:** cached for 10 minutes (the value changes once a day, when the collector runs) —
+**5.61s → 0.09s**. Both collectors re-run clean: equities **18,579 rows** (matching Sep 21's
+18,564), futures through 2026-09-22, both exit 0. Forward labels re-run: Sep 22 now 96%.
+⭐ **Lesson: never put an unbounded aggregate on a multi-GB table behind a 30-second poll.**
+⭐ And the alerts card earned itself on its first run by catching this.
+
+**② SERVICE ROLES — Flask was silently alphabetising the row.** `jsonify` sorts dict keys,
+so the role grouping shipped in pm3 was destroyed in transit. The API now returns **ordered
+groups**, rendered with role labels and separators:
+**Brokers** (4) · **Books** (8) · **Data** (4) · **Instruments** (3) · **Watchdogs** (3).
+"Which layer is broken" now reads at a glance instead of hunting 22 alphabetical pills.
+
+**③ THE ALERTS CARD COULD ONLY SEE POSITION STOPS.** With every stop far away it rendered
+empty — while the Trade Cop was flagging a real divergence, SHORT book health was 53 days
+stale, and the options circuit breaker had silently blocked an entire paper trial. It now
+also reads the system-health payload it is rendered beside: service down/failing · stale book
+health · options breaker tripped or entries frozen · **TC prop room under $500** (it froze by
+$45 once) · bars more than 3 days old · a trader that has stopped writing heartbeats · Trade
+Cop verdict. First run surfaced ① immediately.
+
+**④ THE CALENDAR QUERIED AN EMPTY TABLE.** `earnings_calendar` has **0 rows** and always has,
+so the card was permanently blank — while **`catalyst_calendar` sat beside it with 2,437 rows
+(915 upcoming)**, actively written by news_engine. Now queries that, deduped on symbol+date
+(news_engine writes one row per pass), with `earnings_calendar` kept as a fallback.
+⚠️ **Only 50% of `catalyst_calendar.event_date` values are real dates** — the rest are LLM
+free text ("TBD", "ongoing", "tonight"), so a `GLOB` date filter is required. When no held
+symbol has a dated event, it falls back to the next universe-wide catalysts rather than
+rendering blank.
+**Macro was empty for a different reason:** it shared the 30-day cutoff and `MACRO_EVENTS`'
+nearest future entry is **2026-11-04**. Cutoff dropped; shows the next 4 regardless, because
+"nothing for six weeks" is itself worth knowing. ⚠️ `MACRO_EVENTS` is hand-maintained and has
+only **4 future entries** — October CPI/NFP are missing.
+
+**⑤ "6t" spelled out** as "6 trades", with TODAY/7-DAY/WIN tooltips stating they count
+**closed** trades only.
+
+**SWEEP:** pyflakes clean · app.js syntax-checked in a real JS engine · every renderer
+executed against the live payload · 3 test suites pass · both collectors re-run to exit 0 ·
+dashboard restarted and serving.
