@@ -1497,12 +1497,21 @@ def place_trade(side: str, sig: dict, regime: str,
             f"{'above' if _tide_above else 'below'} the {TIDE_MA_DAYS}d MA "
             f"{_tide_m:,.0f} ({_dist:+.1f}%)")
         try:
+            # get_session() rather than `session`: that local is not assigned until ~55
+            # lines BELOW this point, so this call raised UnboundLocalError every time and
+            # the bare except swallowed it. Net effect — the Daily Tide log-only trial
+            # wrote ZERO rows to gate_blocks between Sep 2 and Sep 22 while printing
+            # "would block" to the trader log, so the review due ~Sep 9 had nothing to
+            # review. Third instance of this exact shape: log_block's own OVN_SKIP call
+            # (TypeError on None, Aug 9) and the dead evening funnel line (NameError,
+            # Sep 22) were the first two. A bare `except: pass` around instrumentation
+            # turns a crash into a silent, permanent hole in the evidence.
             log_block(ACCOUNT_MODE, SYMBOL, side,
                       'TIDE' if TIDE_GATE_ENABLED else 'TIDE_INFO',
                       f'prev_close={_tide_c:.0f} ma{TIDE_MA_DAYS}={_tide_m:.0f} '
-                      f'dist={_dist:+.1f}%', price, session)
-        except Exception:
-            pass
+                      f'dist={_dist:+.1f}%', price, get_session())
+        except Exception as _te:
+            log(f"  [TIDE] could not record the block: {_te}")
         if TIDE_GATE_ENABLED:
             return False
 
