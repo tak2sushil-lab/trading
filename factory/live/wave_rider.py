@@ -315,9 +315,15 @@ def _manual_close(t):
     """
     sym = t["symbol"]
     px = bridge_quote(sym)
-    if px is None and "live_signal" in globals():
-        sig = live_signal(sym)
-        px = sig["price"] if sig else None
+    if px is None:
+        # Engines that compute their own signal (Wave Rider) can price from it when the
+        # quote endpoint is down; the others have no such fallback. Looked up rather than
+        # called by name so this block is identical in all three files without referring
+        # to a function that only exists in one of them.
+        _sig_fn = globals().get("live_signal")
+        if _sig_fn:
+            sig = _sig_fn(sym)
+            px = sig["price"] if sig else None
     if px is None:
         return False, sym + ": no price available — nothing closed"
     px = float(px)

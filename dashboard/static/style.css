@@ -654,3 +654,31 @@ html, body {
 .close-toast.pending { border-left: 3px solid var(--yellow-bright); }
 .close-toast.done    { border-left: 3px solid var(--green-bright); }
 .close-toast.fail    { border-left: 3px solid var(--red-bright); }
+
+/* ── Activity feed: filters, book tags, drill-down (Sep 24 2026) ───────────── */
+.filter-group { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:7px; }
+.filter-label { font-size:10px; font-weight:700; letter-spacing:.7px; text-transform:uppercase;
+                color:var(--muted); min-width:38px; }
+.filter-btn.eng { display:inline-flex; align-items:center; gap:5px; }
+.eng-dot { width:7px; height:7px; border-radius:50%; background:#8b949e; flex:none; }
+
+/* What the current filter selected, and what it came to. */
+.activity-summary { font-size:11px; color:var(--muted); margin:2px 0 9px;
+                    padding-bottom:8px; border-bottom:1px solid var(--border); }
+
+/* The book, on EVERY row including exits — the column whose absence made Clockwork
+   impossible to find in this feed. */
+.act-book { display:inline-flex; align-items:center; gap:5px; white-space:nowrap;
+            font-size:10px; font-weight:600; letter-spacing:.3px;
+            padding:2px 7px; border-radius:var(--radius-sm);
+            border:1px solid var(--border2); color:var(--muted); }
+[data-eng="Day Trader"].act-book, .act-book:has([data-eng="Day Trader"]) { color:#7ee18b; }
+[data-eng="Wave Rider"].act-book, .act-book:has([data-eng="Wave Rider"]) { color:#84bdfa; }
+[data-eng="Contrarian"].act-book, .act-book:has([data-eng="Contrarian"]) { color:#f0cf74; }
+[data-eng="Clockwork"].act-book,  .act-book:has([data-eng="Clockwork"])  { color:#c4a2f9; }
+
+/* Per-book figures on the summary card double as links into the filtered feed. */
+.book-link { display:inline-flex; align-items:center; gap:4px; text-decoration:none;
+             color:inherit; border-bottom:1px dotted var(--border2); padding-bottom:1px; }
+.book-link:hover { border-bottom-color:var(--muted); }
+.book-sep { color:var(--border2); margin:0 5px; }

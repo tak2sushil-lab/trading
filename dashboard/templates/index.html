@@ -216,12 +216,35 @@
         RECENT ACTIVITY
         <span class="muted-text">last 5 sessions</span>
       </div>
-      <div class="activity-filters">
-        <button class="filter-btn active" onclick="filterActivity('ALL')">ALL</button>
-        <button class="filter-btn" onclick="filterActivity('EQUITY')">EQUITY</button>
-        <button class="filter-btn" onclick="filterActivity('OPTIONS')">OPTIONS</button>
-        <button class="filter-btn" onclick="filterActivity('FUTURES')">FUTURES</button>
+      <!-- Three independent axes. Book answers "which engine did this", which the
+           single EQUITY chip could not: four equity books trade the same account and
+           the feed could not be narrowed to one of them. -->
+      <div class="filter-group">
+        <span class="filter-label">Book</span>
+        <button class="filter-btn active" data-f="book" data-v="ALL">All</button>
+        <button class="filter-btn" data-f="book" data-v="EQUITY">All equity</button>
+        <button class="filter-btn eng" data-f="book" data-v="Day Trader" data-eng="Day Trader"><span class="eng-dot" data-eng="Day Trader"></span>Day Trader</button>
+        <button class="filter-btn eng" data-f="book" data-v="Wave Rider" data-eng="Wave Rider"><span class="eng-dot" data-eng="Wave Rider"></span>Wave Rider</button>
+        <button class="filter-btn eng" data-f="book" data-v="Contrarian" data-eng="Contrarian"><span class="eng-dot" data-eng="Contrarian"></span>Contrarian</button>
+        <button class="filter-btn eng" data-f="book" data-v="Clockwork" data-eng="Clockwork"><span class="eng-dot" data-eng="Clockwork"></span>Clockwork</button>
+        <button class="filter-btn" data-f="book" data-v="Options">Options</button>
+        <button class="filter-btn" data-f="book" data-v="FUTURES">All futures</button>
+        <button class="filter-btn" data-f="book" data-v="Futures NY">Futures NY</button>
+        <button class="filter-btn" data-f="book" data-v="London">London</button>
       </div>
+      <div class="filter-group">
+        <span class="filter-label">Leg</span>
+        <button class="filter-btn active" data-f="ev" data-v="ALL">All</button>
+        <button class="filter-btn" data-f="ev" data-v="ENTRY">Entries</button>
+        <button class="filter-btn" data-f="ev" data-v="EXIT">Exits</button>
+        <span class="filter-label" style="margin-left:14px">When</span>
+        <button class="filter-btn" data-f="days" data-v="1">Today</button>
+        <button class="filter-btn" data-f="days" data-v="2">2 days</button>
+        <button class="filter-btn" data-f="days" data-v="3">3 days</button>
+        <button class="filter-btn" data-f="days" data-v="4">4 days</button>
+        <button class="filter-btn active" data-f="days" data-v="5">5 days</button>
+      </div>
+      <div id="activity-summary" class="activity-summary"></div>
       <div id="activity-feed"></div>
     </div>
 

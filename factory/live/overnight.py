@@ -137,6 +137,15 @@ def init_db():
         symbol TEXT, entry_date TEXT, entry_time TEXT, entry_price REAL, shares INTEGER,
         status TEXT DEFAULT 'OPEN', exit_date TEXT, exit_time TEXT, exit_price REAL,
         pnl REAL, pnl_pct REAL, consistency REAL, mode TEXT, order_id TEXT)""")
+    # Sep 24 2026: this table never had an exit_reason, so every Clockwork exit
+    # arrived in the dashboard's activity feed with a blank description — three of
+    # them on Sep 24 alone, which is how the gap was noticed. wave_trades and
+    # contrarian_trades have carried one since they were built; only this engine
+    # was missing it, because record_exit() here never took a reason argument.
+    try:
+        c.execute("ALTER TABLE overnight_trades ADD COLUMN exit_reason TEXT")
+    except Exception:
+        pass   # already present
     c.execute("""CREATE TABLE IF NOT EXISTS overnight_scan_log(
         id INTEGER PRIMARY KEY AUTOINCREMENT, scan_ts TEXT, kind TEXT,
         symbol TEXT, consistency REAL, verdict TEXT, detail TEXT)""")
@@ -224,7 +233,11 @@ def real_position(sym):
         return None, None
 
 
-def record_exit(tid, price):
+def record_exit(tid, price, reason="Sold at the open (MOO)"):
+    """`reason` defaults to the ordinary path — this book's whole design is to sell at
+    the next opening auction — but every caller passes its own, because "the MOO filled"
+    and "the MOO never filled and we crossed with a market order" are different events
+    and the difference is exactly what execution analysis needs to see."""
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     t = dict(c.execute("SELECT * FROM overnight_trades WHERE id=?", (tid,)).fetchone())
     # net of the real IBKR round trip. At this book's ~$968 positions that is ~0.207%,
@@ -234,10 +247,10 @@ def record_exit(tid, price):
     pct = (price - t["entry_price"]) / t["entry_price"] * 100
     now = now_et()
     c.execute("""UPDATE overnight_trades SET status='CLOSED',exit_date=?,exit_time=?,exit_price=?,
-        pnl=?,pnl_pct=? WHERE id=?""",
-        (now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), price, pnl, pct, tid))
+        pnl=?,pnl_pct=?,exit_reason=? WHERE id=?""",
+        (now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), price, pnl, pct, reason, tid))
     c.commit(); c.close()
-    log(f"EXIT #{tid} {t['symbol']} @ ${price:.2f} (open) | PnL ${pnl:+.2f} ({pct:+.1f}%)")
+    log(f"EXIT #{tid} {t['symbol']} @ ${price:.2f} — {reason} | PnL ${pnl:+.2f} ({pct:+.1f}%)")
 
 
 def record_scan(funnel: dict, picks: list):
@@ -367,7 +380,7 @@ def exit_at_open():
             px = bridge_quote(t["symbol"])
             if px is None:
                 log(f"no open price for {t['symbol']} — will retry next fire"); continue
-            record_exit(t["id"], float(px))
+            record_exit(t["id"], float(px), "Marked out at the open (SHADOW)")
 
 
 def confirm_fills():
@@ -416,7 +429,7 @@ def confirm_fills():
         if t["entry_date"] < today and not (EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END):
             filled, px = order_fill(t["order_id"])
             if filled:
-                record_exit(t["id"], px)
+                record_exit(t["id"], px, "Sold at the open (MOO, confirmed late)")
                 log(f"STALE EXIT confirmed {t['symbol']} @ ${px:.2f}")
                 continue
             # Sep 10-11 2026 — THE OVERSELL BUG, twice.
@@ -444,12 +457,12 @@ def confirm_fills():
         for t in rows_with_status("PENDING_EXIT"):
             filled, px = order_fill(t["order_id"])
             if filled:
-                record_exit(t["id"], px)
+                record_exit(t["id"], px, "Sold at the open (MOO)")
             elif n.time() >= EXIT_FALLBACK_AFTER:
                 ok, fill, _ = place_paper_order(t["symbol"], t["shares"], "SELL")
                 if ok and fill:
                     log(f"MOO did not fill {t['symbol']} — crossed with MARKET @ ${fill:.2f}")
-                    record_exit(t["id"], fill)
+                    record_exit(t["id"], fill, "MOO did not fill — crossed with MARKET")
                 else:
                     log(f"fallback SELL not confirmed for {t['symbol']} — stays PENDING_EXIT")
 
@@ -466,9 +479,15 @@ def _manual_close(t):
     """
     sym = t["symbol"]
     px = bridge_quote(sym)
-    if px is None and "live_signal" in globals():
-        sig = live_signal(sym)
-        px = sig["price"] if sig else None
+    if px is None:
+        # Engines that compute their own signal (Wave Rider) can price from it when the
+        # quote endpoint is down; the others have no such fallback. Looked up rather than
+        # called by name so this block is identical in all three files without referring
+        # to a function that only exists in one of them.
+        _sig_fn = globals().get("live_signal")
+        if _sig_fn:
+            sig = _sig_fn(sym)
+            px = sig["price"] if sig else None
     if px is None:
         return False, sym + ": no price available — nothing closed"
     px = float(px)
@@ -479,7 +498,7 @@ def _manual_close(t):
                            "rather than booked at a price we may not have got")
         if fill:
             px = float(fill)
-    record_exit(t["id"], px)
+    record_exit(t["id"], px, "Manual close via dashboard")
     return True, f"{sym} x{t['shares']} @ ${px:.2f}"
 
 

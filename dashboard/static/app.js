@@ -3,13 +3,16 @@
 let pnlChart = null;
 let currentTab = 'paper';
 let allActivity = [];
-let currentFilter = 'ALL';
+// Three independent filter axes. Was a single vertical string, which could not answer
+// "show me only Clockwork" — the question the feed kept failing.
+let actFilter = { book: 'ALL', ev: 'ALL', days: 5 };
 let calView = 'earnings';
 
 // ── Bootstrap ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadData();
   wireCloseControls();
+  wireActivityFilters();
   setInterval(loadData, 30000);
 });
 
@@ -50,12 +53,44 @@ function showCal(view) {
   document.getElementById('macro-cal').style.display    = view === 'macro'    ? '' : 'none';
 }
 
-// ── Activity filter ────────────────────────────────────────
-function filterActivity(vert) {
-  currentFilter = vert;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+// ── Activity filters ───────────────────────────────────────
+// Which books each group chip covers. EQUITY is the four books that share the real
+// equity account; FUTURES is the NY book plus London, which is a separate book with
+// its own exits (FUT CLOSE does not cover it).
+const BOOK_GROUPS = {
+  EQUITY:  ['Day Trader', 'Wave Rider', 'Contrarian', 'Clockwork'],
+  FUTURES: ['Futures NY', 'London'],
+};
+
+function setActFilter(axis, value) {
+  actFilter[axis] = (axis === 'days') ? Number(value) : value;
+  document.querySelectorAll(`.filter-btn[data-f="${axis}"]`).forEach(b =>
+    b.classList.toggle('active', b.dataset.v === String(value)));
   renderActivityFeed(allActivity);
+}
+
+// Kept as a global because the summary-card book chips call it to jump straight to one
+// engine's legs — that is the drill-down path from "Clockwork -$180" to the rows behind it.
+function filterActivityByBook(book) {
+  setActFilter('book', book);
+  document.getElementById('activity-feed')
+    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function wireActivityFilters() {
+  document.addEventListener('click', ev => {
+    const b = ev.target.closest('.filter-btn[data-f]');
+    if (b) { setActFilter(b.dataset.f, b.dataset.v); return; }
+    // Drill-down from the summary card's per-book figures.
+    const link = ev.target.closest('a.book-link');
+    if (link) {
+      ev.preventDefault();
+      // The card reports TODAY, so the feed opens on today to match. Showing five
+      // days under a one-day number is how a drill-down stops reconciling.
+      setActFilter('days', 1);
+      filterActivityByBook(link.dataset.book);
+    }
+  });
 }
 
 // ── Master render ──────────────────────────────────────────
@@ -529,6 +564,12 @@ function renderModeBadge(mode) {
 // Prose destined for a title="" attribute. These strings contain quotes, apostrophes
 // and angle brackets; interpolating them raw silently truncates the tooltip at the
 // first quote (or worse).
+// Signed money, always. A bare "$59.35" in red is ambiguous; "-$59.35" is not.
+function money(v) {
+  const n = Number(v || 0);
+  return `${n < 0 ? '-' : '+'}$${Math.abs(n).toFixed(2)}`;
+}
+
 function attrEsc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
@@ -620,13 +661,20 @@ function renderSummaryCards(eq, opt, futIbkr, futTc) {
     eqSub.title = 'All equity books:\n' + eq.books.map(b =>
       `${b.name}: ${b.pnl >= 0 ? '+' : '-'}$${Math.abs(b.pnl).toFixed(2)}` +
       `  (${b.trades} closed, ${b.open} open)`).join('\n');
-    // Name the books that actually moved the number, so a single-book day is
-    // never mistaken for the whole equity side.
+    // Name the books that actually moved the number, so a single-book day is never
+    // mistaken for the whole equity side — and make each one a LINK into the activity
+    // feed filtered to that book. Reading "Clockwork -$180" and then having to hunt
+    // for the legs behind it was the gap; the number now takes you to them.
     const movers = eq.books.filter(b => b.trades > 0);
     if (movers.length) {
-      eqSub.textContent += '  ·  ' + movers.map(b =>
-        `${b.name.split(' ')[0]} ${b.pnl >= 0 ? '+' : '-'}$${Math.abs(b.pnl).toFixed(0)}`
-      ).join(' / ');
+      const html = movers.map(b => {
+        const cls = b.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        return `<a class="book-link" data-book="${b.name}" href="#"
+                   title="Show ${b.name}'s entries and exits in the activity feed">`
+             + `<span class="eng-dot" data-eng="${b.name}"></span>`
+             + `${b.name.split(' ')[0]} <span class="${cls}">${money(b.pnl)}</span></a>`;
+      }).join('<span class="book-sep">/</span>');
+      eqSub.innerHTML = eqSub.textContent + '  ·  ' + html;
     }
     void active;
   }
@@ -1050,21 +1098,61 @@ function toggleCalDetail(row) {
 }
 
 // ── Activity feed ─────────────────────────────────────────
+function actMatches(a) {
+  const f = actFilter;
+  if (f.ev !== 'ALL' && a.ev !== f.ev) return false;
+  if (f.book !== 'ALL') {
+    const grp = BOOK_GROUPS[f.book];
+    if (grp ? !grp.includes(a.book) : a.book !== f.book) return false;
+  }
+  if (f.days) {
+    // Calendar days back from today, counted on the row's own date. "Today" is 1.
+    const d = new Date(); d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (f.days - 1));
+    const iso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+              + '-' + String(d.getDate()).padStart(2, '0');
+    if ((a.dt || '') < iso) return false;
+  }
+  return true;
+}
+
 function renderActivityFeed(activities) {
   const el = document.getElementById('activity-feed');
-  const filtered = currentFilter === 'ALL'
-    ? activities
-    : activities.filter(a => a.vert === currentFilter);
+  const sum = document.getElementById('activity-summary');
+  const filtered = (activities || []).filter(actMatches);
 
-  if (!filtered || filtered.length === 0) {
-    el.innerHTML = '<div class="empty-state">No recent activity</div>';
+  // What the filter actually selected, and what it is worth. Without this the feed
+  // answers "which legs" but not "so what did that book do", which is the reason to
+  // drill into one engine in the first place.
+  if (sum) {
+    const exits = filtered.filter(a => a.ev === 'EXIT' && a.pnl != null);
+    const net   = exits.reduce((s, a) => s + a.pnl, 0);
+    const wins  = exits.filter(a => a.pnl > 0).length;
+    const bits  = [`${filtered.length} of ${(activities || []).length} legs`];
+    if (exits.length) {
+      const cls = net >= 0 ? 'pnl-pos' : 'pnl-neg';
+      bits.push(`${exits.length} closed`);
+      bits.push(`net <span class="${cls}">${money(net)}</span>`);
+      bits.push(`${Math.round(wins / exits.length * 100)}% win`);
+    }
+    sum.innerHTML = bits.join('  ·  ');
+  }
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty-state">Nothing matches these filters</div>';
     return;
   }
 
   el.innerHTML = filtered.map(a => {
-    const vertTag = `<span class="tag ${(a.vert||'').toLowerCase()}">${a.vert||'—'}</span>`;
-    const evTag   = `<span class="act-ev ${a.ev}">${a.ev}</span>`;
-    const ts      = `${a.dt||''} ${(a.tm||'').slice(0,5)}`;
+    const evTag = `<span class="act-ev ${a.ev}">${a.ev}</span>`;
+    const ts    = `${a.dt || ''} ${(a.tm || '').slice(0, 5)}`;
+    // The BOOK, on every row including exits. Until Sep 24 2026 exit rows showed the
+    // reason alone, so "which engine sold this" was unanswerable from the feed — and
+    // Clockwork, whose reason was also blank, showed nothing at all.
+    const bookTag = a.book
+      ? `<span class="act-book"><span class="eng-dot" data-eng="${a.book}"></span>${a.book}</span>`
+      : `<span class="tag ${(a.vert || '').toLowerCase()}">${a.vert || '—'}</span>`;
+    const acct = a.account ? ` <span class="account-badge ${String(a.account).toLowerCase()}">${a.account}</span>` : '';
 
     const reconciledTag = a.setup === 'RECONCILED'
       ? `<span class="tag reconciled" title="Not a strategy decision — broker-side correction, excluded from P&L/WR stats">🔧 RECONCILED</span> `
@@ -1072,22 +1160,26 @@ function renderActivityFeed(activities) {
 
     let desc = '';
     if (a.ev === 'ENTRY') {
-      desc = `<span class="side-${(a.side||'long').toLowerCase()}">${a.side||''}</span> `;
+      desc = `<span class="side-${(a.side || 'long').toLowerCase()}">${a.side || ''}</span> `;
       if (a.price) desc += `@ $${Number(a.price).toFixed(2)} · `;
-      desc += `<small>${a.setup||''} ${a.sector ? '· '+a.sector : ''}</small>`;
+      const meta = [a.setup, a.sector].filter(Boolean).join(' · ');
+      desc += `<small>${meta || '—'}</small>`;
     } else {
-      desc = reconciledTag + (a.reason ? `<small>${a.reason}</small>` : '');
+      desc = reconciledTag + `<small>${a.reason || '<em class="muted-text">no exit reason recorded</em>'}</small>`;
     }
 
+    // Negative P&L used to render as "$59.35" in red with NO minus sign, because the
+    // prefix was '' for negatives and the value was Math.abs(). Colour alone carried
+    // the sign, so a loss read as a gain at a glance. The sign is explicit now.
     const pnlHtml = a.pnl != null
-      ? `<span class="act-pnl ${a.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${a.pnl >= 0 ? '+' : ''}$${Math.abs(a.pnl).toFixed(2)}</span>`
+      ? `<span class="act-pnl ${a.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${money(a.pnl)}</span>`
       : '';
 
     return `<div class="activity-row">
       <span class="act-time">${ts}</span>
       ${evTag}
-      ${vertTag}
-      <span class="act-sym">${a.symbol||'—'}</span>
+      ${bookTag}${acct}
+      <span class="act-sym">${a.symbol || '—'}</span>
       <span class="act-desc">${desc}</span>
       ${pnlHtml}
     </div>`;

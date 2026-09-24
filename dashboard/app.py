@@ -1100,29 +1100,43 @@ def get_alerts(eq_pos, opt_pos, health=None, services=None):
 
 
 def get_activity(sessions=5):
+    """Every leg from every book, newest first.
+
+    Sep 24 2026 — two things were wrong here and both hid Clockwork.
+
+    (1) `setup` was doing two jobs. For the Day Trader table it holds the SETUP TYPE
+        (CATALYST_OVERRIDE, FVG_FILL...); for the three factory engines it was being
+        overloaded to hold the BOOK NAME. Nothing could filter by book, and an exit row
+        could not say which engine produced it. There is now a separate `book` on every
+        row and `setup` means only ever what it says.
+
+    (2) The row cap was 100 across a 5-session window. On a busy two-day stretch the
+        equity books alone can fill that, so the oldest legs fell off the end silently —
+        which looks exactly like a logging gap. Raised, and the window is returned with
+        the payload so the UI can state what it is showing.
+    """
     cutoff = (datetime.now(tz=ET) - timedelta(days=sessions + 2)).strftime('%Y-%m-%d')
     result = []
     try:
         with _db() as c:
-            # Equity
+            # ── Day Trader (auto_trader's own book) ──
             rows = c.execute("""
-                SELECT 'ENTRY' as ev, 'EQUITY' as vert, symbol, entry_date as dt,
-                       entry_time as tm, entry_price as price, setup_type as setup,
-                       sector, side, shares, NULL as pnl, NULL as reason
+                SELECT 'ENTRY' as ev, 'EQUITY' as vert, 'Day Trader' as book, symbol,
+                       entry_date as dt, entry_time as tm, entry_price as price,
+                       setup_type as setup, sector, side, shares,
+                       NULL as pnl, NULL as reason, NULL as account
                 FROM trades WHERE entry_date >= ? AND setup_type != 'RECONCILED'
                 UNION ALL
-                SELECT 'EXIT', 'EQUITY', symbol, exit_date, exit_time, exit_price,
-                       setup_type, sector, side, shares, pnl, exit_reason
+                SELECT 'EXIT', 'EQUITY', 'Day Trader', symbol, exit_date, exit_time,
+                       exit_price, setup_type, sector, side, shares, pnl, exit_reason, NULL
                 FROM trades WHERE exit_date >= ? AND exit_date IS NOT NULL
                   AND setup_type != 'RECONCILED'
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
 
-            # Sep 22 2026: the feed showed the Day Trader book only, which is why a
-            # +$478 Wave Rider exit could land in the day total with no matching line
-            # anywhere on the page. Fourth panel with the same omission, after the
-            # Today card, the 15-day chart and the scorecard. `setup` carries the book
-            # name so every row says which engine did it.
+            # ── The three factory engines. They hold real shares in the SAME account
+            # and were invisible in this feed until Sep 22 2026, which is why a +$478
+            # Wave Rider exit could land in the day total with no matching line.
             for _book, _tbl in (('Wave Rider', 'wave_trades'),
                                 ('Contrarian', 'contrarian_trades'),
                                 ('Clockwork',  'overnight_trades')):
@@ -1131,61 +1145,68 @@ def get_activity(sessions=5):
                     if not _cols:
                         continue
                     _mode = " AND mode='LIVE'" if 'mode' in _cols else ''
-                    _tm = 'entry_time' if 'entry_time' in _cols else 'NULL'
-                    _xtm = 'exit_time' if 'exit_time' in _cols else 'NULL'
-                    _xr = 'exit_reason' if 'exit_reason' in _cols else 'NULL'
+                    _tm  = 'entry_time'  if 'entry_time'  in _cols else 'NULL'
+                    _xtm = 'exit_time'   if 'exit_time'   in _cols else 'NULL'
+                    _xr  = 'exit_reason' if 'exit_reason' in _cols else 'NULL'
                     _sql = (
-                        "SELECT 'ENTRY' as ev, 'EQUITY' as vert, symbol, entry_date as dt, "
-                        + _tm + " as tm, entry_price as price, '" + _book + "' as setup, "
-                        "NULL as sector, 'LONG' as side, shares, NULL as pnl, NULL as reason "
+                        "SELECT 'ENTRY' as ev, 'EQUITY' as vert, '" + _book + "' as book, "
+                        "symbol, entry_date as dt, " + _tm + " as tm, entry_price as price, "
+                        "NULL as setup, NULL as sector, 'LONG' as side, shares, "
+                        "NULL as pnl, NULL as reason, NULL as account "
                         "FROM " + _tbl + " WHERE entry_date >= ?" + _mode +
                         " UNION ALL "
-                        "SELECT 'EXIT', 'EQUITY', symbol, exit_date, " + _xtm + ", exit_price, '"
-                        + _book + "', NULL, 'LONG', shares, pnl, " + _xr + " "
+                        "SELECT 'EXIT', 'EQUITY', '" + _book + "', symbol, exit_date, "
+                        + _xtm + ", exit_price, NULL, NULL, 'LONG', shares, pnl, "
+                        + _xr + ", NULL "
                         "FROM " + _tbl + " WHERE exit_date >= ? AND exit_date IS NOT NULL "
                         "AND status='CLOSED'" + _mode
                     )
                     result.extend([dict(r) for r in c.execute(_sql, (cutoff, cutoff)).fetchall()])
                 except Exception:
-                    continue      # one engine table must not blank the feed
+                    continue      # one engine's table must not blank the whole feed
 
-            # Options
+            # ── Options ──
             rows = c.execute("""
-                SELECT 'ENTRY' as ev, 'OPTIONS' as vert, symbol, entry_date as dt,
-                       NULL as tm, net_debit as price, strategy as setup,
-                       NULL as sector, 'LONG' as side, contracts as shares,
-                       NULL as pnl, NULL as reason
+                SELECT 'ENTRY' as ev, 'OPTIONS' as vert, 'Options' as book, symbol,
+                       entry_date as dt, NULL as tm, net_debit as price,
+                       strategy as setup, NULL as sector, 'LONG' as side,
+                       contracts as shares, NULL as pnl, NULL as reason, NULL as account
                 FROM options_trades WHERE entry_date >= ?
                 UNION ALL
-                SELECT 'EXIT', 'OPTIONS', symbol, exit_date, NULL, exit_value,
+                SELECT 'EXIT', 'OPTIONS', 'Options', symbol, exit_date, NULL, exit_value,
                        strategy, NULL, 'LONG', contracts,
-                       exit_value - premium_paid, exit_reason
+                       exit_value - premium_paid, exit_reason, NULL
                 FROM options_trades WHERE exit_date >= ? AND exit_date IS NOT NULL
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
 
-            # Futures (NY/TC sessions)
+            # ── Futures NY. `account` separates IBKR from TC: two real accounts with
+            # different prop rules, and their fills genuinely differ (Sep 3 2026).
             rows = c.execute("""
-                SELECT 'ENTRY' as ev, 'FUTURES' as vert, symbol, entry_date as dt,
-                       entry_time as tm, entry_price as price, setup_type as setup,
-                       session as sector, side, contracts as shares, NULL as pnl, NULL as reason
+                SELECT 'ENTRY' as ev, 'FUTURES' as vert, 'Futures NY' as book, symbol,
+                       entry_date as dt, entry_time as tm, entry_price as price,
+                       setup_type as setup, session as sector, side,
+                       contracts as shares, NULL as pnl, NULL as reason, account_mode as account
                 FROM futures_trades WHERE entry_date >= ?
                 UNION ALL
-                SELECT 'EXIT', 'FUTURES', symbol, exit_date, exit_time, exit_price,
-                       setup_type, session, side, contracts, pnl, exit_reason
+                SELECT 'EXIT', 'FUTURES', 'Futures NY', symbol, exit_date, exit_time,
+                       exit_price, setup_type, session, side, contracts, pnl,
+                       exit_reason, account_mode
                 FROM futures_trades WHERE exit_date >= ? AND exit_date IS NOT NULL
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
 
-            # London session futures
+            # ── London. Its own book: FUT CLOSE does not cover it, and both accounts
+            # run it, so the account tag matters here too.
             rows = c.execute("""
-                SELECT 'ENTRY' as ev, 'FUTURES' as vert, 'MNQ' as symbol, entry_date as dt,
-                       entry_time as tm, entry as price, setup as setup,
-                       'LONDON' as sector, side, contracts as shares, NULL as pnl, NULL as reason
+                SELECT 'ENTRY' as ev, 'FUTURES' as vert, 'London' as book, 'MNQ' as symbol,
+                       entry_date as dt, entry_time as tm, entry as price, setup as setup,
+                       'LONDON' as sector, side, contracts as shares,
+                       NULL as pnl, NULL as reason, account_mode as account
                 FROM london_trades WHERE entry_date >= ?
                 UNION ALL
-                SELECT 'EXIT', 'FUTURES', 'MNQ', exit_date, exit_time, exit_price,
-                       setup, 'LONDON', side, contracts, pnl, exit_reason
+                SELECT 'EXIT', 'FUTURES', 'London', 'MNQ', exit_date, exit_time, exit_price,
+                       setup, 'LONDON', side, contracts, pnl, exit_reason, account_mode
                 FROM london_trades WHERE exit_date >= ? AND exit_date IS NOT NULL
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
@@ -1194,7 +1215,7 @@ def get_activity(sessions=5):
         pass
 
     result.sort(key=lambda x: (x.get('dt') or '', x.get('tm') or ''), reverse=True)
-    return result[:100]
+    return result[:400]
 
 
 def get_calendar(opt_pos, eq_pos):
