@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 22 2026 (pm5)
+Last updated: Sep 24 2026 (futures session)
 
 ---
 
@@ -4966,3 +4966,153 @@ dashboard restarted and serving.
 **NEXT SESSION:** work the alerts — currently two, both real: the **Trade Cop divergence**
 (Sep 21: entry-window violations on AXTI/BNC, and INTC with no graded scan_log signal behind
 it) and **SHORT book health 53 days stale**.
+
+---
+
+## Sep 24 2026 — futures: today root-caused (it was the ENTRY), 6 defects fixed, TC was never the same system
+
+**TODAY: IBKR −$401.22 · TC −$702.22 = −$1,103** (IBKR's figure is the CORRECTED one; see ①).
+
+**① IT WAS NOT A LATE REACTION. There was nothing to react to.** The 11:20 VWAP_SHORT
+(30517) spent 55 minutes going nowhere — **best-ever excursion +14.5pts**, oscillating ±40 —
+then the single **12:15 bar ran 30556 → 30748 on 31,735 contracts vs ~4,000 normal (8× volume)**
+and blew through the 200pt stop inside that one bar. Reversal Exit needs a +120pt peak to arm;
+the trail tiers need +90/+110. **Neither could ever arm.** No exit operating on closed 5-min
+bars can help here. This is the documented ORPHAN class (77% of trades, −$34k over 5.5yr,
+19 of 19 entry features failed to predict it). Then the 13:05/13:20 PM_LONG bought back into
+the top of that spike.
+⭐ **The trade should not have been open, and a rule we have already validated said so:**
+`[TIDE] would block (LOG ONLY): SHORT while prev close 30,747 is above the 200d MA 27,508`
+— logged on BOTH accounts 47 seconds before entry. The Field Report also said **RISK_ON,
+"favor momentum longs"** that morning. Both are log-only.
+
+**② 🐛 EVERY FUTURES EXIT EVER TAKEN BOOKED AN ESTIMATE, NOT A FILL.** Both exit paths
+recorded `price` — the `get_live_price()` read from the top of the monitor cycle — not the
+fill. Today's stop really filled at **30717.50** (IBKR `GET /executions`, order 1315874,
+16:17:38Z); we booked **30746.75**, a **−$461.36 loss that was really −$401.62**, because
+price ran another 29.25pt in the ~40s before the monitor noticed the position was flat.
+The pre-existing "actual fill" branch used `/order/{id}/status`, which returns
+`avgFillPrice 0.0` for a filled-then-cancelled stop — **it has fired 0 times in 61
+backup-stop exits**. FIXED: `_get_exit_fill_price()` reads `/executions`, matched on
+orderId **and** side, volume-weighted across partial fills (TC's London order 79173 really
+did fill 2c at two prices 30pt apart), falling back to the estimate on any failure so an
+exit can never be stranded for want of a price. ⚠️ **Historical damage runs BOTH ways and
+reaches ~$500 on single trades** — Jul 27 booked a **+$100 win on a trade that hit its
+200pt stop**; Jul 23 booked +$3 on a −$236. Net across 61 exits is only +$256, but that is
+cancellation, not accuracy. **Per-trade live analysis of exits before today is unreliable.**
+
+**③ ⚠️⚠️ TC WAS NEVER RUNNING THE SAME SYSTEM. Four real divergences, all fixed.**
+AST-diffed all 63 shared functions with comments stripped.
+- **TC was missing the validated 14:00 ET entry cutoff entirely.** Cost on TC's own record:
+  **12 entries at/after 14:00, 9 losers, −$988.46 = 22% of the automated book's whole loss**;
+  −$620 of it is Sep 3/16/17, i.e. AFTER the duplicate-entry fix, so not a dup artifact.
+  Also missing: the low-RVOL (0.3) and thin-IB (50pt) scan skips. All three ported.
+- **TC's software exit never checked whether its own order succeeded.** It cancelled the
+  backup stop, fired a market order, and closed the DB row without reading the result — a
+  rejected exit left a **REAL, LIVE, UNPROTECTED position recorded as CLOSED**. IBKR has had
+  this guard all along. On a funded prop account that is how a trailing MLL gets blown.
+- **TC's stop-replace failure was silent**: on a failed trail update it wrote
+  `stop_order_id=NULL` plus the NEW stop_price and alerted nobody — no stop at the broker,
+  a DB row claiming one. IBKR alerts and leaves the row untouched.
+- `calc_htf_trend` hardcoded `30min` instead of `HTF_BARS_MIN`, **which TC never defined**.
+⭐ The Jul 25 2026 commit `72b3bb5` is recorded as having brought TC to entry parity. It
+brought the GRADE/hero/RVOL_ENTRY/HTF stack and missed these. **Every IBKR-vs-TC comparison
+in this program has therefore compared two different strategies, not two accounts.**
+
+**④ 🐛 THE TWO ACCOUNTS SAMPLED THE TAPE AT DIFFERENT INSTANTS, BY ACCIDENT.**
+Both used an unanchored 60s interval. Restarted in the **same second** (Sep 22 23:18:54),
+IBKR reached the read at **:59** and TC at **:00** — opposite sides of `calc_session_rvol`'s
+hard `now - bar_ts < 300` test (at 299s the newest bar is dropped as forming; at 300s it is
+kept). Their `regime_detail` differed on **145 of 208 bar-close minutes (70%) and 0 of 828
+other minutes**. It decided a real trade:
+`13:04:59 IBKR A+ LONG, rvol 0.71 (stale) → RVOL SKIP` · `13:05:00 TC same signal,
+rvol 1.28 → ENTERED, −$300` · `13:05:59 IBKR rvol 1.30 passes but the signal is GONE` →
+IBKR entered at 13:19, **75pts better, +$1.64**.
+⭐ **The race is arbitrary, not directional — being stale was LUCKY here.** That is the
+point: neither account matched `sim_replay`, which evaluates at bar close, and the phase
+was re-rolled silently on every restart. **SHIPPED `SCAN_ANCHOR_SECOND = 15`** (cron, fixed
+second, 60s cadence unchanged; 15 not 0 because the just-closed bar's volume is still
+settling at :00 — 1.28 vs 1.30 on the same bar today). Fourth fix in the family of the
+Jul 17 RVOL, Jul 18 HTF and Aug 24 regime forming-bar bugs, shipped on the same grounds:
+live now samples where the validated sim always did. **It does change which trades fire —
+that is the fix — and it is neutral in expectation, not an edge improvement.** `None` reverts.
+Verified post-restart: both accounts log at identical timestamps and agree exactly.
+
+**⑤ 🐛 The running peak lived only in memory.** `max_gain_ticks` was NULL in **all 208 rows**,
+and a mid-position restart reset the peak — **disarming the Reversal Exit, the only exit
+mechanism in this book with a 100% win rate (n=11, +$2,272 avg +$207)**. Observed live
+Sep 3: a 13:10 restart took the peak +166 → +118 and unarmed it. Flagged then as a candidate
+fix, not built. Now persisted on every improvement and restored on first touch after a restart.
+
+**⑥ The NY logs had no DATE** — only `[HH:MM:SS]` on 30MB rolling files, so today's session
+had to be located by bracketing it between the dated `[LON:*]` lines that happen to share the
+file. Now dated, matching the London logger.
+
+**⑦ OPS: the TC bridge (port 8002) was running Sep 3 code** — 21 days and 3 commits stale,
+with **no `/executions` at all**, so TC's fills could not be checked even in principle.
+Restarted, DUQ640500 reconnected. TC's real errors today turn out small ($2–3); IBKR's was
+$60 only because it exited into the violent bar.
+
+**⑧ THE HONEST SCOREBOARD — the headline has been hiding the book.**
+Automated NY futures, June → Sep 24, RECONCILED and partials excluded:
+
+| | n | P&L |
+|---|---|---|
+| **automated book** | **176** | **−$4,535.52** |
+| manual `FUT CLOSE` (the user's hand) | 18 | **+$4,209.50** |
+| LONG side | 110 | −$1,040.64 — **negative in all 4 months** |
+| SHORT side | 66 | **−$3,494.88** (77% of the loss; Aug −$2,235, Sep −$1,297) |
+
+Exit-bucket P&L: Reversal exit **+$2,272 (n=11)** · trailing-stop exits +$1,804 · no-move
++$243 · target +$256 — **every adaptive exit makes money**; the loss is entirely in trades
+that never earn one (backup-stop −$3,313/59, circuit breaker −$5,757/16, EOD −$701/10).
+⚠️ **The circuit breaker is NOT the leak** — counterfactual against real bars says holding
+those 16 instead would have made **−$5,115 vs −$5,757**, i.e. the breaker cost $642 net, and
+**11 of 16 times it SAVED money**; the one +$1,267 case (Jun 16) dominates the average. It is
+where the day's damage gets *booked*, not caused. **Do not loosen it.**
+
+**⑨ DECISION PENDING — the Daily Tide. I did not flip it; it is a strategy change.**
+`TIDE_GATE_ENABLED` is still `False` (log-only). Scored on the automated live book:
+
+| month | kept (long) | blocked (short) | as traded | with Tide ON |
+|---|---|---|---|---|
+| 2026-06 | −350.50 | **+238.00** | −112.50 | −350.50 |
+| 2026-07 | −149.00 | −564.50 | −713.50 | −149.00 |
+| 2026-08 | −241.50 | −2,235.00 | −2,476.50 | −241.50 |
+| 2026-09 | −299.64 | −1,238.38 | −1,538.02 | −299.64 |
+| **total** | **−1,040.64** | **−3,799.88** | **−4,840.52** | **−1,040.64** |
+
+**+$3,800 improvement over 175 trades, helps in 3 of 4 months.** Backed by the 5.5yr
+pipeline-confirmed run (+$9,469 vs +$2,622 at $6/contract, green 6/6). Today it would have
+blocked the −$801 short pair, leaving the day at about **−$298 instead of −$1,103**.
+⚠️ **Read the costs honestly before flipping:** it removes **30 winners worth +$3,674**
+(the 65 blocked trades were 35 losers/−$7,474 and 30 winners); **MNQ has been above its
+200d MA on every live trading day, so in practice this IS "long-only"** until MNQ breaks
+below it — the live record cannot distinguish the two; and **the kept long side is still
+negative in every month** — it removes ~77% of the loss, it does not make the book
+profitable. Its own log-only trial has just **16 rows** (the logging was broken for three
+weeks until `090935b`/`aba23ce`), so the live case rests on the trade-level rescoring above,
+not on the gate's own trial.
+
+**⑩ INSTRUMENTATION AUDIT (all of it).** `gate_blocks` 49,940 rows, current, scored.
+`gate_blocks_ctx` 28,953 rows, current (nightly 22:35). Field Report current, 50 briefs.
+Heartbeat healthy, both bridges connected, London STALE only outside its 03:00–08:59 window
+(by design). **Crest Watch: 33 checks, 5 trades, 4 days — 18 errors, ALL `api 400` on Sep 3
+only, clean since; recovered, not broken.** It fires only above a +100pt peak, which 23% of
+trades reach, so at ~2 trades/week it needs months. **Not evaluable.**
+**Mirror Book review (was due ~Aug 17, 5 weeks overdue) — ANSWER: NO.** 258 shadow trades
+Jun 22–Sep 22, +352pts/+$704 total, **37.6% WR, and negative in 3 of 4 months** (Jun −$454,
+Jul **+$3,025**, Aug −$265, Sep −$1,602). Its entire edge is July. Same one-good-month shape
+as everything else here. Do not promote.
+**Parity cop** flagged a real Sep 23 divergence (live-only ORB_SHORT at 10:35); ④ is now the
+leading candidate explanation and should be re-checked once a week of anchored data exists.
+
+**OPEN / NEXT.** (a) **The Daily Tide decision — ⑨.** (b) A **volume-spike guard** is the only
+mechanism that speaks to today's actual loss, and it is unbuilt and untested: the 12:15 bar
+was 8× normal volume. Whether an 8×-volume adverse bar can be reacted to *at all* on 5-min
+closes is exactly what six independent exit studies say no to — treat it as a research
+question, not a fix. (c) TC's `eod_snapshot` has no signal-funnel line (IBKR's does) — the
+account heading for a funded eval gets less reporting. (d) `contract=unset` appears in 25,848
+log lines; pre-existing and cosmetic, both bridges resolve `20261218` correctly. (e) The
+evidence clock **restarted today** for entry timing — ④ changes which trades fire, so the
+Sep 3 clock now applies only to the exit stack.
