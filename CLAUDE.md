@@ -5116,3 +5116,122 @@ account heading for a funded eval gets less reporting. (d) `contract=unset` appe
 log lines; pre-existing and cosmetic, both bridges resolve `20261218` correctly. (e) The
 evidence clock **restarted today** for entry timing — ④ changes which trades fire, so the
 Sep 3 clock now applies only to the exit stack.
+
+---
+
+## Sep 24 2026 (pm) — the asymmetry investigated: "we lose big" SOLVED (already shipped), sizing rejected a 4th time, Tide refinements all FAIL
+
+User declined to ship the Tide until the short-side/reversal/asymmetry questions were investigated.
+All figures: 5.5yr sim book (`_mom_2021-06-01_2026-08-14.csv`), $6/contract, day features causal
+(prev-session daily values + 9:30-10:30 IB only). Feature table:
+`scratchpad/dayfeat.csv` recipe in-session. **Nothing shipped in this pass.**
+
+**① THE ASYMMETRY IS REAL AND MEASURABLE — and the Tide fixes it.** At flat 1 contract:
+
+| | win rate | avg win | avg loss | payoff | needed | verdict |
+|---|---|---|---|---|---|---|
+| baseline | 51.6% | +$107.71 | −$117.23 | **0.89** | 0.94 | **FAILS** |
+| Daily Tide | 54.2% | +$105.58 | −$99.89 | **1.06** | 0.85 | **PASSES** |
+
+⭐ **The whole deficit is a 0.05 payoff gap.** And the Tide closes it the way the user asked —
+**losses get smaller, not wins bigger**: avg loss −$117 → −$100, trades worse than −$300 fall
+63 → 27 (6.6% → 5.0%), avg win essentially unchanged. **The "make wins bigger" half is not
+available**: 7 prior exit tests plus this session's no-move counterfactual all reject it.
+
+**② ⭐ "WHEN WE LOSE WE LOSE BIG" — ROOT-CAUSED, AND THE FIX SHIPPED THREE WEEKS AGO.**
+**All 12 trades worse than −$600 in 5.5 years are 2-CONTRACT trades. 8 of the 12 are SHORT.**
+Worst 1-contract loss is −$413; worst 2-contract loss −$825. The <−$600 bucket is −$9,903.
+`SHORT_MAX_CONTRACTS=1` (shipped Sep 2 2026) already halves 8 of those 12.
+
+| step | n | total | maxDD | worst trade | green | payoff/need | /wk |
+|---|---|---|---|---|---|---|---|
+| original (pre-Sep-2) | 948 | −$3,319 | −11,988 | −825 | 2/6 | 0.89/0.94 | 3.30 |
+| **+ SHORT cap (LIVE NOW)** | 948 | **−$447** | −10,223 | −825 | 2/6 | 0.93/0.94 | 3.30 |
+| + Daily Tide (pending) | 541 | **+$6,833** | −3,672 | −825 | **4/6** | 1.06/0.85 | 1.89 |
+
+Per year, the shipped short cap alone: 2021 −1,160 · 2022 −2,615 · 2023 −2,634 · 2024 −2,650 ·
+2025 +1,008 · 2026 +7,604 (ex-2026 −8,051). **+$2,871 vs original.**
+With the Tide: −178 · **+1,668** · +22 · −1,041 · +528 · +5,835, **ex-2026 +$999** — still the
+only configuration that is positive ex-2026 and the only one that survives 2022.
+
+**③ CONVICTION SIZING IS SIDE-SPECIFIC, and the live config is already correct.** The 2c hero
+ladder: **LONGS +$689 and it helped in 5 of 6 years; SHORTS −$2,871.** So the Sep-2 cap was
+aimed exactly right. ⚠️ **Do NOT cap longs as well on IBKR** — costs $671.
+**BUT worth considering for TC only:** capping longs too takes the worst trade −$825 → **−$413**
+and the worst DAY −$825 → **−$433** for $671 over 5.5yr (~$122/yr). Against a $2,000 trailing
+MLL that is probably the right purchase. Decision, not shipped.
+
+**④ ❌ "RISK LESS ON BAD DAYS, MORE ON GOOD DAYS" — TESTED AND REJECTED (4th sizing rejection).**
+Built a 0-3 "day vibe" score (MA200 slope agrees + first hour wide vs ATR + not shorting after a
+down day), thresholds from 2021-24 only, and sized 2c on good days / 1c on the rest.
+**Per unit of exposure it LOSES: Tide flat-1c = +6,162 per unit vs vibe-sized = +5,119 per unit**
+(+$9,726 total but avgC 1.90 — the headline gain is pure leverage, and maxDD doubles to −7,490).
+⭐⭐ **The decisive tell is the INVERSE CONTROL: sizing up on BAD days scored better in train
+(+$2,018 vs −$1,700) with half the drawdown.** When both directions "work", the score is noise.
+Per-quality-bucket P&L inside the Tide is non-monotonic and inverted (q0 +$24.5 · q1 +$51.7 ·
+q2 +$1.0 · q3 +$15.7). **Sizing is not the lever — joins ATR-normalised sizing, room (3×), and
+the hero ladder as rejected.**
+
+**⑤ ❌ CAN THE TIDE BE MADE MORE MARKET-AWARE? NO — every refinement made it worse.**
+Train/test split (thresholds from 2021-24, tested on 2025-26):
+
+| config | n | total | green | TRAIN | payoff |
+|---|---|---|---|---|---|
+| **Daily Tide (level only)** | 541 | **+6,200** | 3/6 | **+516** | 1.03 |
+| + MA200 slope agrees | 487 | +4,326 | 2/6 | −1,146 | 1.06 |
+| + wide first hour (IB/ATR) | 255 | +4,531 | 3/6 | −912 | 1.11 |
+| + no short after a down day | 483 | +4,538 | 2/6 | −1,365 | 1.05 |
+| + all three | 210 | +3,615 | 2/6 | −1,800 | **1.25** |
+
+Every addition cuts total AND flips TRAIN negative. They *do* improve payoff (1.03 → 1.25) but
+by removing so many trades that the book shrinks faster than it improves.
+⭐ **The answer to "how do we get the vibe of the day": the vibe IS the Tide.** Every feature
+that separated in the single-feature scan — `ma200_slope` (short side, spread −$51/trade,
+monotonic), `dist200` (long side, +$36), `ib_vs_atr` (long side, +$35), `pd_ret` (short side,
++$31) — is a *trend-context* measure. They add nothing on top of each other because they are the
+same information. You do not need a composite; you need the one thing.
+
+**⑥ COULD WE HAVE PREDICTED THE 12:15 SPIKE? NO — quantified.** Bars with ≥5× the prior hour's
+volume AND ≥100pt range: **29 in 5.5 years, 0.03% of bars.** The bar immediately before one has
+median volume **0.88× vs 0.84×** for ordinary bars — indistinguishable. **Today's 12:10 bar was
+0.82×, quieter than average.** A "prior bar ≥1.5×" warning catches 34% of shocks while firing on
+7% of all bars = **0.1% precision**. There is no precursor to build on. Do not revisit without a
+genuinely new data source (order flow / depth), not a new statistic on the same bars.
+
+**⑦ THE BIG-LOSS COHORT — what the sibling days share.** 63 trades worse than −$300 = −$25,690.
+**The Tide blocks 36 of them (57%), worth −$14,614**; it lets 27 through (−$11,075).
+⚠️ **38 of the 63 are LONG (−$15,622) vs 25 SHORT (−$10,068) — big losses are NOT a short-side
+problem.** Median profile vs all other days: `pd_ret` −0.34 vs +0.10 · `pd_close_pos` 0.47 vs
+0.61 · `gap_pct` −0.17 vs +0.04 · `dist200` **+4.10 vs +8.82** (big losses happen CLOSER to the
+200d MA). **Today matched three of four** (gapped down −0.74%, prior day fell −0.92%, prior day
+closed at 0.39 of range) — but `dist200` was +11.8%, the safe end. And ⑤ already showed these
+fail as filters. Real pattern, not a tradeable one.
+
+**⑧ THE NO-MOVE RULE IS THE UPSIDE CAP — and removing it is still not shippable.** 588 of 949
+trades (62%) exit on the 90-minute no-move rule; its best outcome ever is **+$215** while the stop
+sets the downside at −$400/−$825. That is the payoff asymmetry, by construction. Counterfactual
+(hold each to its own stop or 15:55): **+$7,195 vs −$2,088, delta +$9,283, only 5% would have hit
+their stop** — but **green only 3/6, carried by 2022 (+$5,065), and NEGATIVE in both 2025 (−$385)
+and 2026 (−$659)**. In the current regime the rule is helping. Not shippable; logged.
+
+**⑨ "WE BLEED IN CHOP" — half right, and the half that is wrong matters.** Raw CHOPPY-day P&L is
+−$7,106 over 486 trades, losing in 5 of 6 years. But the 100/200pt thresholds are FIXED POINTS set
+when MNQ was 13,000 and it is now 30,700: the CHOP label covers 50% of 2021 and 35% of 2026 while
+TREND covers 6% of 2021 and **62% of 2026**. Re-bucketed by IB% **within each year**, the spread
+collapses from **$30.5/trade to $10.9/trade** — same volatility-drift artifact as the Aug 24 ATR
+finding. And it is **redundant with the Tide**: Tide alone +$6,200 vs Tide + chop filter +$4,234.
+⭐ **The chop bleed and the wrong-side bleed were largely the same trades.**
+
+**⑩ Day-shape (`_ib_kind`) is noise — a 4-month illusion.** Live Jun-Sep said BULL_DIRECTIONAL +
+LONG was the one good cell (+$32.54/trade, n=37). Over 5.5yr it is **+$0.2/trade over 339 trades,
+green 3/6**, and ROT+LONG *flips sign* between the live and sim samples. **Do not build on
+`_ib_kind`.** Method note: this is the third time this program has been shown a strong 4-month
+cell that vanished cross-year (cf. the Sep 5 `day_chg>=7%` curve-fit).
+
+**OPEN / NEXT.** (a) **The Tide decision still stands open** (⑨/② above; +$7,281 on top of the
+live config, green 2/6 → 4/6, payoff 0.93 → 1.06, 3.30 → 1.89 trades/week). (b) **Cap longs at 1
+on TC only** — halves the worst trade for ~$122/yr, sensible against a $2,000 trailing MLL. (c) Do
+not re-test: sizing (4 rejections), Tide refinements (⑤), chop as a separate gate (⑨), `_ib_kind`
+(⑩), spike prediction on bar data (⑥). (d) The next honest day-level candidates are ones NOT
+tested here: multi-day trend memory (the book starts every day stateless at the 10:30 IB) and
+prior-day close location as a *stand-down* rather than a side filter.
