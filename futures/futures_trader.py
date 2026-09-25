@@ -325,6 +325,36 @@ EOD_START       = (15, 30)  # 3:30pm ET — no new entries (8:30pm London BST)
 HARD_CLOSE      = (16, 0)   # 4:00pm ET — force close all positions (9pm London BST)
 
 SCAN_INTERVAL   = 60        # seconds between scans (1 min, faster than equity)
+# ── SCAN PHASE (Sep 24 2026) ────────────────────────────────────────────────
+# Fire the scan at a FIXED second of every minute instead of drifting with the
+# process start time. Both NY traders used an unanchored 60s interval, so the
+# second at which each sampled the tape was an accident of its last restart plus
+# however long that process took to reach the bar fetch. That collides with the
+# hard "is the newest bar complete?" test in calc_session_rvol, which is
+# `now - bar_ts < 300` — correct arithmetic, but a knife edge.
+#
+# Measured Sep 24 2026, both traders restarted in the SAME second (Sep 22
+# 23:18:54), yet IBKR reached the read at :59 and TC at :00 — opposite sides of
+# the 300s boundary. Over the session their regime_detail differed on 145 of 208
+# bar-close minutes (70%) and on 0 of 828 other minutes. It decided a real trade:
+#   13:04:59 IBKR  A+ LONG present, rvol 0.71 (stale bar) -> RVOL SKIP
+#   13:05:00 TC    A+ LONG present, rvol 1.28 (fresh bar) -> ENTERED, -$300
+#   13:05:59 IBKR  rvol 1.30 (passes) but the signal was GONE
+# IBKR then entered the same setup at 13:19, 75pts better, for +$1.64.
+#
+# The race is arbitrary, not directional — being stale was LUCKY here. That is
+# the point: the two accounts were not running the same experiment, and neither
+# matched sim_replay, which evaluates at bar close. This is the fourth fix in the
+# same family as the Jul 17 RVOL, Jul 18 HTF and Aug 24 regime forming-bar bugs,
+# and it is shipped on the same grounds: live now samples where the validated sim
+# always did. It does change WHICH trades fire — it must, that is the fix — and
+# it is neutral in expectation, not an edge improvement.
+#
+# 15s is chosen, not 0s: at :00 the just-closed bar's volume is still settling
+# (Sep 24, 13:05 bar read 1.28 at :00 vs 1.30 at :59, ~1.5% apart). 15s is past
+# settling while still cutting IBKR's worst-case decision lag from 59s to 15s.
+# Set to None to restore the old unanchored interval.
+SCAN_ANCHOR_SECOND = 15
 MONITOR_INTERVAL = 15       # seconds between position checks
 
 # ── London session module (plug / unplug here) ────────────────────────────────
@@ -400,7 +430,16 @@ _avg_vol_by_time: dict = {}
 # ── Logging + Telegram ────────────────────────────────────
 
 def log(msg: str):
-    ts = datetime.now(ET).strftime('%H:%M:%S')
+    """Timestamp every line with the DATE as well as the clock.
+
+    Sep 24 2026: these lines carried only [HH:MM:SS]. Both NY logs are ~30MB
+    rolling files spanning months, so "what did the book see on day D" could not
+    be answered by grep at all — today's session had to be located by bracketing
+    it between the dated [LON:*] London lines that happen to share the file. The
+    London logger has always been dated; this brings the NY loop in line with it.
+    Log-format only; no behaviour depends on it.
+    """
+    ts = datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{ts}] {msg}", flush=True)
 
 
@@ -563,6 +602,162 @@ def _get_ibkr_qty() -> float | None:
         if p.get('symbol') == SYMBOL:
             return float(p.get('qty', 0))
     return 0.0
+
+
+def _get_exit_fill_price(order_id, fallback: float, expect_side: str) -> float:
+    """Real fill price for an EXIT, from the broker's execution record.
+
+    Added Sep 24 2026. The Sep 3 fix gave ENTRIES a real fill price
+    (_get_fill_price, via the portfolio avg_cost). Exits never got one, and they
+    cannot use avg_cost because an exit takes the position TO flat — there is no
+    position left to read. So both exit paths booked `price`, the last
+    get_live_price() read of the monitor cycle, which is whatever the market
+    happened to be doing when the monitor noticed. On a fast move that is not the
+    fill.
+
+    Measured on Sep 24 2026, IBKR, the VWAP_SHORT stopped out at 12:17 ET:
+        real fill (GET /executions)  30717.50   ->  -200.5pt  = -$401.00
+        booked from the live price   30746.75   ->  -230.0pt  = -$461.36
+    a $60.36 error on one trade, because price ran another 29pt in the ~40s
+    before the monitor's next cycle saw the position was flat.
+
+    The existing "actual fill" branch tried /order/{id}/status and has fired
+    ZERO times in 61 backup-stop exits (grep 'Actual fill' in either NY log).
+    That endpoint cannot work here for two reasons, both verified live:
+      1. it returns {status: PendingSubmit|Cancelled, filled: 0.0,
+         avgFillPrice: 0.0} even for an order that genuinely filled — the same
+         staleness behind the Jul 20 2026 USAR incident and the Sep 3 entry fix;
+      2. the backup stop is cancelled before the read, so IBKR reports the order
+         as Cancelled and the fill is gone from the order object entirely.
+
+    GET /executions is the authoritative record: it is the fill itself, keyed by
+    orderId, and it carries the commission IBKR actually charged. Verified on
+    order 1315874 above.
+
+    Guards, in order of what they protect against:
+      * orderId must match exactly, so there is no ambiguity about which order
+        this fill belongs to;
+      * side must match the expected exit direction (SLD for a long exit, BOT
+        for a short exit) — a mismatch means we matched the wrong order;
+      * several fills for one order are volume-weighted (a partial-fill exit);
+      * a value further than MAX_EXIT_FILL_DRIFT_PTS from the estimate is
+        rejected and logged loudly rather than trusted — that generous bound is
+        only there to reject garbage, since the orderId match is already exact;
+      * ANY failure returns the estimate, so an exit is never lost or delayed
+        for want of a price. Booking accuracy must never be able to strand a
+        position.
+
+    Changes no decision: this is called after the exit is done, and only sets the
+    price the trade is recorded at.
+    """
+    MAX_EXIT_FILL_DRIFT_PTS = 500.0
+    if not order_id:
+        return fallback
+    want = 'SLD' if expect_side == 'LONG' else 'BOT'
+    try:
+        ex = _bridge_get('/executions')
+        fills = (ex or {}).get('fills') or []
+    except Exception as e:
+        log(f"  exit fill: /executions failed ({e}) — booking estimate {fallback}")
+        return fallback
+    if not fills:
+        log(f"  exit fill: no executions returned — booking estimate {fallback}")
+        return fallback
+    qty = 0.0
+    notional = 0.0
+    wrong_side = 0
+    for f in fills:
+        try:
+            if int(f.get('orderId', -1)) != int(order_id):
+                continue
+            if f.get('symbol') != SYMBOL:
+                continue
+            if f.get('side') != want:
+                wrong_side += 1
+                continue
+            s = float(f.get('shares') or 0)
+            p = float(f.get('price') or 0)
+            if s <= 0 or p <= 0:
+                continue
+            qty += s
+            notional += s * p
+        except Exception:
+            continue
+    if wrong_side:
+        log(f"  exit fill: order {order_id} had {wrong_side} fill(s) on the wrong "
+            f"side (wanted {want}) — ignored")
+    if qty <= 0:
+        log(f"  exit fill: order {order_id} not in the execution record yet "
+            f"— booking estimate {fallback}")
+        return fallback
+    px = notional / qty
+    drift = px - fallback
+    if abs(drift) > MAX_EXIT_FILL_DRIFT_PTS:
+        log(f"  exit fill: order {order_id} = {px} is {drift:+.1f}pts from the "
+            f"estimate {fallback} (> {MAX_EXIT_FILL_DRIFT_PTS:.0f}) — REJECTED as garbage")
+        return fallback
+    if abs(drift) > 0.01:
+        log(f"  exit fill {px} vs estimate {fallback} ({drift:+.2f}pts, "
+            f"{qty:g}c via /executions) — booking the real fill")
+    return px
+
+
+def _peak_restore(tid: int, entry: float, is_short: bool) -> None:
+    """Seed the in-memory peak for a trade from the DB, once, after a restart.
+
+    Added Sep 24 2026. `_session_high` / `_session_low` lived only in this
+    process's memory, so restarting while a position was open reset the peak to
+    the current price and DISARMED the Reversal Exit — the only exit mechanism in
+    this book with a 100% win rate (n=11, +$2,272). Observed live on Sep 3 2026:
+    a restart at 13:10 took the peak from +166pts back to +118, so rev-exit went
+    from ARMED to needing another 2pts of peak it never got. The trail stop
+    survived that restart because it lives in the DB; the give-back protection did
+    not. Flagged then as a candidate fix and not built — this is it.
+
+    Also fills futures_trades.max_gain_ticks, which was NULL in all 208 rows, so
+    give-back / MFE analysis of the LIVE book had to be reconstructed from bars
+    every time instead of being read off the ledger.
+    """
+    if tid in _session_high or tid in _session_low:
+        return                                   # already tracking in this process
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT max_gain_ticks FROM futures_trades WHERE id=?", (tid,)).fetchone()
+        conn.close()
+    except Exception as e:
+        log(f"  peak restore failed for trade {tid} ({e}) — starting the peak from the current price")
+        return
+    if not row or row[0] is None:
+        return
+    peak_pts = float(row[0]) * TICK_SIZE
+    if is_short:
+        _session_low[tid]  = entry - peak_pts
+    else:
+        _session_high[tid] = entry + peak_pts
+    log(f"  trade {tid}: peak restored from the DB (+{peak_pts:.1f}pts) — "
+        f"Reversal Exit keeps its arming state across restarts")
+
+
+def _peak_persist(tid: int, peak_pts: float) -> None:
+    """Store the best favourable excursion so far, so it survives a restart.
+
+    Only writes when the peak actually improves, so this is a few small UPDATEs
+    per position per session, not one per monitor tick. Never raises into the
+    monitor loop — a bookkeeping failure must not be able to stop an exit.
+    """
+    try:
+        ticks = round(peak_pts / TICK_SIZE, 1)
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.execute(
+            "UPDATE futures_trades SET max_gain_ticks=? "
+            "WHERE id=? AND (max_gain_ticks IS NULL OR max_gain_ticks < ?)",
+            (ticks, tid, ticks))
+        conn.commit()
+        conn.close()
+        return cur.rowcount
+    except Exception as e:
+        log(f"  peak persist failed for trade {tid} ({e}) — in-memory peak still tracking")
+        return 0
 
 
 def get_live_price() -> float | None:
@@ -2065,7 +2260,9 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         if not price:
             continue
 
-        # Track session high/low
+        # Track session high/low. Restore first, so a restart mid-position does not
+        # silently reset the peak and disarm the Reversal Exit (see _peak_restore).
+        _peak_restore(tid, entry, is_short)
         if is_short:
             _session_low[tid]  = min(_session_low.get(tid, price), price)
         else:
@@ -2087,6 +2284,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
         # tightens — never loosens the stop.
         s_peak    = _session_low.get(tid, price) if is_short else _session_high.get(tid, price)
         peak_pts  = (entry - s_peak) if is_short else (s_peak - entry)   # best favorable excursion so far
+        _peak_persist(tid, peak_pts)
 
         # Regime-aware exit params (Jul 8 2026) — see EXIT_PARAMS_BY_REGIME
         # above for rationale/backtest numbers/known limitation.
@@ -2367,17 +2565,19 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 log(f"  IBKR flat (qty={_ibkr_qty}) — backup stop filled, closing DB only")
                 _cancel_backup_stop(trade)   # cancel pending stop if any remains
                 backup_stop_px = trade.get('stop_price', '?')
-                # Try to get actual fill price from the IBKR stop order
+                # Real fill price for the stop, from the broker's execution record.
+                # Sep 24 2026: this used /order/{id}/status, which returns
+                # avgFillPrice 0.0 for a filled-then-cancelled stop and had
+                # therefore NEVER produced a price in 61 backup-stop exits — every
+                # one booked the live price at the moment the monitor noticed, which
+                # on Sep 24 was 29pt / $60 away from the real fill. See
+                # _get_exit_fill_price().
                 stop_oid = trade.get('stop_order_id')
                 actual_fill = None
                 if stop_oid:
-                    try:
-                        sr = _bridge_get(f'/order/{stop_oid}/status')
-                        fp = sr.get('avgFillPrice') if sr else None
-                        if fp and float(fp) > 0:
-                            actual_fill = float(fp)
-                    except Exception:
-                        pass
+                    _fp = _get_exit_fill_price(stop_oid, price, side)
+                    if abs(_fp - price) > 0.001:
+                        actual_fill = _fp
                 if actual_fill:
                     price = actual_fill
                     pnl_pts  = price - entry if not is_short else entry - price
@@ -2433,6 +2633,25 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                 continue
 
             _last_exit_time = datetime.now(ET)
+
+            # Book the REAL fill, not the live price this cycle happened to read.
+            # Sep 24 2026 — this path checked only status=='submitted' (submitted is
+            # not filled) and then recorded `price`, the get_live_price() value from
+            # the top of the monitor cycle. Mirrors the entry path's own 3s wait
+            # (see place_trade) before asking the broker what actually happened.
+            _exit_oid = exit_result.get('order_id', '')
+            if _exit_oid:
+                time.sleep(3)
+                _real = _get_exit_fill_price(_exit_oid, price, side)
+                if abs(_real - price) > 0.001:
+                    # exit_reason was composed above from the pre-fill estimate and
+                    # embeds a dollar figure; say so rather than leave the reason
+                    # and the booked P&L quietly disagreeing in the ledger.
+                    exit_reason = f"{exit_reason} [filled {_real}]"
+                    price     = _real
+                    pnl_pts   = price - entry if not is_short else entry - price
+                    pnl_ticks = pnl_pts / TICK_SIZE
+                    pnl_usd   = pnl_ticks * TICK_VALUE * contracts
 
             pnl_net = _net_usd(pnl_usd, contracts)
             log_futures_exit(tid, price, exit_reason, pnl_net, round(pnl_ticks, 1))
@@ -3449,7 +3668,16 @@ def main():
     _scheduler = BackgroundScheduler(timezone=ET)
 
     # Core loops
-    _scheduler.add_job(run_scan,     'interval', seconds=SCAN_INTERVAL,    id='scan')
+    if SCAN_ANCHOR_SECOND is None:
+        _scheduler.add_job(run_scan, 'interval', seconds=SCAN_INTERVAL, id='scan')
+    else:
+        # Fixed second every minute — same cadence as the old 60s interval, but a
+        # deterministic sampling phase shared with the other account and the sim.
+        _scheduler.add_job(run_scan, 'cron', second=SCAN_ANCHOR_SECOND,
+                           id='scan', misfire_grace_time=30, coalesce=True,
+                           max_instances=1)
+        log(f"Scan anchored to :{SCAN_ANCHOR_SECOND:02d} of every minute "
+            f"(deterministic bar sampling)")
     _scheduler.add_job(run_monitor,  'interval', seconds=MONITOR_INTERVAL, id='monitor')
 
     # London session (plug/unplug via LONDON_ENABLED above)
