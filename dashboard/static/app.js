@@ -13,7 +13,13 @@ document.addEventListener('DOMContentLoaded', () => {
   loadData();
   wireCloseControls();
   wireActivityFilters();
-  setInterval(loadData, 30000);
+  // Poll only while the page is visible. A phone in a pocket or a background laptop
+  // tab used to poll forever — that is what exhausted the tunnel's bandwidth (Sep 2026).
+  // Coming back to the page refreshes immediately, so nothing looks stale.
+  setInterval(() => { if (document.visibilityState === 'visible') loadData(); }, 30000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') loadData();
+  });
 });
 
 // ── Data fetch ────────────────────────────────────────────

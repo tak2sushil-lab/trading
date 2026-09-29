@@ -36,7 +36,7 @@
       letter-spacing: 2px;
       color: #e6edf3;
     }
-    input[type="password"] {
+    input[type="password"], input[name="code"] {
       width: 100%;
       padding: 11px 14px;
       background: #0d1117;
@@ -47,7 +47,8 @@
       margin-bottom: 14px;
       outline: none;
     }
-    input[type="password"]:focus { border-color: #4f9cf6; }
+    input[type="password"]:focus, input[name="code"]:focus { border-color: #4f9cf6; }
+    input[name="code"] { letter-spacing: 6px; text-align: center; }
     button {
       width: 100%;
       padding: 11px;
@@ -79,6 +80,10 @@
     </div>
     <form method="POST">
       <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password">
+      {% if need_code %}
+      <input type="text" name="code" placeholder="6-digit code" inputmode="numeric" pattern="[0-9 ]*"
+             maxlength="7" autocomplete="one-time-code">
+      {% endif %}
       <button type="submit">Enter</button>
       {% if error %}<div class="error">{{ error }}</div>{% endif %}
     </form>

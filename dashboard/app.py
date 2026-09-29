@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TriVega Trading Dashboard — Flask server, port 8080."""
 
-import os, sys, sqlite3, subprocess, json, base64, functools, time
+import os, sys, sqlite3, subprocess, json, base64, functools, time, hmac
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,6 +13,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from futures.strategy_core import TICK_SIZE, TICK_VALUE  # noqa: E402
+from totp import totp_code  # noqa: E402  (dashboard/ is sys.path[0])
 
 # ── Config ─────────────────────────────────────────────────────────────
 BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -111,12 +112,58 @@ GOLIVE_CHECKLIST = [
 ]
 
 app = Flask(__name__)
-app.secret_key = os.getenv('DASHBOARD_PASSWORD', 'trivega-dev-key')  # signs the session cookie
+# Session-signing key. Its own secret since Sep 28 2026 (was the password itself);
+# falls back to the password so an .env without it still starts.
+app.secret_key = (os.getenv('DASHBOARD_SECRET_KEY')
+                  or os.getenv('DASHBOARD_PASSWORD', 'trivega-dev-key'))
+app.permanent_session_lifetime = timedelta(days=30)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-# ── Auth (cookie-based session — enter once, persists 30 days) ───────────
+# ── Auth: password + authenticator code (TOTP), 30-day cookie ─────────────
+# Sep 28 2026: moving to a public Tailscale Funnel URL, which has no auth of its own,
+# so the login is the only wall. Adds a 6-digit authenticator code (RFC 6238, same as
+# Google Authenticator) and lockouts. Setup / rotate: venv/bin/python dashboard/totp_setup.py
 _DASH_PASSWORD = os.getenv('DASHBOARD_PASSWORD', '')
+_TOTP_SECRET   = os.getenv('DASHBOARD_TOTP_SECRET', '').replace(' ', '').upper()
+_AUTH_VERSION  = 2      # bump to sign every browser out (old cookies lack it)
 
 _OPEN_PATHS = {'/login', '/static/apple-touch-icon.png', '/favicon.ico'}
+
+LOGIN_MAX_FAILS_IP     = 5      # per client, per window
+LOGIN_MAX_FAILS_GLOBAL = 20     # all clients — X-Forwarded-For can be spoofed
+LOGIN_WINDOW_S         = 15 * 60
+_fails_by_ip  = {}
+_fails_global = []
+_last_totp_counter = [0]        # a code is accepted once, never replayed
+
+
+def _totp_ok(code):
+    code = (code or '').strip().replace(' ', '')
+    if not (_TOTP_SECRET and code.isdigit() and len(code) == 6):
+        return False
+    now = int(time.time()) // 30
+    for c in (now - 1, now, now + 1):       # ±30 s for clock drift
+        if c > _last_totp_counter[0] and hmac.compare_digest(totp_code(_TOTP_SECRET, c), code):
+            _last_totp_counter[0] = c
+            return True
+    return False
+
+
+def _client_ip():
+    # Behind a tunnel every request arrives from 127.0.0.1; the tunnel sets XFF.
+    xff = request.headers.get('X-Forwarded-For', '')
+    return (xff.split(',')[0].strip() if xff else '') or request.remote_addr or '?'
+
+
+def _lockout_left(ip):
+    cut = time.time() - LOGIN_WINDOW_S
+    _fails_global[:] = [t for t in _fails_global if t > cut]
+    mine = _fails_by_ip[ip] = [t for t in _fails_by_ip.get(ip, []) if t > cut]
+    for fails, cap in ((mine, LOGIN_MAX_FAILS_IP), (_fails_global, LOGIN_MAX_FAILS_GLOBAL)):
+        if len(fails) >= cap:
+            return int(fails[-cap] + LOGIN_WINDOW_S - time.time()) + 1
+    return 0
+
 
 @app.before_request
 def _check_auth():
@@ -124,20 +171,62 @@ def _check_auth():
         return
     if request.path in _OPEN_PATHS or request.path.startswith('/static/'):
         return
-    if not session.get('authenticated'):
+    if not (session.get('authenticated') and session.get('auth_v') == _AUTH_VERSION):
+        if request.path.startswith('/api/'):
+            return jsonify({'error': 'not signed in'}), 401
         return redirect(url_for('login', next=request.path))
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = ''
     if request.method == 'POST':
-        if request.form.get('password') == _DASH_PASSWORD:
-            session.permanent = True
-            app.permanent_session_lifetime = timedelta(days=30)
-            session['authenticated'] = True
-            return redirect(request.args.get('next') or '/')
-        error = 'Wrong password'
-    return render_template('login.html', error=error)
+        ip = _client_ip()
+        wait = _lockout_left(ip)
+        if wait:
+            error = f'Too many attempts. Try again in {wait // 60 + 1} min.'
+        else:
+            pw_ok   = hmac.compare_digest(request.form.get('password', ''), _DASH_PASSWORD)
+            # Only after the password passes: checking burns the code (replay guard).
+            code_ok = pw_ok and (_totp_ok(request.form.get('code')) if _TOTP_SECRET else True)
+            if pw_ok and code_ok:
+                _fails_by_ip.pop(ip, None)
+                session.clear()
+                session.permanent = True
+                session['authenticated'] = True
+                session['auth_v'] = _AUTH_VERSION
+                nxt = request.args.get('next') or '/'
+                if not nxt.startswith('/') or nxt.startswith('//'):
+                    nxt = '/'                   # never redirect off-site
+                return redirect(nxt)
+            now = time.time()
+            _fails_by_ip.setdefault(ip, []).append(now)
+            _fails_global.append(now)
+            print(f'[login] failed from {ip}', flush=True)
+            error = 'Wrong password or code'
+    return render_template('login.html', error=error, need_code=bool(_TOTP_SECRET))
+
+
+@app.after_request
+def _gzip(resp):
+    """Sep 28 2026: ngrok's free 1 GB/month ran out because /api/data (69 KB) went
+    uncompressed every 30 s — ~8 MB/hour per open tab. gzip cuts it ~6x (69 KB -> 12 KB).
+    No new dependency; skips small, already-encoded and streamed responses."""
+    import gzip as _gz
+    if ('gzip' not in request.headers.get('Accept-Encoding', '').lower()
+            or resp.status_code < 200 or resp.status_code >= 300
+            or 'Content-Encoding' in resp.headers
+            or (resp.is_streamed and not resp.direct_passthrough)):
+        return resp
+    resp.direct_passthrough = False      # static files are sent passthrough; read them in
+    data = resp.get_data()
+    if len(data) < 1024:
+        return resp
+    resp.set_data(_gz.compress(data, compresslevel=6))
+    resp.headers['Content-Encoding'] = 'gzip'
+    resp.headers['Content-Length'] = str(len(resp.get_data()))
+    resp.headers.add('Vary', 'Accept-Encoding')
+    return resp
 
 
 # ── DB helper ──────────────────────────────────────────────────────────
@@ -2066,7 +2155,7 @@ def _engine_env(label):
 
 
 def _csrf_token():
-    """Per-session token. The dashboard is reachable on a public ngrok URL behind one
+    """Per-session token. The dashboard is reachable on a public Tailscale Funnel URL behind one
     password and a 30-day cookie, so a close endpoint must not be triggerable by a
     cross-site form post from a page the user happens to have open."""
     tok = session.get('csrf')

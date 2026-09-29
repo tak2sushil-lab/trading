@@ -1,6 +1,6 @@
 # TriVega Trading System — Ground Truth
 **Auto-loaded by Claude Code at session start. Update this file whenever code changes.**
-Last updated: Sep 24 2026 (futures session)
+Last updated: Sep 25 2026 (futures deep review)
 
 ---
 
@@ -5235,3 +5235,125 @@ not re-test: sizing (4 rejections), Tide refinements (⑤), chop as a separate g
 (⑩), spike prediction on bar data (⑥). (d) The next honest day-level candidates are ones NOT
 tested here: multi-day trend memory (the book starts every day stateless at the 10:30 IB) and
 prior-day close location as a *stand-down* rather than a side filter.
+
+---
+
+## Sep 25 2026 — futures deep review: live was not running the validated strategy (5 parity defects fixed) · the Tide becomes the strongest config ever measured · MNQ's edge is overnight
+
+User asked for a no-assumptions re-think after the Sep 24 loss was written off as "unforeseeable".
+**It was not.** Scratch labs in the session scratchpad; A/B runner `futures/factory/_ibab.py`.
+
+**① Sep 24's −$1,103 ROOT-CAUSED — a live-only bug, and the Trade Cop flagged it that night.**
+Live fetches bars with `rth=false` and took "today" as `index.date == today` = since MIDNIGHT. So
+VWAP, the regime's session open, its prev close (the 23:55 bar — why `day_chg` and `sess_chg`
+always logged identical values), the Day Shape IB close-location, and the hero score's prior-day
+high/low/close/POC were all anchored to the overnight session. Sep 24 11:20: price 30,518.50 was
+EXACTLY the 09:30 open (30,519) — the RTH session had gone nowhere, the whole drop was overnight.
+Live measured −0.46% from the midnight bar → WEAK×3 → shorted at RSI 30. The sim (RTH-anchored)
+measured ~0%, its chop filter held NORMAL, and it never shorted — parity.log Sep 24: *"live-only
+trade (sim never took it): 11:21 SHORT VWAP_SHORT"*. Replayed the real bars through live
+`get_regime`: OLD = WEAK 11:00–11:20, NEW = NORMAL/choppy all morning, VWAP 30,571.08 = the sim's.
+**FIXED (both traders): `_rth_today()`, `_prev_rth_close()`, `_prev_rth_bars()`** feed VWAP,
+regime, open-play, IB Day Shape (09:30–10:30 only) and the hero score's prior session.
+
+**② Scan-level RVOL gate read the FORMING bar — killed 92% of bar-close scans.** `calc_rvol_current`
+divides seconds of volume by a full-bar average; IBKR 10:30–14:00 since Aug 24: **550 of 597
+first-minute scans skipped** — exactly the moment the sim decides. Cost a real trade: Sep 21
+11:40 TC entered PM_LONG **+$669** while IBKR read 0.00x the same minute and skipped. TC gained the
+same gate Sep 24. **FIXED: new `calc_rvol_completed()` for the gate only.** `calc_rvol_current`
+still feeds sizing, deliberately — ⚠️ **live SIZING ≠ sim sizing** (live: RVOL/IB-range/had_loss
+ladder on the forming bar; sim: hero-score ladder). Open decision, not a bug fix.
+
+**③ Contract roll: IBKR could not trade for 4 sessions (Sep 15–18).** `_active_contract_month`
+was only set inside `get_live_price()`, which `run_scan()` never calls — after every restart bars
+came from IBKR ContFuture (26,444 `contract=unset` lines). ContFuture stayed on the expiring
+September contract through expiry while orders had rolled to December → signals and fills on two
+contracts, and the dying contract's volume drove the scan gate to RVOL 0.107/0.048/0.045/**0.000**
+while real volume was normal (145–170k/session). **FIXED: `_ensure_contract_month()`** pins bars to
+the order contract (15-min recheck). Verified: first scan after restart logs `contract=20261218`.
+**`bridge.py` roll cutoff 5 → 9 days** = CME's roll Thursday (Dec 2026: rolls Thu Dec 10). Both
+bridges restarted, reconnected (DU9952463 / DUQ640500).
+
+**④ Entry fill double-charged commission.** IBKR `avgCost` folds the $0.62/side commission into
+the basis, so every entry since Sep 3 was booked 0.31pt worse (TC order 85514: real 30868.00,
+avg_cost 30868.31) and `_net_usd` charged it again. **FIXED: `/executions` is now the primary
+entry source** (orderId + side), avg_cost fallback de-commissioned and tick-snapped. Historical
+rows NOT rewritten (~$0.62/contract/trade).
+
+**⑤ The sim classified the day at 09:45, live at 10:30.** Sim classified on the first bar whose
+range hit 50pts = the 09:45 bar (20-min range) EVERY year; live uses the 60-min IB. Agreement:
+day label 53%, Day Shape 44% (2026: live TRENDING 116 days, sim 45). Every exit-lock tuning was
+fit on labels live never used. **`IB_CLASSIFY_AT_1030 = True` is now the sim DEFAULT**
+(`--legacy-ib-0945` reproduces all prior results — verified line-for-line).
+
+**⑥ 5.5yr within-engine A/B (Jun 2021 → Sep 24 2026, $6/contract, one variable):**
+
+| config | net | maxDD | worst day | green | payoff |
+|---|---|---|---|---|---|
+| legacy sim (09:45 day label) | +$4,074 | −6,735 | −814 | 2/6 | 0.92 |
+| **as live runs (10:30)** | **+$2,836** | −4,805 | **−1,222** | 2/6 | 0.89 |
+| **as live + Daily Tide** | **+$12,153** | **−2,943** | −814 | **5/6** | **1.06** |
+| as live, LONG only | +$395 | −5,221 | −1,222 | 3/6 | 0.83 |
+
+The live book has been worse than every number we quoted, and its worst day breaches TC's $1,000
+DLL. **With the Tide it is the best config this program has measured; 2022 = +$3,636.** ⚠️ **The
+Tide is NOT long-only** — long-only on the real classification loses $4,127 in 2022; the short
+leg in a genuine bear tape is what the Tide keeps. Post-Aug-24 live: Tide would have added +$202
+IBKR / +$734 TC. **DECISION PENDING (user).** Per-year: 182 / 3,636 / 925 / −572 / 2,245 / 5,737.
+
+**⑦ Live vs sim, Jun 1 → Sep 24, trade-matched (±15 min):** IBKR live 70 events −$290, only 16
+match the sim; 54 live-only −$1,670; **37 sim-only +$4,856 never taken.** TC: 89 live-only
+−$1,957, 36 sim-only +$5,286. On MATCHED trades live did better than sim (+$1,380 vs +$235) ⇒
+execution is fine, SELECTION diverged — the Aug 16 finding, now with mechanisms (①②③⑤ + the
+pre-Aug-24 duplicates + since-removed gates). ⚠️ Honest scope: **post-Aug-24 the gap mostly
+closes** (sim +$269/11 vs IBKR live +$891/11; TC −$767 of which −$704 was the after-14:00 trades
+fixed Sep 24). **STILL OPEN: `get_signals()` computes every entry signal on the forming bar**
+(price, 3-bar VWAP streak, momentum, ORB/PM break) while the sim decides once per completed bar.
+Not changed — on current code it has not measurably hurt; re-run the match after 4–6 weeks.
+
+**⑧ ⭐ WHERE MNQ ACTUALLY PAYS — the equity overnight finding holds for futures.** 1 MNQ, Tide-up
+days only, $3.24/round trip, 2021→2026: **15:55→next 09:30 hold +$27,218, Sharpe 1.29** vs
+**09:30→15:55 hold −$559, Sharpe −0.02** vs our 10:30→13:55 window +$6,413 (0.38). It is the
+WINDOW, not bull beta: the RTH tape we trade has no drift under the Tide — which is WHY nine
+"let winners run" exit studies all failed. Best variant **15:55→02:55 (exit before London):
++$21,615, Sharpe 1.32, maxDD −$3,997, positive all 6 years**; Mon–Thu Sharpe 1.44; 02:55→09:30 adds
+nothing (0.16). ⚠️ First half (2021–mid 2024) Sharpe 0.57, second half 1.76. Largest after RED
+RTH days (≤ −0.5%: $36.7/night, Sharpe 2.01, 6/6) — NOT after the book's winning days (average).
+Uncorrelated with the NY book (−0.01): diversifies (Tide-up days Sharpe −0.34 → 0.85), but not
+a hedge (recovers 7% of bad days; worst day −$825 → −$1,933 from gaps). **IBKR only** — TopStep
+forbids overnight holds; margin ~$6.2k/contract. **Candidate "Night Tide" book — NOT BUILT.**
+
+**⑨ LONDON IS THE MOST CONSISTENT FUTURES BOOK.** IBKR London since Jun: **+$2,481 / 112 trades,
++$1,105 ex-top-5%, 31 green days vs 22, worst day −$328**; Sep +$1,921. TC London Sep **+$1,013/28**
+(first real month since the Sep 7 gateway fix). Live rows are net of commission on real paper
+fills; the "doesn't survive costs" verdict came from the SIM. Keep running; stop calling it dead.
+
+**OPEN / NEXT, in order.** (a) **Tide: ship live on both accounts** — the recommendation.
+(b) TC only: cap longs at 1c (worst trade −$825 → −$413 for ~$122/yr) against the $2k trailing
+MLL. (c) Night Tide as an IBKR paper book (15:55→02:55, Tide-up, 1c). (d) Live sizing ladder vs
+the sim's hero ladder — pick one and make both use it. (e) Forming-bar `get_signals` — re-measure
+in 4–6 weeks. (f) ⚠️ Every 5.5yr number before today used the 09:45 day label; re-run anything
+still being relied on. **Evidence clock for NY entries restarts Sep 28** (①②③ change which
+trades fire — toward the sim).
+
+---
+
+## Sep 28 2026 — Dashboard hosting: ngrok → Tailscale Funnel + MFA
+
+**ngrok free plan ran out** (1 GB/month data; a separate one-time $5 credit was also being
+drained by the 24/7 endpoint). Cause: `/api/data` was 69 KB **uncompressed, every 30 s**, even
+in hidden tabs — ~8 MB/hour per open tab. Fixed in code: gzip `after_request` in
+`dashboard/app.py` (69 → 12 KB) and `app.js` now polls only while the tab is visible.
+
+**Now public at `https://trivega.bombay-pomfret.ts.net`** via Tailscale Funnel → `127.0.0.1:8080`
+(free Personal plan, fixed URL, Let's Encrypt cert auto-renewed). Chosen over private tailnet
+access because the user views it from an employer MacBook where installing Tailscale is not
+appropriate. **Funnel has NO auth of its own — the login page is the only wall**, so it now needs
+**password + a 6-digit authenticator code** (TOTP, `dashboard/totp.py`, stdlib, RFC-vector tested),
+code checked only after the password passes, single-use; lockout 5 fails/IP or 20 global per
+15 min; `/api/*` → 401 when signed out; separate `DASHBOARD_SECRET_KEY`. Setup/rotate/check:
+`venv/bin/python dashboard/totp_setup.py [--rotate | --check CODE]` (QR opens on the Mac mini
+screen only). Verified from outside: login page only, data/close endpoints 401.
+Tailscale CLI: `/Applications/Tailscale.app/Contents/MacOS/Tailscale funnel status` (run in the
+foreground; off = `funnel --https=443 off`). ngrok plist parked as
+`~/Library/LaunchAgents/com.sushil.trading.dashboard_tunnel.plist.disabled-2026-09-28`.
