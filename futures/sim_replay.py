@@ -306,6 +306,20 @@ NO_OVN_SKIP = False   # --no-ovn-skip: trade through the overnight skip zone (ve
 
 # IB range minimum (pts) — live gate: thin IB (<50pts) → skip
 MIN_IB_RANGE = 50.0
+# Sep 25 2026 -- research flag, default OFF (reproduces every prior sim result).
+# The sim classified the day (day_regime + ib_kind) on the FIRST bar whose
+# running range reached MIN_IB_RANGE -- in practice the 09:45 bar, i.e. a
+# 20-minute range, every year 2021-2026. Live classifies at 10:30 on the full
+# 60-minute Initial Balance, which is also what detect_regime() documents
+# ("9:30-10:30 H-L"). The two agree on the day label on only 53% of days and on
+# Day Shape on 44% (2026: live TRENDING 116 days, sim 45). Since that label picks
+# the hero thresholds, the short unlock and the exit locks, every exit tuning
+# was fit on labels live does not use. True = classify on the 09:30-10:30 IB.
+# DEFAULT TRUE since Sep 25 2026 -- the sim must mirror live (parity_check relies on
+# it). 5.5yr A/B, live config, $6/c: legacy 09:45 +$4,074 vs 10:30 +$2,836 bare, but
+# with the Daily Tide 09:45 +$9,241 vs 10:30 +$12,153 (futures/factory/_ibab.py).
+# --legacy-ib-0945 reproduces every result computed before this date.
+IB_CLASSIFY_AT_1030 = True
 
 # ── Historical per-slot volume averages (RVOL) ────────────────────────────────
 # Loaded once from market_data.db to mirror live's _avg_vol_by_time dict.
@@ -898,7 +912,8 @@ def simulate_day(
         # IB range / day regime / IB-kind classification (mirrors live — happens
         # every scan until classified, regardless of position state)
         ib_range = float(bars_today['high'].max() - bars_today['low'].min()) if len(bars_today) >= 2 else 0.0
-        if day_regime is None and ib_range >= MIN_IB_RANGE:
+        if (day_regime is None and ib_range >= MIN_IB_RANGE
+                and (not IB_CLASSIFY_AT_1030 or t >= _dt.time(10, 25))):
             day_regime = detect_regime(ib_range)
             ib_hi = float(bars_today['high'].max())
             ib_lo = float(bars_today['low'].min())
@@ -1582,6 +1597,9 @@ def main():
     # combos, a paradigm that no longer exists now that stop sizing is
     # point-based. Use --stop-pts / --target-pts with separate runs instead
     # if a similar comparison is needed.
+    ap.add_argument('--legacy-ib-0945', action='store_true', dest='legacy_ib_0945',
+                    help='Classify the day on the ~09:45 bar (pre-Sep-25-2026 sim behaviour) '
+                         'instead of the 09:30-10:30 Initial Balance that live uses.')
     ap.add_argument('--short-max-contracts', type=int, default=None,
                     dest='short_max_contracts',
                     help='Cap SHORT-side size (live default 1, shipped Sep 2 2026). '
@@ -1607,9 +1625,11 @@ def main():
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
     global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS, REV_EXIT_VOL_MULT
-    global SHORT_MAX_CONTRACTS
+    global SHORT_MAX_CONTRACTS, IB_CLASSIFY_AT_1030
     if args.short_max_contracts is not None:
         SHORT_MAX_CONTRACTS = None if args.short_max_contracts == 0 else args.short_max_contracts
+    if args.legacy_ib_0945:
+        IB_CLASSIFY_AT_1030 = False
     global ATR_EXIT_SCALE, ATR_EXIT_REF, ATR_EXIT_PARTS
     if args.atr_exits is not None:
         ATR_EXIT_SCALE = args.atr_exits

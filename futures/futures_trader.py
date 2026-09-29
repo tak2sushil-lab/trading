@@ -540,7 +540,7 @@ def _bridge_post(path: str, payload: dict, timeout: int = 10) -> dict:
         return {}
 
 
-def _get_fill_price(order_id, fallback: float) -> float:
+def _get_fill_price(order_id, fallback: float, side: str = '') -> float:
     """Real average fill price for the entry we just placed; scan price on failure.
 
     Added Sep 3 2026. place_trade() verified fill SIZE (_actual_filled) but never
@@ -564,12 +564,45 @@ def _get_fill_price(order_id, fallback: float) -> float:
     the scan price so an entry is never lost.
     """
     MAX_FILL_DRIFT_PTS = 60.0
+    # Sep 25 2026: the execution record is now the FIRST source. avg_cost carries
+    # IBKR's per-side commission folded into the cost basis (avgCost = fill*mult
+    # + $0.62), so every entry since Sep 3 was booked 0.31pt worse than the real
+    # fill and commission was then charged a second time by _net_usd(). Verified
+    # Sep 25 on TC order 85514: real fill 30868.00, avg_cost 30868.31. avg_cost
+    # stays as the fallback with that commission taken back out and the result
+    # snapped to the tick grid.
+    def _from_executions():
+        want = 'BOT' if side == 'LONG' else 'SLD'
+        fills = ((_bridge_get('/executions') or {}).get('fills') or []) if order_id else []
+        q = n = 0.0
+        for f in fills:
+            try:
+                if int(f.get('orderId', -1)) != int(order_id) or f.get('symbol') != SYMBOL:
+                    continue
+                if side and f.get('side') != want:
+                    continue
+                s, p = float(f.get('shares') or 0), float(f.get('price') or 0)
+                if s > 0 and p > 0:
+                    q += s; n += s * p
+            except Exception:
+                continue
+        return n / q if q > 0 else 0.0
+
+    def _from_avg_cost():
+        for p in (_bridge_get('/futures/position') or []):
+            if not (isinstance(p, dict) and p.get('symbol') == SYMBOL):
+                continue
+            qty, avg = float(p.get('qty', 0)), float(p.get('avg_cost', 0) or 0)
+            if qty == 0 or avg <= 0:
+                continue
+            per_side = (COMMISSION / 2.0) / POINT_VALUE    # $0.62 / $2 = 0.31pt
+            px = avg - per_side if qty > 0 else avg + per_side
+            return round(round(px / TICK_SIZE) * TICK_SIZE, 2)
+        return 0.0
+
     for src, getter in (
-        ('avg_cost', lambda: next(
-            (float(p['avg_cost']) for p in (_bridge_get('/futures/position') or [])
-             if isinstance(p, dict) and p.get('symbol') == SYMBOL
-             and float(p.get('qty', 0)) != 0 and float(p.get('avg_cost', 0)) > 0),
-            0.0)),
+        ('executions', _from_executions),
+        ('avg_cost', _from_avg_cost),
         ('order_status', lambda: float(
             (_bridge_get(f'/order/{order_id}/status') or {}).get('avgFillPrice') or 0)
             if order_id else 0.0),
@@ -771,6 +804,40 @@ def get_live_price() -> float | None:
     return q.get('best_price') or q.get('last') or q.get('close')
 
 
+_contract_checked_at = None   # last time the quote endpoint was asked which contract is live
+_CONTRACT_RECHECK_SEC = 900
+
+
+def _ensure_contract_month() -> None:
+    """Pin get_bars() to the contract the ORDERS go to, before reading any bar.
+
+    Added Sep 25 2026. _active_contract_month was only ever set inside
+    get_live_price(), which run_scan() never calls -- only place_trade() and the
+    position monitor do. So after every restart, until the first trade opened,
+    get_bars() sent no contract_month and the bridge served IBKR's ContFuture
+    series (26,444 scan lines logged 'contract=unset'). ContFuture stayed on the
+    expiring September contract through its Sep 18 expiry while the order
+    resolver had already rolled to December on Sep 13: signals and fills were on
+    two different contracts, and the dying contract's volume drove the scan
+    RVOL gate to 0.107 / 0.048 / 0.045 / 0.000 on Sep 15-18 -- IBKR could not
+    enter for four straight sessions while real MNQ volume was normal
+    (145-170k per session in futures_bars_5m).
+
+    Re-checks every 15 minutes so a long-running process also follows a roll.
+    Never raises: on any failure the previous month (or ContFuture) is used.
+    """
+    global _contract_checked_at
+    now = datetime.now(ET)
+    if (_active_contract_month and _contract_checked_at is not None
+            and (now - _contract_checked_at).total_seconds() < _CONTRACT_RECHECK_SEC):
+        return
+    try:
+        get_live_price()          # sets _active_contract_month from the quote
+    except Exception as e:
+        log(f"  contract pin: quote failed ({e}) -- keeping '{_active_contract_month or 'ContFuture'}'")
+    _contract_checked_at = now
+
+
 def get_bars(bar_size_min: int = 5, days: int = 2) -> pd.DataFrame:
     """
     Fetch historical bars for MNQ from the IBKR bridge.
@@ -779,6 +846,7 @@ def get_bars(bar_size_min: int = 5, days: int = 2) -> pd.DataFrame:
     Bridge endpoint: GET /history/futures/MNQ?duration=2+D&bar_size=5+mins&rth=false
     Response: {'symbol': 'MNQ', 'bars': [{ts, open, high, low, close, volume}, ...]}
     """
+    _ensure_contract_month()
     bar_str  = f'{bar_size_min}+mins'
     dur_str  = f'{days}+D'
     cm       = f'&contract_month={_active_contract_month}' if _active_contract_month else ''
@@ -1017,12 +1085,62 @@ def compute_overnight_bias():
 
 # ── VWAP ──────────────────────────────────────────────────
 
+def _rth_mask(idx, day_cmp: str):
+    """Boolean mask of regular-session bars (09:30 <= bar start < 16:00 ET)."""
+    today = datetime.now(ET).date()
+    mins  = idx.hour * 60 + idx.minute
+    dates = idx.date
+    on_day = (dates == today) if day_cmp == 'today' else (dates < today)
+    return on_day & (mins >= 570) & (mins < 960)
+
+
+def _rth_today(df: pd.DataFrame) -> pd.DataFrame:
+    """Today's REGULAR-SESSION bars only.
+
+    Added Sep 25 2026. get_bars() fetches with rth=false, so df5 carries the whole
+    Globex session, and "today" had been taken as `index.date == today` -- i.e.
+    everything since MIDNIGHT ET. That silently re-anchored four things the sim
+    (the validated reference) anchors at the 09:30 open: VWAP, the regime's
+    session open, the regime's previous close (23:55 bar instead of the prior
+    RTH close -- which is why day_chg and sess_chg always logged identical), and
+    the Day Shape (IB close-location) classification.
+
+    It decided a real trade. Sep 24 11:20: price 30,518.50 sat exactly at the
+    09:30 open (30,519.00) -- the RTH session had gone NOWHERE; the whole drop was
+    overnight (00:00 open 30,661.75). Live measured session_chg -0.46% from the
+    midnight bar, read WEAK x3 and shorted into RSI 30 (-$402 IBKR, -$402 TC).
+    The sim measured ~0% from 09:30, its chop filter held the regime at NORMAL,
+    and it never shorted -- the Trade Cop logged it as a live-only trade that night.
+    """
+    if df.empty:
+        return df
+    return df[_rth_mask(df.index, 'today')]
+
+
+def _prev_rth_close(df: pd.DataFrame):
+    """Last regular-session close before today, or None if df does not reach it."""
+    if df.empty:
+        return None
+    m = _rth_mask(df.index, 'before')
+    return float(df['close'][m].iloc[-1]) if m.any() else None
+
+
+def _prev_rth_bars(df: pd.DataFrame) -> pd.DataFrame:
+    """The most recent completed regular session before today (09:30-16:00 ET)."""
+    if df.empty:
+        return pd.DataFrame()
+    prior = df[_rth_mask(df.index, 'before')]
+    if prior.empty:
+        return prior
+    return prior[prior.index.date == prior.index.date[-1]]
+
+
 def calc_vwap(df5: pd.DataFrame) -> float | None:
     """Calculate today's VWAP from 5-min bars."""
     if df5.empty or len(df5) < 2:
         return None
     today = datetime.now(ET).date()
-    df_today = df5[df5.index.date == today]
+    df_today = _rth_today(df5)          # regular session only -- see _rth_today
     if df_today.empty:
         return None
     tp   = (df_today['high'] + df_today['low'] + df_today['close']) / 3
@@ -1124,7 +1242,7 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
 
         # Today's bars only
         today      = datetime.now(ET).date()
-        df_today   = df5c[df5c.index.date == today]
+        df_today   = _rth_today(df5c)     # regular session only -- see _rth_today
 
         # Price vs VWAP
         above_vwap = price > vwap if vwap else True
@@ -1139,7 +1257,8 @@ def get_regime(df5: pd.DataFrame | None = None) -> str:
 
         # Day change vs prev close (used for WEAK — tested better there)
         if len(df5c) >= 2:
-            prev_close = float(df5c['close'].iloc[-2]) if len(df_today) < 2 else float(df5c[df5c.index.date < today]['close'].iloc[-1]) if len(df5c[df5c.index.date < today]) > 0 else float(df5c['close'].iloc[-2])
+            _prc = _prev_rth_close(df5c)
+            prev_close = _prc if _prc else (float(df5c['close'].iloc[-2]) if len(df_today) < 2 else float(df5c[df5c.index.date < today]['close'].iloc[-1]) if len(df5c[df5c.index.date < today]) > 0 else float(df5c['close'].iloc[-2]))
             day_chg_pct = (price - prev_close) / prev_close * 100 if prev_close else 0
         else:
             day_chg_pct = 0
@@ -1268,7 +1387,7 @@ def get_signals(df5: pd.DataFrame) -> dict:
 
     # Session open play (first bar direction after 9:30)
     today      = datetime.now(ET).date()
-    df_today   = df5[df5.index.date == today]
+    df_today   = _rth_today(df5)      # first REGULAR-SESSION bar, as in the sim
     if len(df_today) >= 2:
         open_bar = float(df_today['close'].iloc[0])
         sig['open_play_bull'] = price > open_bar and price > vwap
@@ -1516,6 +1635,37 @@ def load_avg_volumes():
         log(f"RVOL: loaded avg_vol for {len(_avg_vol_by_time)} slots ({len(df):,} bars)")
     except Exception as e:
         log(f"RVOL: load_avg_volumes failed — {e}. RVOL scaling disabled.")
+
+
+def calc_rvol_completed(df5: pd.DataFrame) -> float:
+    """Volume of the last COMPLETED 5-min bar relative to its time-slot average.
+
+    Added Sep 25 2026 for the scan-level dead-market gate. That gate used
+    calc_rvol_current(), which divides the FORMING bar's volume by a FULL bar's
+    average. At the first scan after a bar closes the forming bar holds seconds
+    of volume, so it reads ~0 and the whole scan is skipped. Measured on IBKR,
+    10:30-14:00, Aug 24 - Sep 24: the gate killed 550 of 597 (92%) of the scans
+    taken in the first minute of a bar -- the one moment live is closest to the
+    sim, which decides on the just-completed bar and has no such gate at all.
+    It cost a real trade: Sep 21 11:40, TC entered PM_LONG (+$669) while IBKR's
+    scan in the same minute read 0.00x and skipped.
+
+    Same partial-bar family as calc_session_rvol (Jul 17), calc_htf_trend
+    (Jul 18) and get_regime (Aug 24). The gate's purpose -- block genuinely dead
+    sessions (a holiday reads ~0.17x) -- is unchanged; it just reads a whole bar.
+    calc_rvol_current() is left alone: it also feeds contract sizing, and
+    changing sizing is a strategy decision, not a bug fix.
+    """
+    if df5.empty or not _avg_vol_by_time:
+        return 1.0
+    bars = df5
+    if len(bars) > 1 and (datetime.now(ET) - bars.index[-1]).total_seconds() < 300:
+        bars = bars.iloc[:-1]
+    slot = bars.index[-1].strftime('%H:%M')
+    avg  = _avg_vol_by_time.get(slot, 0)
+    if avg <= 0:
+        return 1.0
+    return float(bars['volume'].iloc[-1]) / avg
 
 
 def calc_rvol_current(df5: pd.DataFrame) -> float:
@@ -2028,7 +2178,7 @@ def place_trade(side: str, sig: dict, regime: str,
             contracts = _actual_filled
     # Real fill price (Sep 3 2026) — stops/targets/trail/P&L must key off what we
     # actually paid, not the scan price. See _get_fill_price().
-    price = _get_fill_price(order_id, price)
+    price = _get_fill_price(order_id, price, side)
     sl, target = calc_sl_target(price, atr, side, session_rvol)
 
     session  = get_session()
@@ -3009,7 +3159,8 @@ def run_scan():
         ib_range = calc_ib_range_today(df5)
         if ib_range >= 50.0:   # only classify when IB has meaningful range
             today_d = today_et
-            df_today = df5[df5.index.date == today_d]
+            df_today = _rth_today(df5)
+            df_today = df_today[(df_today.index.hour * 60 + df_today.index.minute) < 630] if len(df_today) else df_today   # 09:30-10:30 IB only
             if not df_today.empty:
                 ib_hi  = float(df_today['high'].max())
                 ib_lo  = float(df_today['low'].min())
@@ -3105,7 +3256,7 @@ def run_scan():
     # RTH slots run 0.3-0.6× that baseline — structurally lower, not thin.
     # 0.3 blocks truly dead scans (weekend/holiday test: 0.17×) without
     # filtering normal trading days. tc_champion uses 1.0 (its own backtest).
-    _scan_rvol     = calc_rvol_current(df5)
+    _scan_rvol     = calc_rvol_completed(df5)   # completed bar -- see calc_rvol_completed
     _scan_ib_range = calc_ib_range_today(df5)
     if _scan_rvol < 0.3:
         log(f"Low RVOL ({_scan_rvol:.2f}× < 0.3) — skip entry attempt")
@@ -3142,7 +3293,10 @@ def run_scan():
     hero_regime = _day_regime if _day_regime else 'CHOPPY'
     try:
         bars_hist = get_bars(bar_size_min=5, days=2)
-        prev_rth  = bars_hist[bars_hist.index.date < today_et] if not bars_hist.empty else pd.DataFrame()
+        # Prior REGULAR session only (Sep 25 2026) -- this was every bar before midnight,
+        # Globex included, so the hero score's prior-day high/low/close, FIB pivots and
+        # volume POC were not the ones the sim scores. See _prev_rth_bars.
+        prev_rth  = _prev_rth_bars(bars_hist)
         atr_now   = calc_atr(df5)
         price_now = sig.get('price', 0)
     except Exception:

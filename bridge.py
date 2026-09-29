@@ -1384,10 +1384,16 @@ async def _resolve_fut_contract(symbol: str):
         details = await ib.reqContractDetailsAsync(stub)
         if not details:
             return None
-        # Roll 5 days early: skip contracts expiring within the next 5 days.
-        # ContFuture (used for bar history) rolls to the next active contract
-        # ~1 week before expiry as volume shifts. This keeps live quote aligned.
-        roll_cutoff = (datetime.utcnow() + timedelta(days=5)).strftime('%Y%m%d')
+        # Roll on CME's standard equity-index roll date: the Thursday 8 days before
+        # the third-Friday expiry, which is when volume actually moves. A 9-day
+        # cutoff makes that Thursday the first day on the new contract (Sep 2026:
+        # expiry 20260918, roll Thu Sep 10). Was 5 days (roll Sep 13), which left
+        # Sep 10-12 on a contract whose volume was draining away. Changed Sep 25
+        # 2026 together with the NY traders' _ensure_contract_month(), so bars and
+        # orders now roll on the same day. (The old comment said ContFuture rolls
+        # ~1 week early -- on IBKR it did not: it stayed on September through the
+        # Sep 18 expiry, see _ensure_contract_month in futures_trader.py.)
+        roll_cutoff = (datetime.utcnow() + timedelta(days=9)).strftime('%Y%m%d')
         upcoming = sorted(
             [d for d in details
              if d.contract.lastTradeDateOrContractMonth >= roll_cutoff],
