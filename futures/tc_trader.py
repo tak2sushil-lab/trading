@@ -2346,8 +2346,8 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                         _update_backup_stop(trade, sl)
                         msg = (
                             f"🟡 PARTIAL SCALE-OUT (TC)\n"
-                            f"{SYMBOL} {side}: banked 1 of {contracts + 1} @ {price} "
-                            f"(+{_ppts:.0f}pts / ${_pusd:+.0f})\n"
+                            f"{SYMBOL} {side}: banked 1 of {contracts + 1} @ {_pfill} "
+                            f"({_ppts:+.0f}pts / ${_pnet:+.2f} booked)\n"
                             f"Runner: 1 contract, stop → breakeven ({sl})"
                         )
                         log(msg)
@@ -3032,7 +3032,7 @@ def eod_snapshot():
     s = prop_status()
     send_telegram(
         f"🌙 FUTURES EOD\n"
-        f"Day P&L:      ${daily:+.2f}\n"
+        f"Day P&L:      ${daily + london_daily:+.2f}  (NY ${daily:+.2f} · London ${london_daily:+.2f})\n"
         f"Balance:      ${s.get('balance', 0):,.0f}\n"
         f"TC {TC_ACCOUNT_SIZE} progress: ${s.get('total_profit', 0):,.0f} / ${TC_PROFIT_TARGET:,.0f} "
         f"(${s.get('tc_target_left', 0):,.0f} left)\n"

@@ -832,6 +832,75 @@ def get_futures_positions():
     return result, session
 
 
+# Options realized P&L — ONE definition, same as database.get_options_total_pnl (the circuit
+# breaker's). Credit spreads earn the credit and pay to buy back, so their sign is reversed;
+# the dashboard used exit_value - premium_paid for every trade until Sep 29 2026 (no credit
+# spread had closed yet, so no figure was wrong — the first one would have been).
+OPT_PNL_SQL = ("(CASE WHEN strategy IN ('BULL_PUT_CREDIT','BEAR_CALL_CREDIT') "
+               "THEN premium_paid - exit_value ELSE exit_value - premium_paid END)")
+
+
+def get_totals():
+    """Realized P&L TO DATE per category — closed trades only, the same definitions the
+    Today card uses (equity = all four books' LIVE rows; futures = NY + London per account;
+    RECONCILED rows excluded). TC is a prop-evaluation account, so it reports its combine
+    progress from the ledger-derived state and is NOT added to the own-money total."""
+    out = {'equity': {'total': 0.0, 'since': None, 'books': []}}
+    since_all = []
+    try:
+        with _db() as c:
+            r = c.execute("SELECT COALESCE(SUM(pnl),0), MIN(exit_date), COUNT(*) FROM trades "
+                          "WHERE exit_date IS NOT NULL AND setup_type != 'RECONCILED'").fetchone()
+            books = [{'name': 'Day Trader', 'total': round(r[0], 2), 'since': r[1], 'trades': r[2]}]
+            for name, tbl in (('Wave Rider', 'wave_trades'), ('Contrarian', 'contrarian_trades'),
+                              ('Clockwork', 'overnight_trades')):
+                try:
+                    cols = {x[1] for x in c.execute(f'PRAGMA table_info({tbl})')}
+                    if not cols:
+                        continue
+                    mode = " AND mode='LIVE'" if 'mode' in cols else ''
+                    r = c.execute(f"SELECT COALESCE(SUM(pnl),0), MIN(exit_date), COUNT(*) FROM {tbl} "
+                                  f"WHERE status='CLOSED'{mode}").fetchone()
+                    books.append({'name': name, 'total': round(r[0], 2), 'since': r[1], 'trades': r[2]})
+                except Exception:
+                    continue
+            eq_since = min((b['since'] for b in books if b['since']), default=None)
+            out['equity'] = {'total': round(sum(b['total'] for b in books), 2),
+                             'since': eq_since, 'books': books}
+            r = c.execute(f"SELECT COALESCE(SUM({OPT_PNL_SQL}),0), MIN(exit_date), COUNT(*) "
+                          "FROM options_trades WHERE status='CLOSED' AND exit_value IS NOT NULL").fetchone()
+            r2 = c.execute(f"SELECT COALESCE(SUM({OPT_PNL_SQL}),0), COUNT(*) FROM options_trades "
+                           "WHERE status='CLOSED' AND exit_value IS NOT NULL AND exit_date >= '2026-09-21'").fetchone()
+            out['options'] = {'total': round(r[0], 2), 'since': r[1], 'trades': r[2],
+                              'since_rebuild': round(r2[0], 2), 'rebuild_trades': r2[1],
+                              'rebuild_date': '2026-09-21'}
+            for mode, key in (('IBKR', 'fut_ibkr'), ('TC', 'fut_tc')):
+                ny = c.execute("SELECT COALESCE(SUM(pnl),0), MIN(exit_date) FROM futures_trades "
+                               "WHERE status='CLOSED' AND setup_type != 'RECONCILED' AND account_mode=?",
+                               (mode,)).fetchone()
+                lon = c.execute("SELECT COALESCE(SUM(pnl),0), MIN(exit_date) FROM london_trades "
+                                "WHERE status='CLOSED' AND account_mode=?", (mode,)).fetchone()
+                out[key] = {'total': round(ny[0] + lon[0], 2), 'ny': round(ny[0], 2),
+                            'london': round(lon[0], 2),
+                            'since': min((x for x in (ny[1], lon[1]) if x), default=None)}
+    except Exception as e:
+        out['error'] = str(e)
+    try:
+        import json as _json
+        with open(os.path.join(BASE_DIR, 'futures', 'prop_state.json')) as _pf:
+            ps = _json.load(_pf)
+        out.setdefault('fut_tc', {})['combine'] = {
+            'plan': ps.get('account_size'), 'profit': round(float(ps.get('total_profit') or 0), 2),
+            'target': ps.get('profit_target'), 'balance': ps.get('balance'),
+            'room': round(float(ps.get('balance') or 0) - float(ps.get('floor') or 0)
+                          - float(ps.get('buffer') or 0), 2) if ps.get('floor') else None}
+    except Exception:
+        pass
+    own = [out.get(k, {}).get('total') for k in ('equity', 'options', 'fut_ibkr')]
+    out['own_total'] = round(sum(x for x in own if x is not None), 2)
+    return out
+
+
 def get_today_summary():
     """Aug 9 2026: futures split into fut_ibkr / fut_tc — two real, separate
     accounts with different prop rules (DLL/MLL/consistency), each combining
@@ -902,7 +971,7 @@ def get_today_summary():
             opt['delta'] = round(sum(r['delta_entry'] or 0 for r in opt_open), 3)
 
             opt_closed = c.execute(
-                "SELECT exit_value - premium_paid as pnl FROM options_trades "
+                "SELECT " + OPT_PNL_SQL + " as pnl FROM options_trades "
                 "WHERE exit_date=? AND exit_value IS NOT NULL", (today,)
             ).fetchall()
             opt['pnl']    = round(sum(r['pnl'] or 0 for r in opt_closed), 2)
@@ -966,7 +1035,7 @@ def get_pnl_by_book(sessions=15):
                 except Exception:
                     continue
             add(c.execute(
-                "SELECT exit_date, SUM(exit_value - premium_paid) FROM options_trades "
+                "SELECT exit_date, SUM(" + OPT_PNL_SQL + ") FROM options_trades "
                 "WHERE exit_date>=? AND exit_value IS NOT NULL GROUP BY exit_date",
                 (cutoff,)).fetchall(), 'options')
             # Aug 9 2026: 'futures' split into futures_ibkr / futures_tc — each
@@ -1027,7 +1096,7 @@ def get_scorecard(since_date=None, days=21):
         ('Clockwork',     "SELECT exit_date, pnl FROM overnight_trades "
                           "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
                           "AND pnl IS NOT NULL"),
-        ('Options',       "SELECT exit_date, exit_value - premium_paid FROM options_trades "
+        ('Options',       "SELECT exit_date, " + OPT_PNL_SQL + " FROM options_trades "
                           "WHERE exit_date>=? AND exit_value IS NOT NULL"),
         ('IBKR NY',       "SELECT exit_date, pnl FROM futures_trades "
                           "WHERE exit_date>=? AND setup_type!='RECONCILED' AND pnl IS NOT NULL "
@@ -1264,7 +1333,7 @@ def get_activity(sessions=5):
                 UNION ALL
                 SELECT 'EXIT', 'OPTIONS', 'Options', symbol, exit_date, NULL, exit_value,
                        strategy, NULL, 'LONG', contracts,
-                       exit_value - premium_paid, exit_reason, NULL
+                       """ + OPT_PNL_SQL + """, exit_reason, NULL
                 FROM options_trades WHERE exit_date >= ? AND exit_date IS NOT NULL
             """, (cutoff, cutoff)).fetchall()
             result.extend([dict(r) for r in rows])
@@ -1554,9 +1623,9 @@ def get_system_health():
             opt['whatif_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0,
                                  'wins': r[2] or 0}
             r = c.execute(
-                """SELECT COUNT(*), ROUND(SUM(exit_value - premium_paid),0)
-                   FROM options_trades WHERE status='CLOSED'
-                     AND exit_date >= date('now','-14 day')""").fetchone()
+                "SELECT COUNT(*), ROUND(SUM(" + OPT_PNL_SQL + "),0) "
+                "FROM options_trades WHERE status='CLOSED' "
+                "AND exit_date >= date('now','-14 day')").fetchone()
             opt['closed_14d'] = {'n': r[0] or 0, 'pnl': r[1] or 0}
             # Options circuit breaker (Sep 22 2026). This blocked EVERY options entry
             # for the whole paper trial and was visible nowhere: lifetime realized was
@@ -2284,6 +2353,7 @@ def api_data():
         'opt_summary':  opt_sum,
         'fut_ibkr_summary': fut_ibkr_sum,
         'fut_tc_summary':   fut_tc_sum,
+        'totals':       get_totals(),
         'pnl_by_book':  pnl_books,
         'scorecard':    scorecard,
         'alerts':       alerts,

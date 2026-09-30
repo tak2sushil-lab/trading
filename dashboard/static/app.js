@@ -275,8 +275,8 @@ function renderAll(d) {
   renderModeBadge(d.mode);
   renderServices(d.services);
   renderRegime(d.regime);
-  renderSessionPnl(d.eq_summary, d.opt_summary, d.fut_ibkr_summary, d.fut_tc_summary);
-  renderSummaryCards(d.eq_summary, d.opt_summary, d.fut_ibkr_summary, d.fut_tc_summary);
+  renderSessionPnl(d.eq_summary, d.opt_summary, d.fut_ibkr_summary, d.fut_tc_summary, d.totals);
+  renderSummaryCards(d.eq_summary, d.opt_summary, d.fut_ibkr_summary, d.fut_tc_summary, d.totals);
   renderPnlChart(d.pnl_by_book);
   renderScorecard(d.scorecard);
   renderEquityTable(d.equity_positions);
@@ -573,7 +573,7 @@ function renderModeBadge(mode) {
 // Signed money, always. A bare "$59.35" in red is ambiguous; "-$59.35" is not.
 function money(v) {
   const n = Number(v || 0);
-  return `${n < 0 ? '-' : '+'}$${Math.abs(n).toFixed(2)}`;
+  return `${n < 0 ? '-' : '+'}$${Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 }
 
 function attrEsc(s) {
@@ -636,22 +636,31 @@ function renderRegime(regime) {
 }
 
 // ── Session P&L bar ────────────────────────────────────────
-function renderSessionPnl(eq, opt, futIbkr, futTc) {
+function renderSessionPnl(eq, opt, futIbkr, futTc, totals) {
   const bar = document.getElementById('session-pnl-bar');
   const fmt = (v, label) => {
     if (v === undefined || v === null) return '';
     const cls = v > 0 ? 'pnl-pos' : (v < 0 ? 'pnl-neg' : '');
-    const sign = v >= 0 ? '+' : '';
+    // Signed, always (Sep 29 2026): this printed Math.abs() with '+' only for gains, so a
+    // loss showed as a bare red "$57" — colour was the only thing saying it was negative.
+    const sign = v > 0 ? '+' : (v < 0 ? '-' : '');
     return `<span class="spnl-item"><span class="spnl-label">${label}</span><span class="${cls}">${sign}$${Math.abs(v).toFixed(0)}</span></span>`;
   };
-  bar.innerHTML = fmt(eq?.pnl, 'EQ') + fmt(opt?.pnl, 'OPT') + fmt(futIbkr?.pnl, 'FUT-IBKR') + fmt(futTc?.pnl, 'FUT-TC');
+  bar.innerHTML = fmt(eq?.pnl, 'EQ') + fmt(opt?.pnl, 'OPT') + fmt(futIbkr?.pnl, 'FUT-IBKR') + fmt(futTc?.pnl, 'FUT-TC')
+    + (totals && totals.own_total != null
+        ? `<span class="spnl-item spnl-total" title="Realized P&L to date on your own money: equity + options + IBKR futures, closed trades. TC is a prop evaluation account and is not included.">`
+          + `<span class="spnl-label">TO DATE</span>`
+          + `<span class="${totals.own_total > 0 ? 'pnl-pos' : (totals.own_total < 0 ? 'pnl-neg' : '')}">${totals.own_total < 0 ? '-' : '+'}$${Math.abs(Math.round(totals.own_total)).toLocaleString()}</span></span>`
+        : '');
 }
 
 // ── Summary cards ──────────────────────────────────────────
-function renderSummaryCards(eq, opt, futIbkr, futTc) {
+function renderSummaryCards(eq, opt, futIbkr, futTc, totals) {
   const pnlClass = v => v > 0 ? 'pnl-pos' : (v < 0 ? 'pnl-neg' : 'pnl-zero');
-  const sign = v => v >= 0 ? '+' : '';
-  const fmt = v => v != null ? `<span class="${pnlClass(v)}">${sign(v)}$${Math.abs(v).toFixed(2)}</span>` : '<span class="pnl-zero">—</span>';
+  // money() is signed both ways. The old local sign() returned '' for losses and the
+  // value was printed through Math.abs(), so -$280.56 rendered as a red "$280.56".
+  const fmt = v => v != null ? `<span class="${pnlClass(v)}">${money(v)}</span>` : '<span class="pnl-zero">—</span>';
+  renderTotals(totals, fmt);
 
   // Equity — the TOTAL across all four equity books (Day Trader, Wave Rider,
   // Contrarian, Clockwork). Until Sep 22 2026 this read the Day Trader table
@@ -701,6 +710,41 @@ function renderSummaryCards(eq, opt, futIbkr, futTc) {
   document.getElementById('fut-tc-sub').textContent =
     `${futTc?.trades ?? 0} closed today` +
     (futTc?.wr != null ? `  ·  ${futTc.wr}% WR` : '');
+}
+
+// ── Realized P&L to date, per card (Sep 29 2026) ──────────
+// The cards only ever showed TODAY. These rows answer "how much have we made so far" with
+// the same definitions as the Today figure (closed trades, all equity books, NY + London).
+function renderTotals(t, fmt) {
+  if (!t) return;
+  const mon = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) : '—';
+  const put = (id, html, tip) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = html;
+    el.title = tip || '';
+  };
+  const eq = t.equity || {};
+  put('eq-total', `<span class="tot-label">To date</span>${fmt(eq.total)}<span class="tot-since">since ${mon(eq.since)}</span>`,
+      'Realized P&L to date, closed trades, LIVE rows only:\n' +
+      (eq.books || []).map(b => `${b.name}: ${money(b.total)} (${b.trades} trades since ${b.since || '—'})`).join('\n') +
+      '\n\nClockwork is booked at IBKR paper auction fills, which the paper simulator fabricates; ' +
+      'its honest measure is the reference-price P&L (ref_pnl).');
+  const o = t.options || {};
+  put('opt-total', `<span class="tot-label">To date</span>${fmt(o.total)}<span class="tot-since">since ${mon(o.since)}</span>`,
+      `Realized options P&L to date: ${money(o.total)} over ${o.trades} closed trades.\n` +
+      `Since the Sep 21 rebuild: ${money(o.since_rebuild)} over ${o.rebuild_trades} trades.`);
+  const fi = t.fut_ibkr || {};
+  put('fut-ibkr-total', `<span class="tot-label">To date</span>${fmt(fi.total)}<span class="tot-since">since ${mon(fi.since)}</span>`,
+      `IBKR futures realized to date: NY ${money(fi.ny)} + London ${money(fi.london)}.\n` +
+      'NY includes manual FUT CLOSE trades; the automated NY book alone is negative.');
+  const ft = t.fut_tc || {}, cb = ft.combine || {};
+  const prog = cb.target ? `${money(cb.profit)} <span class="tot-since">of $${Number(cb.target).toLocaleString()} target · ${cb.plan}</span>` : '';
+  put('fut-tc-total', `<span class="tot-label">Combine</span>${prog}` +
+      (cb.room != null ? `<span class="tot-since"> · room $${Math.round(cb.room).toLocaleString()}</span>` : ''),
+      `TopStep ${cb.plan || ''} paper combine: profit ${money(cb.profit)} toward $${cb.target || '—'}, ` +
+      `balance $${cb.balance || '—'}; $${cb.room ?? '—'} of room before our buffer blocks new trades.\n` +
+      `All TC paper trading to date (all plans): ${money(ft.total)} (NY ${money(ft.ny)}, London ${money(ft.london)}).`);
 }
 
 // ── Daily P&L by system — stacked bars, last 15 sessions ──

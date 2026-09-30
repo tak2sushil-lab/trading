@@ -5578,3 +5578,21 @@ its limits follow the plan (daily stop $1,400); don't scale it until its real sl
 Sep 25 long at 4c +$137; Sep 24 long at 4c ≈ −$730 (the old $700 breaker no longer fires — price came
 within 3pts of the −$1,626 stop, then recovered); London +$211 ⇒ ≈ −$380. Sim for the same days: one
 trade (Sep 25, ≈ +$170 at 4c) — it no longer takes the Sep 24 long.
+
+### Sep 29 2026 (late night) — dashboard "to date" totals + sign bug + Telegram accuracy
+
+**Dashboard:** each summary card now has a **To date** row (realized, closed trades, same definitions as
+Today: equity = all four books' LIVE rows; futures = NY + London per account; RECONCILED excluded) and
+the top bar a **TO DATE** own-money total (equity + options + IBKR futures; TC excluded — prop eval, shows
+its combine progress/room instead). `get_totals()` in app.py. At ship: equity −$2,250.37 since Apr 15
+(Day Trader −1,465.80 · Wave −251.52 · Contrarian +390.58 · Clockwork −923.63 at paper auction fills),
+options −$5,333.08, IBKR futures +$5,429.48 (NY +3,099 incl. manual FUT CLOSE · London +2,330), TC
+combine $0 of $6,000, own total −$2,154. **Bugs fixed:** (1) headline and top-bar numbers printed
+Math.abs() with '+' only for gains — losses showed as a bare red "$280.56"; now signed everywhere (money()
+also gained thousands separators). (2) options P&L used exit_value − premium_paid for every trade in 5
+places; credit spreads are reversed — now one `OPT_PNL_SQL` matching database.get_options_total_pnl (no
+credit spread had closed, so nothing was wrong yet). Verified by rendering the cards in JavaScriptCore.
+
+**Telegram:** London entry/exit and NY partial messages now show the booked FILLS (were signal/estimate
+prices); partial shows booked net $. Both FUTURES EOD messages show Day P&L = NY + London with the split
+(were NY only while the account total included London).

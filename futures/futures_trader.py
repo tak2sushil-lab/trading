@@ -2546,8 +2546,8 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                         _update_backup_stop(trade, sl)
                         msg = (
                             f"🟡 PARTIAL SCALE-OUT\n"
-                            f"{SYMBOL} {side}: banked 1 of {contracts + 1} @ {price} "
-                            f"(+{_ppts:.0f}pts / ${_pusd:+.0f})\n"
+                            f"{SYMBOL} {side}: banked 1 of {contracts + 1} @ {_pfill} "
+                            f"({_ppts:+.0f}pts / ${_pnet:+.2f} booked)\n"
                             f"Runner: 1 contract, stop → breakeven ({sl})"
                         )
                         log(msg)
@@ -3490,9 +3490,17 @@ def reset_daily_state():
 def eod_snapshot():
     """Called at EOD — reconcile balance from DB, send summary, reset for tomorrow."""
     daily = get_futures_daily_pnl()
-    log(f"EOD futures P&L: ${daily:+.2f}")
-    # update_eod_balance reconciles balance from DB truth, then resets session_pnl=0
-    update_eod_balance(daily)
+    # London (3-8am) is part of this account's day too (Sep 29 2026) — report it beside NY.
+    london_daily = 0.0
+    if LONDON_ENABLED:
+        try:
+            from futures import london_trader as _lt_eod
+            london_daily = _lt_eod.get_london_daily_pnl()
+        except Exception as e:
+            log(f"EOD: London P&L unavailable ({e})")
+    log(f"EOD futures P&L: NY ${daily:+.2f} + London ${london_daily:+.2f}")
+    # update_eod_balance rebuilds the state from the ledger (NY + London), then resets session_pnl=0
+    update_eod_balance(daily + london_daily)
     # Read state AFTER balance update but re-inject today's P&L for the EOD message
     # (format_prop_status shows session_pnl=0 post-reset, so we show daily separately)
     s = prop_status()
@@ -3518,7 +3526,7 @@ def eod_snapshot():
         pass
     send_telegram(
         f"🌙 FUTURES (IBKR) EOD\n"
-        f"Day P&L:    ${daily:+.2f}\n"
+        f"Day P&L:    ${daily + london_daily:+.2f}  (NY ${daily:+.2f} · London ${london_daily:+.2f})\n"
         f"Balance:    ${s.get('balance', 0):,.0f}\n"
         f"All-time:   ${s.get('total_profit', 0):+,.0f}"
         f"{funnel}\n"

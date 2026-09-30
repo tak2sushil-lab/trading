@@ -705,7 +705,8 @@ def place_london_trade(side: str, signal_price: float) -> bool:
     ib_range = _ib_high - _ib_low
     msg = (
         f'🇬🇧 LONDON ENTRY\n'
-        f'{SYMBOL} {side} ×{contracts}  @{live_price:.2f}\n'
+        f'{SYMBOL} {side} ×{contracts}  @{entry_fill:.2f}'
+        f'{"" if abs(entry_fill - live_price) < 0.01 else f" (signal {live_price:.2f})"}\n'
         f'SL: {sl:.2f}  Target: {target:.2f}\n'
         f'ATR={_atr:.1f}  IB: {_ib_low:.2f}–{_ib_high:.2f} ({ib_range:.0f}pts)\n'
         f'R:R={rr:.2f}  Stop={stop_pts:.0f}pts\n'
@@ -828,7 +829,7 @@ def _monitor_position_locked(df: pd.DataFrame):
             emoji = '✅' if realized > 0 else '🔴'
             send_telegram(
                 f'{emoji} LONDON EXIT (IBKR stop)\n'
-                f'{pos["side"]} ×{contracts}  {entry:.2f}→{fill_px:.2f}\n'
+                f'{pos["side"]} ×{contracts}  {pos.get("entry_fill", entry):.2f}→{fill_px:.2f}\n'
                 f'P&L: ${realized:+.2f}'
             )
             _position       = None
@@ -905,7 +906,7 @@ def _monitor_position_locked(df: pd.DataFrame):
         emoji = '✅' if realized > 0 else '🔴'
         msg = (
             f'{emoji} LONDON EXIT\n'
-            f'{pos["side"]} ×{contracts}  {entry:.2f}→{exit_price:.2f}\n'
+            f'{pos["side"]} ×{contracts}  {pos.get("entry_fill", entry):.2f}→{exit_fill:.2f}\n'
             f'P&L: ${realized:+.2f}  |  Reason: {exit_reason}'
         )
         log(msg)

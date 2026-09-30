@@ -682,3 +682,11 @@ html, body {
              color:inherit; border-bottom:1px dotted var(--border2); padding-bottom:1px; }
 .book-link:hover { border-bottom-color:var(--muted); }
 .book-sep { color:var(--border2); margin:0 5px; }
+
+/* ── To-date rows on the summary cards (Sep 29 2026) ── */
+.card-label-when { font-weight: 400; opacity: .55; text-transform: none; letter-spacing: 0; margin-left: 4px; }
+.card-total { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border, rgba(255,255,255,.08));
+              font-size: 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.card-total .tot-label { opacity: .6; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.card-total .tot-since { opacity: .55; font-size: 12px; }
+.spnl-total { border-left: 1px solid var(--border, rgba(255,255,255,.12)); padding-left: 10px; }
