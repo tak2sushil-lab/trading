@@ -547,7 +547,10 @@ function renderScorecard(rows) {
               ? engBadge(r.book) : `<strong>${r.book}</strong>`}</td>
         <td>${r.n}</td>
         <td>${r.wr}%</td>
-        <td>${money(r.pnl)}</td>
+        <td>${money(r.pnl)}${r.unverified ? ` <span class="unverified-mark" title="${attrEsc(
+            `${r.unverified} of ${r.n} trades were recorded at the intended price, not the broker's fill ` +
+            `(London before Sep 29, NY exits before Sep 25). The real result is likely lower for London. ` +
+            `Correcting them needs the IBKR account statement for this period.`)}">≈ ${r.unverified}/${r.n} est.</span>` : ''}</td>
         <td>${money(r.avg)}</td>
         <td>${money(r.best.pnl)} <small class="muted-text">${day(r.best.date)}</small></td>
         <td>${money(r.worst.pnl)} <small class="muted-text">${day(r.worst.date)}</small></td>

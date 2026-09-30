@@ -5621,3 +5621,11 @@ worse at 0 slip (+$1,619) and negative with any slippage. Measured real stop-exi
 removed): 3.75 / −1.75 / 5.5 / 5.25 pts ≈ 3pts avg — the exits are software-detected on a 15s monitor then sent
 as market orders. Even perfect execution (0.5pt) loses. **Recommendation: switch London off on TC**
 (`LONDON_ENABLED=False` in tc_trader.py); keep IBKR London running to keep measuring real fills. Pending user.
+
+**Unverified fills (Sep 30 2026):** the 15-day scorecard now marks, per futures book, how many trades were
+recorded at the INTENDED price instead of the broker's fill (London before Sep 29, NY exits before Sep 25 except
+the hand-corrected #225) — "≈ 24/28 est." with a tooltip. At ship: TC London 24/28, IBKR London 24/28, TC NY
+13/17, IBKR NY 5/10. Their real fills are not in our system (IBKR API serves only today's executions; bridge logs
+keep only cancels). **To correct them: export the IBKR Activity Statement / Trade Confirmation Flex Query for
+DUQ640500 (TC) and DU9952463 (IBKR) from Sep 10, then match fills to rows.** Do not adjust them by estimate.
+`futures/ibkr_state.json` untracked (runtime state, like prop_state.json).

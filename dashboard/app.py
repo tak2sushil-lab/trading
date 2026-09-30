@@ -1109,6 +1109,23 @@ def get_scorecard(since_date=None, days=21):
         ('TC London',     "SELECT exit_date, pnl FROM london_trades "
                           "WHERE exit_date>=? AND pnl IS NOT NULL AND account_mode='TC'"),
     ]
+    # Rows recorded at the INTENDED price rather than the broker's fill (Sep 30 2026).
+    # London booked its signal entry and stop/target level until Sep 29; NY exits booked the
+    # monitor's estimate until the Sep 24 fix (the one trade corrected by hand says CORRECTED).
+    # Those fills are not in our system (IBKR serves only today's executions) — they need the
+    # account statement — so the page must say which figures are not yet real-fill verified.
+    unverified_sql = {
+        'IBKR NY':     "SELECT COUNT(*) FROM futures_trades WHERE exit_date>=? AND account_mode='IBKR' "
+                       "AND setup_type!='RECONCILED' AND pnl IS NOT NULL AND exit_date<='2026-09-24' "
+                       "AND coalesce(notes,'') NOT LIKE '%CORRECTED%'",
+        'TC NY':       "SELECT COUNT(*) FROM futures_trades WHERE exit_date>=? AND account_mode='TC' "
+                       "AND setup_type!='RECONCILED' AND pnl IS NOT NULL AND exit_date<='2026-09-24' "
+                       "AND coalesce(notes,'') NOT LIKE '%CORRECTED%'",
+        'IBKR London': "SELECT COUNT(*) FROM london_trades WHERE exit_date>=? AND account_mode='IBKR' "
+                       "AND pnl IS NOT NULL AND entry_signal IS NULL",
+        'TC London':   "SELECT COUNT(*) FROM london_trades WHERE exit_date>=? AND account_mode='TC' "
+                       "AND pnl IS NOT NULL AND entry_signal IS NULL",
+    }
     out = []
     try:
         with _db() as c:
@@ -1135,6 +1152,8 @@ def get_scorecard(since_date=None, days=21):
                     'avg':  round(sum(pnls) / len(pnls), 2),
                     'best':  {'date': best[0],  'pnl': best[1]},
                     'worst': {'date': worst[0], 'pnl': worst[1]},
+                    'unverified': (c.execute(unverified_sql[name], (cutoff,)).fetchone()[0]
+                                   if name in unverified_sql else 0),
                 })
     except Exception:
         pass
