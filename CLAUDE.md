@@ -5541,3 +5541,24 @@ London helps in the current regime, hurts across history. **Measure its real sli
 ⚠️ **2026 sim by month (NY 2c longs): Feb–Jun strong (+$9.2k), Jul–Sep flat (+$165).** Live TC since
 Sep 3 under the new rules ≈ +$513 (NY longs −$513, London +$1,027 on old booking). "Pass in ~3 months"
 applies to starts into a strong stretch, not necessarily today.
+
+### Sep 29 2026 (night) — $100K plan: wide stop / chop-sizing / NQ all tested and rejected
+
+**Accounts (TopStep pages):** 50K $3k/$2k MLL/$1k DLL $85 · 100K $6k/$3k/$2k $129 · 150K $9k/$4.5k/$3k
+$199 (+~13% tax). Target÷MLL: 1.5 / 2.0 / 2.0. At max DLL-fitting size (2/4/6 MNQ on a 200pt stop) all
+three pass at the same pace (recent starts median 2.6mo); all-history 63% / 70% / 70% within 12mo; fees to
+pass ~$330 / ~$490 / ~$760. 100K = cheapest per contract once funded ($36 vs $48). Runner: scratchpad
+`accounts.py` logic; see topstep_gauntlet.py.
+
+**Wide stop at EQUAL dollar risk on the 100K (`_stopab_{200,500,1000}.csv`, same script, one variable):**
+| config | per contract 5.5yr | net | pass ≤12mo |
+|---|---|---|---|
+| 4 MNQ @ 200pt | +$6,770 | +$22,804 | 70% |
+| 2 MNQ @ 500pt | +$6,192 | +$9,700 | 0% |
+| 1 MNQ @ 1000pt | +$3,261 | +$3,261 | 0% |
+Wider stops earn LESS per contract and force fewer contracts — the 11th confirmation that more room per
+trade does not pay on this book. **Chop:** with the Tide on, CHOPPY days are +$1,876/contract; labels drift
+with volatility (TRENDING 5% of 2021 days, 61% of 2026); within-year IB terciles earn the same per trade —
+no stable "play big" day. **NQ:** 1 NQ @200pt = $4,000 > the 100K's $2k DLL and $3k MLL; TopStep would
+liquidate at ~100 NQ pts. Not viable. **Fixed tonight:** daily_tide crashed and failed OPEN when our 5m bars
+had a session the daily table lacked (`cc8b94c`) — caught by this A/B.
