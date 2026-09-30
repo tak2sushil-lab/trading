@@ -57,8 +57,11 @@ def daily_closes(symbol: str = 'MNQ', db_path: str = _DB) -> pd.Series:
     ok = (n >= MIN_RTH_BARS) & (last_bar.dt.hour * 60 + last_bar.dt.minute == 955)
     own = rth_close[ok]
 
-    s = fallback.copy()
-    s.loc[own.index] = own                               # our own close wins wherever it exists
+    # our own close wins wherever it exists. combine_first, not .loc assignment: our bars
+    # often include a session the daily table does not have yet (the collector deliberately
+    # skips today's in-progress daily bar), and .loc on a missing date raises — which the
+    # traders catch, making the Tide fail OPEN (caught Sep 29 2026 before it went live).
+    s = own.combine_first(fallback)
     # a fallback row only counts on a weekday; yfinance occasionally emits weekend stubs
     s = s[[d.weekday() < 5 for d in s.index]]
     return s.sort_index()
