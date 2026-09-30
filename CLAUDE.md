@@ -23,6 +23,19 @@ Last updated: Sep 25 2026 (futures deep review)
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
+**🟢 FUTURES — CURRENT STATE (Sep 30 2026, read first for futures):**
+- TC = TopStep **$100K** paper combine (`prop_rules.TC_ACCOUNT_SIZE`), started **Sep 30**: 4 MNQ per long, shorts 1,
+  200pt stop, target $6,000 / MLL $3,000 / DLL $2,000. Day 1: **+$303.08**. IBKR unchanged (2c).
+- **Daily Tide LIVE** on both accounts (shorts blocked while MNQ > 200d MA). Shared code: `futures/daily_tide.py`.
+- Prop state is **rebuilt from the ledger** (NY + London) at startup/EOD — never hand-edit the state file;
+  change `TC_COMBINE_START` when a real combine begins.
+- All fills are real (`/executions`), with the IBKR paper split-lot artifact cleaned (`futures/fills.py`).
+  Trades before Sep 29 (London) / Sep 25 (NY exits) are flagged "est." on the dashboard — user chose NOT to
+  back-correct them.
+- **London stays ON for TC (user decision Sep 30)** despite the sim saying it cannot survive slippage — WATCH its
+  real fills (`entry_signal`/`exit_signal` vs fills) over the next weeks and report the measured slippage.
+- Open: forming-bar entries (re-measure), TopStep MLL lock-at-start rule (verify), `commission_rt_tc` placeholder.
+
 **⚠️ NEXT SESSION PRIORITY (rewritten Sep 20 2026 — read this before anything else):**
 
 **THE ONE THING THAT CHANGED THIS MONTH: 91% of our universe's return accrues OVERNIGHT
