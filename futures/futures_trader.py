@@ -135,7 +135,7 @@ SHORT_MAX_CONTRACTS = 1        # LIVE. The RVOL/IB conviction ladder in
 #   - it has already cost a real winner (Sep 1 2026 VWAP_SHORT, +$512).
 #   - NY zero-trade days would rise 43% -> 68%.
 #   - London shorts the same tape in the same week and is NOT gated by this.
-TIDE_GATE_ENABLED  = False     # False = LOG ONLY. Flip True to actually block.
+TIDE_GATE_ENABLED  = True      # LIVE Sep 29 2026 (user-approved). False = LOG ONLY.
 TIDE_MA_DAYS       = 200
 
 # A_EXT gate REMOVED Jul 6 2026 — gate_audit scored it 33% accuracy / "REMOVE"

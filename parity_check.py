@@ -39,6 +39,7 @@ SIM_FLAGS = ['--graduated-rvol', '--rvol-floor', '0.70',
              '--dll', '1250',   # $5K futures allocation risk model (Jul 18 2026)
              '--rev-exit', '2,0.30,120',  # reversal-detection exit live Jul 25 2026
              '--partial', '150',          # partial scale-out live Jul 25 2026
+             '--tide',                    # Daily Tide side gate live Sep 29 2026
              '--short-max-contracts', '1']  # short size cap live Sep 2 2026 —
                               # passed explicitly (it is also the sim default) so a
                               # future change to the module default cannot silently

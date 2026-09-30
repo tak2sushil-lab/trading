@@ -5357,3 +5357,92 @@ screen only). Verified from outside: login page only, data/close endpoints 401.
 Tailscale CLI: `/Applications/Tailscale.app/Contents/MacOS/Tailscale funnel status` (run in the
 foreground; off = `funnel --https=443 off`). ngrok plist parked as
 `~/Library/LaunchAgents/com.sushil.trading.dashboard_tunnel.plist.disabled-2026-09-28`.
+
+---
+
+## Sep 29 2026 — futures review: bad days are shorts against the tide; "win big" and "lose small via exits" both closed
+
+Labs in the session scratchpad (`pyramid.py`, `feats.py`, `stopw.py`, `astdiff.py`/`srcdiff.py`).
+Baseline = the Sep 25 "as live" book `futures/factory/_ibab_on.csv` (10:30 IB, $6/contract).
+**No code changed.**
+
+**① Sep 28 (IBKR −$307, TC −$304) — both accounts shorted at 10:40 (RSI 24.6, Tide "would block"),
+Reversal Exit banked +$116 at 11:05, then re-entered the SAME short at 11:07 (score 100 vs 115,
+`trend_up=True`, RVOL passed only via Hero-GOLD) → 200pt stop −$423.** Trade Cop flagged 11:07 as
+live-only (entered 2 min into the forming 11:05 bar, which closed +50pts). ⚠️ **But the sim lost
+too**: it shorted one bar later at 30386.75, never reached +120, stopped for −$401. The day lost
+because both sim and live shorted a tape 12% above its 200d MA — not because of the re-entry.
+
+**② THE BOOK IN ONE LINE:** 75 Reversal Exits **+$15,836** vs 151 stop-outs **−$14,307**; the
+other 793 trades net ~+$1,300. Winning big already happens. The question is only the losing side.
+
+**③ REJECTED (do not re-test without a new mechanism):**
+- **Pyramiding** (add 1c once a trade is +60/+80/+100/+120/+150): negative at every threshold,
+  green 1-2/6. After a trade proves itself, the rest of its path mean-reverts (same as equity).
+- **Narrower initial stop** inside the Tide book: 100/125/150/175pt all make LESS than 200pt
+  (−$1,698…−$2,953); avg loss does not shrink because more trades get stopped. **10th
+  confirmation that cutting earlier costs more than it saves.**
+- **RSI-exhaustion filter** ("don't short oversold"): buckets flip sign by side and neighbour. Noise.
+- **Crest Watch as a bad-day tool**: 19 valid checks on 5 trades, all 5 finished green — it only
+  sees trades already past +100pts, and the stop-outs never get there. Structurally blind to losers.
+
+**④ LEAD, not proven:** no same-side re-entry after a Reversal Exit — 24 such trades −$1,366,
+negative in 4/4 years with any; on top of the Tide +$861 (13 trades). But the ≤15-min re-entries
+(yesterday's type) are +$49/9 in sim, and the Jul-25 design's best re-entry (+$749) would be lost.
+
+**⑤ THE TIDE CASE, all four lines of evidence now agree:** 5.5yr pipeline +$12,153 vs +$2,836,
+green 5/6, worst day −814 vs −1,222 · log-only trial 78 signals, blocked shorts −23pts at 60m,
+right 64% · **live automated since Aug 24: IBKR +$646 → +$1,155 (days ≤−$200: 3 → 0), TC
+−$1,003 → +$36 (4 → 2)** · every bad day of the last week (Sep 23/24/28) was a short it logged
+"would block". Cost: in the current tape it is long-only (gave back Sep 1 +$211, Sep 28 +$116).
+**Tide + every trade at 1 contract:** −$422 over 5.5yr, worst day −$814 → **−$503**.
+
+**⑥ Residual bad days inside the Tide book:** 32 days −$14,422; 30 of 32 are "the first trade went
+straight against us" (median best excursion 15pts vs 42pts on all days) → the ORPHAN class, no
+precursor found (19+ features, spike study). Not solvable by exits or filters we have; only by size.
+
+**⑦ CODE STATE:** IBKR vs TC now run the same entry/exit logic (12 of 71 shared functions differ,
+all cosmetic / Elephant / timestamp placement). Contract pinned (0 `contract=unset`). Today (Sep 29)
+both accounts made the identical RVOL-skip decision in the same second. **Still open: `get_signals()`
+reads the forming bar** (yesterday's 11:07 entry is an example).
+
+**⑧ 🚨 TC IS $281 FROM FREEZING AGAIN.** balance $48,581, trailing floor $48,000, +$300 buffer ⇒
+`check_can_trade()` fails below $48,300. One 200pt stop ≈ −$402. Same deadlock as Sep 3.
+Decision (user's): reset the paper baseline, or let it freeze as the honest TopStep verdict.
+
+### Sep 29 2026 (pm) — ✅ DAILY TIDE LIVE on both accounts · sim parity defect fixed · unfinished bar did not hurt
+
+**SHIPPED (user-approved): `TIDE_GATE_ENABLED = True`** in `futures_trader.py` + `tc_trader.py`.
+LONG only when the previous daily close is above its previous 200d MA, SHORT only below. Gate
+sits in `place_trade()` after every cooldown/count check and has no side effects; LONG is
+evaluated before SHORT each scan, so a blocked short can never hide a long. Both traders
+restarted 18:33 ET while flat; verified loaded: prev close 30,442 vs MA200 27,585 ⇒
+LONG allowed, SHORT blocked. User declined the TC 1-contract cap and the re-entry rule.
+
+**🐛 SIM PARITY DEFECT FIXED — `_run_scenario` hardcoded `large_ib_gate_pts=200, early_ib_pts=200`.**
+Every simulated day (Trade Cop, factory bench, every 5.5yr number) (a) held entries to 10:45
+when the 09:30-10:30 range exceeded 200pts and (b) started trading at 10:00 when the range hit
+200pts by 10:00. **Live has had neither since Jul 7 2026.** Found tracing Sep 28 (sim entered
+10:45, live 10:40). Defaults now 0/0 = live; `--legacy-ib-gates` (or `LEGACY_IB_GATES=True`)
+reproduces every older result — verified: legacy Tide-off = the Sep 25 book exactly (1,019t,
++$9,634 raw). Sep 28 now replays identically to live (10:35 short, rev_exit +$115, 11:05
+re-entry, stop). New `--tide` flag in sim_replay (reads `futures_bars_1d`, same causal anchor
+as live, fails open); added to `parity_check.SIM_FLAGS`. Runner `futures/factory/_tideab2.py`.
+
+**5.5yr, $6/contract, live-parity sim (one script, one variable):**
+| | n | net | maxDD | worst day | green |
+|---|---|---|---|---|---|
+| Tide off | 1,008 | +$3,609 | −4,461 | −1,222 | 3/6 |
+| **Tide ON (= live now)** | **588** | **+$9,916** | **−2,755** | **−814** | **5/6** |
+Per year ON: 149 / 2,184 / 1,282 / −385 / 975 / 5,711. Short leg +$2,634 (bear years).
+⚠️ Every pre-Sep-29 5.5yr number was on the legacy gates; the Sep 25 "+$12,153" is superseded.
+
+**UNFINISHED (FORMING) BAR — did it hurt? No measurable harm.** Since the scan anchor (Sep 25):
+9 bars had an A+ read mid-bar; the finished bar confirmed 7; the 2 it rejected (both LONG) never
+became trades. Sep 28's 11:07 re-entry was confirmed A+ by the finished bar AND got a 21pt
+BETTER price than the sim's bar-close entry — the loss was the short itself. Live P&L split by
+position-in-bar flips sign between eras (Jun-Aug mid-bar −$2/trade vs bar-start −$72; since
+Aug 24 −$76 vs −$45, ~16 independent trades) — inconclusive. **Left unchanged; the Trade Cop
+now runs at true parity, so any trade the unfinished bar causes will show as live-only.**
+If live-only trades net negative over ~4 weeks, the fix is to allow entries only on the first
+scan after a bar closes (bar <60s old).

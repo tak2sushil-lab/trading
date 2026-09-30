@@ -121,6 +121,44 @@ NO_MOVE_MIN_PTS  = -40.0
 # tc_trader.py. Live value is 1. Set to None to reproduce the pre-Sep-2 book.
 SHORT_MAX_CONTRACTS: 'int | None' = 1
 
+# ── DAILY TIDE SIDE GATE (live Sep 29 2026) ─────────────────────────────────
+# Mirrors get_daily_tide()/tide_agrees() in futures_trader.py / tc_trader.py:
+# LONG only when the PREVIOUS daily close is above its PREVIOUS 200-day MA,
+# SHORT only when below. Same source table (futures_bars_1d) and same causal
+# anchoring as live, so the Trade Cop compares like with like. Fails OPEN when
+# there is not enough daily history, exactly as live does.
+# False reproduces the pre-Sep-29 book BYTE-FOR-BYTE.
+TIDE_GATE: bool = False
+
+# ── LEGACY IB GATES (sim-only, removed Sep 29 2026) ─────────────────────────
+# True reproduces every pre-Sep-29 sim result: large-IB delay to 10:45 and
+# early 10:00 entries on >=200pt early ranges — neither exists in live code.
+LEGACY_IB_GATES: bool = False
+TIDE_MA_DAYS = 200
+_tide_by_date: 'dict | None' = None
+
+
+def _tide_agrees(trade_date: _dt.date, side: str) -> bool:
+    global _tide_by_date
+    if _tide_by_date is None:
+        conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'market_data.db'))
+        d = pd.read_sql_query("SELECT ts_utc, close FROM futures_bars_1d "
+                              "WHERE symbol='MNQ' ORDER BY ts_utc", conn)
+        conn.close()
+        d['d'] = pd.to_datetime(d.ts_utc, utc=True, format='ISO8601').dt.date
+        d['ma'] = d.close.rolling(TIDE_MA_DAYS).mean()
+        # a session is judged on the LAST bar strictly before it (live: d < today)
+        _tide_by_date = {'d': list(d.d), 'c': list(d.close), 'm': list(d.ma)}
+    import bisect
+    i = bisect.bisect_left(_tide_by_date['d'], trade_date) - 1
+    if i < 0:
+        return True
+    pc, pm = _tide_by_date['c'][i], _tide_by_date['m'][i]
+    if pm != pm:                                  # NaN — not enough history, fail open
+        return True
+    return (pc > pm) if side == 'LONG' else (pc <= pm)
+
 ATR_EXIT_SCALE: 'float | None' = None      # global multiplier on top of k; None = OFF
 ATR_EXIT_REF   = 31.4                      # A0: full-sample median 5-min ATR14 at entry
 ATR_EXIT_PARTS = ('trail', 'nomove')       # which families scale: stop | trail | nomove
@@ -1247,6 +1285,12 @@ def simulate_day(
                 if side == 'SHORT' and not short_allowed:
                     continue
 
+                # Daily Tide side gate (live Sep 29 2026). Live checks it inside
+                # place_trade() after hero/RVOL/HTF; it is a pure veto with no side
+                # effects there, so vetoing earlier here yields identical trades.
+                if TIDE_GATE and not _tide_agrees(trade_date, side):
+                    continue
+
                 # LONG gate: regime must be STRONG or NORMAL (mirrors live)
                 if side == 'LONG' and regime == 'WEAK':
                     continue
@@ -1420,10 +1464,23 @@ def _run_scenario(
     gate2:             bool,
     label:             str,
     verbose:           bool = True,
-    large_ib_gate_pts: float = 200.0,
-    early_ib_pts:      float = 200.0,
+    large_ib_gate_pts: 'float | None' = None,
+    early_ib_pts:      'float | None' = None,
 ) -> dict:
-    """Run one scenario and return summary stats."""
+    """Run one scenario and return summary stats.
+
+    large_ib_gate_pts / early_ib_pts default to LEGACY_IB_GATES' values. Until
+    Sep 29 2026 they were hardcoded 200/200 here, so every simulated day (the Trade
+    Cop, the factory bench, every 5.5yr number) (a) held entries to 10:45 when the
+    09:30-10:30 range exceeded 200pts and (b) started trading at 10:00 when the range
+    reached 200pts by 10:00. Live has had neither since Jul 7 2026: it removed the
+    large-IB delay and has never traded before 10:30. Found tracing Sep 28, where
+    the sim entered at 10:45 and live at 10:40 on the same signal.
+    """
+    if large_ib_gate_pts is None:
+        large_ib_gate_pts = 200.0 if LEGACY_IB_GATES else 0.0
+    if early_ib_pts is None:
+        early_ib_pts = 200.0 if LEGACY_IB_GATES else 0.0
     # Precompute daily closes once for Gate1 macro guard (50-day MA)
     daily_closes = _precompute_daily_closes(all_bars) if gate1 else None
 
@@ -1604,6 +1661,13 @@ def main():
                     dest='short_max_contracts',
                     help='Cap SHORT-side size (live default 1, shipped Sep 2 2026). '
                          'Pass 0 to disable the cap and reproduce the pre-Sep-2 book.')
+    ap.add_argument('--legacy-ib-gates', action='store_true', dest='legacy_ib_gates',
+                    help='Reproduce pre-Sep-29-2026 sim results: hold entries to 10:45 on '
+                         '>200pt IB days and allow 10:00 entries on >=200pt early ranges. '
+                         'Live has neither.')
+    ap.add_argument('--tide', action='store_true', dest='tide',
+                    help='Daily Tide side gate (live Sep 29 2026): LONG only above the prev '
+                         '200d MA, SHORT only below. Omit to reproduce the pre-Sep-29 book.')
     ap.add_argument('--atr-exits', type=float, default=None, dest='atr_exits',
                     metavar='SCALE',
                     help='Candidate (Aug 24 2026): scale exit thresholds by '
@@ -1625,7 +1689,12 @@ def main():
     # Apply overrides to module-level constants so all functions pick them up
     global BASE_STOP_PTS, BASE_TARGET_PTS, MAX_DAILY_LOSS, MAX_DAILY_TRADES, BE_ACTIVATE_PTS, HERO_GATE_ENABLED, USE_THESIS_INVALIDATION, ENTRY_CUTOFF, SUSTAIN_A_PLUS_BONUS, SHORT_CONFIRM_SCANS, GRADUATED_RVOL, RVOL_GRAD_FLOOR, RSI_TREND_EXEMPT, BE_LOCK_FRACTION, TRAIL_WIDE_PTS, TRAIL_WIDE_GAP, TRAIL_TIGHT_PTS, TRAIL_TIGHT_GAP, REGIME_AWARE_EXITS, TRENDING_REQUIRES_DIRECTIONAL, LONG_ALLOWS_A_GRADE, HERO_TRENDING_REQUIRES_DIRECTIONAL
     global NO_OVN_SKIP, IB_READY_OVERRIDE, FLIP_COOLDOWN_BARS, RATCHET, REV_EXIT, PARTIAL_TAKE_PTS, REV_EXIT_VOL_MULT
-    global SHORT_MAX_CONTRACTS, IB_CLASSIFY_AT_1030
+    global SHORT_MAX_CONTRACTS, IB_CLASSIFY_AT_1030, TIDE_GATE
+    if args.tide:
+        TIDE_GATE = True
+    global LEGACY_IB_GATES
+    if args.legacy_ib_gates:
+        LEGACY_IB_GATES = True
     if args.short_max_contracts is not None:
         SHORT_MAX_CONTRACTS = None if args.short_max_contracts == 0 else args.short_max_contracts
     if args.legacy_ib_0945:
