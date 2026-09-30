@@ -1,6 +1,11 @@
-import pandas as pd, numpy as np, gauntlet2 as G
+"""TopStep $50K combine simulator (Sep 29 2026). Walks the Tide-on live-parity sim book in real
+order from every start date: $2k EOD-trailing MLL (floor >= $48k), $1k DLL (day-stop), $3k target,
+55% consistency, our soft guards ($700 day stop, $1,200 day cap, $300 MLL buffer), and treats a
+blow OR a buffer freeze as a reset. Usage: venv/bin/python futures/factory/topstep_gauntlet.py"""
+import os, pandas as pd, numpy as np
+BOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_tideab3_on.csv')
 STOP_1C=406.0   # 200pt stop x $2 + $6 friction
-d=G.load('/Users/sushil/trading/futures/factory/_tideab3_on.csv'); trades={k:g for k,g in d.groupby('date')}
+d=pd.read_csv(BOOK); d['pc']=d.pnl/d.contracts; trades={k:g for k,g in d.groupby('date')}
 cal=pd.bdate_range(d.date.min(), d.date.max()).strftime('%Y-%m-%d').tolist()
 def journey(s0, size, rule, horizon):
     resets=0; bal=50000.; hwm=50000.; best=0.
