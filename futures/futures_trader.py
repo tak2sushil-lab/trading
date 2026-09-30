@@ -48,6 +48,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from prop_rules import (
     check_can_trade, get_max_contracts, record_trade_pnl,
     update_eod_balance, get_status as prop_status, load_state as prop_load,
+    reconcile_from_ledger, account_realized_today,
     save_state as prop_save, ACCOUNT_MODE, IBKR_DAILY_CAP, IBKR_DLL_SOFT, IBKR_FLOOR,
 )
 from portfolio_status import format_all as _portfolio_all
@@ -2047,7 +2048,7 @@ def place_trade(side: str, sig: dict, regime: str,
             return False
 
     # 7. Daily P&L gates
-    daily_pnl = get_futures_daily_pnl()
+    daily_pnl = account_realized_today()   # NY + London: TopStep's DLL is account-wide
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f"  BLOCKED: daily loss ${daily_pnl:.0f}")
         return False
@@ -2522,10 +2523,16 @@ def monitor_open_trades(regime: str = 'NORMAL'):
                     })
                     if _pr.get('status') == 'submitted':
                         _partial_done[tid] = True
-                        _ppts  = pnl_pts
+                        # Book the partial's REAL fill (Sep 29 2026) — was `price`, the
+                        # monitor's estimate, the same class as the Sep 24 exit fix.
+                        _pfill = price
+                        if _pr.get('order_id'):
+                            time.sleep(3)
+                            _pfill = _get_exit_fill_price(_pr['order_id'], price, side)
+                        _ppts = (_pfill - entry) if not is_short else (entry - _pfill)
                         _pusd  = _ppts / TICK_SIZE * TICK_VALUE * 1
                         _pnet = _net_usd(_pusd, 1)     # one contract's round turn
-                        _log_partial_close(trade, price, _pnet,
+                        _log_partial_close(trade, _pfill, _pnet,
                                            round(_ppts / TICK_SIZE, 1))
                         record_trade_pnl(_pnet)
                         contracts -= 1
@@ -2571,7 +2578,7 @@ def monitor_open_trades(regime: str = 'NORMAL'):
             (price - t['entry_price']) / TICK_SIZE * TICK_VALUE * t.get('contracts', 1)
             for t in trades
         )
-        daily_pnl = get_futures_daily_pnl() + _total_unrealized
+        daily_pnl = account_realized_today() + _total_unrealized   # NY + London
         if not exit_reason and daily_pnl <= -MAX_DAILY_LOSS:
             exit_reason = f'Daily loss circuit breaker (total): ${daily_pnl:.0f}'
 
@@ -2994,7 +3001,7 @@ def _enter_elephant(signal: dict) -> bool:
         log(f"  🐘 Elephant BLOCKED: {_edaily} trades entered today (max {MAX_DAILY_TRADES})")
         return False
 
-    daily_pnl = get_futures_daily_pnl()
+    daily_pnl = account_realized_today()   # NY + London: TopStep's DLL is account-wide
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f"  🐘 Elephant BLOCKED: daily loss ${daily_pnl:.0f}")
         return False
@@ -3717,7 +3724,7 @@ def _force_close_all():
 
     close_side = 'BUY' if real_qty < 0 else 'SELL'
     close_qty  = abs(int(round(real_qty)))
-    _bridge_post('/futures/order', {
+    _close_res = _bridge_post('/futures/order', {
         'symbol': SYMBOL, 'qty': close_qty,
         'side': close_side, 'order_type': 'MARKET',
     })
@@ -3728,6 +3735,10 @@ def _force_close_all():
         return
 
     price = get_live_price() or trades[0]['entry_price']
+    # Book the REAL fill (Sep 29 2026) — was the live-price estimate above.
+    if isinstance(_close_res, dict) and _close_res.get('order_id'):
+        price = _get_exit_fill_price(_close_res['order_id'], price,
+                                     'SHORT' if real_qty < 0 else 'LONG')
     total_pnl = 0.0
     for t in trades:
         pnl_pts   = (t['entry_price'] - price) if t.get('side') == 'SHORT' else (price - t['entry_price'])
@@ -3787,33 +3798,12 @@ def main():
     _thesis_check.init_db()
 
     prop_load()
-    # Reconcile ibkr_state from DB on every startup — restarts mid-day cause drift.
-    # DB is the single source of truth for all realized P&L.
-    _state     = prop_load()
-    _db_today  = get_futures_daily_pnl()
-    _db_total  = _get_all_time_futures_pnl()
-    _saved_date = _state.get('session_date', '')
-    _today_str  = str(date.today())
-    _changed   = False
-    if _saved_date != _today_str:
-        # New calendar day — always start session_pnl fresh; never carry yesterday's DLL
-        _state['session_pnl']  = 0
-        _state['session_date'] = _today_str
-        _changed = True
-    else:
-        # Same-day restart — restore session_pnl from DB truth (handles mid-day crash recovery)
-        if _db_today != _state.get('session_pnl', 0):
-            _state['session_pnl'] = _db_today
-            _changed = True
-    # Reconcile balance/total_profit by delta (handles restarts mid-day)
-    _tracked = _state.get('total_profit', 0)
-    _delta   = round(_db_total - _tracked, 2)
-    if abs(_delta) > 0.01:
-        _state['total_profit'] = _db_total
-        _state['balance']      = round(_state.get('balance', IBKR_FLOOR) + _delta, 2)
-        _changed = True
-    if _changed:
-        prop_save(_state)
+    # Rebuild the prop state from the ledger (NY + London, this account only) —
+    # see prop_rules.reconcile_from_ledger for the three drift bugs this replaces.
+    try:
+        reconcile_from_ledger()
+    except Exception as e:
+        log(f"  Startup: ledger reconcile failed ({e}) — state file left as is")
     send_telegram(f"⚡ TriVega Futures · Personal · Online\n{format_prop_status()}")
 
     _scheduler = BackgroundScheduler(timezone=ET)

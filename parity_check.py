@@ -172,8 +172,8 @@ def london_live_trades(day):
     Documented as a known gap on Aug 9 2026 and never fixed until now."""
     con = sqlite3.connect(os.path.join(ROOT, 'trades.db'))
     rows = con.execute(
-        """select entry_time, side, entry from london_trades
-           where entry_date=? and coalesce(account_mode,'IBKR')=?""",
+        """select entry_time, side, coalesce(entry_signal, entry) from london_trades
+           where entry_date=? and coalesce(account_mode,'IBKR')=?""",   # signal price, not the fill (Sep 29 2026)
         (day, LONDON_COP_ACCOUNT)).fetchall()
     con.close()
     return [{'time': (r[0] or '')[:5], 'side': r[1], 'setup': 'LONDON',

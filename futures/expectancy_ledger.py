@@ -236,7 +236,10 @@ def report(con):
         'equity LONG':  ("select pnl from trades where side='LONG' and entry_date>=? and setup_type!='RECONCILED'", (cutoff,)),
         'equity SHORT': ("select pnl from trades where side='SHORT' and entry_date>=? and setup_type!='RECONCILED'", (cutoff,)),
         'futures NY (IBKR)': ("select pnl from futures_trades where entry_date>=? and account_mode='IBKR' and setup_type!='RECONCILED'", (cutoff,)),
-        'London (live paper)': ("select pnl from london_trades where entry_date>=?", (cutoff,)),
+        'futures NY (TC)':   ("select pnl from futures_trades where entry_date>=? and account_mode='TC' and setup_type!='RECONCILED'", (cutoff,)),
+        # split by account (Sep 29 2026) — was one line blending IBKR and TC London
+        'London (IBKR)': ("select pnl from london_trades where entry_date>=? and coalesce(account_mode,'IBKR')='IBKR'", (cutoff,)),
+        'London (TC)':   ("select pnl from london_trades where entry_date>=? and account_mode='TC'", (cutoff,)),
         'shadow fish-net': ("select pnl_usd from shadow_fishnet where entry_ts>=?", (cutoff,)),
     }
     lines = [f"═══ EXPECTANCY LEDGER — trailing 14 calendar days (to {datetime.now(ET).strftime('%Y-%m-%d')}) ═══"]

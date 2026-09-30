@@ -267,7 +267,11 @@ def fetch_ibkr_5min(symbol: str = 'MNQ') -> list[dict]:
         for b in resp.json().get('bars', []):
             try:
                 rows.append({
-                    'symbol': symbol, 'ts_utc': b['ts'],
+                    # normalise to the same UTC 'T' format as every other source, or the
+                    # same bar is stored twice under two strings (Sep 29 2026: 1,575 dupes)
+                    'symbol': symbol,
+                    'ts_utc': (lambda t: (t.tz_localize('America/New_York') if t.tzinfo is None else t)
+                               .tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%S'))(pd.Timestamp(b['ts'])),
                     'open': float(b['open']), 'high': float(b['high']),
                     'low': float(b['low']),   'close': float(b['close']),
                     'volume': int(b.get('volume', 0)), 'source': 'ibkr',
@@ -299,10 +303,10 @@ def bootstrap(symbols: list[str] | None = None, start: str = DATABENTO_START):
         # 1. Databento 1-min → 5-min (best quality, 5yr)
         rows_1m, rows_5m = fetch_databento(sym, start=start)
         if rows_1m:
-            n = store_bars(conn, rows_1m, 'futures_bars_1m')
+            n = store_bars(conn, rows_1m, 'futures_bars_1m', replace=True)
             print(f'  stored {n:,} new 1-min bars')
         if rows_5m:
-            n = store_bars(conn, rows_5m, 'futures_bars_5m')
+            n = store_bars(conn, rows_5m, 'futures_bars_5m', replace=True)   # see update()
             print(f'  stored {n:,} new 5-min bars')
 
         # 2. IBKR 5-min (MNQ only — what we trade)
@@ -350,10 +354,15 @@ def update():
         three_days_ago = (datetime.now(timezone.utc) - timedelta(days=4)).strftime('%Y-%m-%d')
         yesterday       = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
         rows_1m, rows_5m = fetch_databento(sym, start=three_days_ago, end=yesterday)
+        # Databento OVERWRITES (Sep 29 2026). It arrives a day late, so yfinance has
+        # already written provisional bars for those timestamps; with INSERT OR IGNORE the
+        # yfinance bar won forever. yfinance MNQ volume is ~1/4 of CME's (median ~4k vs
+        # ~15k per midday bar), and by Sep 2026 ~40% of the 550-day average that live RVOL
+        # sizing and the scan RVOL gate divide by was yfinance — inflating live RVOL.
         if rows_1m:
-            store_bars(conn, rows_1m, 'futures_bars_1m')
+            store_bars(conn, rows_1m, 'futures_bars_1m', replace=True)
         if rows_5m:
-            store_bars(conn, rows_5m, 'futures_bars_5m')
+            store_bars(conn, rows_5m, 'futures_bars_5m', replace=True)
 
         # yfinance 5-min gap fill
         rows = fetch_yf(sym, yf_sym, '5m', '3d')

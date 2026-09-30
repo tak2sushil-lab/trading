@@ -44,7 +44,7 @@ ACCOUNT_MODE = os.getenv('FUTURES_ACCOUNT_MODE', 'TC')
 TC_PROFIT_TARGET    = 3_000.0   # pass condition
 TC_MLL_AMOUNT       = 2_000.0   # trailing max loss limit ("Max Loss Limit / One Rule")
 TC_DLL_AMOUNT       = 1_000.0   # daily loss limit ("Responsible Trading Advantage" DLL)
-TC_CONSISTENCY_MAX  = 0.50      # best day ≤ 50% of total profit
+TC_CONSISTENCY_MAX  = 0.55      # best day ≤ 55% of total profit (TopStep $50K page, confirmed Sep 29 2026; was 0.50)
 TC_DAILY_CAP        = 1_200.0   # our soft daily cap ($300 buffer under $1,500 ceiling)
 TC_MAX_CONTRACTS    = 50        # TopStep's PLATFORM ceiling for $50K (micro) — a disaster
                                  # limit, not a trading size. NOT used for position sizing;
@@ -127,6 +127,89 @@ def load_state() -> dict:
 
 def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+# ── Ledger-derived state (Sep 29 2026) ────────────────────────────────────────
+# The state file used to be a running tally that four code paths patched in four ways,
+# and it drifted: on Sep 29 TC's file said -$1,418.70 while the ledger said +$239.94.
+#   * tc_trader's EOD reconcile passed NY-only P&L, so `eod - session` subtracted every
+#     London trade (already in session_pnl) back out, every night;
+#   * both traders' startup reconcile reset total_profit to the account's ALL-TIME NY P&L,
+#     silently undoing the Sep 3 TC reset (the "-$500" was pre-reset history) and again
+#     dropping London (IBKR's file was missing +$2,462.06 of London P&L).
+# Now the ledger (futures_trades + london_trades for THIS account) is the only truth, and
+# balance / total / session / high-water mark / best day are recomputed from it at startup
+# and at EOD. record_trade_pnl() still increments intraday so the DLL sees each fill at
+# once; the next reconcile overwrites any drift.
+#
+# TC_COMBINE_START: the ET minute the current TopStep combine began. Only trades that
+# closed at/after it count toward the combine. Set it when a new combine (or reset) starts.
+TC_COMBINE_START = os.getenv('TC_COMBINE_START', '2026-09-03 10:54')
+_TRADES_DB = Path(__file__).parent.parent / 'trades.db'
+
+
+def ledger_days(mode: str | None = None, since: str | None = None) -> dict:
+    """{exit_date: realized net P&L} for one account, NY + London, oldest first.
+    `since` = 'YYYY-MM-DD HH:MM' (ET); trades that closed before it are excluded."""
+    import sqlite3
+    mode = mode or ACCOUNT_MODE
+    conn = sqlite3.connect(_TRADES_DB)
+    try:
+        rows = conn.execute("""
+            SELECT exit_date, substr(coalesce(exit_time,'00:00'),1,5), pnl FROM futures_trades
+             WHERE status='CLOSED' AND account_mode=? AND setup_type != 'RECONCILED'
+               AND exit_date IS NOT NULL
+            UNION ALL
+            SELECT exit_date, substr(coalesce(exit_time,'00:00'),1,5), pnl FROM london_trades
+             WHERE status='CLOSED' AND account_mode=? AND exit_date IS NOT NULL
+        """, (mode, mode)).fetchall()
+    finally:
+        conn.close()
+    out: dict = {}
+    for d, t, p in rows:
+        if since and f'{d} {t}' < since:
+            continue
+        out[d] = out.get(d, 0.0) + float(p or 0.0)
+    return dict(sorted(out.items()))
+
+
+def account_realized_today(mode: str | None = None) -> float:
+    """Today's realized P&L for the whole account (NY + London). TopStep's DLL is
+    account-wide, so every daily-loss / daily-cap check must use this, not NY alone."""
+    return round(ledger_days(mode).get(date.today().isoformat(), 0.0), 2)
+
+
+def reconcile_from_ledger(eod: bool = False) -> dict:
+    """Rebuild the state file from the ledger. eod=True also counts today in the
+    high-water mark / best day (TopStep trails the MLL on END-OF-DAY balance)."""
+    state = load_state()
+    mode  = state.get('mode', ACCOUNT_MODE)
+    if mode not in ('TC', 'IBKR'):
+        return state                                   # XFA keeps its own path
+    base  = round(state.get('balance', 0.0) - state.get('total_profit', 0.0), 2)
+    if mode == 'TC':
+        base = 50_000.0                                # combine starting balance
+    days  = ledger_days(mode, TC_COMBINE_START if mode == 'TC' else None)
+    today = date.today().isoformat()
+    total = round(sum(days.values()), 2)
+    state['total_profit'] = total
+    state['balance']      = round(base + total, 2)
+    state['session_pnl']  = round(days.get(today, 0.0), 2)
+    state['session_date'] = today
+    closed = [d for d in days if d < today or eod]
+    bal, hwm, best = base, base, 0.0
+    for d in days:
+        bal += days[d]
+        if d in closed:
+            hwm  = max(hwm, bal)
+            best = max(best, days[d])
+    if mode == 'TC':
+        state['high_water_mark'] = round(hwm, 2)
+    state['best_day_profit'] = round(best, 2)
+    save_state(state)
+    if eod and mode == 'TC' and total >= TC_PROFIT_TARGET and best <= TC_CONSISTENCY_MAX * total:
+        _send_telegram('🏆 *TC PASS* — profit target and consistency both met! Apply for XFA.')
+    return state
 
 
 # ── MLL floor calculation ─────────────────────────────────────────────────────
@@ -238,6 +321,20 @@ def record_trade_pnl(pnl: float):
 
 
 def update_eod_balance(eod_pnl: float):
+    """TC/IBKR: rebuild from the ledger (eod_pnl is ignored — it was NY-only, see
+    reconcile_from_ledger). IBKR still counts a qualifying day off today's ledger P&L."""
+    _mode = load_state().get('mode', ACCOUNT_MODE)
+    if _mode in ('TC', 'IBKR'):
+        st = reconcile_from_ledger(eod=True)
+        if _mode == 'IBKR' and st.get('session_pnl', 0.0) >= 150.0:
+            st['qualifying_days'] = st.get('qualifying_days', 0) + 1
+        st['session_pnl'] = 0.0                   # next session starts fresh (as before)
+        save_state(st)
+        return
+    _update_eod_balance_legacy(eod_pnl)
+
+
+def _update_eod_balance_legacy(eod_pnl: float):
     """
     Call at end of each trading day (5 PM CT reset).
     Updates balance + total_profit from DB truth, updates TC floor, resets session.

@@ -431,6 +431,13 @@ def init_db():
         conn.execute("ALTER TABLE london_trades ADD COLUMN account_mode TEXT DEFAULT 'IBKR'")
     except Exception:
         pass  # column already exists
+    # Sep 29 2026: entry/exit_price now hold the broker's FILLS; the prices the strategy
+    # decided at (live price at entry, stop/target level at exit) are kept here.
+    for _col in ('entry_signal', 'exit_signal'):
+        try:
+            conn.execute(f"ALTER TABLE london_trades ADD COLUMN {_col} REAL")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -456,6 +463,19 @@ def _log_entry(side: str, entry: float, sl: float, target: float,
     conn.commit()
     conn.close()
     return trade_id
+
+
+def _set_signal_price(trade_id: int, col: str, px) -> None:
+    """Record the price the strategy decided at, beside the booked fill."""
+    if px is None or col not in ('entry_signal', 'exit_signal'):
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(f'UPDATE london_trades SET {col}=? WHERE id=?', (float(px), trade_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log(f'  could not record {col} for trade {trade_id}: {e}')
 
 
 def _log_exit(trade_id: int, exit_price: float, reason: str, pnl: float):
@@ -645,12 +665,16 @@ def place_london_trade(side: str, signal_price: float) -> bool:
     })
     stop_order_id = stop_result.get('order_id', '') or ''
 
-    # DB + state
-    trade_id = _log_entry(side, live_price, sl, target, contracts, _atr)
+    # DB + state. Strategy state (stop, BE, trail) stays on the signal price, as validated;
+    # the ledger books what the broker actually filled.
+    entry_fill = _exec_fill(order_id, live_price, 'BOT' if side == 'LONG' else 'SLD')
+    trade_id = _log_entry(side, entry_fill, sl, target, contracts, _atr)
+    _set_signal_price(trade_id, 'entry_signal', live_price)
     _position = {
         'id':            trade_id,
         'side':          side,
         'entry':         live_price,
+        'entry_fill':    entry_fill,
         'sl':            sl,
         'sl_init':       sl,
         'target':        target,
@@ -785,10 +809,11 @@ def _monitor_position_locked(df: pd.DataFrame):
             # IBKR backup stop already filled
             log(f'  IBKR flat (qty={ibkr_qty:.0f}) — backup stop filled, closing London DB only')
             _cancel_backup_stop(pos)
-            stop_fill = _get_stop_fill(pos.get('stop_order_id'))
-            fill_px   = stop_fill or price
-            realized  = _pnl_usd(entry, fill_px, pos['side'], contracts)
+            fill_px   = _get_stop_fill(pos.get('stop_order_id'), price,
+                                       'SLD' if pos['side'] == 'LONG' else 'BOT')
+            realized  = _pnl_usd(pos.get('entry_fill', entry), fill_px, pos['side'], contracts)
             _log_exit(pos['id'], fill_px, 'stop_ibkr', realized)
+            _set_signal_price(pos['id'], 'exit_signal', pos.get('sl'))
             _daily_pnl += realized
             emoji = '✅' if realized > 0 else '🔴'
             send_telegram(
@@ -859,8 +884,11 @@ def _monitor_position_locked(df: pd.DataFrame):
             _finish_manual_close('FAILED', f'broker rejected the closing order: {exit_result}')
             return
 
-        realized = _pnl_usd(entry, exit_price, pos['side'], contracts)
-        _log_exit(pos['id'], exit_price, exit_reason, realized)
+        exit_fill = _exec_fill(exit_result.get('order_id'), exit_price,
+                               'SLD' if pos['side'] == 'LONG' else 'BOT')
+        realized = _pnl_usd(pos.get('entry_fill', entry), exit_fill, pos['side'], contracts)
+        _log_exit(pos['id'], exit_fill, exit_reason, realized)
+        _set_signal_price(pos['id'], 'exit_signal', exit_price)
         _daily_pnl += realized
         _last_exit_time = now_et
 
@@ -913,15 +941,46 @@ def _monitor_position_locked(df: pd.DataFrame):
         log(f'  Trail update: sl {sl:.2f} → {new_sl:.2f}  pnl_pts={pnl_pts:+.1f}')
 
 
-def _get_stop_fill(stop_order_id: str | None) -> float | None:
-    if not stop_order_id:
-        return None
+MAX_FILL_DRIFT_PTS = 60.0
+
+
+def _exec_fill(order_id, fallback: float, action: str, wait: float = 3.0) -> float:
+    """The broker's real fill for `order_id` (volume-weighted over partial fills), from
+    GET /executions, matched on orderId AND action ('BOT'/'SLD'). Any failure, or a value
+    more than MAX_FILL_DRIFT_PTS from `fallback`, returns `fallback` — booking must never
+    strand a trade.
+
+    Sep 29 2026: London booked the live price at entry and the stop/target LEVEL at exit
+    since it was built — NY got real fills on Sep 3 (entries) and Sep 24 (exits), London
+    never did. All 113 stop exits since Aug were booked exactly at the stop. The old
+    _get_stop_fill read /order/{id}/status, which returns avgFillPrice 0.0 for filled
+    orders (the endpoint NY abandoned on Sep 24), so it always fell back.
+    """
+    if not order_id:
+        return fallback
     try:
-        resp = _bridge_get(f'/order/{stop_order_id}/status')
-        fp   = resp.get('avgFillPrice') if resp else None
-        return float(fp) if fp and float(fp) > 0 else None
-    except Exception:
-        return None
+        if wait:
+            time.sleep(wait)
+        d = _bridge_get('/executions')
+        fills = d.get('fills', []) if isinstance(d, dict) else []
+        mine = [f for f in fills if str(f.get('orderId')) == str(order_id)
+                and f.get('side') == action and f.get('price') is not None]
+        qty = sum(float(f.get('shares') or 0) for f in mine)
+        if qty <= 0:
+            return fallback
+        px = sum(float(f['price']) * float(f.get('shares') or 0) for f in mine) / qty
+        if abs(px - fallback) > MAX_FILL_DRIFT_PTS:
+            log(f'  ⚠️ fill {px:.2f} for order {order_id} is {abs(px - fallback):.1f}pt from '
+                f'{fallback:.2f} — not trusted, booking the estimate')
+            return fallback
+        return round(px, 2)
+    except Exception as e:
+        log(f'  fill lookup failed for order {order_id}: {e} — booking the estimate')
+        return fallback
+
+
+def _get_stop_fill(stop_order_id: str | None, fallback: float, action: str) -> float:
+    return _exec_fill(stop_order_id, fallback, action)
 
 
 # ── Session logic ─────────────────────────────────────────────────────────────
