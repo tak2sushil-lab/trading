@@ -7,7 +7,7 @@ Modes:
   IBKR = Personal IBKR capital          ($15K floor, $3,750 DLL soft, no trailing MLL)
 
 TopStepX $50K Standard path:
-  TC eval:   profit target $3,000 | MLL $2,000 | DLL $1,000 | consistency ≤50%/day
+  TC eval:   plan-driven (TC_ACCOUNT_SIZE) — $100K: target $6,000 | MLL $3,000 | DLL $2,000 | consistency ≤55%
   XFA:       balance starts $0    | MLL starts -$2,000, locks at $0 after first $2K
 
 IBKR personal ($15K own capital — updated Jul 6 2026):
@@ -35,26 +35,29 @@ FUTURES_TELEGRAM_CHAT_ID = os.getenv('FUTURES_TELEGRAM_CHAT_ID')
 # 'IBKR' = Personal IBKR capital ($2K floor, soft DLL only, no trailing MLL)
 ACCOUNT_MODE = os.getenv('FUTURES_ACCOUNT_MODE', 'TC')
 
-# ── TopStepX $50K TC constants (confirmed against TopStep's own $50K plan
-# page Aug 9 2026 — screenshot cross-checked: profit target $3,000, consistency
-# 50%, Max Loss Limit $2,000, Daily Loss Limit $1,000, contract limit 5 mini /
-# 50 micro. Every number below already matched what TopStep publishes except
-# contract sizing, which had never been revisited since account-open — see
-# TC_TRADING_MAX_CONTRACTS.) ───────────────────────────────────────────────────
-TC_PROFIT_TARGET    = 3_000.0   # pass condition
-TC_MLL_AMOUNT       = 2_000.0   # trailing max loss limit ("Max Loss Limit / One Rule")
-TC_DLL_AMOUNT       = 1_000.0   # daily loss limit ("Responsible Trading Advantage" DLL)
-TC_CONSISTENCY_MAX  = 0.55      # best day ≤ 55% of total profit (TopStep $50K page, confirmed Sep 29 2026; was 0.50)
-TC_DAILY_CAP        = 1_200.0   # our soft daily cap ($300 buffer under $1,500 ceiling)
-TC_MAX_CONTRACTS    = 50        # TopStep's PLATFORM ceiling for $50K (micro) — a disaster
-                                 # limit, not a trading size. NOT used for position sizing;
-                                 # see TC_TRADING_MAX_CONTRACTS below for what we actually trade.
-TC_TRADING_MAX_CONTRACTS = 2    # our own risk-managed cap (Aug 9 2026) — mirrors
-                                 # IBKR_MAX_CONTRACTS. At BASE_STOP_PTS=200, a single
-                                 # worst-case 2-contract stop-out risks $800 — inside the
-                                 # $2,000 trailing MLL and roughly at (not past) the $700
-                                 # soft DLL. Was hardcoded to 1 since account-open; never
-                                 # revisited. Raise only after live data shows headroom.
+# ── TopStepX Trading Combine plans (TopStep plan pages, confirmed by the user Sep 29 2026) ──
+# ONE setting picks the plan; every TC limit below derives from it. Soft limits keep the same
+# fractions we have always used, so on the $50K they reproduce the old constants exactly
+# ($700 soft DLL = 70% of DLL, $300 MLL buffer = 15% of MLL, $1,200 day cap = 40% of target).
+TC_PLANS = {
+    #          start       target    MLL (trailing)  DLL        contracts we trade (200pt stop)
+    '50K':  dict(start=50_000.0,  target=3_000.0, mll=2_000.0, dll=1_000.0, contracts=2),
+    '100K': dict(start=100_000.0, target=6_000.0, mll=3_000.0, dll=2_000.0, contracts=4),
+    '150K': dict(start=150_000.0, target=9_000.0, mll=4_500.0, dll=3_000.0, contracts=6),
+}
+# $100K chosen Sep 29 2026 (user): same pass pace as the $50K at full size, 70% vs 63% pass
+# within 12 months, half the fee per contract once funded. 4 MNQ is the largest size whose
+# full 200pt stop (~$1,624) fits the $2,000 DLL. See futures/factory/topstep_gauntlet.py.
+TC_ACCOUNT_SIZE     = os.getenv('TC_ACCOUNT_SIZE', '100K')
+_TCP                = TC_PLANS[TC_ACCOUNT_SIZE]
+TC_START_BALANCE    = _TCP['start']
+TC_PROFIT_TARGET    = _TCP['target']       # pass condition
+TC_MLL_AMOUNT       = _TCP['mll']          # trailing max loss limit ("Max Loss Limit / One Rule")
+TC_DLL_AMOUNT       = _TCP['dll']          # daily loss limit (hard; TopStep liquidates)
+TC_CONSISTENCY_MAX  = 0.55                 # best day <= 55% of total profit (all plans)
+TC_DAILY_CAP        = 0.40 * TC_PROFIT_TARGET   # our soft day cap, keeps consistency safe
+TC_MAX_CONTRACTS    = 50                   # platform ceiling (micro) for the $50K — disaster limit only
+TC_TRADING_MAX_CONTRACTS = _TCP['contracts']   # what we actually trade, per plan
 
 # ── TopStepX XFA constants ────────────────────────────────────────────────────
 XFA_STARTING_BALANCE = 0.0
@@ -64,8 +67,10 @@ XFA_MIN_PAYOUT       = 125.0
 XFA_INACTIVITY_DAYS  = 25        # alert before 30-day closure
 
 # ── Soft stops (always fire before TopStepX hard limits) ─────────────────────
-SOFT_STOP_BUFFER     = 300.0    # stay $300 above MLL floor (slippage guard)
-DLL_SOFT             = 700.0    # TC/XFA DLL soft stop (below $700 → halt; hard limit is $1K)
+# TC scales with the plan (15% of MLL, 70% of DLL = $300 / $700 on the $50K, $450 / $1,400 on the
+# $100K); XFA keeps the $50K values it was written for.
+SOFT_STOP_BUFFER     = 0.15 * TC_MLL_AMOUNT if ACCOUNT_MODE == 'TC' else 300.0   # stay above the MLL floor
+DLL_SOFT             = 0.70 * TC_DLL_AMOUNT if ACCOUNT_MODE == 'TC' else 700.0   # halt new entries for the day
 
 # ── IBKR personal mode — user-confirmed Jul 18 2026: $15K TOTAL splits into
 # $10K equity + $5K futures. Futures risk caps therefore scale to the $5K
@@ -99,7 +104,7 @@ def _default_state() -> dict:
     elif ACCOUNT_MODE == 'IBKR':
         starting = IBKR_FLOOR
     else:  # TC
-        starting = 50_000.0
+        starting = TC_START_BALANCE
     return {
         'mode':               ACCOUNT_MODE,
         'balance':            starting,
@@ -144,7 +149,7 @@ def save_state(state: dict):
 #
 # TC_COMBINE_START: the ET minute the current TopStep combine began. Only trades that
 # closed at/after it count toward the combine. Set it when a new combine (or reset) starts.
-TC_COMBINE_START = os.getenv('TC_COMBINE_START', '2026-09-03 10:54')
+TC_COMBINE_START = os.getenv('TC_COMBINE_START', '2026-09-30 00:00')   # $100K paper combine starts Sep 30 2026 (was the $50K from 2026-09-03 10:54)
 _TRADES_DB = Path(__file__).parent.parent / 'trades.db'
 
 
@@ -202,7 +207,7 @@ def reconcile_from_ledger(eod: bool = False) -> dict:
         return state                                   # XFA keeps its own path
     base  = round(state.get('balance', 0.0) - state.get('total_profit', 0.0), 2)
     if mode == 'TC':
-        base = 50_000.0                                # combine starting balance
+        base = TC_START_BALANCE                        # combine starting balance
     days  = ledger_days(mode, TC_COMBINE_START if mode == 'TC' else None)
     today = date.today().isoformat()
     total = round(sum(days.values()), 2)
@@ -220,6 +225,10 @@ def reconcile_from_ledger(eod: bool = False) -> dict:
     if mode == 'TC':
         state['high_water_mark'] = round(hwm, 2)
     state['best_day_profit'] = round(best, 2)
+    if mode == 'TC':
+        state.update({'account_size': TC_ACCOUNT_SIZE, 'start_balance': TC_START_BALANCE,
+                      'mll_amount': TC_MLL_AMOUNT, 'profit_target': TC_PROFIT_TARGET,
+                      'floor': round(effective_floor(state), 2), 'buffer': SOFT_STOP_BUFFER})
     save_state(state)
     if eod and mode == 'TC' and total >= TC_PROFIT_TARGET and best <= TC_CONSISTENCY_MAX * total:
         _send_telegram('🏆 *TC PASS* — profit target and consistency both met! Apply for XFA.')
@@ -238,7 +247,7 @@ def effective_floor(state: dict) -> float:
     if mode == 'TC':
         hwm   = state['high_water_mark']
         floor = hwm - TC_MLL_AMOUNT
-        return max(floor, 50_000.0 - TC_MLL_AMOUNT)
+        return max(floor, TC_START_BALANCE - TC_MLL_AMOUNT)
     elif mode == 'IBKR':
         return 0.0   # no trailing MLL — just don't go to zero
     else:  # XFA
@@ -445,7 +454,7 @@ class PropRulesSimulator:
 
     def __init__(self, mode: str = 'TC'):
         self.mode          = mode
-        self.balance       = 0.0 if mode == 'XFA' else 50_000.0
+        self.balance       = 0.0 if mode == 'XFA' else TC_START_BALANCE
         self.hwm           = self.balance
         self.total_profit  = 0.0
         self.session_pnl   = 0.0
@@ -457,7 +466,7 @@ class PropRulesSimulator:
 
     def _floor(self) -> float:
         if self.mode == 'TC':
-            return max(self.hwm - TC_MLL_AMOUNT, 50_000.0 - TC_MLL_AMOUNT)
+            return max(self.hwm - TC_MLL_AMOUNT, TC_START_BALANCE - TC_MLL_AMOUNT)
         return XFA_MLL_LOCK_AT if self.balance >= 2_000.0 else XFA_INITIAL_MLL
 
     def new_day(self, trade_date):

@@ -5562,3 +5562,19 @@ with volatility (TRENDING 5% of 2021 days, 61% of 2026); within-year IB terciles
 no stable "play big" day. **NQ:** 1 NQ @200pt = $4,000 > the 100K's $2k DLL and $3k MLL; TopStep would
 liquidate at ~100 NQ pts. Not viable. **Fixed tonight:** daily_tide crashed and failed OPEN when our 5m bars
 had a session the daily table lacked (`cc8b94c`) — caught by this A/B.
+
+### Sep 29 2026 (night) — TC switched to the $100K plan (user-approved)
+
+`prop_rules.TC_ACCOUNT_SIZE = '100K'` (env-overridable; plans for 50K/100K/150K in `TC_PLANS`). Every TC
+limit derives from it: start $100,000 · target $6,000 · MLL $3,000 (floor ≥ $97,000) · DLL $2,000 · our
+soft DLL $1,400 (70%) · MLL buffer $450 (15%) · day cap $2,400 (40% of target) · **4 MNQ per long**
+(`tc_trader.TC_LONG_CONTRACTS = TC_TRADING_MAX_CONTRACTS`), shorts stay 1, 200pt stop unchanged. The
+fractions reproduce the old $50K constants exactly. Paper combine restarted: `TC_COMBINE_START =
+'2026-09-30 00:00'` (old $50K state backed up as prop_state.json.bak-20260929-pre100k). The state file
+now publishes floor/buffer/plan; the dashboard reads them. **London on TC unchanged** (≤$250 risk, 2c) —
+its limits follow the plan (daily stop $1,400); don't scale it until its real slippage is measured.
+
+**Last 5 days (Sep 23-29) under the new rules:** actual TC −$982. Tide removes all 5 shorts (−$961 of it);
+Sep 25 long at 4c +$137; Sep 24 long at 4c ≈ −$730 (the old $700 breaker no longer fires — price came
+within 3pts of the −$1,626 stop, then recovered); London +$211 ⇒ ≈ −$380. Sim for the same days: one
+trade (Sep 25, ≈ +$170 at 4c) — it no longer takes the Sep 24 long.

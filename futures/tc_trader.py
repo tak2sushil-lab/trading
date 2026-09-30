@@ -39,6 +39,7 @@ from prop_rules import (
     update_eod_balance, get_status as prop_status, load_state as prop_load,
     reconcile_from_ledger, account_realized_today, dll_contracts,
     save_state as prop_save, ACCOUNT_MODE, DLL_SOFT, TC_DAILY_CAP,
+    TC_PROFIT_TARGET, TC_TRADING_MAX_CONTRACTS, TC_ACCOUNT_SIZE,
 )
 from portfolio_status import format_all as _portfolio_all
 
@@ -94,7 +95,9 @@ MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and liv
 # Tide-on book — combines started Oct 2025-Mar 2026 pass in a median 2.6 months at 2c vs
 # 4.9 at 1-2c; 5.5yr net +$11,402 vs +$7,548, worst day -$1,007 vs -$848, but the worst
 # drawdown doubles (-$6,101 vs -$2,755). None = revert to the ladder.
-TC_LONG_CONTRACTS = 2
+# Sep 29 2026: follows the TopStep plan (prop_rules.TC_ACCOUNT_SIZE) — 4 on the $100K, the
+# largest size whose full 200pt stop fits the $2,000 DLL. Shorts stay at SHORT_MAX_CONTRACTS.
+TC_LONG_CONTRACTS = TC_TRADING_MAX_CONTRACTS
 
 # ── SHORT-SIDE RISK CAP + DAILY TIDE GATE (Sep 2 2026) ─────────────────────
 SHORT_MAX_CONTRACTS = 1       # LIVE. The RVOL/IB conviction ladder in
@@ -1925,7 +1928,7 @@ def place_trade(side: str, sig: dict, regime: str,
 
     ib_range   = calc_ib_range_today(df5)
     contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range, side)
-    # TopStep's $1,000 DLL is a hard, account-wide limit: size so this trade's full stop
+    # TopStep's DLL is a hard, account-wide limit: size so this trade's full stop
     # cannot carry today's NY + London P&L past it (Sep 29 2026, see prop_rules).
     _risk_c = abs(price - sl) * POINT_VALUE + COMMISSION
     _fit = dll_contracts(contracts, _risk_c)
@@ -3031,7 +3034,7 @@ def eod_snapshot():
         f"🌙 FUTURES EOD\n"
         f"Day P&L:      ${daily:+.2f}\n"
         f"Balance:      ${s.get('balance', 0):,.0f}\n"
-        f"TC Progress:  ${s.get('total_profit', 0):,.0f} / $3,000 "
+        f"TC {TC_ACCOUNT_SIZE} progress: ${s.get('total_profit', 0):,.0f} / ${TC_PROFIT_TARGET:,.0f} "
         f"(${s.get('tc_target_left', 0):,.0f} left)\n"
         f"MLL buffer:   ${s.get('buffer_to_mll', 0):,.0f}\n"
         f"Resets tomorrow at 9:28am ET"

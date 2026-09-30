@@ -1699,11 +1699,16 @@ def get_system_health():
                     _ps = _json.load(_pf)
                 _hwm = float(_ps.get('high_water_mark') or 0)
                 _bal = float(_ps.get('balance') or 0)
-                _floor = max(_hwm - 2000.0, 48000.0)   # TopStep $50k trailing MLL — same as prop_rules.effective_floor
+                # floor/buffer come from the plan (prop_rules.TC_ACCOUNT_SIZE), published into the
+                # state file by reconcile_from_ledger; the fallback is the old $50K arithmetic.
+                _floor = float(_ps.get('floor') or max(_hwm - 2000.0, 48000.0))
+                _buf   = float(_ps.get('buffer') or 300.0)
                 out['prop'] = {
                     'mode': _ps.get('mode'), 'balance': round(_bal, 2),
                     'hwm': round(_hwm, 2), 'floor': round(_floor, 2),
-                    'room': round(_bal - _floor - 300.0, 2),   # 300 = SOFT_STOP_BUFFER
+                    'room': round(_bal - _floor - _buf, 2),
+                    'plan': _ps.get('account_size'),
+                    'profit_target': _ps.get('profit_target'),
                     'target': round(float(_ps.get('total_profit') or 0), 2),
                 }
             except Exception:
