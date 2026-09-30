@@ -43,7 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from futures.gate_audit import log_block, log_enter
 from futures import thesis_check as _thesis_check
-from prop_rules import ACCOUNT_MODE, check_can_trade, record_trade_pnl
+from prop_rules import (ACCOUNT_MODE, check_can_trade, record_trade_pnl,
+                        account_realized_today, dll_contracts, DLL_SOFT)
 
 # ── Instrument constants (MNQ) ────────────────────────────────────────────────
 
@@ -80,7 +81,9 @@ TRAIL_TIGHT_GAP  = 0.20      # CALIBRATE: gap for tight trail
 
 # ── Risk params ($5k account model, 25% DLL) ─────────────────────────────────
 
-MAX_DAILY_LOSS     = 1250.0  # 25% of $5k account allocation
+# TC: TopStep's soft DLL ($700 of the $1,000 hard limit), account-wide (Sep 29 2026) —
+# was $1,250 (the IBKR allocation) on both accounts, above TopStep's hard limit.
+MAX_DAILY_LOSS     = DLL_SOFT if ACCOUNT_MODE == 'TC' else 1250.0
 MAX_RISK_PER_TRADE = 250.0   # 5% of $5k account per trade
 MAX_CONTRACTS      = 2
 MAX_DAILY_TRADES   = 2
@@ -584,7 +587,7 @@ def place_london_trade(side: str, signal_price: float) -> bool:
         log(f'  BLOCKED: max daily trades ({MAX_DAILY_TRADES}) reached')
         return False
 
-    daily_pnl = get_london_daily_pnl()
+    daily_pnl = account_realized_today()   # NY + London for this account (Sep 29 2026)
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f'  BLOCKED: DLL hit (${daily_pnl:.0f})')
         return False
@@ -638,6 +641,13 @@ def place_london_trade(side: str, signal_price: float) -> bool:
         return False
 
     contracts = calc_contracts(live_price, sl)
+    _fit = dll_contracts(contracts, abs(live_price - sl) * POINT_VALUE + COMMISSION)
+    if _fit < contracts:
+        log(f'  DLL room: {contracts}c does not fit today\'s ${account_realized_today():+.0f} — '
+            f'{"trading " + str(_fit) + "c" if _fit else "SKIP"}')
+        if _fit == 0:
+            return False
+        contracts = _fit
 
     # Submit entry
     order_side = 'BUY' if side == 'LONG' else 'SELL'
@@ -760,7 +770,7 @@ def _monitor_position_locked(df: pd.DataFrame):
 
     pnl_pts  = (price - entry) if not is_short else (entry - price)
     pnl_usd  = _pnl_usd(entry, price, pos['side'], contracts)
-    daily_pnl = get_london_daily_pnl()
+    daily_pnl = account_realized_today()   # NY + London for this account (Sep 29 2026)
 
     # Crest Watch — LLM in-trade reversal-risk observer (log-only, Aug 9 2026,
     # redesigned same night — see futures/thesis_check.py). London has no
@@ -985,6 +995,67 @@ def _get_stop_fill(stop_order_id: str | None, fallback: float, action: str) -> f
 
 # ── Session logic ─────────────────────────────────────────────────────────────
 
+_restore_checked = None   # the date this process last ran the restart recovery
+
+
+def _restore_after_restart():
+    """Once per process per day: pick up state a restart would otherwise forget (Sep 29 2026).
+
+    London keeps its open trade only in memory. After a restart the broker's backup stop
+    still protects the position, but _position is None, so the exit would never be
+    recorded — the ledger, the prop state and the DLL would all miss that P&L. The daily
+    trade count also reset to 0, allowing more than MAX_DAILY_TRADES.
+      * today's OPEN row  -> rebuilt into _position, monitoring resumes (if the backup stop
+        filled while we were down, the monitor's first pass books it from /executions);
+      * an older OPEN row -> its exit is unrecoverable: marked ORPHANED (excluded from the
+        ledger) and alerted, so the P&L gap is visible instead of silent.
+    """
+    global _restore_checked, _position, _trade_count
+    today = datetime.now(ET).date()
+    if _restore_checked == today:
+        return
+    _restore_checked = today
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        _trade_count = max(_trade_count, conn.execute(
+            "SELECT COUNT(*) FROM london_trades WHERE entry_date=? AND account_mode=?",
+            (str(today), ACCOUNT_MODE)).fetchone()[0])
+        rows = conn.execute(
+            "SELECT * FROM london_trades WHERE status='OPEN' AND account_mode=? ORDER BY id",
+            (ACCOUNT_MODE,)).fetchall()
+        for r in rows:
+            if r['entry_date'] != str(today):
+                conn.execute("UPDATE london_trades SET status='ORPHANED', exit_reason=? WHERE id=?",
+                             ('orphaned on restart — exit never recorded', r['id']))
+                send_telegram(f"⚠️ LONDON ({ACCOUNT_MODE}) trade #{r['id']} from {r['entry_date']} was "
+                              f"still OPEN — its exit was never recorded. Marked ORPHANED; reconcile "
+                              f"its P&L against the broker by hand.")
+                log(f"  restart: London #{r['id']} from {r['entry_date']} marked ORPHANED")
+        conn.commit()
+        live = [r for r in rows if r['entry_date'] == str(today)]
+        conn.close()
+        if live and _position is None:
+            r = live[-1]
+            sig_entry = r['entry_signal'] if r['entry_signal'] is not None else r['entry']
+            sl = r['sl_current'] if r['sl_current'] is not None else r['sl_init']
+            hh, mm = (r['entry_time'] or '00:00')[:5].split(':')
+            be = (sl >= sig_entry) if r['side'] == 'LONG' else (sl <= sig_entry)
+            _position = {
+                'id': r['id'], 'side': r['side'], 'entry': sig_entry, 'entry_fill': r['entry'],
+                'sl': sl, 'sl_init': r['sl_init'], 'target': r['target'],
+                'contracts': r['contracts'], 'atr': r['atr'] or _atr,
+                'entry_time': ET.localize(datetime(today.year, today.month, today.day, int(hh), int(mm))),
+                'peak': sig_entry, 'order_id': '', 'stop_order_id': r['stop_order_id'] or None,
+                'be_done': bool(be), 'ib_range': r['ib_range'],
+            }
+            log(f"  restart: resumed London #{r['id']} {r['side']} x{r['contracts']} "
+                f"entry {sig_entry} stop {sl} (backup stop {r['stop_order_id']})")
+            send_telegram(f"🔁 LONDON ({ACCOUNT_MODE}) resumed open trade #{r['id']} after a restart.")
+    except Exception as e:
+        log(f"  restart recovery failed: {e}")
+
+
 def reset_session():
     """Called at session start (≈3am ET). Resets all daily state."""
     global _session_date, _ib_high, _ib_low, _ib_formed, _ib_close_pos
@@ -1051,6 +1122,7 @@ def run_scan():
         return
 
     reset_session()
+    _restore_after_restart()
 
     # Fetch bars using the specific active contract (same one as live quote)
     df = get_bars(days=2, contract_month=_active_contract_month)

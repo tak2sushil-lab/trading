@@ -5510,3 +5510,34 @@ the recent regime 81/81 non-passes were frozen. Freeze ⇒ reset. With reset-on-
 credit/mo): 2c longs — all history 64% pass within 12mo (median 7.9mo, ~1 reset); combines started
 Oct 2025–Mar 2026: 61% within 3mo, 100% within 6mo, median 2.6mo, cost ~$292. Current sizing: 16%/12mo
 all history; recent 63%/6mo, median 4.9mo. Size-aware step-down instead of the $300 buffer: no better.
+
+### Sep 29 2026 (late) — TC 2c longs LIVE · TopStep rule audit · TC London fixes · pass estimate incl. London
+
+**LIVE (user-approved): `TC_LONG_CONTRACTS = 2`** in tc_trader.py — every TC long trades 2 (prop cap 2),
+shorts stay 1. Plus: `prop_rules.dll_contracts()` sizes TC NY and TC London entries so a full stop-out
+cannot carry TODAY's account P&L (NY + London) past TopStep's $1,000 DLL (e.g. London −$300 then a 2c
+NY stop −$812 = −$1,112 was possible). London on TC now uses the $700 soft DLL (was IBKR's $1,250) and
+account-wide daily P&L. **London restart recovery**: today's OPEN row is rebuilt into `_position`
+(monitoring resumes; a stop filled while down is booked from /executions), older OPEN rows → ORPHANED +
+Telegram, and the day's trade count is restored (a restart used to reset it to 0). **NY startup no longer
+cancels TODAY's backup stops** (it cancelled every open trade's broker stop on any restart). Dashboard
+floor now `max(hwm−2000, 48000)` like prop_rules.
+
+**TopStep rule audit:** target $3k ✅ · consistency 55% ✅ (was 50%) · MLL $2k EOD-trailing ✅ (ours never
+stops trailing; TopStep reportedly locks at the $50k start — verify; ours is only stricter above $52k) ·
+DLL now account-wide + risk-aware ✅ · 2 of 50 micros ✅ · NY hard close 4:00pm ET = 3:00pm CT, London by
+9am ✅ · `commission_rt_tc` still = IBKR's 1.24 placeholder ⚠️.
+
+**London 5.5yr sim (live config, 2c, `_london_2c_slip*.csv`):** no slippage +$2,069 (2023 −$1,484,
+2024 −$1,910, 2025 +$3,018, 2026 +$1,957); **0.5pt/side slippage −$8,148** — most wins are BE scratches.
+**Combine incl. London (NY 2c longs, reset on blow/freeze, fees ×1.13 tax):**
+| book | starts Oct25–Mar26 | all history |
+|---|---|---|
+| NY only | 61% ≤3mo, median 2.6mo, ~$330 | 64% ≤12mo, median 7.9mo |
+| NY + London (0 slip) | 69% ≤3mo, median 2.3mo, ~$288 | 54% ≤12mo |
+| NY + London (0.5pt) | 69% ≤3mo, median 2.4mo | 49% ≤12mo, 1.84 resets |
+London helps in the current regime, hurts across history. **Measure its real slippage** (new
+`entry_signal`/`exit_signal` columns vs fills) for ~2 weeks; if ≳0.5pt/side, turn London off on TC.
+⚠️ **2026 sim by month (NY 2c longs): Feb–Jun strong (+$9.2k), Jul–Sep flat (+$165).** Live TC since
+Sep 3 under the new rules ≈ +$513 (NY longs −$513, London +$1,027 on old booking). "Pass in ~3 months"
+applies to starts into a strong stretch, not necessarily today.

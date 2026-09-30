@@ -1699,7 +1699,7 @@ def get_system_health():
                     _ps = _json.load(_pf)
                 _hwm = float(_ps.get('high_water_mark') or 0)
                 _bal = float(_ps.get('balance') or 0)
-                _floor = _hwm - 2000.0            # TopStep $50k trailing MLL
+                _floor = max(_hwm - 2000.0, 48000.0)   # TopStep $50k trailing MLL — same as prop_rules.effective_floor
                 out['prop'] = {
                     'mode': _ps.get('mode'), 'balance': round(_bal, 2),
                     'hwm': round(_hwm, 2), 'floor': round(_floor, 2),

@@ -3779,11 +3779,18 @@ def main():
     # have live SELL STOP orders from previous entries. Cancel them all.
     _orphan_trades = get_open_futures_trades()
     for _t in _orphan_trades:
+        # Only a PRIOR-day trade is an orphan. Until Sep 29 2026 this cancelled the backup
+        # stop of EVERY open trade, so any mid-session restart (crash, kickstart) left
+        # today's live position with no broker-side stop — only the software monitor.
+        _stale = bool(_t.get('entry_date')) and _t['entry_date'] != str(date.today())
+        if not _stale:
+            log(f"  Startup: resuming open trade {_t['id']} — backup stop {_t.get('stop_order_id')} kept")
+            continue
         if _t.get('stop_order_id'):
             _r = _bridge_post(f"/futures/cancel/{_t['stop_order_id']}", {})
             log(f"  Startup: cancelled orphan backup stop {_t['stop_order_id']} → {_r.get('status','?')}")
         # Mark stale OPEN trades from a prior day as CLOSED so today starts clean
-        if _t.get('entry_date') and _t['entry_date'] != str(date.today()):
+        if _stale:
             _conn = sqlite3.connect(DB_PATH)
             _conn.execute(
                 "UPDATE futures_trades SET status='CLOSED', exit_reason='orphaned on restart', "

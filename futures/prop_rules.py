@@ -179,6 +179,20 @@ def account_realized_today(mode: str | None = None) -> float:
     return round(ledger_days(mode).get(date.today().isoformat(), 0.0), 2)
 
 
+def dll_contracts(want: int, risk_per_contract: float, margin: float = 50.0) -> int:
+    """TC only: the largest contract count (<= want) whose full stop-out keeps TODAY's
+    account P&L (NY + London) above -TC_DLL_AMOUNT (+ margin). 0 = the trade does not fit.
+
+    Added Sep 29 2026. The soft DLL (-$700) only looks at losses already taken, so a
+    London -$300 followed by a 2-contract NY stop (-$812) reached -$1,112 — past TopStep's
+    $1,000 limit, which force-liquidates. IBKR has no hard DLL, so it is unaffected.
+    """
+    if ACCOUNT_MODE != 'TC' or risk_per_contract <= 0:
+        return want
+    room = TC_DLL_AMOUNT - margin + account_realized_today()
+    return max(0, min(want, int(room // risk_per_contract)))
+
+
 def reconcile_from_ledger(eod: bool = False) -> dict:
     """Rebuild the state file from the ledger. eod=True also counts today in the
     high-water mark / best day (TopStep trails the MLL on END-OF-DAY balance)."""

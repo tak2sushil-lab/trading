@@ -37,7 +37,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from prop_rules import (
     check_can_trade, get_max_contracts, record_trade_pnl,
     update_eod_balance, get_status as prop_status, load_state as prop_load,
-    reconcile_from_ledger, account_realized_today,
+    reconcile_from_ledger, account_realized_today, dll_contracts,
     save_state as prop_save, ACCOUNT_MODE, DLL_SOFT, TC_DAILY_CAP,
 )
 from portfolio_status import format_all as _portfolio_all
@@ -88,8 +88,16 @@ ENTRY_COOLDOWN_MINUTES = 2.0   # minutes to wait after any ENTRY before another 
                                # root cause).
 MAX_PRICE_DIVERGENCE = 50.0    # pts: max allowed gap between scan price and live price at order time
 
+# ── TC LONG SIZE (Sep 29 2026, user-approved) ──────────────────────────────
+# Every TC long trades this many contracts (still capped by prop_rules), replacing the
+# RVOL/IB ladder for longs. Why: TopStep gauntlet (futures/factory/topstep_gauntlet.py),
+# Tide-on book — combines started Oct 2025-Mar 2026 pass in a median 2.6 months at 2c vs
+# 4.9 at 1-2c; 5.5yr net +$11,402 vs +$7,548, worst day -$1,007 vs -$848, but the worst
+# drawdown doubles (-$6,101 vs -$2,755). None = revert to the ladder.
+TC_LONG_CONTRACTS = 2
+
 # ── SHORT-SIDE RISK CAP + DAILY TIDE GATE (Sep 2 2026) ─────────────────────
-SHORT_MAX_CONTRACTS = 1        # LIVE. The RVOL/IB conviction ladder in
+SHORT_MAX_CONTRACTS = 1       # LIVE. The RVOL/IB conviction ladder in
                                # calc_contracts_dynamic() is anti-predictive on the
                                # short side ONLY (see the comment there). Shorts are
                                # profitable at 1c (+$10.1/trade) and ruinous at 2c
@@ -1532,6 +1540,9 @@ def calc_contracts_dynamic(price: float, sl: float,
     # Removes ZERO trades. Worth +$2,517 over 5.5yr, TC blow-ups 6 -> 4.
     if side == 'SHORT':
         n = min(n, SHORT_MAX_CONTRACTS)
+    elif TC_LONG_CONTRACTS:
+        # Flat size on every long (user-approved Sep 29 2026) — overrides the ladder above.
+        n = max(1, min(TC_LONG_CONTRACTS, get_max_contracts(TC_LONG_CONTRACTS)))
     return n
 
 
@@ -1914,6 +1925,16 @@ def place_trade(side: str, sig: dict, regime: str,
 
     ib_range   = calc_ib_range_today(df5)
     contracts  = calc_contracts_dynamic(price, sl, rvol, ib_range, side)
+    # TopStep's $1,000 DLL is a hard, account-wide limit: size so this trade's full stop
+    # cannot carry today's NY + London P&L past it (Sep 29 2026, see prop_rules).
+    _risk_c = abs(price - sl) * POINT_VALUE + COMMISSION
+    _fit = dll_contracts(contracts, _risk_c)
+    if _fit < contracts:
+        log(f"  DLL room: {contracts}c would risk ${_risk_c * contracts:.0f} against today's "
+            f"${account_realized_today():+.0f} — {'trading ' + str(_fit) + 'c' if _fit else 'SKIP'}")
+        if _fit == 0:
+            return False
+        contracts = _fit
 
     rr = abs(target - price) / abs(price - sl) if abs(price - sl) > 0 else 0
     # Use small tolerance to avoid floating-point false rejects at exactly MIN_RR
@@ -3267,11 +3288,18 @@ def main():
     # have live SELL STOP orders from previous entries. Cancel them all.
     _orphan_trades = get_open_futures_trades()
     for _t in _orphan_trades:
+        # Only a PRIOR-day trade is an orphan. Until Sep 29 2026 this cancelled the backup
+        # stop of EVERY open trade, so any mid-session restart (crash, kickstart) left
+        # today's live position with no broker-side stop — only the software monitor.
+        _stale = bool(_t.get('entry_date')) and _t['entry_date'] != str(date.today())
+        if not _stale:
+            log(f"  Startup: resuming open trade {_t['id']} — backup stop {_t.get('stop_order_id')} kept")
+            continue
         if _t.get('stop_order_id'):
             _r = _bridge_post(f"/futures/cancel/{_t['stop_order_id']}", {})
             log(f"  Startup: cancelled orphan backup stop {_t['stop_order_id']} → {_r.get('status','?')}")
         # Mark stale OPEN trades from a prior day as CLOSED so today starts clean
-        if _t.get('entry_date') and _t['entry_date'] != str(date.today()):
+        if _stale:
             _conn = sqlite3.connect(DB_PATH)
             _conn.execute(
                 "UPDATE futures_trades SET status='CLOSED', exit_reason='orphaned on restart', "
