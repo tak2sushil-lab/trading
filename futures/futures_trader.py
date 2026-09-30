@@ -576,6 +576,7 @@ def _get_fill_price(order_id, fallback: float, side: str = '') -> float:
         want = 'BOT' if side == 'LONG' else 'SLD'
         fills = ((_bridge_get('/executions') or {}).get('fills') or []) if order_id else []
         q = n = 0.0
+        _lots = []
         for f in fills:
             try:
                 if int(f.get('orderId', -1)) != int(order_id) or f.get('symbol') != SYMBOL:
@@ -585,9 +586,17 @@ def _get_fill_price(order_id, fallback: float, side: str = '') -> float:
                 s, p = float(f.get('shares') or 0), float(f.get('price') or 0)
                 if s > 0 and p > 0:
                     q += s; n += s * p
+                    _lots.append((s, p))
             except Exception:
                 continue
-        return n / q if q > 0 else 0.0
+        if q <= 0:
+            return 0.0
+        from futures.fills import clean_vwap
+        _clean, _aside = clean_vwap(_lots, fallback)
+        if _aside:
+            log(f"  entry fill: order {order_id} lots disagree — set aside {_aside} as a paper "
+                f"split-fill artifact, booking {_clean:.2f} (see futures/fills.py)")
+        return _clean
 
     def _from_avg_cost():
         for p in (_bridge_get('/futures/position') or []):
@@ -700,6 +709,7 @@ def _get_exit_fill_price(order_id, fallback: float, expect_side: str) -> float:
     qty = 0.0
     notional = 0.0
     wrong_side = 0
+    _lots = []
     for f in fills:
         try:
             if int(f.get('orderId', -1)) != int(order_id):
@@ -715,6 +725,7 @@ def _get_exit_fill_price(order_id, fallback: float, expect_side: str) -> float:
                 continue
             qty += s
             notional += s * p
+            _lots.append((s, p))
         except Exception:
             continue
     if wrong_side:
@@ -725,6 +736,12 @@ def _get_exit_fill_price(order_id, fallback: float, expect_side: str) -> float:
             f"— booking estimate {fallback}")
         return fallback
     px = notional / qty
+    from futures.fills import clean_vwap
+    _clean, _aside = clean_vwap(_lots, fallback)
+    if _aside:
+        log(f"  exit fill: order {order_id} lots disagree — set aside {_aside} as a paper "
+            f"split-fill artifact, booking {_clean:.2f} for all {qty:g}c (see futures/fills.py)")
+        px = _clean
     drift = px - fallback
     if abs(drift) > MAX_EXIT_FILL_DRIFT_PTS:
         log(f"  exit fill: order {order_id} = {px} is {drift:+.1f}pts from the "

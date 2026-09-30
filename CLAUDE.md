@@ -5596,3 +5596,28 @@ credit spread had closed, so nothing was wrong yet). Verified by rendering the c
 **Telegram:** London entry/exit and NY partial messages now show the booked FILLS (were signal/estimate
 prices); partial shows booked net $. Both FUTURES EOD messages show Day P&L = NY + London with the split
 (were NY only while the account total included London).
+
+### Sep 30 2026 — first day on the new config · paper split-fill artifact found and neutralised · London verdict
+
+**Worked as planned:** TC's first 4-MNQ long (PM_LONG 10:32 → no-move 12:02, +44.5pts) and IBKR's same trade
+at 2c, identical fills on both accounts; Tide verdict logged LONG-only (no shorts signalled); DLL-aware sizing
+did not need to trim; ledger-rebuilt state and NY+London EOD messages correct. TC $100K combine: **+$303.08**
+(NY +$351.04 · London −$47.96).
+
+**🐛 IBKR PAPER SPLIT-FILL ARTIFACT.** Part of some multi-contract MARKET orders fills ~30pts worse than the rest
+at a price that never traded (yfinance 1m confirms): London exit 04:03 lots 30693.25 + 30662.75 (market
+30686.00–30707.50); NY exit 12:02 lots 30881.25 + 30850.50 on BOTH accounts (market 30869.25–30888.75); Sep 29
+London entries 30636.50 + 30667.00. Always adverse, never on 1 lot. Real-fill booking (Sep 24/29) was recording
+it. **New `futures/fills.py::clean_vwap`**: lots of one order that disagree by >10pts → book all contracts at
+the lots agreeing with the one nearest the expected price, log what was set aside (never triggers on a real
+account). Wired into NY entry + exit helpers (both traders) and London `_exec_fill`. Rows corrected: NY #235
++$228.04→+$351.04, #236 +$114.02→+$175.52; London #161 −$85.48→−$24.48; Sep 29 #157/158 → +$60.52,
+#159/160 → +$4.52 (backup trades.db.bak-20260930-splitfill). ⚠️ Today's Telegram EOD was sent with the old
+(artifact) figures.
+
+**London — no configuration survives real costs** (5.5yr 1m sim, 2c, commission): BE 0.10 (live) +$2,075 at
+0 slippage = $0.81/trade; **0.5pt/side −$8,149, 1pt −$18,373**; BE 0.25/0.5/1.0/none all worse; London + Tide
+worse at 0 slip (+$1,619) and negative with any slippage. Measured real stop-exit slippage (4 exits, artifact
+removed): 3.75 / −1.75 / 5.5 / 5.25 pts ≈ 3pts avg — the exits are software-detected on a 15s monitor then sent
+as market orders. Even perfect execution (0.5pt) loses. **Recommendation: switch London off on TC**
+(`LONDON_ENABLED=False` in tc_trader.py); keep IBKR London running to keep measuring real fills. Pending user.

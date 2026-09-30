@@ -979,7 +979,11 @@ def _exec_fill(order_id, fallback: float, action: str, wait: float = 3.0) -> flo
         qty = sum(float(f.get('shares') or 0) for f in mine)
         if qty <= 0:
             return fallback
-        px = sum(float(f['price']) * float(f.get('shares') or 0) for f in mine) / qty
+        from futures.fills import clean_vwap
+        px, _aside = clean_vwap([(float(f.get('shares') or 0), float(f['price'])) for f in mine], fallback)
+        if _aside:
+            log(f'  fill: order {order_id} lots disagree — set aside {_aside} as a paper split-fill '
+                f'artifact, booking {px:.2f} (see futures/fills.py)')
         if abs(px - fallback) > MAX_FILL_DRIFT_PTS:
             log(f'  ⚠️ fill {px:.2f} for order {order_id} is {abs(px - fallback):.1f}pt from '
                 f'{fallback:.2f} — not trusted, booking the estimate')
