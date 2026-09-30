@@ -29,6 +29,7 @@ Usage:
 import os
 import sys
 import sqlite3
+from zoneinfo import ZoneInfo
 import argparse
 import requests
 from datetime import datetime, timedelta, timezone, date
@@ -85,12 +86,13 @@ def init_db() -> sqlite3.Connection:
     return conn
 
 
-def store_bars(conn: sqlite3.Connection, rows: list[dict], table: str) -> int:
+def store_bars(conn: sqlite3.Connection, rows: list[dict], table: str,
+               replace: bool = False) -> int:
     if not rows:
         return 0
     before = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
     conn.executemany(
-        f'INSERT OR IGNORE INTO {table} '
+        f'INSERT OR {"REPLACE" if replace else "IGNORE"} INTO {table} '
         f'(symbol, ts_utc, open, high, low, close, volume, source) '
         f'VALUES (?,?,?,?,?,?,?,?)',
         [(r['symbol'], r['ts_utc'], r['open'], r['high'],
@@ -98,6 +100,20 @@ def store_bars(conn: sqlite3.Connection, rows: list[dict], table: str) -> int:
     )
     conn.commit()
     return conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0] - before
+
+
+def store_daily(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Daily bars need different rules from intraday ones (Sep 29 2026).
+
+    This runs at 21:30 ET, 3.5 hours into the NEXT Globex session, and yfinance's newest
+    daily bar at that hour is that in-progress session labelled with the date it started.
+    INSERT OR IGNORE froze those half-built bars as permanent "closes" (63 of 2026's rows),
+    and also refused yfinance's later revisions of every earlier bar. So: drop any bar dated
+    today or later (ET), and let the rest overwrite — the revised bar is the right one.
+    """
+    today = datetime.now(ZoneInfo('America/New_York')).date()
+    keep = [r for r in rows if r['ts_utc'][:10] < today.isoformat()]
+    return store_bars(conn, keep, 'futures_bars_1d', replace=True)
 
 
 # ── yfinance helpers ──────────────────────────────────────────────────────────
@@ -311,7 +327,7 @@ def bootstrap(symbols: list[str] | None = None, start: str = DATABENTO_START):
         # 5. yfinance daily (10yr)
         rows = fetch_yf(sym, yf_sym, '1d', '10y')
         if rows:
-            n = store_bars(conn, rows, 'futures_bars_1d')
+            n = store_daily(conn, rows)
             print(f'  stored {n:,} new daily bars')
 
     conn.close()
@@ -347,7 +363,7 @@ def update():
         # daily (keeps 10yr window fresh)
         rows = fetch_yf(sym, yf_sym, '1d', '1y')
         if rows:
-            store_bars(conn, rows, 'futures_bars_1d')
+            store_daily(conn, rows)
 
     conn.close()
     summary()

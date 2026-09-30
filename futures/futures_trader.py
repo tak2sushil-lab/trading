@@ -1760,33 +1760,30 @@ _tide_cache = {}     # {date: (above_ma, prev_close, prev_ma)} — one read per 
 
 
 def get_daily_tide():
-    """PREVIOUS daily close vs its PREVIOUS 200-day MA. Returns (above, close, ma)
+    """PREVIOUS session close vs its PREVIOUS 200-day MA. Returns (above, close, ma)
     or (None, None, None) if there is not enough daily history.
 
-    Causal by construction — both sides of the comparison are shifted one session
-    back, so nothing about today is used (same anchoring as
-    futures/factory/conditions.py:209-211, which produced the backtest).
-    Cached per calendar day: this is a daily-frequency signal, there is no reason
-    to re-read it on a 60s scan loop.
+    Sep 29 2026: now delegates to futures/daily_tide.py, the ONE implementation shared
+    with sim_replay. It used to read futures_bars_1d (yfinance) directly, whose nightly
+    21:30 ET write froze half-built evening bars as "closes" (63 of 2026's rows). The
+    shared module takes each session's 4pm close from our own 5-minute bars.
+    Cached per calendar day: this is a daily-frequency signal.
     """
     today = datetime.now(ET).date()
     if today in _tide_cache:
         return _tide_cache[today]
     out = (None, None, None)
     try:
-        import pandas as _pd
-        _c = sqlite3.connect(MKT_DB_PATH)
-        _d = _pd.read_sql_query(
-            "SELECT ts_utc, close FROM futures_bars_1d WHERE symbol=? ORDER BY ts_utc",
-            _c, params=(SYMBOL,))
-        _c.close()
-        if len(_d) > TIDE_MA_DAYS + 1:
-            _d['d'] = _pd.to_datetime(_d.ts_utc, utc=True, format='ISO8601').dt.date
-            _d = _d[_d.d < today]                     # never read today's own bar
-            ma = _d.close.rolling(TIDE_MA_DAYS).mean()
-            pc, pm = float(_d.close.iloc[-1]), float(ma.iloc[-1])
-            if pm == pm:                              # not NaN
-                out = (pc > pm, pc, pm)
+        from futures.daily_tide import daily_closes, Tide, MA_DAYS, previous_weekday
+        above, pc, pm, pdate = Tide(daily_closes(SYMBOL), TIDE_MA_DAYS).verdict(today)
+        if above is not None:
+            out = (above, pc, pm)
+            if pdate < previous_weekday(today):
+                # a failed nightly bar collection shows up HERE, not as a crash
+                log(f"  [TIDE] ⚠️ STALE: latest session close is {pdate} "
+                    f"(expected {previous_weekday(today)}) — check futures_collect_bars")
+            log(f"  [TIDE] {today}: prev close {pc:,.2f} ({pdate}) vs "
+                f"{TIDE_MA_DAYS}d MA {pm:,.2f} → {'LONG only' if above else 'SHORT only'}")
     except Exception as e:
         log(f"  [TIDE] unavailable: {e}")
     _tide_cache[today] = out

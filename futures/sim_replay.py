@@ -123,10 +123,9 @@ SHORT_MAX_CONTRACTS: 'int | None' = 1
 
 # ── DAILY TIDE SIDE GATE (live Sep 29 2026) ─────────────────────────────────
 # Mirrors get_daily_tide()/tide_agrees() in futures_trader.py / tc_trader.py:
-# LONG only when the PREVIOUS daily close is above its PREVIOUS 200-day MA,
-# SHORT only when below. Same source table (futures_bars_1d) and same causal
-# anchoring as live, so the Trade Cop compares like with like. Fails OPEN when
-# there is not enough daily history, exactly as live does.
+# LONG only when the PREVIOUS session close is above its PREVIOUS 200-day MA,
+# SHORT only when below. Live and sim both call futures/daily_tide.py, so the
+# Trade Cop compares like with like. Fails OPEN without enough history, as live.
 # False reproduces the pre-Sep-29 book BYTE-FOR-BYTE.
 TIDE_GATE: bool = False
 
@@ -135,29 +134,16 @@ TIDE_GATE: bool = False
 # early 10:00 entries on >=200pt early ranges — neither exists in live code.
 LEGACY_IB_GATES: bool = False
 TIDE_MA_DAYS = 200
-_tide_by_date: 'dict | None' = None
+_tide_by_date = None   # futures.daily_tide.Tide, built on first use
 
 
 def _tide_agrees(trade_date: _dt.date, side: str) -> bool:
+    """Same code live runs: futures/daily_tide.py (Sep 29 2026)."""
     global _tide_by_date
     if _tide_by_date is None:
-        conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), 'market_data.db'))
-        d = pd.read_sql_query("SELECT ts_utc, close FROM futures_bars_1d "
-                              "WHERE symbol='MNQ' ORDER BY ts_utc", conn)
-        conn.close()
-        d['d'] = pd.to_datetime(d.ts_utc, utc=True, format='ISO8601').dt.date
-        d['ma'] = d.close.rolling(TIDE_MA_DAYS).mean()
-        # a session is judged on the LAST bar strictly before it (live: d < today)
-        _tide_by_date = {'d': list(d.d), 'c': list(d.close), 'm': list(d.ma)}
-    import bisect
-    i = bisect.bisect_left(_tide_by_date['d'], trade_date) - 1
-    if i < 0:
-        return True
-    pc, pm = _tide_by_date['c'][i], _tide_by_date['m'][i]
-    if pm != pm:                                  # NaN — not enough history, fail open
-        return True
-    return (pc > pm) if side == 'LONG' else (pc <= pm)
+        from futures.daily_tide import daily_closes, Tide
+        _tide_by_date = Tide(daily_closes('MNQ'), TIDE_MA_DAYS)
+    return _tide_by_date.agrees(trade_date, side)
 
 ATR_EXIT_SCALE: 'float | None' = None      # global multiplier on top of k; None = OFF
 ATR_EXIT_REF   = 31.4                      # A0: full-sample median 5-min ATR14 at entry
