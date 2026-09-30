@@ -5482,3 +5482,31 @@ filled at two prices ~30pts apart on BOTH accounts (30,636.50 + 30,667.00), exit
 booked +$75/account, fills −$57. The 30pt second lot is almost certainly the paper simulator (identical on
 both accounts, same second), so neither number is the real one. Bridge logs keep no historical fills.
 Next step: London should record /executions fills alongside the booked price (NY got this Sep 24).
+
+### Sep 29-30 2026 — P&L sweep (commit 4afadc5) + TC sizing / time-to-pass
+
+**Fixed (all live, both traders restarted flat 21:13 ET):** (1) prop state now rebuilt from the ledger
+(`prop_rules.reconcile_from_ledger`, NY + London, TC since `TC_COMBINE_START`) — TC file had been reset to
+ALL-TIME NY P&L on every restart and had London erased nightly; IBKR's was missing +$2,462.06 of London.
+(2) Daily-loss check + circuit breaker use `account_realized_today()` (NY + London; TopStep's DLL is
+account-wide). (3) Real fills for NY partials and FUT CLOSE; London books /executions fills (never had
+real-fill booking since it was built; stop-fill reader used the broken /order status) with model prices
+in `entry_signal`/`exit_signal`. Sep 29 London corrected +$75.04 → −$56.96 per account.
+(4) **futures_bars_5m since Mar 2026 was mostly yfinance** (MNQ volume ≈ 1/4 of CME) because Databento
+arrives a day later and INSERT OR IGNORE kept yfinance — inflating live RVOL (sizing tiers + scan gate).
+2026 rebuilt from Databento 1-min; Databento now overwrites. Consistency 0.50 → 0.55 (TopStep page).
+**Tide-on live-parity book on corrected bars (`_tideab3_on.csv`): 2021-25 unchanged, 2026 +$6,455 →
++$4,233 raw** — yfinance volumes had flattered 2026.
+
+**TC sizing ($6/c, same 579 trades, win rate 59.4% at every size):**
+| size | net | worst trade | worst day | maxDD | 2024 |
+|---|---|---|---|---|---|
+| current (1-2c) | +$7,548 | −$814 | −$848 | −$2,755 | −$385 |
+| 2c every long | +$11,402 | −$814 | −$1,007 | −$6,101 | −$1,712 |
+
+**⚠️ The combine's real bottleneck is our own $300 MLL buffer, not blow-ups:** most non-passing combines
+are FROZEN (balance within $300 of the floor → no trade allowed → can never recover or fail). At 2c in
+the recent regime 81/81 non-passes were frozen. Freeze ⇒ reset. With reset-on-freeze ($85/mo, 1 reset
+credit/mo): 2c longs — all history 64% pass within 12mo (median 7.9mo, ~1 reset); combines started
+Oct 2025–Mar 2026: 61% within 3mo, 100% within 6mo, median 2.6mo, cost ~$292. Current sizing: 16%/12mo
+all history; recent 63%/6mo, median 4.9mo. Size-aware step-down instead of the $300 buffer: no better.
