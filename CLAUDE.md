@@ -5446,3 +5446,39 @@ Aug 24 −$76 vs −$45, ~16 independent trades) — inconclusive. **Left unchan
 now runs at true parity, so any trade the unfinished bar causes will show as live-only.**
 If live-only trades net negative over ~4 weeks, the fix is to allow entries only on the first
 scan after a bar closes (bar <60s old).
+
+### Sep 29 2026 (night) — Tide audited (data bug fixed, no smarter variant) · TC deep dive: state file was wrong, book is slow not risky
+
+**Tide data bug FIXED (`0cc8a40`).** `futures_bars_1d` was written at 21:30 ET with INSERT OR IGNORE; at that
+hour yfinance's newest daily bar is the NEXT session labelled with its start date, so half-built bars froze
+as closes (63 of 2026's rows; Sep 28 "close" 30,442 = the 21:25 price, real ~30,566). New
+`futures/daily_tide.py` is the one Tide for both traders + sim: session close = our own 15:55 5-min bar close,
+yfinance only as fallback; STALE warning if the latest close predates the previous weekday.
+`collect_bars.store_daily()` now skips today-or-later bars and overwrites (repaired; old rows in
+`futures_bars_1d_bak_20260929`). Decision impact: 1 day in 5.3yr (2022-02-10, price on the MA).
+**Variant sweep (live-parity Tide-off book, frame filter):** SMA150 +$9,331 · **SMA200 +$10,162** · SMA250
++$8,787 · EMA200 +$9,822 · bands, N-day hysteresis, slope all worse · long-only +$4,410 (2022 −$4,461).
+SMA200 is the centre of a 150-250 plateau. The 427 trades it removes net −$6,553. Keep as is.
+
+**🐛 TC STATE FILE WAS WRONG — London P&L erased nightly.** `eod_snapshot()` passed NY-only P&L to
+`update_eod_balance`, whose `eod_pnl - session_pnl` subtracted every London trade (already in session_pnl via
+london_trader) back out. State said balance $48,581.30 / −$1,418.70 (= NY −$918.70 − a $500.00 carryover
+matching the pre-reset file). **Truth from the ledger: balance $50,239.94, +$239.94, HWM $51,090.38, room to
+the block $849.56 (not $281).** Code fixed (NY + London reconcile). ⚠️ `futures/prop_state.json` itself NOT
+yet corrected — awaiting user.
+
+**TopStep gauntlet (live-parity Tide-ON NY book, every start date, real order, our soft rules, $6/c):**
+| config | pass ≤3mo | ≤6mo | blow ≤6mo |
+|---|---|---|---|
+| today's sizing (1-2c) | 3% | 10% | 0% |
+| 2c every long (shorts 1c) | 14% | 25% | 7% |
+| 3c every long | 20% | 32% | 19% (one 3c stop = −$1,206 > $1,000 DLL) |
+Stop-after-loss / one-trade-a-day: no change. **The NY book is too slow, not too risky.** Pass odds depend
+heavily on regime (starts in 2026: ~74% within a year; 2023-24: 2-11%).
+
+**⚠️ LONDON'S LIVE RECORD IS NOT TRUSTWORTHY EITHER WAY.** All 113 stop exits since Aug were booked at exactly
+the stop level; entries booked at the intended price. IBKR's own fills for Sep 29: each 2-lot market entry
+filled at two prices ~30pts apart on BOTH accounts (30,636.50 + 30,667.00), exits a few pts off the stop —
+booked +$75/account, fills −$57. The 30pt second lot is almost certainly the paper simulator (identical on
+both accounts, same second), so neither number is the real one. Bridge logs keep no historical fills.
+Next step: London should record /executions fills alongside the booked price (NY got this Sep 24).

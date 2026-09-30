@@ -2980,9 +2980,22 @@ def morning_gateway_health_check():
 def eod_snapshot():
     """Called at EOD — reconcile balance from DB, send summary, reset for tomorrow."""
     daily = get_futures_daily_pnl()
-    log(f"EOD futures P&L: ${daily:+.2f}")
+    # London trades on THIS account (3-8am ET) belong to the same TopStep trading day
+    # and already sit in session_pnl via london_trader's record_trade_pnl(). Until Sep 29
+    # 2026 this reconcile passed NY only, so update_eod_balance's `eod_pnl - session_pnl`
+    # subtracted every London trade back out each night: the TC state file had erased
+    # +$1,158.64 of London P&L since the Sep 3 reset — the MLL gate was reading a balance
+    # the account never had.
+    london_daily = 0.0
+    if LONDON_ENABLED:
+        try:
+            from futures import london_trader as _lt_eod
+            london_daily = _lt_eod.get_london_daily_pnl()
+        except Exception as e:
+            log(f"EOD: London P&L unavailable ({e}) — reconciling NY only")
+    log(f"EOD futures P&L: NY ${daily:+.2f} + London ${london_daily:+.2f}")
     # update_eod_balance reconciles balance from DB truth, then resets session_pnl=0
-    update_eod_balance(daily)
+    update_eod_balance(daily + london_daily)
     # Read state AFTER balance update but re-inject today's P&L for the EOD message
     # (format_prop_status shows session_pnl=0 post-reset, so we show daily separately)
     s = prop_status()
