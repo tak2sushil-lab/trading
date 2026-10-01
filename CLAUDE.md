@@ -5788,3 +5788,17 @@ fill, not the 30-60s-old scan price (fills averaged +0.16% above it since Aug, +
   skipped), so REGIME_AS_MODIFIER is only a partial modifier.
 - The day trader buys names other books already hold (AXTI held 24, COHR 6 by another book) — no
   cross-book concentration limit.
+
+**OCT 1 2026 (pm) — RE-TESTS (replay Aug 4–Sep 29, live config) + API CREDIT AUDIT.**
+- **Choppy/cautious block: KEEP** (`REGIME_HARD_SKIP`). Allowing CHOPPY −$527 (t=−2.19), allowing CAUTIOUS
+  −$110, both −$616 (t=−2.55) — the strongest single result in the program. Live config replays at +$64.
+- **T+5 check (L3): KEEP for now** (`L3_ENABLED`). Replay without it +$141 (t=+0.31; −$241 without its best
+  2 days; hard-stop losses 5 → 12). Live since Jun 23, when it acted (149 trades) results were ~$303 worse
+  than holding — partly the stale-price bug fixed in c587981. Re-measure on live data after the fix.
+- **Anthropic API credits:** live features ≈ $0.70/week (Thesis Check ~$2.2, Field Report/Opus ~$1.8,
+  Chart Gate ~$1.0, Crest Watch ~$0.3 since Aug 8). **Most spend was replays** — equity_replay never stubbed
+  Thesis Check, so each 5-arm Aug–Sep replay ≈ 2,200 Sonnet vision calls ≈ $14 (Sep 18 six arms ≈ $17,
+  Sep 5 ≈ $6, Sep 30 ≈ $4). Stubbed Sep 30. $0: news_engine (paid fallback off), bridge /chat (unused),
+  graphify (last LLM run May 30), Claude Code (not on the API key). Confirm in Console → Usage (spikes
+  Sep 5 / Sep 18 / Sep 30).
+- Live watch tool: `./watch_daytrader.sh [MAX_WAIT] [FROM_LINE]`. User wants live watching from the open.
