@@ -5771,3 +5771,20 @@ Replay tooling now committed: `research_replay_ab.sh` (presets `sep30` = reprodu
 `voltrial` = the trial review) + `research_replay_score.py`. equity_replay switches are tri-state
 (omitted = mirror live code; `--vol-risk/--no-vol-risk`, `--override/--no-override`, `--thrust-priority`,
 `--fresh-max-5d N`).
+
+**OCT 1 2026 — LIVE WATCH (user: "live system gives more insights than history").** Day: 8 trades,
+−$110.59 — VICR/IT/EPAM (old code) and AXTI/AMAT/CACI scratched by Layer 3, COHR +$21.44 (PCT trail),
+MRNA −$23.34 (regime-flip exit). Verified live: grader's `today_gain` matched the true move for every
+entry (≤0.06pt); override silent; volatility stop applied (COHR 6.6%, MRNA 6.6%, ~$90-105 risk); Layer 2
+rejected ~30 candidates, which then moved **−0.02% on average** (no money left on the table, none saved).
+**Fixed + deployed 13:03 (commit c587981, user-approved):** (1) stops and Layer 3 now anchored to the real
+fill, not the 30-60s-old scan price (fills averaged +0.16% above it since Aug, +0.41% today; EPAM's
+"break-even" was −1.1%); (2) slot counter counted every entry twice → a scan could fill only 3 of 5 slots.
+**Open questions the watch surfaced (not changed — need a test first):**
+- Layer 2's "HOD×N resistance" counts bars within 0.5% of the window high, so it rejects a grinder making
+  new highs (FN, +7.5% from open, rejected all morning) the same as a stall (CRDO). It is really a "don't buy
+  at the high" rule — and the batting order ranks names AT their high FIRST. The two work against each other.
+- On CHOPPY/CAUTIOUS scans grade_setup still hard-skips every non-catalyst (CTSH +10.5% on 10.8× vol was
+  skipped), so REGIME_AS_MODIFIER is only a partial modifier.
+- The day trader buys names other books already hold (AXTI held 24, COHR 6 by another book) — no
+  cross-book concentration limit.
