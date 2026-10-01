@@ -349,6 +349,7 @@ first_bar_strong_trades = {}  # trade_id → bool — entry was on a strong firs
 _last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
 peak_session_pnl    = 0.0    # highest session P&L seen today (realized + unrealized)
 _l3_pending         = {}     # trade_id → {sym, entry_time, entry_price, direction} — Layer 3 T+5 check
+_entry_fill_px      = {}     # trade_id → real fill price (Oct 1 2026: Layer 3 measures from this, not the scan price)
 pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
 _morning_pnl_snap   = None   # P&L frozen at first post-noon scan — afternoon gate uses this
 _daily_loss_alerted = False  # ensures circuit breaker Telegram fires once per day only
@@ -2812,6 +2813,7 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
 def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG',
                 limit_price=None, outside_rth=False):
+    _scan_px = price   # the price the decision was made at; `price` becomes the real fill below
     try:
         # Buying power pre-check — prevents hard-reject on live account.
         # Paper has $3M+ paper BP so this never blocks in paper mode.
@@ -2931,6 +2933,18 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 log(f"  {symbol}: Fill not confirmed after {poll_attempts * 2}s — skipping DB entry")
                 return None
 
+        # Oct 1 2026: anchor the stop (and the display target) to the REAL fill, keeping the
+        # distance the caller chose from the scan price. The scan price is 30-60s old by the time
+        # the order lands (since Aug: fills +0.16% above it on average, 73% of the time; Oct 1
+        # +0.41%), so a stop measured from it sat further away than intended and the Layer 3
+        # "break-even" stop below the fill locked the slippage in as a loss (EPAM: scan $118.72,
+        # fill $120.00). Same fix the futures traders got Sep 3.
+        _slip = round(price - _scan_px, 4)
+        if _slip:
+            sl     = round(sl + _slip, 2)
+            target = round(target + _slip, 2)
+            log(f"  {symbol}: filled ${price} vs scan ${_scan_px} ({_slip / _scan_px * 100:+.2f}%) "
+                f"— stop anchored to the fill: ${sl}")
         trade_id = log_trade_entry(
             symbol=symbol, entry_price=price, shares=shares,
             target_price=target, stop_price=sl, setup_type=strategy,
@@ -2940,6 +2954,7 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
         )
         if trade_id:
             trade_entry_times[trade_id] = datetime.now(ET)
+            _entry_fill_px[trade_id] = price
             # Capture HOD at entry from 5-min bars (best-effort, non-blocking)
             try:
                 import sqlite3 as _sq
@@ -4267,7 +4282,7 @@ def _scan_premarket_catalyst(open_trades):
     for pick in candidates:
         if len(entries) >= MAX_PREMARKET_TRADES:
             break
-        if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
+        if open_count + attempted >= MAX_OPEN_TRADES:   # Oct 1 2026: entries were counted twice
             break
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
@@ -4933,7 +4948,7 @@ def _scan_regime_adaptive(regime, open_trades):
                                 'sl': sl, 'target': target, 'side': side})
                 _l3_pending[trade_id] = {
                     'sym': symbol, 'entry_time': datetime.now(ET),
-                    'entry_price': price, 'direction': side,
+                    'entry_price': _entry_fill_px.get(trade_id, price), 'direction': side,
                 }
         except Exception as e:
             log(f"  Fish Finder error {symbol}: {e}")
@@ -4991,7 +5006,7 @@ def _scan_catalyst_override(open_trades):
             continue
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
-        if len(open_trades) + len(entries) + attempted >= MAX_OPEN_TRADES:
+        if len(open_trades) + attempted >= MAX_OPEN_TRADES:   # Oct 1 2026: entries were counted twice
             break
 
         try:
@@ -5494,7 +5509,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         log("📖 LONG book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
 
     for pick in (candidates if _long_book_on else []):
-        if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
+        if open_count + attempted >= MAX_OPEN_TRADES:   # Oct 1 2026: entries were counted twice
             break
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
@@ -5581,7 +5596,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             entries.append(pick | {'shares': shares, 'sector': sector, 'tag': tag})
             _l3_pending[trade_id] = {
                 'sym': sym, 'entry_time': datetime.now(ET),
-                'entry_price': price, 'direction': 'LONG',
+                'entry_price': _entry_fill_px.get(trade_id, price), 'direction': 'LONG',
             }
             # Chart Gate (Aug 8 2026 fix — was defined but never called, zero data
             # accumulated since it was built). LOG MODE only, background thread,
@@ -5822,7 +5837,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1, observ
         log("📖 SHORT book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
 
     for pick in (candidates if _short_book_on else []):
-        if open_count + len(entries) + attempted >= MAX_OPEN_TRADES:
+        if open_count + attempted >= MAX_OPEN_TRADES:   # Oct 1 2026: entries were counted twice
             break
         if daily_bear_count >= MAX_DAILY_BEAR_TRADES:
             break
@@ -5879,7 +5894,7 @@ def _scan_and_enter_bear(regime, spy_chg, open_trades, confirmed_scans=1, observ
             entries.append(pick | {'shares': shares, 'sector': sector})
             _l3_pending[trade_id] = {
                 'sym': sym, 'entry_time': datetime.now(ET),
-                'entry_price': price, 'direction': 'SHORT',
+                'entry_price': _entry_fill_px.get(trade_id, price), 'direction': 'SHORT',
             }
             try:
                 import sqlite3 as _sq3
