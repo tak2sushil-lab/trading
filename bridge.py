@@ -20,6 +20,8 @@ import anthropic
 import json
 import requests as http_requests
 import yfinance as yf
+import yf_cache_fix          # Sep 30 2026: stops yfinance's per-thread SQLite handle leak
+yf_cache_fix.install()
 import pandas as pd
 from datetime import datetime, timedelta
 
