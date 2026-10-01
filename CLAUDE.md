@@ -23,6 +23,21 @@ Last updated: Sep 25 2026 (futures deep review)
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
+**🟡 EQUITY DAY TRADER — current state (Oct 1 2026, read first for equity):**
+- **LIVE since Oct 1 09:46 ET:** `yf_cache_fix.py` (FD leak) · `DAILY_ROW_FROM_LIVE_BARS=True` (grader reads
+  live "today gain"/RSI/MA, not a frozen first-fetch value) · `SCANNER_PICKS_TRADE=False` (non-universe names
+  graded + logged, never traded) · `CATALYST_OVERRIDE_ENABLED=False` (duplicate entry path that skipped the
+  batting order / Layer 2 / Layer 3 — retired) · **`VOL_SCALED_RISK=True` — LIVE TRIAL** (stop = 1 daily ATR,
+  same $ risk per trade; new entries only). scan_log logs `today_gain`, `ret_5d`, `atr_pct`, `is_thrust`.
+- **⏰ Volatility-stop trial review ~Oct 29 2026 (20 trading days):**
+  `./research_replay_ab.sh voltrial oct 2026-10-01 2026-10-14 2026-10-15 2026-10-28` then
+  `venv/bin/python research_replay_score.py oct fixed`. **Keep only if the `vol` arm is not worse than
+  `fixed`** (P&L and hard-stop losses) AND live hard-stop losses since Oct 1 are not larger than the
+  Aug–Sep baseline (12 hard stops, −$608 in the replay base). Otherwise `VOL_SCALED_RISK=False`.
+- OFF and staying off: `MULTIDAY_FRESH_MAX_5D` (freshness, failed the replay), `THRUST_PRIORITY` (one-day result).
+- ⚠️ **Backtests start no earlier than 2026-08-04** — bars_5m volume before that is the DataBento backfill
+  (~2–5% of consolidated). See the Sep 30 section at the bottom.
+
 **🟢 FUTURES — CURRENT STATE (Sep 30 2026, read first for futures):**
 - TC = TopStep **$100K** paper combine (`prop_rules.TC_ACCOUNT_SIZE`), started **Sep 30**: 4 MNQ per long, shorts 1,
   200pt stop, target $6,000 / MLL $3,000 / DLL $2,000. Day 1: **+$303.08**. IBKR unchanged (2c).
@@ -5642,3 +5657,117 @@ the hand-corrected #225) — "≈ 24/28 est." with a tooltip. At ship: TC London
 keep only cancels). **To correct them: export the IBKR Activity Statement / Trade Confirmation Flex Query for
 DUQ640500 (TC) and DU9952463 (IBKR) from Sep 10, then match fills to rows.** Do not adjust them by estimate.
 `futures/ibkr_state.json` untracked (runtime state, like prop_state.json).
+
+---
+
+## Sep 30 2026 — Equity day trader review: the loss is a left tail with three sources (decisions pending)
+
+Started from the day's two losers (XRPN, IONQ — both `CATALYST_OVERRIDE`, both −5% hard stops).
+Labs: `research_daytrader_entry_lab.py` (481 live trades × point-in-time bar features) and
+`research_daytrader_exhaustion_2y.py` (9,449 candidate-days, Sep 2024–Sep 2026, universe names).
+Outputs in `research_out/`. **Nothing that changes a trading decision is live; three flags wait on the user.**
+
+**① OPS BUG, FIXED + LIVE — file-descriptor leak.** yfinance 1.3's tz/cookie caches are peewee SQLite DBs
+with thread-local connections; every `yf.download(threads=True)` thread opened handles that were never closed.
+auto_trader (up since Sep 22) held 179 cache handles at a 256 launchd soft limit → errors 11 → 471/day, Sep 30:
+75 scan errors, 3 exit errors, "Bridge unreachable [Errno 24]". bridge.py had 58 after 5 days. `yf_cache_fix.py`
+swaps the caches for in-memory dicts (tz map seeded from disk, no extra Yahoo calls). Repro: 40→82 handles in 4
+downloads without it, 0 with it, identical data. Installed in auto_trader, bridge, options_trader, news_engine.
+
+**② DATA BUG, FLAG OFF — frozen daily bars.** `bridge.py` caches '1 day' bars 24h, so df1d's last row (today's
+partial) froze at the symbol's first fetch; prev_chg (the ≥3% gate, the +10/20/30 bonus, the strong-momo pattern
+bypass, rs_vs_spy), daily RSI, MA20 and EMAs read it all day. Proof: IONQ Sep 29 logged "Only +1.1% today" at
+11:23 and 12:55 while truly −1.1%/−1.3%. 12,081 Jul–Sep SKIP rows: off by >1pt 39%, 1,167 true ≥3% movers
+rejected. **equity_replay.daily_upto() always built today's row live — every recent equity A/B measured a system
+that live was not running.** Fix written + tested (also repairs yesterday's row when the cache still serves
+yesterday's partial at the open, detected by volume) behind `DAILY_ROW_FROM_LIVE_BARS=False`. Caveat: the freeze
+has acted as an accidental early-mover filter — 2y: first-qualifying ≤09:40 +0.18–0.22%/trade vs ~+0.02% later;
+unfreezing admits later movers (≈breakeven).
+
+**③ THE LOSS IS A LEFT TAIL.** Since Jun 1: 27 hard-stop exits realized **−6.21%** avg (5% stop + slippage) =
+**−$2,297, more than the whole book's −$2,319**; every other exit type nets ≈0. Sources:
+- **Scanner-discovered names** (not in FULL_UNIVERSE): 58 trades **−$1,506, −1.67%/trade, 26–43% hard stops**
+  (universe: 201 trades −0.32%, 3–8%), negative Jun/Jul/Aug/Sep, via BOTH paths (main CATALYST 23t −$868,
+  override 35t −$638). **+$965 in May** — a lottery cohort. XRPN = de-SPAC at $10.55 trust value for months;
+  its RSI 99.5 / 51× vol / ATR were computed on that history. It closed $16.39, +8% above our stopped entry.
+- **`_scan_catalyst_override`**: since REGIME_AS_MODIFIER it runs every cycle BEFORE the main scan, buys
+  first-come (no batting order — 46% of entries since Sep 6 bypassed it), no Layer 2, no Layer 3, hardcoded
+  'NORMAL' regime (STRONG exhaustion gate can't fire), no scanner-pick rules, no sector cap, no scan_log row.
+  107 trades −$842 (−0.70%/trade). Universe override trades re-run through L2+L3 on bars: 73% L2-skipped,
+  −0.20%→−0.05%/trade. ⚠️ Its ENTRY RULE is fine on universe names (2y: ≥5% from open + rvol≥3 = +0.45%/trade
+  vs +0.07% other candidates, but only 3/5 halves, 32% stop hits) — the problem is what it buys and how it holds.
+  Retiring it routes these candidates through the main scan as catalysts at FULL size (override used half).
+- **Fixed 5% stop vs volatility**: high-ATR names hit it 31% vs 3%. 2y: ATR-scaled stop (1.0×) with equal-risk
+  sizing = +36% R/trade vs fixed 5% (0.023R vs 0.017R), 6/8 quarters; high-ATR tercile ≈0 edge at any width.
+
+**④ YOUR "EXHAUSTED/FADED" HYPOTHESIS, TESTED (2y, 9,449 candidates).** Intraday exhaustion — fade from HOD,
+retrace of the run, 30-min run, 5m RSI, up-volume, VWAP extension — does NOT predict worse outcomes (flat or
+slightly positive; within-day |ρ|<0.06). Only **multi-day** extension holds: prior-5-day return top decile
+(>18.6%) is the only negative decile (−0.14%/trade, 29% stop hits), Q5<Q1 in 7/8 quarters; fresh moves (5d ≤0)
+best. IONQ Sep 30 *was* a top-of-thrust entry (two volume bars 45.1→47.14, bought 47.15, closed 43.87) — a
+coin-flip pattern on average; L3 would have exited ~−2%. Thesis Check (LLM) flags BREAKING on 81% of losers;
+acting on it = +0.15%/trade — weak.
+
+**⑤ "Best batsman" scoring:** score_components = LOGGING only (since Sep 18); EXTENSION_TILT=0 (A/B rejected);
+batting order live but bypassed by the override path.
+
+**DECISIONS (user, Sep 30 night):** `SCANNER_PICKS_TRADE=False` and `DAILY_ROW_FROM_LIVE_BARS=True` — LIVE
+(autotrader restarted 22:16). `CATALYST_OVERRIDE_ENABLED` still undecided (True). Estimate Jul 22–Sep 30 with
+override off + scanner names off: −$481 vs −$1,382 actual (universe book alone still −$429 — stops the bleed,
+not an edge). Freshness / volatility / thrust: user agreed, but ONLY after a backtest — measured live from
+Sep 30 (scan_log `ret_5d`/`atr_pct`/`is_thrust`/`today_gain`) and A/B'd via equity_replay.
+2-year bar-lab, per half-year: freshness gate (>18%) improves 4/5 halves; ATR stop better per unit risk 5/5;
+thrust better only 3/5 (an earlier "4/5" was a miscount).
+
+**⚠️⚠️ DATA FINDING (Sep 30 night) — bars_5m VOLUME IS ON TWO SCALES. Read before ANY backtest that uses volume.**
+The DataBento backfill rows (ts_utc '...T13:30:00', all of 2024 → ~Jul 2026) carry only **~2–5% of
+consolidated volume** (IONQ 2024-03-05: 717,948 vs Yahoo 13,959,100; NVDA 2.6%; AMD 3.8%). Prices are fine.
+The collector rows ('... 13:30:00+00:00', from ~Mar 2026; sole source from Aug 4 2026) are consolidated
+(~80–95%). In the Mar–Aug 4 overlap BOTH rows exist and `load_bars` keeps the backfill one (keep='last').
+Consequences: (1) **equity_replay before Aug 4 2026 is volume-starved** — vol_ratio = backfill 5-min volume ÷
+Yahoo consolidated daily average ≈ 0.03× true, so the ≥1.3 gate blocks almost everything; every replay A/B
+spanning Jun–Jul was effectively an August test (cf. the Sep 6 regime A/B: "+$1,345 of +$1,428 is August").
+(2) Research rvol across the Aug 4 switch is distorted. (3) Live books use bars_5m for prices / same-day
+VWAP only — unaffected. Fixed tonight in `tod_relative_volume` (upper date bound — it also read FUTURE days
+in a replay — and one row per bar, preferring the collector's). Real fix (NOT done): rescale or replace the
+backfill volume, e.g. per-symbol factors calibrated on the Mar–Aug overlap, then re-run any volume-based study.
+Until then: **replay only from Aug 4 2026 onward.** Also found: equity_replay never stubbed the Thesis Check, so
+replays since Aug 8 made real Claude vision calls (stubbed now, at `_claude_analyse_image` itself).
+
+**WHY EARLIER TESTS DIDN'T STICK (read before testing any new entry idea — avoid circling):** (1) the replay
+computed "today gain" live while production used a frozen value; (2) the replay failed Layer 2 open; (3) the
+replay never saw scanner names and under-represented the override — so A/B verdicts were about a different
+system, and the two largest leaks were invisible to the bench. (4) Reviews sliced losses by setup/month, never
+by universe membership — that one split is 65% of the Jun–Sep loss. (5) scan_log stored the grader's OUTPUTS,
+not its inputs, so a stale input could not be seen; `today_gain` is now logged for that reason. Rule: slice by
+cohort first, and confirm replay INPUTS match live before trusting any replay verdict.
+
+**BACKTEST RESULT (Sep 30 night) — full-pipeline replay, Aug 4 → Sep 29 2026 (37 trading days, consistent
+volume data), live config incl. tonight's fixes, Layer 2 active, LLM stubbed. `research_replay_ab.sh sep30 …` / `research_replay_score.py sep30 base`.**
+
+| arm | trades | P&L | WR | hard stops | maxDD | vs base (matched days) |
+|---|---|---|---|---|---|---|
+| base (live today) | 228 | −$255 | 39.5% | 12 (−$608) | −$503 | — |
+| freshness >18% | 206 | −$450 | 37.4% | 9 | −$648 | −$195, t=−0.91, worse both months |
+| **volatility stop** | 223 | **−$94** | 39.9% | 11 | −$485 | **+$161, t=+1.14, better 57% of days, both months; +$34 without its best 2 days** |
+| thrust + override off | 243 | −$129 | 29.6% | 6 (−$407) | −$552 | +$126, t=+0.26 — ALL from Aug 6 (+$289); −$297 without best 2 days |
+| all three | 224 | −$321 | 28.6% | 5 | −$481 | −$67, t=−0.20 |
+
+Verdict: **volatility stop is the only one positive in BOTH tests** (2y bar lab 5/5 half-years + replay both
+months) — small, not significant, risk-neutral by design. **Freshness REJECTED** (fails the replay despite
+2y 4/5). **Thrust inconclusive** (one-day result; halves hard stops but more small losses). Combining hurts.
+None makes the book profitable (best arm −$94 over 8 weeks). All three stay OFF pending the user; their
+inputs keep logging to scan_log. ⇒ Stop tuning day-trader ENTRIES; remaining value is the bench/data fixes.
+
+**OCT 1 2026 — DECISIONS + LIVE CHANGES (user):** override OFF (a removal of a duplicate path, not a gate)
+and the volatility stop ON as a live trial — "if it is not harming us, continue, else cut it later".
+Restarted 09:46 ET while the book was flat of in-flight orders. ⚠️ Restart note (my error, recorded so it
+is not repeated): the old process had opened IT #880 and EPAM #881 at 09:45:01/04, my pre-restart check only
+looked at VICR, and the restart dropped their in-memory Layer 3 (T+5) checks. Re-applied by hand at 09:50
+with the system's own rule (both FLAT → stop to signal price) → both exited on the fast stop (−$17.53,
+−$48.77), as the live check would have done. **Rule: gate any mid-session restart on `status='OPEN'` = 0
+and no entry in the last 5 minutes** (Layer 3 pending checks live only in memory).
+Replay tooling now committed: `research_replay_ab.sh` (presets `sep30` = reproduces the Sep 30 A/B,
+`voltrial` = the trial review) + `research_replay_score.py`. equity_replay switches are tri-state
+(omitted = mirror live code; `--vol-risk/--no-vol-risk`, `--override/--no-override`, `--thrust-priority`,
+`--fresh-max-5d N`).
