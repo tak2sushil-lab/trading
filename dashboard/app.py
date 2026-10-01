@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and their locks) every 60s
+gc_sweeper.install()
 from futures.strategy_core import TICK_SIZE, TICK_VALUE  # noqa: E402
 from totp import totp_code  # noqa: E402  (dashboard/ is sys.path[0])
 

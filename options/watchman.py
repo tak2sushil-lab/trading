@@ -42,6 +42,8 @@ from dotenv import load_dotenv
 
 # ── Path setup ──────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and their locks) every 60s
+gc_sweeper.install()
 from database import (
     init_db,
     get_open_options_trades,

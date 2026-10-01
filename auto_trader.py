@@ -35,6 +35,8 @@ import sys
 # bridge calls failed all session. See yf_cache_fix.py.
 import yf_cache_fix
 yf_cache_fix.install()
+import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and their locks) every 60s
+gc_sweeper.install()
 
 from database import (
     init_db, log_trade_entry, log_trade_exit,

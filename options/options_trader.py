@@ -40,6 +40,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yf_cache_fix          # Sep 30 2026: stops yfinance's per-thread SQLite handle leak
 yf_cache_fix.install()
+import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and their locks) every 60s
+gc_sweeper.install()
 import engine      # options/engine.py — same directory
 import structure   # options/structure.py — strike selection + Edge Budget
 from portfolio_status import format_all as _portfolio_all
@@ -4723,6 +4725,10 @@ def _process_pending_suggestions():
         return
 
     # Reset any PROCESSING rows stuck for > 5 min (crash recovery)
+    # Oct 1 2026: close in `finally`. If commit() fails ("database is locked") the connection
+    # keeps its half-finished write lock, and the rest of this function goes on to open new
+    # connections that then wait on it. close() rolls the failed write back and frees the lock.
+    _sc = None
     try:
         import sqlite3 as _sq
         _sdb = os.getenv('OPTIONS_DB_PATH', os.path.join(os.path.dirname(__file__), '..', 'trades.db'))
@@ -4733,9 +4739,14 @@ def _process_pending_suggestions():
             "datetime(suggested_at) < datetime('now', '-5 minutes')"
         )
         _sc.commit()
-        _sc.close()
     except Exception:
         pass
+    finally:
+        if _sc is not None:
+            try:
+                _sc.close()
+            except Exception:
+                pass
 
     # ── Step 1 (Jul 18 2026 redesign): news_engine queue is LOG-ONLY ─────────
     # Audit verdict: news HIGH-BULL conviction is a fade signal (65-86% short-

@@ -45,6 +45,21 @@ GRACE_MIN    = 10       # allow this long after a window opens before alerting
 ALERT_REPEAT_MIN = 60      # re-alert the same issue at most this often
 BRIDGES = {'IBKR bridge': 'http://localhost:8000', 'TC bridge': 'http://localhost:8002'}
 
+# trades.db is shared by every book. On Oct 1 2026 one process (options_trader) was left
+# holding a half-finished write from 17:04 to 18:10: every other service's reads AND writes
+# failed with "database is locked" for 65 minutes — auto_trader, both futures traders, the
+# dashboard, the 17:05/17:15 jobs — and nothing alerted, because each service only logged
+# its own error. A normal write holds the lock for milliseconds, so a read that cannot get
+# in within DB_LOCK_WAIT_SEC means something is stuck. This check alerts at ANY hour: the
+# London session (03:00) and the 23:00 learner both need the database.
+DB_PATH = os.path.join(ROOT, 'trades.db')
+DB_LOCK_WAIT_SEC = 15
+DB_ISSUE_KEY = 'trades.db'
+# script -> launchd label, so the alert can say exactly what to restart
+SERVICE_LABELS = {'options_trader.py': 'options_trader', 'auto_trader.py': 'autotrader',
+                  'futures_trader.py': 'futures_personal', 'tc_trader.py': 'futures_trader',
+                  'app.py': 'dashboard', 'watchman.py': 'watchman', 'news_engine.py': 'news_engine'}
+
 
 # ── writer half (imported by the traders) ────────────────────────────────────
 
@@ -88,6 +103,64 @@ def _should_alert(key: str, state: dict) -> bool:
     return (time.time() - last) > ALERT_REPEAT_MIN * 60
 
 
+def _db_lock_holder(path: str):
+    """PID holding SQLite's write locks on `path`, or None.
+
+    SQLite's unix VFS locks fixed bytes of the file (PENDING at 0x40000000, RESERVED +1,
+    the SHARED range +2..+511), and F_GETLK reports the PID of a conflicting holder. The
+    struct flock layout below is macOS's, so other platforms return None.
+    """
+    if sys.platform != 'darwin':
+        return None
+    import fcntl, struct
+    pending = 0x40000000
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        for start, length in ((pending, 1), (pending + 1, 1), (pending + 2, 510)):
+            req = struct.pack('qqihh', start, length, 0, fcntl.F_WRLCK, os.SEEK_SET)
+            _, _, pid, ltype, _ = struct.unpack('qqihh', fcntl.fcntl(fd, fcntl.F_GETLK, req))
+            if ltype != fcntl.F_UNLCK:
+                return pid
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return None
+
+
+def _db_issue(path: str = DB_PATH):
+    """None if the database is readable within DB_LOCK_WAIT_SEC, else a one-line issue."""
+    import sqlite3, subprocess
+    try:
+        con = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=DB_LOCK_WAIT_SEC)
+        try:
+            con.execute('SELECT 1 FROM sqlite_master LIMIT 1').fetchone()
+        finally:
+            con.close()
+        return None
+    except sqlite3.OperationalError as e:
+        if 'locked' not in str(e).lower():
+            return f'{DB_ISSUE_KEY}: UNREADABLE ({e})'
+    pid = _db_lock_holder(path)
+    who, fix = 'an unknown process', ''
+    if pid:
+        try:
+            cmd = subprocess.run(['ps', '-o', 'command=', '-p', str(pid)],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+            script = next((os.path.basename(t) for t in cmd.split() if t.endswith('.py')), '')
+            who = f'{script or cmd[:60]} (pid {pid})'
+            if script in SERVICE_LABELS:
+                fix = (f' — fix: launchctl kickstart -k gui/$(id -u)/'
+                       f'com.sushil.trading.{SERVICE_LABELS[script]}')
+        except Exception:
+            who = f'pid {pid}'
+    return (f'{DB_ISSUE_KEY}: LOCKED by {who} for >{DB_LOCK_WAIT_SEC}s — every service\'s '
+            f'database reads and writes are failing{fix}')
+
+
 def _is_trading_window() -> bool:
     """London IB starts 3am ET; NY closes 4pm. Outside that, silence is normal."""
     now = datetime.now(ET)
@@ -127,6 +200,10 @@ def check(force: bool = False) -> int:
         except Exception as e:
             issues.append(f'{label}: UNREACHABLE ({type(e).__name__})')
 
+    db = _db_issue()
+    if db:
+        issues.append(db)
+
     stamp = datetime.now(ET).strftime('%H:%M:%S')
     if not issues:
         print(f'[{stamp}] heartbeat OK — all services alive, both bridges connected')
@@ -142,8 +219,12 @@ def check(force: bool = False) -> int:
           f'trading window={in_window}):')
     for i in issues: print('   - ' + i)
 
-    to_alert = [i for i in issues if force or _should_alert(i.split(':')[0], state)]
-    if to_alert and (in_window or force):
+    due = [i for i in issues if force or _should_alert(i.split(':')[0], state)]
+    # a stuck database alerts at any hour; everything else waits for the trading window
+    to_alert = due if (in_window or force) else [i for i in due if i.startswith(DB_ISSUE_KEY)]
+    if len(to_alert) < len(due):
+        print('   (outside 03:00-16:00 ET trading window — logged, not alerted)')
+    if to_alert:
         # Say WHAT IS STILL WORKING, not just what broke. The old text ended with a blanket
         # "Nothing is trading until this is fixed", which on Sep 7 2026 was simply false: only
         # the TC gateway was down, IBKR traded the whole London session normally. An alert that
@@ -156,8 +237,6 @@ def check(force: bool = False) -> int:
         _telegram('🚨 TRADING WATCHDOG — ' + stamp + ' ET\n' + '\n'.join('• ' + i for i in to_alert)
                   + tail)
         for i in to_alert: state[i.split(':')[0]] = time.time()
-    elif to_alert:
-        print('   (outside 03:00-16:00 ET trading window — logged, not alerted)')
     state['_was_down'] = True
     _save_state(state)
     return 1
@@ -189,6 +268,7 @@ def status() -> None:
             print(f'  {label:<14} connected={r.get("connected")} account={r.get("account")}')
         except Exception as e:
             print(f'  {label:<14} UNREACHABLE {type(e).__name__}')
+    print(f'  {DB_ISSUE_KEY:<14} {_db_issue() or "readable"}')
 
 
 if __name__ == '__main__':

@@ -26,6 +26,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yf_cache_fix          # Sep 30 2026: stops yfinance's per-thread SQLite handle leak
 yf_cache_fix.install()
+import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and their locks) every 60s
+gc_sweeper.install()
 from database import (
     init_db,
     log_options_news, add_catalyst,

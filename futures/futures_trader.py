@@ -43,6 +43,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 # ── root path so shared modules resolve ──────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and their locks) every 60s
+gc_sweeper.install()
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from prop_rules import (
