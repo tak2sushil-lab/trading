@@ -24,6 +24,9 @@ chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
 **🟡 EQUITY DAY TRADER — current state (Oct 1 2026, read first for equity):**
+- **Oct 1 evening:** day's-high verdict + `pullback_first` decision pending; replay profit is all overnight
+  holds; trades.db 65-min lock fixed (`gc_sweeper.py`, watchdog DB check); Clockwork missed Oct 1 (my replay
+  load) — replays now blocked in market hours. See the Oct 1 (evening) entry at the bottom.
 - **LIVE since Oct 1 09:46 ET:** `yf_cache_fix.py` (FD leak) · `DAILY_ROW_FROM_LIVE_BARS=True` (grader reads
   live "today gain"/RSI/MA, not a frozen first-fetch value) · `SCANNER_PICKS_TRADE=False` (non-universe names
   graded + logged, never traded) · `CATALYST_OVERRIDE_ENABLED=False` (duplicate entry path that skipped the
@@ -5802,3 +5805,32 @@ fill, not the 30-60s-old scan price (fills averaged +0.16% above it since Aug, +
   graphify (last LLM run May 30), Claude Code (not on the API key). Confirm in Console → Usage (spikes
   Sep 5 / Sep 18 / Sep 30).
 - Live watch tool: `./watch_daytrader.sh [MAX_WAIT] [FROM_LINE]`. User wants live watching from the open.
+
+**OCT 1 2026 (evening) — THE DAY'S-HIGH CONTRADICTION, A 65-MIN DATABASE OUTAGE, A MISSED CLOCKWORK NIGHT.**
+- **Contradiction (batting order "at the high first" vs Layer 2 "skip a tested high"): Layer 2's belief is
+  the right one, but the stakes are small.** Graded candidates competing in the same scan (Jun–Sep, 2,398):
+  at the high −0.21% to the close vs peers, 1–3% below +0.19% (pullback ahead Jul/Aug/Sep, June a tie) —
+  one-obs-per-day t=+0.52. Grinders making new highs AT the high were the worst group (−0.39%), so the
+  "count only stalls" variant is not better. Replay Aug 4–Sep 29, live config (base +$64/242t):
+  `pullback_first` +$44 (only 6 of 40 days differ — the 5 slots are rarely full), +no high-test +$5,
+  pullbacks-only −$331, stall-count +$92 (noise), **no Layer 2 at all +$592** (t=+1.14, both months).
+  All switches default-off in `auto_trader.py` (see the comment there). **DECISION PENDING (user):**
+  ship `HOD_LOCATION_RULE='pullback_first'` (consistency, ~no money either way).
+- ⭐ **In EVERY replay arm the profit is the ~10% of trades held overnight; same-day trades lose
+  (−$839 to −$1,470 over 8 weeks).** No-Layer-2's gain is mostly more trades reaching an overnight hold
+  (+$893), not better intraday picks (same-day −$300 worse). Same shape as the Sep 20 overnight finding.
+  Live has held only 2 trades overnight since Aug 4 (before Sep 4 it could not enter before 10:00, and
+  the override/scanner paths took slots until today) — so live cannot confirm this yet. Next test: the
+  overnight-hold rule itself, then Layer 2 split by check (RUN / VWAP / exhaustion / half-size).
+- 🚨 **trades.db was locked 17:04–18:10 ET — every service's reads and writes failed, nothing alerted.**
+  options_trader held a half-finished write (found with F_GETLK on SQLite's lock bytes). Mechanism,
+  reproduced: in Python 3.11 an unclosed `sqlite3.Connection` sits in a reference cycle, so it outlives
+  its last reference until a FULL garbage collection — hours in a long-running process — and keeps any
+  write lock whose commit failed. Fixed (commit 31b8517): `gc_sweeper.py` (gc.collect() every 60s in the
+  7 always-on services), options_trader's suggestion poller closes in `finally`, and the heartbeat
+  watchdog now alerts at ANY hour with the PID holding the lock. All 7 services restarted 18:24 (flat).
+  ⚠️ Real fix still open: close every connection in a `finally` (~130 call sites).
+- ❌ **My replay batch at 15:20 (10 processes, market hours) slowed Clockwork past its 15:49 MOC cutoff —
+  it entered NOTHING on Oct 1** (scan finished 15:52; normal days finish ~15:41). `research_replay_ab.sh`
+  now refuses 09:25–16:15 ET unless FORCE=1 and runs under `taskpolicy -b`. Never edit that script while
+  it runs — zsh reads it as it goes (an edit garbled the tail of tonight's run).
