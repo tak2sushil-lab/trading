@@ -287,6 +287,54 @@ REGIME_HARD_SKIP = ('CHOPPY', 'CAUTIOUS')
 #   hard-stop losses more than double (5 -> 12). Inconclusive: KEEP, re-measure on live data with the fix.
 L3_ENABLED = True
 
+# ── Oct 1 2026: where the price sits vs the day's high — A/B switches, current behaviour by default ──
+# The batting order ranked candidates AT their high first ("strong") while Layer 2 rejected candidates
+# that tested the high 3+ times ("stuck") — opposite beliefs. 2-year lab (5,744 candidates,
+# research_hod_rules_2y.py): at the high +0.00%/trade; 0.3-1% below -0.11%; 1-3% below (a PULLBACK
+# inside the up-move) +0.30% — better than at-the-high in 5/5 half-years, before and after 10:30;
+# >3% below -0.06%. Layer 2's rejects did no worse than its passes (high-tested +0.00%, RUN x4 +0.06%,
+# VWAP-stretched +0.10%, passed -0.02%).
+#   HOD_LOCATION_RULE  'at_high_first' (live) | 'pullback_first': batting order ranks 1-3% pullbacks
+#                      first, then at-the-high, then 0.3-1% below, then >3% below
+#   L2_HOD_TEST        False drops Layer 2's "HOD x N" skip/half (keeps its RUN / VWAP / exhaustion checks)
+#   PULLBACK_ONLY      True enters only candidates 1-3% below their high (graded and logged otherwise)
+#   L2_ENABLED         False skips Layer 2 entirely
+HOD_LOCATION_RULE = 'at_high_first'
+L2_HOD_TEST       = True
+PULLBACK_ONLY     = False
+L2_ENABLED        = True
+#   L2_HOD_COUNT       'all' (live) counts every bar within 0.5% of the 6-bar high as a "test";
+#                      'failed' counts only bars that came within 0.5% WITHOUT making a new session
+#                      high — a stall detector that lets a grinder making fresh highs (FN, Oct 1) through
+L2_HOD_COUNT      = 'all'
+# Graded candidates competing in the SAME scan (Jun-Sep, 2,398 rows): at the high -0.21% to the close
+# vs the others, 1-3% below +0.19% (pullback ahead in Jul/Aug/Sep, June a tie) — but one-obs-per-day
+# t=+0.52. Stocks making new highs AT the high were the worst group (-0.39%), so 'failed' is not better.
+# Full replay, Aug 4 - Sep 29, live config (research_replay_ab.sh hod / hod2, base +$64 / 242 trades):
+#   pullback_first +$44 (picks differ on only 6 of 40 days — the 5 slots are rarely full; t=+0.81,
+#   both months) · + no high-test +$5 (worse drawdown) · PULLBACK_ONLY -$331 · 'failed' count +$92
+#   (better on 42% of days, -$126 without its best 2) · L2_ENABLED=False +$592 (t=+1.14, both months,
+#   +$91 without its best 2) — but in EVERY arm all the profit is the ~30 trades held overnight and the
+#   same-day trades lose ($-839 to $-1,470); no-L2's gain is mostly more trades reaching an overnight
+#   hold (+$893), not better intraday picks (same-day -$300 worse). Not decided — see CLAUDE.md Oct 1.
+
+
+def hod_location(pvh_pct):
+    """Where the price sits vs the session high: PULLBACK (1-3% below), AT_HIGH (<0.3% below),
+    NEAR (0.3-1% below), FADED (>3% below). Ranked in that order under 'pullback_first'."""
+    if pvh_pct is None:
+        return 'NEAR'
+    if pvh_pct >= -0.3:
+        return 'AT_HIGH'
+    if pvh_pct >= -1.0:
+        return 'NEAR'
+    if pvh_pct >= -3.0:
+        return 'PULLBACK'
+    return 'FADED'
+
+
+_LOCATION_RANK = {'PULLBACK': 0, 'AT_HIGH': 1, 'NEAR': 2, 'FADED': 3}
+
 MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
@@ -2276,12 +2324,21 @@ def _check_layer2_fitness(symbol, direction, entry_price, is_catalyst=False):
         # HOD / LOD test count — how many times has price probed the session extreme
         if is_long:
             hod = max(b['high'] for b in window)
-            tests = sum(1 for b in window if hod > 0 and (hod - b['high']) / hod < 0.005)
+            if L2_HOD_COUNT == 'failed':
+                # only bars that came within 0.5% of the high WITHOUT making a new session high
+                _run_max, _fresh = 0.0, []
+                for b in bars:
+                    _fresh.append(b['high'] > _run_max)
+                    _run_max = max(_run_max, b['high'])
+                tests = sum(1 for b, f in zip(window, _fresh[-len(window):])
+                            if hod > 0 and (hod - b['high']) / hod < 0.005 and not f)
+            else:
+                tests = sum(1 for b in window if hod > 0 and (hod - b['high']) / hod < 0.005)
         else:
             lod = min(b['low'] for b in window)
             tests = sum(1 for b in window if lod > 0 and (b['low'] - lod) / lod < 0.005)
 
-        if tests >= 3:
+        if L2_HOD_TEST and tests >= 3:
             return ('SKIP', f'HOD×{tests} resistance confirmed')
 
         # Consecutive directional bars — overextended run
@@ -2323,7 +2380,7 @@ def _check_layer2_fitness(symbol, direction, entry_price, is_catalyst=False):
                 if up_vol_ratio > 0.90:
                     return ('SKIP', f'BAR_EXHAUST up-vol {up_vol_ratio:.0%} — buyers spent')
 
-        if tests == 2:
+        if L2_HOD_TEST and tests == 2:
             return ('HALF', 'HOD×2 double-test')
 
         return ('GO', None)
@@ -5437,6 +5494,19 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         is_sympathy  = symbol in active_sympathy_triggers
         _hod_val = sig.get('today_hod', price) or price
         _pvh_val = round((price - _hod_val) / _hod_val * 100, 2) if _hod_val else 0.0
+        if PULLBACK_ONLY and hod_location(_pvh_val) != 'PULLBACK':
+            try:
+                log_scan_candidate(
+                    _now.strftime('%Y-%m-%d'), _now.strftime('%H:%M'),
+                    symbol, 'LONG', regime, price, grade, score,
+                    f'Not a pullback ({hod_location(_pvh_val)}, {_pvh_val:+.2f}% vs high)',
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
+                    is_catalyst=is_catalyst, entered=False, reasons=reasons,
+                    today_hod=_hod_val, price_vs_hod_pct=_pvh_val, **_review_cols(sig),
+                )
+            except Exception:
+                pass
+            continue
         candidates.append({
             'symbol': symbol, 'price': price, 'grade': grade, 'score': score,
             'side': side, 'sl': sl, 'target': target, 'risk_pct': risk_pct, 'rr': rr,
@@ -5473,6 +5543,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         1 if (x['is_catalyst'] and x['grade'] == 'A+') else
         2 if (x['is_catalyst'] and x['grade'] == 'A')  else
         3 if x['grade'] == 'A+' else 4,
+        # HOD_LOCATION_RULE 'pullback_first': 1-3% pullbacks bat first (constant 0 = no effect otherwise)
+        (_LOCATION_RANK[hod_location(x.get('price_vs_hod_pct'))]
+         if HOD_LOCATION_RULE == 'pullback_first' else 0),
         _SLOT_SECTOR_PRIORITY.get(x.get('sector', 'OTHER'), 1),  # pitch report
         # EXTENSION_TILT >= 2 reverses the two rungs that select for extension. Measured:
         # candidates pinned at the day high reach +2% only 20% of the time vs 37-39% for
@@ -5584,7 +5657,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             continue
 
         # ── Layer 2 fitness gate (pre-entry candle quality) ────────────
-        _l2_sig, _l2_reason = _check_layer2_fitness(sym, 'LONG', price, is_catalyst=pick['is_catalyst'])
+        _l2_sig, _l2_reason = (_check_layer2_fitness(sym, 'LONG', price, is_catalyst=pick['is_catalyst'])
+                               if L2_ENABLED else ('GO', None))
         if _l2_sig == 'SKIP':
             log(f"  🚫 L2 SKIP {sym} — {_l2_reason}")
             continue

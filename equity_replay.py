@@ -641,6 +641,13 @@ def main():
     ap.add_argument('--regime-hard-skip', default=None,
                     help="A/B auto_trader.REGIME_HARD_SKIP: comma list of labels (e.g. CHOPPY,CAUTIOUS) or 'none'")
     ap.add_argument('--no-l3', action='store_true', help='A/B auto_trader.L3_ENABLED=False (no T+5 check)')
+    ap.add_argument('--hod-rule', choices=['at_high_first', 'pullback_first'], default=None,
+                    help='A/B auto_trader.HOD_LOCATION_RULE (batting-order preference vs the day high)')
+    ap.add_argument('--no-l2-hod', action='store_true', help="A/B: drop Layer 2's HOD x N skip/half")
+    ap.add_argument('--pullback-only', action='store_true', help='A/B: enter only 1-3%% pullbacks')
+    ap.add_argument('--no-l2', action='store_true', help='A/B: skip Layer 2 entirely')
+    ap.add_argument('--l2-hod-failed-only', action='store_true',
+                    help="A/B: Layer 2's HOD test counts only failed tests (no new session high)")
     ap.set_defaults(vol_risk=None, thrust=None, override=None)
     a = ap.parse_args()
 
@@ -676,10 +683,22 @@ def main():
             tuple(x.strip().upper() for x in a.regime_hard_skip.split(',') if x.strip())
     if a.no_l3:
         at.L3_ENABLED = False
+    if a.hod_rule:
+        at.HOD_LOCATION_RULE = a.hod_rule
+    if a.no_l2_hod:
+        at.L2_HOD_TEST = False
+    if a.pullback_only:
+        at.PULLBACK_ONLY = True
+    if a.no_l2:
+        at.L2_ENABLED = False
+    if a.l2_hod_failed_only:
+        at.L2_HOD_COUNT = 'failed'
     print(f'  switches: fresh_max_5d={at.MULTIDAY_FRESH_MAX_5D} vol_risk={at.VOL_SCALED_RISK} '
           f'thrust_priority={at.THRUST_PRIORITY} override={at.CATALYST_OVERRIDE_ENABLED} '
           f'live_daily_row={at.DAILY_ROW_FROM_LIVE_BARS} scanner_picks_trade={at.SCANNER_PICKS_TRADE} '
-          f'regime_hard_skip={at.REGIME_HARD_SKIP} l3={at.L3_ENABLED}')
+          f'regime_hard_skip={at.REGIME_HARD_SKIP} l3={at.L3_ENABLED} hod_rule={at.HOD_LOCATION_RULE} '
+          f'l2_hod={at.L2_HOD_TEST} pullback_only={at.PULLBACK_ONLY} l2={at.L2_ENABLED} '
+          f'l2_hod_count={at.L2_HOD_COUNT}')
     global REGIME_AS_MODIFIER
     if a.hard_router:
         REGIME_AS_MODIFIER = False
