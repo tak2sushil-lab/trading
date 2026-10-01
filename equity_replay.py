@@ -283,6 +283,12 @@ at.send_telegram  = lambda *a, **k: None
 at.send_telegram_to = lambda *a, **k: None
 at.speak          = lambda *a, **k: None
 at._chart_alignment_check = lambda *a, **k: (True, 'replay')   # never call the LLM
+# Sep 30 2026: Thesis Check (Aug 8, log-only) was never stubbed here, so every replay since then
+# made REAL Claude vision calls (chart image + Sonnet) for each simulated losing position every
+# 15 simulated minutes — spend with zero value, plus a chart render per call. Stub the trigger AND
+# the one function every LLM feature goes through, so no future LLM hook can leak out of a replay.
+at._maybe_thesis_check   = lambda *a, **k: None
+at._claude_analyse_image = lambda *a, **k: None
 _quiet = [True]
 _orig_log = at.log
 at.log = lambda m: (None if _quiet[0] else _orig_log(m))
@@ -386,6 +392,22 @@ class _FakeRequests:
     def get(url, *a, **kw):
         if url.rstrip('/').endswith('/portfolio'):
             return _FakeRequests._Resp([])
+        # Sep 30 2026: serve the one history call Layer 2 makes (_check_layer2_fitness:
+        # duration '1 D', '5 mins', rth 'true') from stored bars. Until now it raised here,
+        # so Layer 2 failed open and every replay ran WITHOUT the HOD x3 / RUN x4 / VWAP-
+        # extension / buyers-exhausted checks live applies. Other history calls (pre-market
+        # levels rth=false, the 1-min pre-market scan) still raise as before.
+        p = kw.get('params') or {}
+        if ('/history/' in url and p.get('bar_size') == '5 mins'
+                and str(p.get('rth', '')).lower() == 'true'):
+            sym = url.rstrip('/').split('/history/')[-1]
+            b = bars5_upto(sym, days=1)
+            if len(b):
+                b = b[b.index.date == FakeDatetime._now.date()]
+            return _FakeRequests._Resp([
+                {'date': t.isoformat(), 'open': float(r['Open']), 'high': float(r['High']),
+                 'low': float(r['Low']), 'close': float(r['Close']), 'volume': int(r['Volume'])}
+                for t, r in b.iterrows()])
         raise ConnectionError('replay: no live bridge')
 
 at.requests = _FakeRequests
@@ -422,6 +444,30 @@ class _FakeTime:
     @staticmethod
     def sleep(secs): pass
 at.time = _FakeTime()
+
+# ── Speed (Sep 30 2026) — neither change alters a decision ──────────────────
+# 1. prefetch_df5's batched yf.download gets DAILY-shaped data from _FakeYF.download, fails to
+#    parse it, and every symbol falls back to the per-symbol _FakeTicker path anyway — so each
+#    call built a 241-ticker daily table and threw it away, twice per simulated 5-min step.
+at.prefetch_df5 = lambda symbols: 0
+# 2. The override and the main scan each compute get_intraday_signals for every symbol at the
+#    same simulated instant. Compute once per (symbol, instant); rs_vs_spy is the only field
+#    that depends on the spy_chg argument, so it is re-derived per call.
+_orig_signals = at.get_intraday_signals
+_sig_cache = {'now': None, 'data': {}}
+def _cached_signals(symbol, spy_chg=0):
+    now = FakeDatetime._now
+    if _sig_cache['now'] != now:
+        _sig_cache['now'], _sig_cache['data'] = now, {}
+    if symbol not in _sig_cache['data']:
+        _sig_cache['data'][symbol] = _orig_signals(symbol, spy_chg=0)
+    sig = _sig_cache['data'][symbol]
+    if sig is None:
+        return None
+    out = dict(sig)
+    out['rs_vs_spy'] = round(out['prev_chg'] - spy_chg, 2)
+    return out
+at.get_intraday_signals = _cached_signals
 
 # ── Replay engine ────────────────────────────────────────────────────────────
 # (spy_chg is now sourced directly from at.get_regime()'s own return tuple, passed
@@ -577,6 +623,22 @@ def main():
                     help='A/B auto_trader.FRESHNESS_GATE: 0 off, 1 stale AND thin, 2 stale OR thin')
     ap.add_argument('--regime-as-modifier', action='store_true',
                     help='A/B: demote the market regime from router to modifier')
+    # Sep 30 2026 review switches (all off live) — see auto_trader.py for each definition
+    # Each switch is tri-state: omitted = whatever auto_trader.py ships with (so a plain replay
+    # mirrors live); the flag forces it on or off for an A/B arm.
+    ap.add_argument('--fresh-max-5d', type=float, default=None,
+                    help='A/B auto_trader.MULTIDAY_FRESH_MAX_5D: skip LONGs up more than N%% over 5 sessions')
+    ap.add_argument('--vol-risk', dest='vol_risk', action='store_true',
+                    help='force auto_trader.VOL_SCALED_RISK on (1x daily-ATR stop, equal-risk sizing)')
+    ap.add_argument('--no-vol-risk', dest='vol_risk', action='store_false',
+                    help='force VOL_SCALED_RISK off (flat 5%% stop)')
+    ap.add_argument('--thrust-priority', dest='thrust', action='store_true',
+                    help='force auto_trader.THRUST_PRIORITY on (strong-thrust names bat first)')
+    ap.add_argument('--override', dest='override', action='store_true',
+                    help='force auto_trader.CATALYST_OVERRIDE_ENABLED on (pre-Oct-1-2026 live behaviour)')
+    ap.add_argument('--no-override', dest='override', action='store_false',
+                    help='force CATALYST_OVERRIDE_ENABLED off')
+    ap.set_defaults(vol_risk=None, thrust=None, override=None)
     a = ap.parse_args()
 
     start = a.parity or a.start
@@ -598,6 +660,17 @@ def main():
     if a.freshness_gate:
         print(f'FRESHNESS_GATE = {a.freshness_gate} '
               f'({"stale AND thin" if a.freshness_gate == 1 else "stale OR thin"}) — A/B variant')
+    if a.fresh_max_5d is not None:
+        at.MULTIDAY_FRESH_MAX_5D = a.fresh_max_5d
+    if a.vol_risk is not None:
+        at.VOL_SCALED_RISK = a.vol_risk
+    if a.thrust is not None:
+        at.THRUST_PRIORITY = a.thrust
+    if a.override is not None:
+        at.CATALYST_OVERRIDE_ENABLED = a.override
+    print(f'  switches: fresh_max_5d={at.MULTIDAY_FRESH_MAX_5D} vol_risk={at.VOL_SCALED_RISK} '
+          f'thrust_priority={at.THRUST_PRIORITY} override={at.CATALYST_OVERRIDE_ENABLED} '
+          f'live_daily_row={at.DAILY_ROW_FROM_LIVE_BARS} scanner_picks_trade={at.SCANNER_PICKS_TRADE}')
     global REGIME_AS_MODIFIER
     if a.hard_router:
         REGIME_AS_MODIFIER = False
