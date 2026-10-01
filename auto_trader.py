@@ -30,6 +30,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # never once executed as written.
 import sys
 
+# Sep 30 2026: yfinance's SQLite caches leaked one file handle per download thread;
+# after 7 days up this process hit the 256-descriptor limit and scans, exits and
+# bridge calls failed all session. See yf_cache_fix.py.
+import yf_cache_fix
+yf_cache_fix.install()
+
 from database import (
     init_db, log_trade_entry, log_trade_exit,
     get_open_trades, get_daily_pnl, get_win_rate,
@@ -188,6 +194,79 @@ EXTENSION_TILT = 0
 # Short side is GRADED AND LOGGED every scan but never traded — see the call site in
 # run_scan() for why. False restores the Aug 15 2026 state where the short side was invisible.
 BEAR_OBSERVE_ONLY = True
+
+# ── CATALYST OVERRIDE ("Catalyst Wildcard") — Sep 30 2026 review ──────────────
+# Built for the regime-ROUTER era, as the only way to buy a catalyst on CHOPPY/WEAK days
+# when _scan_and_enter could not run. Since REGIME_AS_MODIFIER (Sep 6) it runs on EVERY
+# cycle, BEFORE _scan_and_enter, and its Path B rule (intraday >=5%, vol >=3x, above VWAP)
+# is the same rule _scan_and_enter's dynamic catalyst upgrade already applies. What it
+# skips that the main scan applies: the batting order (it buys first-come in list order and
+# takes the slot), Layer 2 fitness, Layer 3 T+5 probation, the real regime (grades with a
+# hardcoded 'NORMAL', so the STRONG-day exhaustion gate can never fire), the scanner-pick
+# rules (STRONG or NORMAL x3, float check), the sector cap, and scan_log (its entries have
+# no graded row, which the Trade Cop reports as violations).
+# Measured: worst setup in the book — 107 trades, -$842, -0.70%/trade (CATALYST +0.22%);
+# since Jun 1, 17% of its trades hit the -5% hard stop (43% on scanner-discovered names)
+# vs 8% for the main scan. Re-running its universe-name trades through Layer 2 + Layer 3
+# on real bars: 73% would have been Layer-2 skipped; -0.20% -> -0.05% per trade.
+# Both Sep 30 losers (XRPN, IONQ) came through here.
+# False = its candidates are graded by _scan_and_enter instead (nothing else changes).
+# Set False Oct 1 2026 (user decision). Replay Aug 4-Sep 29 with it off: roughly neutral on P&L
+# (+$126, carried by one day) but hard stops halved (12 -> 6). This is a removal of a duplicate
+# path that skips our own checks, not a new gate. Revert: True.
+CATALYST_OVERRIDE_ENABLED = False
+
+# ── SCANNER PICKS — symbols from the morning catalyst scan that are NOT in FULL_UNIVERSE ──
+# Sep 30 2026 review. These are IBKR-scanner small caps with no validated history in this
+# book (Sep 30: XRPN was a de-SPAC that had sat at its $10.55 trust value for months — its
+# RSI 99.5, 51x volume and ATR were all computed on that flat history).
+# Measured since Jun 1: 58 trades, -$1,506, -1.67%/trade, 26-43% hit the hard stop (universe
+# names: 201 trades, -0.32%/trade, 3-8%), negative in each of Jun/Jul/Aug/Sep, via BOTH the
+# main scan (23t, -$868) and the override (35t, -$638). Counterweight: +$965 in May — a
+# lottery cohort that paid in one hot small-cap month.
+# False = graded and logged every scan (observe-only), never entered by any automated path.
+# Manual Telegram BUY is unaffected.
+# Set False Sep 30 2026 (user decision).
+SCANNER_PICKS_TRADE = False
+
+# ── LIVE DAILY ROW — Sep 30 2026 data fix ─────────────────────────────────────
+# get_intraday_signals() reads daily bars through bridge.py's 24h cache, so its "today" row
+# (and therefore prev_chg / the >=3% gate, daily RSI, MA20, EMAs) was frozen at the symbol's
+# first fetch of the session. True rebuilds today's row from the live 5-min bars, as
+# equity_replay.daily_upto() has always done. See the comment at the rebuild for the
+# measurement. Side effect, accepted: stocks that cross +3% after the open are now graded
+# (the freeze had been an accidental early-mover filter). False = the old frozen behaviour.
+# Set True Sep 30 2026 (user decision).
+DAILY_ROW_FROM_LIVE_BARS = True
+
+# ── Sep 30 2026 review: three candidate improvements — A/B SWITCHES, ALL OFF ───
+# Each is measured on every graded candidate (scan_log ret_5d / atr_pct / is_thrust) and
+# backtested in equity_replay before any of them is switched on.
+#
+# FRESHNESS: skip LONGs already up more than this % over the prior 5 sessions. 2y lab (9,449
+#   candidates): the top decile (>18.6%) is the only losing decile, 29% stop hits; Q5<Q1 in
+#   7/8 quarters; fresh moves (5d <= 0) did best. None = off.
+MULTIDAY_FRESH_MAX_5D = None
+# VOLATILITY: stop one daily ATR below entry instead of a flat 5%, sized so each trade risks
+#   what its tier risks today (allocation x 5%). Position capped at VOL_MAX_POS_MULT x the
+#   allocation and at the remaining book. 2y lab: +36% return per unit of risk (0.023R vs
+#   0.017R), 6/8 quarters; the high-ATR third has ~zero edge at any stop width.
+#   Replay Aug 4-Sep 29: +$161 vs the flat 5% stop (t=+1.14, both months, 57% of days, +$34
+#   without its best 2 days) — the only switch positive in both tests. Small, not yet proven.
+#   ON from Oct 1 2026 as a LIVE TRIAL (user decision): keep it only if it is not hurting.
+#   Review ~Oct 29 (20 trading days) — see CLAUDE.md "Volatility stop trial". New entries only;
+#   positions already open keep the stop they were opened with. Revert: False.
+#   Known interaction (tested in the replay as-is): the +2.5% break-even rule moves the stop to
+#   entry + half the stop distance, so on names whose daily range exceeds 5% it locks in +2.5%.
+VOL_SCALED_RISK   = True
+VOL_STOP_ATR_MULT = 1.0
+VOL_MAX_POS_MULT  = 1.5
+# THRUST: up >=5% from the open on >=3x volume, above VWAP, bats first in the batting order.
+#   2y lab: +0.45%/trade vs +0.07% for other candidates (5% stop exit), but better in only
+#   3 of 5 half-years (trails slightly in 2025H2 and 2026H1) and 32% stop hits. These names
+#   are taken today by the catalyst override (no batting order, no Layer 2/3) before the main
+#   scan sees them, so the A/B pairs this with the override off.
+THRUST_PRIORITY = False
 
 MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
@@ -1476,15 +1555,25 @@ def tod_relative_volume(symbol, today_cum_vol, now=None):
         try:
             import sqlite3 as _sq
             con = _sq.connect('market_data.db')
+            # Upper bound added Sep 30 2026: without it a replay of an older date read every
+            # LATER session too, so the median included future volume (look-ahead) and the
+            # query grew with the distance to today. Live has no future rows; unchanged there.
             rows = con.execute(
-                "SELECT ts_utc, volume FROM bars_5m WHERE symbol=? AND ts_utc>=?",
-                (symbol, (today - timedelta(days=45)).isoformat())).fetchall()
+                "SELECT ts_utc, volume FROM bars_5m WHERE symbol=? AND ts_utc>=? AND ts_utc<? "
+                "ORDER BY ts_utc",
+                (symbol, (today - timedelta(days=45)).isoformat(), today.isoformat())).fetchall()
             con.close()
             if len(rows) > 50:
                 d = pd.DataFrame(rows, columns=['ts_utc', 'volume'])
                 ts = pd.to_datetime(d['ts_utc'], format='mixed', utc=True).dt.tz_convert(ET)
                 d['day'] = ts.dt.strftime('%Y-%m-%d')
                 d['t']   = ts.dt.strftime('%H:%M')
+                # Sep 30 2026: across Mar-Aug 2026 the same bar is stored twice — the DataBento
+                # backfill ('...T13:30:00', whose volume is only ~2-5% of consolidated) and the
+                # collector ('... 13:30:00+00:00', consolidated, the same scale as today's live
+                # bars). Keep ONE row per bar and prefer the collector's: in ts_utc order its ' '
+                # sorts before 'T', so keep='first'. Live's 45-day window is past the overlap now.
+                d = d.loc[~ts.duplicated(keep='first').values]
                 d = d[(d['t'] >= '09:30') & (d['t'] <= hhmm) & (d['day'] != str(today))]
                 if len(d):
                     per_day = d.groupby('day')['volume'].sum()
@@ -1651,6 +1740,66 @@ def get_intraday_signals(symbol, spy_chg=0):
         price     = float(df5['Close'].iloc[-1])
         open_p    = float(_today['Open'].iloc[0]) if not _today.empty else float(df5['Open'].iloc[-50])
         intra_chg = (price - open_p) / open_p * 100
+
+        # ── Daily bars: rebuild TODAY's row (and a stale yesterday) from the live 5-min bars ──
+        # Sep 30 2026. bridge.py caches '1 day' history for 24h, so the last row — today's
+        # partial bar — froze at whatever minute the symbol was first fetched that session,
+        # and for the first minutes of the next session it was still yesterday's partial.
+        # prev_chg (the MIN_TODAY_GAIN gate, the +10/20/30 bonus, the strong-momentum pattern
+        # bypass, rs_vs_spy), daily RSI, MA20 and the EMAs all read that frozen close.
+        # Measured on 12,081 Jul-Sep SKIP rows: the logged gain was off by >1pt 39% of the time
+        # and 1,167 stocks truly up >=3% were rejected as "Only +X% today" (IONQ Sep 29: logged
+        # +1.1% at 11:23 and 12:55 while it was really -1.1% / -1.3%). equity_replay's
+        # daily_upto() — the harness every recent equity A/B ran through — always built this
+        # row live, so live now matches what was validated. No extra data calls.
+        # Switched by DAILY_ROW_FROM_LIVE_BARS (on since Sep 30 2026). Unfreezing also admits
+        # stocks that cross +3% after the open, which the 2-year lab measures as ~breakeven.
+        _now_d = datetime.now(ET).date()
+        _hist  = df1d[df1d.index.date < _now_d] if DAILY_ROW_FROM_LIVE_BARS else df1d
+        _rth5  = _df5_tz.between_time('09:30', '15:55')
+        _prior = sorted(d for d in set(_rth5.index.date) if d < _now_d) if DAILY_ROW_FROM_LIVE_BARS else []
+        if len(_hist) and _prior and _hist.index[-1].date() == _prior[-1]:
+            _y = _rth5[_rth5.index.date == _prior[-1]]
+            # A bar frozen mid-session carries a fraction of the day's volume; a complete one
+            # matches the 5-min total. Rebuild yesterday only in the frozen case, so the
+            # official close is kept whenever IB's row is complete.
+            if float(_hist['Volume'].iloc[-1]) < 0.9 * float(_y['Volume'].sum()):
+                # IB delivers Volume as int64; assigning a float into it raises
+                _hist = _hist.astype({c: float for c in ('Open', 'High', 'Low', 'Close', 'Volume')
+                                      if c in _hist.columns})
+                for _col, _val in (('Open', float(_y['Open'].iloc[0])), ('High', float(_y['High'].max())),
+                                   ('Low', float(_y['Low'].min())), ('Close', float(_y['Close'].iloc[-1])),
+                                   ('Volume', float(_y['Volume'].sum()))):
+                    _hist.iloc[-1, _hist.columns.get_loc(_col)] = _val
+        if DAILY_ROW_FROM_LIVE_BARS:
+            _tb  = _rth5[_rth5.index.date == _now_d]
+            _row = {'Open':   float(_tb['Open'].iloc[0]) if len(_tb) else price,
+                    'High':   max(float(_tb['High'].max()), price) if len(_tb) else price,
+                    'Low':    min(float(_tb['Low'].min()), price) if len(_tb) else price,
+                    'Close':  price,
+                    'Volume': float(_tb['Volume'].sum()) if len(_tb) else 0.0}
+            _ts = pd.Timestamp(_now_d)
+            if _hist.index.tz is not None:
+                _ts = _ts.tz_localize(_hist.index.tz)
+            df1d = pd.concat([_hist, pd.DataFrame([_row], index=[_ts])])
+            if len(df1d) < 20:
+                return None
+
+        # ── Sep 30 2026 review measurements (logged to scan_log; see MULTIDAY_FRESH_MAX_5D,
+        # VOL_SCALED_RISK). COMPLETED sessions only, so both are known before today's open.
+        ret_5d = atr_d = atr_pct_d = None
+        try:
+            _done = df1d[df1d.index.date < _now_d]
+            if len(_done) >= 6:
+                ret_5d = round((float(_done['Close'].iloc[-1]) / float(_done['Close'].iloc[-6]) - 1) * 100, 2)
+            if len(_done) >= 15:
+                _dc = _done['Close']
+                _dtr = pd.concat([_done['High'] - _done['Low'], (_done['High'] - _dc.shift()).abs(),
+                                  (_done['Low'] - _dc.shift()).abs()], axis=1).max(axis=1)
+                atr_d = float(_dtr.iloc[-14:].mean())
+                atr_pct_d = round(atr_d / float(_dc.iloc[-1]) * 100, 2)
+        except Exception:
+            pass
 
         avg_vol   = df1d['Volume'].rolling(20).mean().iloc[-2]
         now       = datetime.now(ET)
@@ -1985,6 +2134,10 @@ def get_intraday_signals(symbol, spy_chg=0):
             'adx': adx, 'above_keltner_upper': above_keltner_upper,
             'below_keltner_lower': below_keltner_lower,
             'chg_5d_up': chg_5d_up, 'chg_5d_down': chg_5d_down,
+            # Sep 30 2026 review measurements — see MULTIDAY_FRESH_MAX_5D / VOL_SCALED_RISK /
+            # THRUST_PRIORITY. is_thrust is the same rule as the dynamic catalyst upgrade.
+            'ret_5d': ret_5d, 'atr_d': atr_d, 'atr_pct_d': atr_pct_d,
+            'is_thrust': bool(intra_chg >= 5.0 and vol_ratio >= 3.0 and vwap > 0 and price > vwap),
         }
     except:
         return None
@@ -2002,6 +2155,34 @@ def calc_sl_target(symbol, price, side='LONG'):
         sl     = round(price * 1.05, 2)
         target = round(price * (1 - reward / 100), 2)
     return sl, target, risk_pct, round(reward, 2), MIN_RR
+
+
+def vol_scaled_stop(price, sig):
+    """VOL_SCALED_RISK (LONG): stop VOL_STOP_ATR_MULT daily ATRs below entry instead of a
+    flat 5%. Returns (sl, target) or None when the switch is off or ATR is unavailable,
+    in which case the caller keeps calc_sl_target's flat stop."""
+    atr = sig.get('atr_d')
+    if not VOL_SCALED_RISK or not atr or atr <= 0 or atr >= price:
+        return None
+    sl = round(price - VOL_STOP_ATR_MULT * atr, 2)
+    return sl, round(price + MIN_RR * (price - sl), 2)
+
+
+def vol_scaled_shares(price, sl, capital, deployed, max_loss=MAX_LOSS_PER_TRADE):
+    """VOL_SCALED_RISK sizing: risk what this allocation risks with a flat 5% stop
+    (capital x 5%) over the volatility-sized stop; cap the position at VOL_MAX_POS_MULT x
+    the allocation, at the remaining book and at the dollar circuit breaker."""
+    rps = price - sl
+    if rps <= 0:
+        return max(1, int(capital / price))
+    cap_usd = min(capital * VOL_MAX_POS_MULT, TOTAL_CAPITAL - deployed)
+    return max(1, min(int(cap_usd / price), int(capital * 0.05 / rps), int(max_loss / rps)))
+
+
+def _review_cols(sig_or_pick):
+    """scan_log columns for the Sep 30 2026 review measurements."""
+    return {'ret_5d': sig_or_pick.get('ret_5d'), 'atr_pct': sig_or_pick.get('atr_pct_d'),
+            'is_thrust': sig_or_pick.get('is_thrust'), 'today_gain': sig_or_pick.get('prev_chg')}
 
 # ─────────────────────────────────────────────────────────
 # EARNINGS HELPER
@@ -2192,6 +2373,12 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
             pass
         else:
             return 'SKIP', [f'Only +{today_gain:.1f}% today (need ≥{MIN_TODAY_GAIN}%)'], 0
+
+    # Multi-day freshness — A/B switch, off unless MULTIDAY_FRESH_MAX_5D is set (Sep 30 2026)
+    if MULTIDAY_FRESH_MAX_5D is not None:
+        _r5 = sig.get('ret_5d')
+        if _r5 is not None and _r5 > MULTIDAY_FRESH_MAX_5D:
+            return 'SKIP', [f'Multi-day extended: +{_r5:.1f}% over 5 sessions (> {MULTIDAY_FRESH_MAX_5D}%)'], 0
 
     # ── Gap-and-crap filter (day-1 prop rule) ─────────────────
     # If price is 5%+ below today's opening print, the gap has been distributed.
@@ -3943,6 +4130,8 @@ def _scan_premarket_catalyst(open_trades):
             continue
         if any(t['symbol'] == symbol for t in open_trades):
             continue
+        if not SCANNER_PICKS_TRADE and symbol not in FULL_UNIVERSE:
+            continue
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
         if len(open_trades) + len(candidates) >= MAX_OPEN_TRADES:
@@ -4771,6 +4960,10 @@ def _scan_catalyst_override(open_trades):
     """
     global daily_bull_count, traded_today
 
+    # See CATALYST_OVERRIDE_ENABLED for the Sep 30 2026 measurement.
+    if not CATALYST_OVERRIDE_ENABLED:
+        return []
+
     # Book health selector applies here too — these are LONG entries, and the
     # Jul 17 validation blocked CATALYST_OVERRIDE trades along with the rest of
     # the LONG book (July: 10 trades, -$15 under negative health).
@@ -4793,6 +4986,8 @@ def _scan_catalyst_override(open_trades):
         if symbol in traded_today:
             continue
         if any(t['symbol'] == symbol for t in open_trades):
+            continue
+        if not SCANNER_PICKS_TRADE and symbol not in FULL_UNIVERSE:
             continue
         if daily_bull_count >= MAX_DAILY_BULL_TRADES:
             break
@@ -4835,6 +5030,9 @@ def _scan_catalyst_override(open_trades):
                 continue
 
             sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, 'LONG')
+            _vs = vol_scaled_stop(price, sig)      # None unless VOL_SCALED_RISK is on
+            if _vs:
+                sl, target = _vs
             grade, reasons, score = grade_setup(sig, 'NORMAL', sl, target, price, rr, symbol=symbol)
 
             # Catalyst override requires A+ only — both paths
@@ -4850,12 +5048,14 @@ def _scan_catalyst_override(open_trades):
             risk_per_share = round(price - sl, 4)
             atr_shares     = int((MAX_LOSS_PER_TRADE * 0.5) / risk_per_share) if risk_per_share > 0 else int(capital / price)
             shares         = max(1, min(int(capital / price), atr_shares))
+            if VOL_SCALED_RISK:
+                shares = vol_scaled_shares(price, sl, capital, deployed, max_loss=MAX_LOSS_PER_TRADE * 0.5)
 
             if is_intraday_play:
                 play_tag = f"intraday {intra_chg:+.1f}% vol {vol_intra:.1f}x above VWAP"
             else:
                 play_tag = f"gap {gap_pct:+.1f}% vol {vol_ratio:.1f}x"
-            log(f"  ⚡ CATALYST OVERRIDE {symbol} {play_tag} — entering despite adverse market (WEAK/CHOPPY)")
+            log(f"  ⚡ CATALYST OVERRIDE {symbol} {play_tag} — entering (market regime not consulted)")
 
             attempted += 1
             trade_id = place_trade(
@@ -4880,7 +5080,7 @@ def _scan_catalyst_override(open_trades):
             log(f"  Catalyst override error {symbol}: {e}")
 
     if entries:
-        lines = [f"⚡ CATALYST OVERRIDE — {len(entries)} isolated plays (WEAK/CHOPPY mkt)"]
+        lines = [f"⚡ CATALYST OVERRIDE — {len(entries)} isolated plays"]
         for e in entries:
             if e['is_intraday']:
                 tag = f"intraday {e['intra_chg']:+.1f}% {e['vol_intra']:.1f}x vol"
@@ -5077,9 +5277,12 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         if any(t['symbol'] == symbol for t in open_trades):
             continue
 
-        # Dynamic (unknown) stocks need strong confirmation — volatile at open
+        # Dynamic (unknown) stocks need strong confirmation — volatile at open.
+        # With SCANNER_PICKS_TRADE off they are graded on every scan instead (measurement
+        # only) and dropped before the candidate list further down.
         is_dynamic = symbol in dynamic_picks
-        if is_dynamic and regime != 'STRONG' and not (regime == 'NORMAL' and confirmed_scans >= 3):
+        if (is_dynamic and SCANNER_PICKS_TRADE and regime != 'STRONG'
+                and not (regime == 'NORMAL' and confirmed_scans >= 3)):
             continue
 
         sig = get_intraday_signals(symbol, spy_chg=spy_chg)
@@ -5095,6 +5298,10 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             continue
 
         sl, target, risk_pct, reward_pct, rr = calc_sl_target(symbol, price, side)
+        _vs = vol_scaled_stop(price, sig)          # None unless VOL_SCALED_RISK is on
+        if _vs:
+            sl, target = _vs
+            risk_pct = round((price - sl) / price * 100, 2)
 
         # Dynamic intraday catalyst upgrade: stock wasn't moving at 8:15am but is running hard now.
         # Adds it to catalyst_priority so the CAUTIOUS/CHOPPY bypass in grade_setup can fire.
@@ -5143,7 +5350,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
                     symbol, 'LONG', regime, price, grade, score,
                     reasons[0] if reasons else None,
                     sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
-                    is_catalyst=is_catalyst, entered=False,
+                    is_catalyst=is_catalyst, entered=False, **_review_cols(sig),
                 )
             except Exception:
                 pass
@@ -5156,7 +5363,22 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
                     symbol, 'LONG', regime, price, grade, score,
                     'SPY negative — A+ only',
                     sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
-                    is_catalyst=is_catalyst, entered=False,
+                    is_catalyst=is_catalyst, entered=False, **_review_cols(sig),
+                )
+            except Exception:
+                pass
+            continue
+
+        # SCANNER_PICKS_TRADE off: graded above so the decision can be re-judged, never entered.
+        if is_dynamic and not SCANNER_PICKS_TRADE:
+            try:
+                log_scan_candidate(
+                    _now.strftime('%Y-%m-%d'), _now.strftime('%H:%M'),
+                    symbol, 'LONG', regime, price, grade, score,
+                    'Scanner pick (not in universe) — observe only',
+                    sig['vol_ratio'], sig['rsi'], sig['intra_chg'], _sector,
+                    is_catalyst=is_catalyst, entered=False, reasons=reasons,
+                    **_review_cols(sig),
                 )
             except Exception:
                 pass
@@ -5195,6 +5417,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             'price_vs_hod_pct': _pvh_val,
             'sector': _sector, 'scan_time': _now.strftime('%H:%M'),
             'scan_date': _now.strftime('%Y-%m-%d'),
+            'ret_5d': sig.get('ret_5d'), 'atr_pct_d': sig.get('atr_pct_d'),
+            'is_thrust': sig.get('is_thrust', False), 'prev_chg': sig.get('prev_chg'),
         })
 
     # ── Power-play batting order ────────────────────────────────────────────────
@@ -5209,6 +5433,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
     # When multiple A+ compete for 5 slots, prefer the ones still at/near their HOD.
     grade_order = {'A+': 0, 'A': 1, 'B': 2}
     candidates.sort(key=lambda x: (
+        # THRUST_PRIORITY (A/B, off): strong-thrust names bat first — see its definition
+        0 if (THRUST_PRIORITY and x.get('is_thrust')) else 1,
         0 if (x['is_sympathy'] and x['grade'] == 'A+') else
         1 if (x['is_catalyst'] and x['grade'] == 'A+') else
         2 if (x['is_catalyst'] and x['grade'] == 'A')  else
@@ -5246,6 +5472,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
                 today_hod=_c['today_hod'],
                 price_vs_hod_pct=_c['price_vs_hod_pct'],
                 reasons=_c.get('reasons'),
+                **_review_cols(_c),
             )
         except Exception:
             pass
@@ -5298,6 +5525,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         risk_per_share = round(price - pick['sl'], 4)
         atr_shares     = int(MAX_LOSS_PER_TRADE / risk_per_share) if risk_per_share > 0 else int(capital / price)
         shares         = max(1, min(int(capital / price), atr_shares))
+        if VOL_SCALED_RISK:
+            shares = vol_scaled_shares(price, pick['sl'], capital, deployed)
 
         if pick['is_sympathy']:
             info     = active_sympathy_triggers[sym]

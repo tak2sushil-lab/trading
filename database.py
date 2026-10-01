@@ -481,6 +481,18 @@ def init_db():
         ('fwd_mfe_pct',      'REAL'),
         ('fwd_mae_pct',      'REAL'),
         ('fwd_window_min',   'INTEGER'),
+        # Sep 30 2026 day-trader review -- three measurements logged on every graded
+        # candidate so they can be scored against outcomes before any of them gates a trade.
+        # ret_5d: prior five-session return (multi-day freshness). atr_pct: 14-session daily
+        # ATR as % of the prior close. is_thrust: up >=5% from the open on >=3x volume,
+        # above VWAP.
+        ('ret_5d',           'REAL'),
+        ('atr_pct',          'REAL'),
+        ('is_thrust',        'INTEGER'),
+        # today_gain: the % change vs the prior close that the GRADER acted on (prev_chg). It
+        # was frozen at first fetch for months and nobody could see it, because only outputs
+        # were logged; logging the input makes a stale value visible next to the live price.
+        ('today_gain',       'REAL'),
     ]:
         try:
             c.execute(f'ALTER TABLE scan_log ADD COLUMN {_col} {_typ}')
@@ -2038,7 +2050,8 @@ def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
                        vol_ratio, rsi, intra_chg, sector,
                        is_catalyst=False, entered=False, entry_trade_id=None,
                        burst_age_min=None, consec_new_highs=None,
-                       today_hod=None, price_vs_hod_pct=None, reasons=None):
+                       today_hod=None, price_vs_hod_pct=None, reasons=None,
+                       ret_5d=None, atr_pct=None, is_thrust=None, today_gain=None):
     """Log every candidate — entered, benched, or skipped — with full energy context.
 
     `reasons` is grade_setup()'s own explanation list. It is parsed into a
@@ -2052,14 +2065,16 @@ def log_scan_candidate(scan_date, scan_time, symbol, direction, regime,
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
          is_catalyst, entered, entry_trade_id,
-         burst_age_min, consec_new_highs, today_hod, price_vs_hod_pct, score_components)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         burst_age_min, consec_new_highs, today_hod, price_vs_hod_pct, score_components,
+         ret_5d, atr_pct, is_thrust, today_gain)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (scan_date, scan_time, symbol, direction, regime, price,
          grade, score, skip_reason, vol_ratio, rsi, intra_chg, sector,
          int(is_catalyst), int(entered), entry_trade_id,
          burst_age_min if burst_age_min != 999 else None,
          consec_new_highs, today_hod, price_vs_hod_pct,
-         _components_json(reasons)))
+         _components_json(reasons),
+         ret_5d, atr_pct, None if is_thrust is None else int(is_thrust), today_gain))
     row_id = c.lastrowid
     conn.commit()
     conn.close()
