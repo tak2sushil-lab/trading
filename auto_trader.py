@@ -268,6 +268,23 @@ VOL_MAX_POS_MULT  = 1.5
 #   scan sees them, so the A/B pairs this with the override off.
 THRUST_PRIORITY = False
 
+# ── Oct 1 2026: two more A/B switches (current behaviour by default) ──────────
+# REGIME_HARD_SKIP: market labels on which grade_setup refuses every NON-catalyst outright.
+#   CHOPPY = SPY flat (|chg| < 0.3%) with >40% of its 5-min bars reversing; CAUTIOUS = mildly
+#   negative / downgraded tape. WEAK (SPY < -0.5%) is NOT blocked, so the book trades clearly
+#   weak days but not merely flat ones. Oct 1: CTSH +10.5% on 10.8x volume skipped as "CHOPPY".
+#   RE-TESTED Oct 1 2026 (replay Aug 4-Sep 29, live config): KEEP. Allowing CHOPPY: -$527 vs the block
+#   (t=-2.19, better on 24% of days); allowing CAUTIOUS: -$110 (worse on every differing day);
+#   allowing both: -$616 (t=-2.55). The block earns its keep; misses like CTSH are the price.
+REGIME_HARD_SKIP = ('CHOPPY', 'CAUTIOUS')
+# L3_ENABLED: the T+5 check (5 min after entry: < -2% -> exit; -2%..+0.5% -> stop to break-even;
+#   > +0.5% -> hold). Shipped Jun 22 on "+$418 over 174 trades"; not re-measured since.
+#   Re-measured Oct 1 2026. Live (183 trades since Jun 23): when it acted (149), trades ended worse
+#   than holding to the close by ~$303 — partly the stale-scan-price bug fixed the same day (c587981).
+#   Replay without it (no slippage modelled): +$141, t=+0.31, but -$241 without its best 2 days, and
+#   hard-stop losses more than double (5 -> 12). Inconclusive: KEEP, re-measure on live data with the fix.
+L3_ENABLED = True
+
 MIN_TODAY_GAIN    = 3.0      # stock must be up ≥3% today — capture early-stage moves, not extended
 MAX_DAILY_LOSS    = 200      # stop new entries if daily P&L < -$200
 LUNCH_AVOID_START = (11, 30) # no new entries from 11:30am ET (lunch chop)
@@ -2361,7 +2378,7 @@ def grade_setup(sig, regime, sl, target, price, rr, symbol=None, is_catalyst=Fal
         if ((FRESHNESS_GATE == 1 and _stale and _thin)
                 or (FRESHNESS_GATE == 2 and (_stale or _thin))):
             return 'SKIP', [f'Freshness gate: burst {_fb:.0f}m / vol {_fv:.1f}x'], 0
-    if regime in ('CHOPPY', 'CAUTIOUS'):
+    if regime in REGIME_HARD_SKIP:
         if is_catalyst:
             pass  # Fix 1: catalyst stocks bypass CAUTIOUS/CHOPPY — market-independent move
         else:
@@ -3035,7 +3052,7 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         # HARD_FAIL (<-2%): move stop to entry → triggers fast exit on next 30s cycle
         # FLAT (±0.5%):     tighten stop to break-even → cap intraday loss at $0
         # CONFIRM (>+0.5%): log and hold — no stop change needed
-        if tid in _l3_pending:
+        if L3_ENABLED and tid in _l3_pending:
             _l3 = _l3_pending[tid]
             _elapsed = (now - _l3['entry_time']).total_seconds()
             if _elapsed >= 300:   # 5 minutes have passed

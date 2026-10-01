@@ -638,6 +638,9 @@ def main():
                     help='force auto_trader.CATALYST_OVERRIDE_ENABLED on (pre-Oct-1-2026 live behaviour)')
     ap.add_argument('--no-override', dest='override', action='store_false',
                     help='force CATALYST_OVERRIDE_ENABLED off')
+    ap.add_argument('--regime-hard-skip', default=None,
+                    help="A/B auto_trader.REGIME_HARD_SKIP: comma list of labels (e.g. CHOPPY,CAUTIOUS) or 'none'")
+    ap.add_argument('--no-l3', action='store_true', help='A/B auto_trader.L3_ENABLED=False (no T+5 check)')
     ap.set_defaults(vol_risk=None, thrust=None, override=None)
     a = ap.parse_args()
 
@@ -668,9 +671,15 @@ def main():
         at.THRUST_PRIORITY = a.thrust
     if a.override is not None:
         at.CATALYST_OVERRIDE_ENABLED = a.override
+    if a.regime_hard_skip is not None:
+        at.REGIME_HARD_SKIP = tuple() if a.regime_hard_skip.lower() == 'none' else \
+            tuple(x.strip().upper() for x in a.regime_hard_skip.split(',') if x.strip())
+    if a.no_l3:
+        at.L3_ENABLED = False
     print(f'  switches: fresh_max_5d={at.MULTIDAY_FRESH_MAX_5D} vol_risk={at.VOL_SCALED_RISK} '
           f'thrust_priority={at.THRUST_PRIORITY} override={at.CATALYST_OVERRIDE_ENABLED} '
-          f'live_daily_row={at.DAILY_ROW_FROM_LIVE_BARS} scanner_picks_trade={at.SCANNER_PICKS_TRADE}')
+          f'live_daily_row={at.DAILY_ROW_FROM_LIVE_BARS} scanner_picks_trade={at.SCANNER_PICKS_TRADE} '
+          f'regime_hard_skip={at.REGIME_HARD_SKIP} l3={at.L3_ENABLED}')
     global REGIME_AS_MODIFIER
     if a.hard_router:
         REGIME_AS_MODIFIER = False

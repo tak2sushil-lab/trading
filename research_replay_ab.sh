@@ -9,6 +9,9 @@
 #                   the volatility stop OFF in live code):
 #     ./research_replay_ab.sh sep30 sep30 2026-08-04 2026-08-31 2026-09-01 2026-09-29
 #     venv/bin/python research_replay_score.py sep30 base
+# PRESET regime_l3 — choppy/cautious hard-skip and the T+5 check vs the live config:
+#     ./research_replay_ab.sh regime_l3 rl3 2026-08-04 2026-08-31 2026-09-01 2026-09-29
+#     venv/bin/python research_replay_score.py rl3 base
 # PRESET voltrial — the volatility-stop trial review: live config, flat 5% stop vs volatility stop:
 #     ./research_replay_ab.sh voltrial oct 2026-10-01 2026-10-14 2026-10-15 2026-10-28
 #     venv/bin/python research_replay_score.py oct fixed
@@ -31,7 +34,13 @@ case $PRESET in
   voltrial)
     ARMS[fixed]="--no-vol-risk"
     ARMS[vol]="--vol-risk" ;;
-  *) echo "unknown preset $PRESET (sep30 | voltrial)"; exit 1 ;;
+  regime_l3)   # Oct 1 2026: choppy/cautious hard-skip and the T+5 check, vs the live config
+    ARMS[base]=""
+    ARMS[no_block]="--regime-hard-skip none"
+    ARMS[block_choppy_only]="--regime-hard-skip CHOPPY"
+    ARMS[block_cautious_only]="--regime-hard-skip CAUTIOUS"
+    ARMS[no_l3]="--no-l3" ;;
+  *) echo "unknown preset $PRESET (sep30 | voltrial | regime_l3)"; exit 1 ;;
 esac
 OUT=research_out/replay_$TAG
 mkdir -p $OUT
