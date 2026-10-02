@@ -24,7 +24,12 @@ chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
 **🟡 EQUITY DAY TRADER — current state (Oct 1 2026, read first for equity):**
-- **Oct 1 evening:** day's-high verdict + `pullback_first` decision pending; replay profit is all overnight
+- **LIVE since Oct 2 (user-approved Oct 1 evening): `HOD_LOCATION_RULE='pullback_first'`** — batting order ranks
+  1-3% pullbacks first, agreeing with Layer 2 (hypothesis: fewer fade-out picks). Batting-order log line now tags
+  each name `pullback / at-high / near / faded` with its % vs the high. **Review ~Oct 29** (with the vol trial):
+  `./research_replay_ab.sh hodtrial oct2 2026-10-02 2026-10-15 2026-10-16 2026-10-28` then
+  `venv/bin/python research_replay_score.py oct2 base` — keep unless `at_high` beats it. Revert = `'at_high_first'`.
+- **Oct 1 evening:** day's-high verdict; replay profit is all overnight
   holds; trades.db 65-min lock fixed (`gc_sweeper.py`, watchdog DB check); Clockwork missed Oct 1 (my replay
   load) — replays now blocked in market hours. See the Oct 1 (evening) entry at the bottom.
 - **LIVE since Oct 1 09:46 ET:** `yf_cache_fix.py` (FD leak) · `DAILY_ROW_FROM_LIVE_BARS=True` (grader reads
@@ -5814,8 +5819,8 @@ fill, not the 30-60s-old scan price (fills averaged +0.16% above it since Aug, +
   "count only stalls" variant is not better. Replay Aug 4–Sep 29, live config (base +$64/242t):
   `pullback_first` +$44 (only 6 of 40 days differ — the 5 slots are rarely full), +no high-test +$5,
   pullbacks-only −$331, stall-count +$92 (noise), **no Layer 2 at all +$592** (t=+1.14, both months).
-  All switches default-off in `auto_trader.py` (see the comment there). **DECISION PENDING (user):**
-  ship `HOD_LOCATION_RULE='pullback_first'` (consistency, ~no money either way).
+  **DECIDED (user, Oct 1 evening): `HOD_LOCATION_RULE='pullback_first'` LIVE from Oct 2** — restarted 21:03
+  while flat; the other switches stay default-off. Small money either way; it makes the two rules agree.
 - ⭐ **In EVERY replay arm the profit is the ~10% of trades held overnight; same-day trades lose
   (−$839 to −$1,470 over 8 weeks).** No-Layer-2's gain is mostly more trades reaching an overnight hold
   (+$893), not better intraday picks (same-day −$300 worse). Same shape as the Sep 20 overnight finding.

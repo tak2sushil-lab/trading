@@ -299,7 +299,11 @@ L3_ENABLED = True
 #   L2_HOD_TEST        False drops Layer 2's "HOD x N" skip/half (keeps its RUN / VWAP / exhaustion checks)
 #   PULLBACK_ONLY      True enters only candidates 1-3% below their high (graded and logged otherwise)
 #   L2_ENABLED         False skips Layer 2 entirely
-HOD_LOCATION_RULE = 'at_high_first'
+# LIVE since Oct 2 2026 (user-approved Oct 1 evening): 'pullback_first' — the batting order now agrees
+# with Layer 2 (avoid a stock pinned at / repeatedly testing its high). Hypothesis: fewer fade-out picks.
+# Scored by scan_log (price_vs_hod_pct + forward labels on every candidate) and the replay review
+# ~Oct 29: ./research_replay_ab.sh hodtrial ... (live vs at_high_first). Revert = 'at_high_first'.
+HOD_LOCATION_RULE = 'pullback_first'
 L2_HOD_TEST       = True
 PULLBACK_ONLY     = False
 L2_ENABLED        = True
@@ -5559,7 +5563,9 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
 
     _n_cat = sum(1 for c in candidates if c['is_catalyst'])
     log(f"Found {len(candidates)} valid setups ({_n_cat} catalyst) — batting order: "
-        + " | ".join(f"{c['symbol']}({c['intra_chg']:+.1f}%{'⚡' if c['is_catalyst'] else ''})"
+        + " | ".join(f"{c['symbol']}({c['intra_chg']:+.1f}%{'⚡' if c['is_catalyst'] else ''} "
+                     f"{hod_location(c.get('price_vs_hod_pct')).lower().replace('_', '-')} "
+                     f"{c.get('price_vs_hod_pct') or 0:+.1f}%)"
                      for c in candidates[:8]))
 
     # Log all qualified candidates with exact batting rank so bench players are traceable

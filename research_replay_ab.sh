@@ -60,7 +60,10 @@ case $PRESET in
     ARMS[no_l2]="--no-l2" ;;
   hod2)  # Oct 1 2026: keep the at-the-high preference but make Layer 2 a stall detector
     ARMS[stall_only]="--l2-hod-failed-only" ;;
-  *) echo "unknown preset $PRESET (sep30 | voltrial | regime_l3 | hod | hod2)"; exit 1 ;;
+  hodtrial)  # pullback_first went live Oct 2 2026 — review: live (base) vs the old at-the-high order
+    ARMS[base]=""
+    ARMS[at_high]="--hod-rule at_high_first" ;;
+  *) echo "unknown preset $PRESET (sep30 | voltrial | regime_l3 | hod | hod2 | hodtrial)"; exit 1 ;;
 esac
 OUT=research_out/replay_$TAG
 mkdir -p $OUT
