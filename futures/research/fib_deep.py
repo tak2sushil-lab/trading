@@ -9,8 +9,9 @@ import numpy as np, pandas as pd
 from scipy.stats import spearmanr
 
 sys.path.insert(0, '.')
-import futures.sim_replay as sr
-from futures.feature_study import compute_fib_pivots, get_prior_rth
+# futures.sim_replay is imported inside main() only: hero_score imports fib_features_deep from this
+# module inside the LIVE traders, and must not pull a whole simulator into a live process (Oct 4 2026).
+from futures.research.feature_study import compute_fib_pivots, get_prior_rth   # moved Jun 17 2026
 
 
 def fib_features_deep(entry_price, pivots, side):
@@ -80,6 +81,7 @@ def fib_features_deep(entry_price, pivots, side):
 
 
 def main():
+    import futures.sim_replay as sr
     print("Loading bars 2024-06-01 → 2026-06-17...")
     all_bars = sr.load_bars('MNQ', start='2024-06-01', end='2026-06-17')
     rth_all  = sr.filter_ny_session(all_bars)

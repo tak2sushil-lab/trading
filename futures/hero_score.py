@@ -126,10 +126,16 @@ def score_entry(price: float, atr: float, side: str,
     # Distance from entry to nearest blocking fib pivot in the opposite direction.
     # High value = no pivot walls nearby = room to run.
     # IS 2025-2026: threshold=300 → WR 45.1% vs 40.6% baseline (N=226).
-    # Not OOS-validated (2024 failed) — used as contract boost only, not skip gate.
+    # Not OOS-validated (2024 failed). Tracked only: it is NOT in _REGIME_WEIGHTS and
+    # contracts_from_regime_score() ignores h5_fib (the silver→gold boost was never implemented).
     try:
-        from futures.feature_study import compute_fib_pivots
-        from futures.fib_deep import fib_features_deep
+        # Oct 4 2026: these lived at futures/feature_study.py + futures/fib_deep.py until the Jun 17
+        # housekeeping commit 59bff9d moved them into futures/research/ — the except below then
+        # swallowed the ImportError and H5 read False on EVERY trade (live and sim) from that day.
+        # No trading effect: H5 is in no _REGIME_WEIGHTS row and contracts_from_regime_score
+        # never reads h5_fib. Only the tracking was lost.
+        from futures.research.feature_study import compute_fib_pivots
+        from futures.research.fib_deep import fib_features_deep
         if prior_rth is not None and not prior_rth.empty:
             pdH = float(prior_rth['high'].max())
             pdL = float(prior_rth['low'].min())

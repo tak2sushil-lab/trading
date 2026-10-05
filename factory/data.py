@@ -25,12 +25,15 @@ MOVE_MIN = 3.0               # % move (vs prior close) to qualify as an event
 PRICE_LO, PRICE_HI = 5.0, 800.0
 IS_END = "2025-07-01"        # design window ends here; everything after is sealed OOS
 OOS1_END = "2026-01-01"      # OOS window 1 = H2 2025;  OOS window 2 = 2026+
+# End of the bar window = tomorrow (load_bars treats end as exclusive). Was hard-coded to
+# "2026-09-15", which froze every cache at the build date; Oct 4 2026 made it follow the calendar.
+_DATA_END = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
 
 
 def _daily_frame(sym: str) -> pd.DataFrame | None:
     """Per-session-day OHLC + 10:00 price + opening-range stats for one symbol."""
     try:
-        df = load_bars(sym, start="2024-01-01", end="2026-09-15")
+        df = load_bars(sym, start="2024-01-01", end=_DATA_END)
     except Exception:
         return None
     if df is None or len(df) == 0:
@@ -171,7 +174,7 @@ def _daily_price_matrix(which: str, force: bool = False) -> pd.DataFrame:
         if i % 60 == 0:
             print(f"  daily-{which} {i}/{len(syms)}", flush=True)
         try:
-            df = load_bars(s, start="2024-01-01", end="2026-09-15")
+            df = load_bars(s, start="2024-01-01", end=_DATA_END)
         except Exception:
             continue
         if df is None or len(df) == 0:
