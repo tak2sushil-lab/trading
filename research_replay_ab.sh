@@ -12,6 +12,9 @@
 # PRESET regime_l3 — choppy/cautious hard-skip and the T+5 check vs the live config:
 #     ./research_replay_ab.sh regime_l3 rl3 2026-08-04 2026-08-31 2026-09-01 2026-09-29
 #     venv/bin/python research_replay_score.py rl3 base
+# PRESET oct2 — Oct 2 2026: T+5 check off / off for pre-10:00 rides / confirm-then-buy / 1 new name per sector per scan:
+#     ./research_replay_ab.sh oct2 oct2ab 2026-08-04 2026-08-31 2026-09-01 2026-10-01
+#     venv/bin/python research_replay_score.py oct2ab base
 # PRESET voltrial — the volatility-stop trial review: live config, flat 5% stop vs volatility stop:
 #     ./research_replay_ab.sh voltrial oct 2026-10-01 2026-10-14 2026-10-15 2026-10-28
 #     venv/bin/python research_replay_score.py oct fixed
@@ -63,7 +66,15 @@ case $PRESET in
   hodtrial)  # pullback_first went live Oct 2 2026 — review: live (base) vs the old at-the-high order
     ARMS[base]=""
     ARMS[at_high]="--hod-rule at_high_first" ;;
-  *) echo "unknown preset $PRESET (sep30 | voltrial | regime_l3 | hod | hod2 | hodtrial)"; exit 1 ;;
+  oct2)  # Oct 2 2026: the T+5 check vs confirm-then-buy vs one new name per sector per scan, vs live
+    ARMS[base]=""
+    ARMS[no_l3]="--no-l3"
+    ARMS[l3_ride]="--l3-skip-ride"
+    ARMS[confirm]="--confirm-entry 0.25"
+    ARMS[confirm_nol3]="--confirm-entry 0.25 --no-l3"
+    ARMS[sector1]="--max-new-per-sector 1"
+    ARMS[no_cat_priv]="--no-catalyst-privileges" ;;
+  *) echo "unknown preset $PRESET (sep30 | voltrial | regime_l3 | hod | hod2 | hodtrial | oct2)"; exit 1 ;;
 esac
 OUT=research_out/replay_$TAG
 mkdir -p $OUT

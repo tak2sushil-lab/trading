@@ -315,6 +315,12 @@ def _manual_close(t):
     """
     sym = t["symbol"]
     px = bridge_quote(sym)
+    # Wave Rider's bridge_quote returns the whole quote dict (monitor() unwraps it); the other two
+    # engines return a bare price. Unwrap here so this block stays identical in all three files.
+    # Oct 2 2026: without this, float(dict) raised and every dashboard close of a Wave Rider
+    # position failed before the SELL (AXTI #55, COHR #59) — nothing was sent.
+    if isinstance(px, dict):
+        px = px.get("last") or px.get("price") or px.get("close")
     if px is None:
         # Engines that compute their own signal (Wave Rider) can price from it when the
         # quote endpoint is down; the others have no such fallback. Looked up rather than

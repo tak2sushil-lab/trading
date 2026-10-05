@@ -39,7 +39,7 @@ import gc_sweeper          # Oct 1 2026: frees leaked SQLite connections (and th
 gc_sweeper.install()
 
 from database import (
-    init_db, log_trade_entry, log_trade_exit,
+    init_db, log_trade_entry, log_trade_exit, correct_exit_fill,
     get_open_trades, get_daily_pnl, get_win_rate,
     update_trade_stop, update_trade_shares, get_trade_entry_date, get_today_trades,
     get_strategy_weights, get_today_entry_counts,
@@ -287,6 +287,45 @@ REGIME_HARD_SKIP = ('CHOPPY', 'CAUTIOUS')
 #   hard-stop losses more than double (5 -> 12). Inconclusive: KEEP, re-measure on live data with the fix.
 L3_ENABLED = True
 
+# ── Oct 2 2026: three more A/B switches (current behaviour by default) ──────
+# Found watching Oct 2 live (12 exits, 11 by the T+5 check) and measured on every A+/A LONG
+# candidate since Aug 4 (355 name-days, exit at the close so only the entry rule differs):
+#   up >= +0.5% five minutes after the signal: only 17% of candidates -> the check moves the stop to
+#   entry on ~83% of trades; corr(5-min move, rest of day) = -0.10 (red at minute 5 is slightly MORE
+#   likely to recover); buy+hold +0.32%/trade vs buy+T+5 check -0.02%; buy only if up >=0.25% at the
+#   next scan +0.77%/trade on 102 trades. Live since Sep 4: the 23 trades the check cut booked -$268,
+#   held to the close ~+$188. It pays on days SPY falls open->close (corr -0.36), unknowable at 09:35.
+# L3_SKIP_RIDE: True = trades opened before HOLD_TO_CLOSE_BEFORE skip the T+5 check. Their measured
+#   edge is a hold-to-close edge (holds_to_close) and the check was never part of that measurement.
+#   REPLAY VERDICT Oct 2 2026 (oct2ab, Aug 4-Oct 1, full pipeline; base -$142): L3_SKIP_RIDE +$198 vs base
+#   (t=+0.53, better on 45% of days, -$140 without its best 2) and hard-stop losses $332 -> $731. NOT SHIPPED.
+#   No T+5 check at all: +$1 (t=0.00), hard-stop losses -> $829. The check is P&L-neutral and halves blow-ups: KEEP.
+L3_SKIP_RIDE = False
+# CONFIRM_ENTRY_PCT: None = buy at the signal (live). X = a candidate that clears every gate is put on
+#   watch at its price; it is bought on a later scan (within CONFIRM_WINDOW_MIN) only if it is still a
+#   candidate and its price is >= X% above the watched price, else the watch re-arms at the new price.
+#   Pays for confirmation with a worse entry instead of with the T+5 stop-outs.
+#   REPLAY VERDICT Oct 2 2026: 0.25% -> -$584 (-$442 vs base, t=-1.00; -$723 without its best 2); with no
+#   T+5 check -$576 and 19 hard stops. The candidate-level lab's +0.77%/trade did NOT survive the real
+#   pipeline (late entries, same exits). REJECTED.
+CONFIRM_ENTRY_PCT  = None
+CONFIRM_WINDOW_MIN = 15
+# MAX_NEW_PER_SECTOR_PER_SCAN: None = live (only MAX_PER_SECTOR=5 open positions, OTHER uncapped).
+#   N = at most N new entries per sector in one scan (OTHER included). Live since Jun 1: names bought
+#   with a same-sector name in the same scan -0.88%/trade (61) vs -0.40/-0.45% otherwise; 72% of those
+#   clusters ended with one sign (one bet placed twice). Oct 2: COIN + MSTR, 09:36, both crypto.
+#   REPLAY VERDICT Oct 2 2026: N=1 -> -$95 vs base (t=-0.89, changed only 12 of 40 days). Noise. REJECTED.
+MAX_NEW_PER_SECTOR_PER_SCAN = None
+# CATALYST_PRIVILEGES: True (live) = a catalyst name bats first, is exempt from the FVG volume rule and
+#   Layer 2's exhaustion check, and gets the larger allocation. False = ranked, gated and sized like any
+#   other candidate (its CHOPPY/CAUTIOUS regime bypass in grade_setup is kept — eligibility unchanged).
+#   Measured: catalyst entries -0.63% at +30 min vs +0.58% non-catalyst (log scorecard, Aug 5-Oct 1);
+#   first-qualify names we BOUGHT -0.69% at +30 min vs -0.02% for those we skipped; Sep 18: catalyst the
+#   worse real-trade cohort in all 4 months. Not significant day-clustered (t~0.5).
+#   REPLAY VERDICT Oct 2 2026: False -> -$103 vs base (t=-0.27; Aug +$333 -> -$44, Sep -$358 -> -$101) but max
+#   drawdown -$559 -> -$287 and hard-stop losses $332 -> $159. Risk reduction, not an edge. NOT SHIPPED (option).
+CATALYST_PRIVILEGES = True
+
 # ── Oct 1 2026: where the price sits vs the day's high — A/B switches, current behaviour by default ──
 # The batting order ranked candidates AT their high first ("strong") while Layer 2 rejected candidates
 # that tested the high 3+ times ("stuck") — opposite beliefs. 2-year lab (5,744 candidates,
@@ -420,6 +459,7 @@ first_bar_strong_trades = {}  # trade_id → bool — entry was on a strong firs
 _last_regime        = None   # last valid get_regime() result — held when SPY bars are empty
 peak_session_pnl    = 0.0    # highest session P&L seen today (realized + unrealized)
 _l3_pending         = {}     # trade_id → {sym, entry_time, entry_price, direction} — Layer 3 T+5 check
+_confirm_watch      = {}     # sym → {'px', 't'} — CONFIRM_ENTRY_PCT watch list (Oct 2 2026 A/B)
 _entry_fill_px      = {}     # trade_id → real fill price (Oct 1 2026: Layer 3 measures from this, not the scan price)
 pl_protect_active   = False  # True when peak has dropped 25% from ≥$200 — cut non-runners
 _morning_pnl_snap   = None   # P&L frozen at first post-noon scan — afternoon gate uses this
@@ -1210,10 +1250,15 @@ def _close_equity_trade(t, reason):
                    else (price - t['entry_price'])) / t['entry_price'] * 100
         if ibkr_qty > 0:
             _mark_exit_in_flight(sym)
-            requests.post(f"{BRIDGE}/order",
-                          json={'symbol': sym, 'qty': qty,
-                                'side': close_side, 'order_type': 'MARKET'},
-                          timeout=10)
+            _mr = requests.post(f"{BRIDGE}/order",
+                                json={'symbol': sym, 'qty': qty,
+                                      'side': close_side, 'order_type': 'MARKET'},
+                                timeout=10)
+            try:
+                _book_exit_fill(t['id'], sym, _mr.json().get('orderId'),
+                                'BOT' if is_short else 'SLD', price)
+            except Exception:
+                pass
         else:
             log(f"{reason}: {sym} has no IBKR position — DB-only close")
         for d in (price_history, session_high, session_low):
@@ -1308,6 +1353,45 @@ def _last_fill_price(sym, side_code):
     except Exception as e:
         log(f"_last_fill_price {sym}: {e}")
     return None
+
+
+# EXIT_FILL_BOOKING (Oct 2 2026): exits are booked by log_trade_exit() BEFORE the closing order is
+# sent, at the monitor's sampled price. On Oct 2 the real fills of 10 exits were $12.28 worse than
+# booked (HOOD $7.36 alone). True = once the order fills, re-book exit price / P&L from IBKR's own
+# execution record for that orderId (background thread, never places an order, never blocks the
+# loop; no fill found within ~30s -> the booked price stands and the log says so). Accuracy only —
+# but realized P&L feeds MAX_DAILY_LOSS and peak_session_pnl, so those now see the real number.
+EXIT_FILL_BOOKING = True
+
+
+def _book_exit_fill(tid, sym, order_id, side_code, booked_px):
+    """Background: find this exit order's fills (orderId + side) and re-book the trade at their VWAP."""
+    if not EXIT_FILL_BOOKING or not order_id:
+        return
+    def _run():
+        for wait in (4, 5, 5, 5, 6, 6):
+            time.sleep(wait)
+            try:
+                d = requests.get(f"{BRIDGE}/executions?days=1", timeout=10).json()
+                fills = [f for f in (d.get('fills', []) if isinstance(d, dict) else d)
+                         if f.get('orderId') == order_id and f.get('symbol') == sym
+                         and f.get('side') == side_code and f.get('shares')]
+                if not fills:
+                    continue
+                qty = sum(float(f['shares']) for f in fills)
+                px = round(sum(float(f['shares']) * float(f['price']) for f in fills) / qty, 4)
+                if abs(px - float(booked_px)) < 0.005:
+                    log(f"  {sym}: exit fill ${px} = booked — no correction")
+                    return
+                res = correct_exit_fill(tid, px)
+                if res:
+                    log(f"  {sym}: exit FILLED ${px} vs booked ${booked_px} — P&L re-booked "
+                        f"${res[0]:+.2f} → ${res[1]:+.2f} (order {order_id}, {qty:g} sh)")
+                return
+            except Exception as e:
+                log(f"  {sym}: exit-fill lookup error ({e})")
+        log(f"  {sym}: no fill found for exit order {order_id} after ~30s — booked price ${booked_px} stands")
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _other_book_symbols():
@@ -3115,6 +3199,8 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
         # HARD_FAIL (<-2%): move stop to entry → triggers fast exit on next 30s cycle
         # FLAT (±0.5%):     tighten stop to break-even → cap intraday loss at $0
         # CONFIRM (>+0.5%): log and hold — no stop change needed
+        if L3_SKIP_RIDE and tid in _l3_pending and holds_to_close(tid):
+            _l3_pending.pop(tid, None)   # hold-to-close trade: no T+5 check (Oct 2 2026 A/B)
         if L3_ENABLED and tid in _l3_pending:
             _l3 = _l3_pending[tid]
             _elapsed = (now - _l3['entry_time']).total_seconds()
@@ -3442,6 +3528,9 @@ def monitor_open_trades(regime='NORMAL', confirmed_scans=1):
                     if _xr.status_code != 200:
                         log(f"  {sym}: EXIT ORDER REJECTED — bridge {_xr.status_code}: "
                             f"{_xr.text[:120]} (DB already booked; reconcile will pick it up)")
+                    else:
+                        _book_exit_fill(tid, sym, _xr.json().get('orderId'),
+                                        'BOT' if is_short else 'SLD', price)
                 except Exception as _xe:
                     log(f"  {sym}: EXIT ORDER FAILED TO SUBMIT ({_xe}) — DB already booked; "
                         f"reconcile_with_ibkr() will detect the still-open position")
@@ -3521,6 +3610,8 @@ def fast_monitor_positions():
                             'side': close_side, 'order_type': 'MARKET'
                         }, timeout=10)
                         log(f"  {sym}: fast-exit close order → {r.json().get('status', '?')}")
+                        _book_exit_fill(tid, sym, r.json().get('orderId'),
+                                        'BOT' if is_short else 'SLD', price)
                     except Exception as _oe:
                         log(f"  {sym}: fast-exit close order failed to submit ({_oe}) — "
                             f"reconcile_with_ibkr() will pick it up")
@@ -5544,8 +5635,8 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         # THRUST_PRIORITY (A/B, off): strong-thrust names bat first — see its definition
         0 if (THRUST_PRIORITY and x.get('is_thrust')) else 1,
         0 if (x['is_sympathy'] and x['grade'] == 'A+') else
-        1 if (x['is_catalyst'] and x['grade'] == 'A+') else
-        2 if (x['is_catalyst'] and x['grade'] == 'A')  else
+        1 if (CATALYST_PRIVILEGES and x['is_catalyst'] and x['grade'] == 'A+') else
+        2 if (CATALYST_PRIVILEGES and x['is_catalyst'] and x['grade'] == 'A')  else
         3 if x['grade'] == 'A+' else 4,
         # HOD_LOCATION_RULE 'pullback_first': 1-3% pullbacks bat first (constant 0 = no effect otherwise)
         (_LOCATION_RANK[hod_location(x.get('price_vs_hod_pct'))]
@@ -5606,6 +5697,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
     elif not _long_book_on:
         log("📖 LONG book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
 
+    _new_by_sector = {}   # MAX_NEW_PER_SECTOR_PER_SCAN (Oct 2 2026 A/B)
     for pick in (candidates if _long_book_on else []):
         if open_count + attempted >= MAX_OPEN_TRADES:   # Oct 1 2026: entries were counted twice
             break
@@ -5626,10 +5718,14 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         if sector != 'OTHER' and sector_counts.get(sector, 0) >= MAX_PER_SECTOR:
             log(f"  SKIP {sym} — {sector} sector full ({MAX_PER_SECTOR} positions)")
             continue
+        if (MAX_NEW_PER_SECTOR_PER_SCAN is not None
+                and _new_by_sector.get(sector, 0) >= MAX_NEW_PER_SECTOR_PER_SCAN):
+            log(f"  SKIP {sym} — already {_new_by_sector[sector]} new {sector} entry this scan")
+            continue
 
         price    = pick['price']
         deployed = get_deployed_capital()   # entries already in DB via log_trade_entry
-        capital  = get_position_capital(pick['grade'], pick['is_catalyst'], deployed,
+        capital  = get_position_capital(pick['grade'], pick['is_catalyst'] and CATALYST_PRIVILEGES, deployed,
                                         pick.get('first_bar_strong', False))
         if capital <= 0:
             log(f"  Capital cap reached (${deployed:,.0f}/${TOTAL_CAPITAL:,} deployed)")
@@ -5645,7 +5741,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             info     = active_sympathy_triggers[sym]
             strategy = 'SYMPATHY'
             tag      = '💫'
-        elif pick['is_catalyst']:
+        elif pick['is_catalyst'] and CATALYST_PRIVILEGES:
             strategy = 'CATALYST'
             tag      = '⚡'
         else:
@@ -5663,7 +5759,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             continue
 
         # ── Layer 2 fitness gate (pre-entry candle quality) ────────────
-        _l2_sig, _l2_reason = (_check_layer2_fitness(sym, 'LONG', price, is_catalyst=pick['is_catalyst'])
+        _l2_sig, _l2_reason = (_check_layer2_fitness(sym, 'LONG', price, is_catalyst=pick['is_catalyst'] and CATALYST_PRIVILEGES)
                                if L2_ENABLED else ('GO', None))
         if _l2_sig == 'SKIP':
             log(f"  🚫 L2 SKIP {sym} — {_l2_reason}")
@@ -5674,6 +5770,17 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
 
         log(f"  {tag} {pick['grade']} {sym} [{sector}] ${price} | "
             f"Vol {pick['vol_ratio']:.1f}x | RSI {pick['rsi']} | R:R 1:{pick['rr']} | ATR stop")
+
+        if CONFIRM_ENTRY_PCT is not None:
+            _w, _nc = _confirm_watch.get(sym), datetime.now(ET)
+            _fresh = _w is not None and (_nc - _w['t']).total_seconds() <= CONFIRM_WINDOW_MIN * 60
+            if not _fresh or price < _w['px'] * (1 + CONFIRM_ENTRY_PCT / 100):
+                log(f"  ⏳ CONFIRM {sym} ${price}" + (f" vs ${_w['px']} — not confirmed, re-armed" if _fresh
+                    else f" — on watch, buys next scan only if >= +{CONFIRM_ENTRY_PCT}%"))
+                _confirm_watch[sym] = {'px': price, 't': _nc}
+                continue
+            _confirm_watch.pop(sym, None)
+            log(f"  ✅ CONFIRMED {sym} ${price} vs watch ${_w['px']} ({(price / _w['px'] - 1) * 100:+.2f}%)")
 
         attempted += 1  # count this slot before we know fill outcome
         trade_id = place_trade(
@@ -5693,6 +5800,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
                 daily_sympathy_count += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
             entries.append(pick | {'shares': shares, 'sector': sector, 'tag': tag})
+            _new_by_sector[sector] = _new_by_sector.get(sector, 0) + 1
             _l3_pending[trade_id] = {
                 'sym': sym, 'entry_time': datetime.now(ET),
                 'entry_price': _entry_fill_px.get(trade_id, price), 'direction': 'LONG',

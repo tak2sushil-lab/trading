@@ -23,7 +23,12 @@ Last updated: Sep 25 2026 (futures deep review)
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
-**🟡 EQUITY DAY TRADER — current state (Oct 1 2026, read first for equity):**
+**🟡 EQUITY DAY TRADER — current state (Oct 2 2026, read first for equity):**
+- **Oct 2 live watch — read the Oct 2 entry at the bottom first.** No entry input or batting order picks
+  batsmen (2y, 25+ features, max |corr| 0.04); the T+5 check fires on ~83% of trades by design; holding our
+  actual picks longer is WORSE. Replay `oct2ab`: no T+5/confirm/sector/catalyst variant changes the sign
+  (T+5 check is P&L-neutral and halves blow-ups — KEEP). Stop tuning entry filters/ranking/exits. Pending:
+  autotrader restart to make `EXIT_FILL_BOOKING` (real-fill exit booking) live; strategic size/churn call.
 - **LIVE since Oct 2 (user-approved Oct 1 evening): `HOD_LOCATION_RULE='pullback_first'`** — batting order ranks
   1-3% pullbacks first, agreeing with Layer 2 (hypothesis: fewer fade-out picks). Batting-order log line now tags
   each name `pullback / at-high / near / faded` with its % vs the high. **Review ~Oct 29** (with the vol trial):
@@ -5839,3 +5844,49 @@ fill, not the 30-60s-old scan price (fills averaged +0.16% above it since Aug, +
   it entered NOTHING on Oct 1** (scan finished 15:52; normal days finish ~15:41). `research_replay_ab.sh`
   now refuses 09:25–16:15 ET unless FORCE=1 and runs under `taskpolicy -b`. Never edit that script while
   it runs — zsh reads it as it goes (an edit garbled the tail of tonight's run).
+
+**OCT 2 2026 — LIVE WATCH: "10 of 10 losses" is the T+5 check, not the picks; no input picks batsmen.**
+Gap-up day (SPY +0.9% gap, then below its open). Day trader 17 entries, 16 closed by noon-ish + ON at
+15:45: **−$54.99 at real fills** (booked −$30.34), 4 winners; 12 exits were the T+5 check. The Oct 1-2
+changes (pullback_first, slot-counter fix, fill-anchored L3) changed ~nothing today (traced every scan).
+Measured (A+/A LONG candidates Aug 4 → Oct 1, bars_5m; 2y set = research_out/exhaustion_2y.csv):
+- **T+5 bar is +0.5% in 5 min; only 17% of candidates clear it** → stop-to-entry on ~83% of trades. At
+  T+5 picks are up 50/50; corr(5-min move, rest of day) = −0.10. It is insurance: it pays when SPY falls
+  open→close (corr −0.36), not knowable at the open (corr with SPY gap −0.09). Saved ~$160 Oct 2; cost
+  ~$456 Sep 4–Oct 1 (cut trades −$268 vs ~+$188 held to close).
+- ⚠️ **Holding OUR ACTUAL PICKS longer is WORSE** (224 trades): actual −$864 · hold to close −$1,247 ·
+  next open −$749 · next close −$379 · next close + 1-ATR stop +$17 (Sep 12-18 alone +$1,002; 4/9 weeks
+  positive). The candidate-level lab (+0.32%/trade buy+hold, confirm-then-buy +0.77%) does NOT transfer —
+  first-qualify names we BOUGHT ran −0.69% at +30m vs −0.02% for those skipped.
+- **Batting order has no skill**: within-scan corr(rank, to-close) +0.03 (t=0.29); at +30m +0.10 (wrong
+  way, t=1.41). **No entry feature picks batsmen**: 25+ features × 9,449 candidates (2y) incl. strength vs
+  ES/MNQ — max |corr| ≈0.04 (rvol_tod +0.035, ret_5d −0.033). A "market already ran up at entry" signal
+  (5/5 halves) was ARITHMETIC (within-day close is fixed) — withdrawn. ES early move does not predict its
+  rest of day (675 days, sign flips by year).
+- Same-sector names bought in one scan: −0.88%/trade (61, since Jun 1) vs −0.42%; 72% end one sign.
+  Catalysts get 4 privileges yet are −0.63% at +30m vs +0.58% non-catalyst (n.s. day-clustered).
+- Layer 2 "HOD×N" counts bars within 0.5% of the LAST-6-BAR high, not the session high (label is wrong).
+- Fixed-% thresholds (L3 −2/+0.5, PCT trail 0.5%) on names with 4-8% daily ATR.
+**Shipped (code):** default-off switches `L3_SKIP_RIDE`, `CONFIRM_ENTRY_PCT`/`CONFIRM_WINDOW_MIN`,
+`MAX_NEW_PER_SECTOR_PER_SCAN`, `CATALYST_PRIVILEGES` (+ equity_replay flags, preset `oct2`).
+`EXIT_FILL_BOOKING=True` + `database.correct_exit_fill()` — exits re-booked from IBKR executions by
+orderId (background thread, never orders; 30s timeout keeps the booked price) — **live only after an
+autotrader restart**. Today's 17 exits re-booked at real fills (backup `trades.db.bak-20261002-pre-fill-rebook`):
+fills cost $24.65 (~$1.45/trade) vs booked. **Wave Rider dashboard close fixed** — its bridge_quote returns
+a dict; `float(dict)` failed before the SELL (nothing was sent).
+**Replay `oct2ab`** (Aug 4 → Oct 1, 7 arms) started 14:34 during market hours with a freeze guard
+(SIGSTOP 15:35–15:52) — Clockwork entered ACLS/CENX/P at 15:43 on time. ⚠️ `taskpolicy -b` confines
+replays to the 4 E-cores: 14 processes ran at ~17% CPU each (1-2 days/hour); lifted with
+`taskpolicy -B -p <pid>` after 16:05.
+⚠️ **Replay ops lesson:** 14 concurrent replays on this 16 GB Mac thrash memory (≈6 GB compressed, 2 GB
+swap) AND `nice`/`taskpolicy -b` pin them to the 4 E-cores → ~20 min per simulated day. `renice -n` ADDS
+to nice and a normal user cannot lower it again. Restarted with ≤6 concurrent at nice 0 (runner in the
+session scratchpad): **~2 min/day, all 14 done in 1h42m.** Use ≤6 concurrent after the close.
+**REPLAY VERDICT `oct2ab`** (`research_replay_score.py oct2ab base`, 40 days, full pipeline):
+base −$142 (256t, 6 hard stops −$332, maxDD −$559) · confirm 0.25% **−$584** (t=−1.00) REJECTED ·
+confirm+no-L3 −$576 (19 hard stops) REJECTED · l3_ride +$56 (+$198, t=+0.53, −$140 ex-best-2, hard-stop
+losses −$731) NOT SHIPPED · no_l3 −$141 (**+$1**, hard stops −$829) → **T+5 check is P&L-neutral and halves
+blow-ups: KEEP** · no_cat_priv −$245 (−$103) but maxDD −$287 / hard stops −$159 = risk option · sector1
+−$237 (noise, 12 days differ). ⇒ **No entry-timing or exit variant changes the sign; the intraday book has
+no edge in this data. Change nothing in its logic; the open decision is strategic (size/churn vs the
+overnight window).**

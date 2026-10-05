@@ -646,6 +646,14 @@ def main():
     ap.add_argument('--no-l2-hod', action='store_true', help="A/B: drop Layer 2's HOD x N skip/half")
     ap.add_argument('--pullback-only', action='store_true', help='A/B: enter only 1-3%% pullbacks')
     ap.add_argument('--no-l2', action='store_true', help='A/B: skip Layer 2 entirely')
+    ap.add_argument('--l3-skip-ride', action='store_true',
+                    help='A/B auto_trader.L3_SKIP_RIDE=True: no T+5 check on hold-to-close (pre-10:00) trades')
+    ap.add_argument('--confirm-entry', type=float, default=None,
+                    help='A/B auto_trader.CONFIRM_ENTRY_PCT: buy only on a later scan, >= this %% above the qualifying price')
+    ap.add_argument('--no-catalyst-privileges', action='store_true',
+                    help='A/B auto_trader.CATALYST_PRIVILEGES=False: catalysts ranked/gated/sized like any candidate')
+    ap.add_argument('--max-new-per-sector', type=int, default=None,
+                    help='A/B auto_trader.MAX_NEW_PER_SECTOR_PER_SCAN: at most N new entries per sector per scan')
     ap.add_argument('--l2-hod-failed-only', action='store_true',
                     help="A/B: Layer 2's HOD test counts only failed tests (no new session high)")
     ap.set_defaults(vol_risk=None, thrust=None, override=None)
@@ -693,12 +701,23 @@ def main():
         at.L2_ENABLED = False
     if a.l2_hod_failed_only:
         at.L2_HOD_COUNT = 'failed'
+    if a.l3_skip_ride:
+        at.L3_SKIP_RIDE = True
+    if a.confirm_entry is not None:
+        at.CONFIRM_ENTRY_PCT = a.confirm_entry
+    if a.max_new_per_sector is not None:
+        at.MAX_NEW_PER_SECTOR_PER_SCAN = a.max_new_per_sector
+    if a.no_catalyst_privileges:
+        at.CATALYST_PRIVILEGES = False
     print(f'  switches: fresh_max_5d={at.MULTIDAY_FRESH_MAX_5D} vol_risk={at.VOL_SCALED_RISK} '
           f'thrust_priority={at.THRUST_PRIORITY} override={at.CATALYST_OVERRIDE_ENABLED} '
           f'live_daily_row={at.DAILY_ROW_FROM_LIVE_BARS} scanner_picks_trade={at.SCANNER_PICKS_TRADE} '
           f'regime_hard_skip={at.REGIME_HARD_SKIP} l3={at.L3_ENABLED} hod_rule={at.HOD_LOCATION_RULE} '
           f'l2_hod={at.L2_HOD_TEST} pullback_only={at.PULLBACK_ONLY} l2={at.L2_ENABLED} '
-          f'l2_hod_count={at.L2_HOD_COUNT}')
+          f'l2_hod_count={at.L2_HOD_COUNT} l3_skip_ride={getattr(at, "L3_SKIP_RIDE", None)} '
+          f'confirm_entry={getattr(at, "CONFIRM_ENTRY_PCT", None)} '
+          f'max_new_per_sector={getattr(at, "MAX_NEW_PER_SECTOR_PER_SCAN", None)} '
+          f'catalyst_privileges={getattr(at, "CATALYST_PRIVILEGES", None)}')
     global REGIME_AS_MODIFIER
     if a.hard_router:
         REGIME_AS_MODIFIER = False

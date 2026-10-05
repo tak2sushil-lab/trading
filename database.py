@@ -675,6 +675,33 @@ def log_trade_exit(trade_id, exit_price, exit_reason, max_gain_pct=None):
     conn.close()
     return round(pnl, 2)
 
+def correct_exit_fill(trade_id, fill_price):
+    """Re-book a closed trade at the broker's REAL exit fill (Oct 2 2026).
+
+    log_trade_exit() is called BEFORE the closing order is sent (DB-write-first, see
+    auto_trader), so it books the monitor's sampled price. On Oct 2 2026 the real fills of
+    10 exits were $12.28 worse than booked. This recomputes pnl / pnl_pct / status from the
+    fill with the same commission model; exit_reason, exit time and max_gain_pct are kept.
+    Returns (old_pnl, new_pnl) or None when the row is missing.
+    """
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute('SELECT entry_price, shares, side, pnl FROM trades WHERE id=?', (trade_id,))
+        row = c.fetchone()
+        if not row:
+            return None
+        entry_price, shares, side, old_pnl = row[0], row[1], (row[2] or 'LONG'), row[3]
+        gross = ((entry_price - fill_price) if side == 'SHORT' else (fill_price - entry_price)) * shares
+        pnl = gross - equity_commission(shares)
+        pnl_pct = (pnl / (entry_price * shares) * 100) if (entry_price and shares) else 0.0
+        c.execute('UPDATE trades SET exit_price=?, pnl=?, pnl_pct=?, status=? WHERE id=?',
+                  (fill_price, round(pnl, 2), round(pnl_pct, 2), 'WIN' if pnl > 0 else 'LOSS', trade_id))
+        conn.commit()
+        return old_pnl, round(pnl, 2)
+    finally:
+        conn.close()
+
 def get_open_trades():
     conn   = get_connection()
     c      = conn.cursor()
