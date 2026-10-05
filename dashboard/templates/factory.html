@@ -86,7 +86,7 @@
 
   <div class="card section">
     <div class="section-title">THE ALPHA FACTORY</div>
-    <p class="glossary-note">A machine that keeps <b>building trading edges, testing each honestly, sailing the ones that pass, and scrapping the ones that rot.</b> We don't bet on a strategy (they decay) — we bet on the <i>process</i>. Judged on smoothness, not peak return. Places <b>no live orders</b> except the live-paper engines below (Wave Rider + Clockwork), currently in shadow.
+    <p class="glossary-note">A machine that keeps <b>building trading edges, testing each honestly, sailing the ones that pass, and scrapping the ones that rot.</b> We don't bet on a strategy (they decay) — we bet on the <i>process</i>. Judged on smoothness, not peak return. Places <b>no live orders</b> except the live-paper engines below (Wave Rider, Contrarian, Clockwork, Night Owl) — real orders on the IBKR <i>paper</i> account.
     {% if f.snapshot %}<br><span class="subtle">Snapshot generated {{ f.snapshot.generated }} · {{ f.snapshot.data.events }} events over {{ f.snapshot.data.universe }} stocks · {{ f.snapshot.data.start }} → {{ f.snapshot.data.end }}</span>{% endif %}</p>
   </div>
 
@@ -150,6 +150,17 @@
         <div class="lstep"><div class="lk">④ HOLD</div><div class="lv">overnight — the money made while you sleep</div></div>
         <div class="lstep"><div class="lk">⑤ EXIT</div><div class="lv">next open: sell @ <b>$12.18</b> (+1.5%)</div></div>
         <div class="lstep alpha"><div class="lk">✓ ALPHA</div><div class="lv">+1.5% − overnight Tide +0.4% = <b>+1.1% skill</b></div></div>
+      </div>
+    </div>
+    <div class="dry-lane" style="--acc:#f778ba">
+      <div class="dry-head">🦉 Night Owl <span class="tag">overnight book · learned ranking · 1 night · LIVE paper</span></div>
+      <div class="dry-flow">
+        <div class="lstep"><div class="lk">① SIGNAL</div><div class="lv">09:35 ET — the model scores every name from <b>yesterday's</b> daily data + today's opening gap</div></div>
+        <div class="lstep"><div class="lk">② SELECT</div><div class="lv">top 3 WILD names, skipping Clockwork's picks and anyone reporting earnings</div></div>
+        <div class="lstep"><div class="lk">③ ENTER</div><div class="lv">buy at the close: ~$3,333 a name (own $10k)</div></div>
+        <div class="lstep"><div class="lk">④ HOLD</div><div class="lv">overnight — same window as Clockwork, a different chooser</div></div>
+        <div class="lstep"><div class="lk">⑤ EXIT</div><div class="lv">next open, at the opening auction</div></div>
+        <div class="lstep alpha"><div class="lk">✓ ALPHA</div><div class="lv">pick's overnight − average WILD name's overnight = <b>skill</b></div></div>
       </div>
     </div>
     <p class="subtle" style="margin-top:4px">Illustrative numbers. The key point: three different edges, one identical honesty test — <b>outcome − Tide = alpha</b> — so no engine can flatter itself.</p>
@@ -301,7 +312,7 @@
     <div class="section-title">CLOCKWORK — LIVE PAPER (overnight book · Night Shift v2)
       {% if f.ovn.mode=='LIVE' %}<span class="pill livebadge">LIVE ORDERS</span>{% else %}<span class="pill shadowbadge">SHADOW · no orders</span>{% endif %}
     </div>
-    <p class="subtle"><b>Directional overnight book on live-shadow</b> (not a market-neutral Roster engine — it fails the gate's cost check once you charge a full round-trip every night, which an overnight book always pays). Near the close, rank WILD stocks by how <b>consistently</b> they've gapped up (last 30 nights), buy the top ~10, hold overnight, sell at the open. It carries overnight beta, so its RAW return is positive at realistic costs; the forward shadow test measures real net-of-fills. Shadow = records intended trades, places no orders.</p>
+    <p class="subtle"><b>Directional overnight book on live-shadow</b> (not a market-neutral Roster engine — it fails the gate's cost check once you charge a full round-trip every night, which an overnight book always pays). Near the close, rank WILD stocks by how <b>consistently</b> they've gapped up (last 30 nights), buy the top 3 (~$3,333 each), hold overnight, sell at the open. It carries overnight beta, so its RAW return is positive at realistic costs; the forward shadow test measures real net-of-fills. Shadow = records intended trades, places no orders.</p>
 
     {% if f.ovn.scan %}
     <div style="margin:6px 0 10px">
@@ -333,6 +344,67 @@
     <table class="positions-table glossary-table">
       <thead><tr><th>Symbol</th><th>P&amp;L</th><th>%</th></tr></thead>
       <tbody>{% for p in f.ovn.closed %}<tr><td>{{ p.symbol }}</td><td>${{ '%.2f'|format(p.pnl or 0) }}</td><td>{{ '%.1f'|format(p.pnl_pct or 0) }}%</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="card section">
+    <div class="section-title">NIGHT OWL — LIVE PAPER (machine-learned overnight book)
+      {% if f.owl.mode=='LIVE' %}<span class="pill livebadge">LIVE ORDERS</span>{% else %}<span class="pill shadowbadge">SHADOW · no orders</span>{% endif %}
+    </div>
+    <p class="subtle"><b>Same window as Clockwork, a different chooser.</b> Every morning at ~09:35 a gradient-boosted
+      model (~90 daily inputs, every one at least a session old, plus today's opening gap) ranks the whole universe for
+      tonight's close→open return. Near the close it buys its top 3 WILD names (~$3,333 each, own $10k), skipping any name
+      Clockwork or another book already holds and any name reporting earnings; sells at the next open. Re-trained monthly.
+      Out of sample 2018→2026 (walk-forward, monthly re-fit) its top 3 beat the average WILD name by ~+18bp a night;
+      its ranking skill was positive every year, the top-3 excess in 7 of 9 (2019 and 2023 slightly negative) — with
+      deep multi-month drawdowns. <b>Judge it on ref P&amp;L (official prints)</b>: IBKR paper invents auction fills.</p>
+    {% if f.owl.model %}
+    <div style="margin:4px 0 8px">
+      <span class="kpi"><b>{{ f.owl.model.version }}</b><span>model</span></span>
+      <span class="kpi"><b>{{ f.owl.model.trained_through }}</b><span>trained through</span></span>
+      <span class="kpi"><b>{{ '{:,}'.format(f.owl.model.n_rows or 0) }}</b><span>training rows</span></span>
+    </div>
+    {% endif %}
+
+    {% if f.owl.ranking %}
+    <div style="font-size:11px;color:#8b949e;margin:6px 0 4px">MORNING RANKING — {{ f.owl.ranking[0].score_date }} (top WILD names)</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>#</th><th>Symbol</th><th>Model score</th><th>Opening gap</th></tr></thead>
+      <tbody>{% for r in f.owl.ranking %}<tr><td>{{ r.wild_rank }}</td><td>{{ r.symbol }}</td><td>{{ '%+.4f'|format(r.score or 0) }}</td><td>{{ '%+.2f'|format((r.gap or 0)*100) }}%</td></tr>{% endfor %}</tbody>
+    </table>
+    {% else %}
+    <p class="subtle">No ranking yet — Night Owl scores the universe from ~09:35 ET on market days and enters 15:41–15:49 ET.</p>
+    {% endif %}
+
+    {% if f.owl.scan %}
+    <div style="margin:10px 0 6px">
+      <div style="font-size:11px;color:#8b949e;margin-bottom:4px">LATEST CLOSE-SCAN — {{ f.owl.scan.ts }}</div>
+      <span class="kpi"><b>{{ f.owl.scan.funnel.wild_ranked if f.owl.scan.funnel.wild_ranked is defined else '—' }}</b><span>WILD ranked</span></span>
+      <span class="kpi"><b>{{ f.owl.scan.funnel.top_n if f.owl.scan.funnel.top_n is defined else '—' }}</b><span>target</span></span>
+      <span class="kpi"><b>{{ f.owl.scan.funnel.entered if f.owl.scan.funnel.entered is defined else 0 }}</b><span>entered</span></span>
+    </div>
+    {% if f.owl.candidates %}
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>Model score</th><th>Verdict</th></tr></thead>
+      <tbody>{% for c in f.owl.candidates %}<tr><td>{{ c.symbol }}</td><td>{{ '%+.4f'|format(c.score or 0) }}</td><td>{% if c.verdict=='ENTERED' %}<span class="pill pass">ENTERED</span>{% else %}<span class="subtle">{{ c.verdict }}</span>{% endif %}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+
+    {% if f.owl.open %}
+    <div style="font-size:11px;color:#8b949e;margin:10px 0 4px">HELD OVERNIGHT ({{ f.owl.open|length }})</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>Status</th><th>Entry</th><th>Shares</th><th>Model rank</th></tr></thead>
+      <tbody>{% for p in f.owl.open %}<tr><td>{{ p.symbol }}</td><td>{{ p.status }}</td><td>${{ p.entry_price }}</td><td>{{ p.shares }}</td><td>{{ p.model_rank }}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+
+    {% if f.owl.summary %}
+    <div style="font-size:11px;color:#8b949e;margin:10px 0 4px">RECENT CLOSED ({{ f.owl.summary.n }}) — P&amp;L ${{ f.owl.summary.pnl }}, win {{ f.owl.summary.win }}%{% if f.owl.summary.ref_pnl is not none %} · at official prints ${{ f.owl.summary.ref_pnl }} ({{ f.owl.summary.ref_n }} marked){% endif %}</div>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Symbol</th><th>P&amp;L</th><th>%</th><th>Ref P&amp;L</th></tr></thead>
+      <tbody>{% for p in f.owl.closed %}<tr><td>{{ p.symbol }}</td><td>${{ '%.2f'|format(p.pnl or 0) }}</td><td>{{ '%.1f'|format(p.pnl_pct or 0) }}%</td><td>{% if p.ref_pnl is not none %}${{ '%.2f'|format(p.ref_pnl) }}{% else %}<span class="subtle">—</span>{% endif %}</td></tr>{% endfor %}</tbody>
     </table>
     {% endif %}
   </div>

@@ -34,10 +34,15 @@ TRADES, MARKET = os.path.join(ROOT, 'trades.db'), os.path.join(ROOT, 'market_dat
 COLS = [('ref_entry', 'REAL'), ('ref_exit', 'REAL'), ('ref_pnl', 'REAL'), ('exec_drag', 'REAL')]
 
 
-def ensure_cols(con):
+# Oct 5 2026: Night Owl (factory/live/night_owl.py) is the second overnight book; the same honest-price
+# marking applies, so both tables are processed. Its table is created with these columns already.
+TABLES = ('overnight_trades', 'night_owl_trades')
+
+
+def ensure_cols(con, table='overnight_trades'):
     for c, t in COLS:
         try:
-            con.execute(f'ALTER TABLE overnight_trades ADD COLUMN {c} {t}')
+            con.execute(f'ALTER TABLE {table} ADD COLUMN {c} {t}')
         except Exception:
             pass
     con.commit()
@@ -59,14 +64,23 @@ def prints(dates):
 
 
 def main():
+    for table in TABLES:
+        mark(table)
+
+
+def mark(table):
     con = sqlite3.connect(TRADES)
-    ensure_cols(con)
+    try:
+        con.execute(f'SELECT 1 FROM {table} LIMIT 1')
+    except Exception:
+        print(f'{table}: not present yet'); con.close(); return
+    ensure_cols(con, table)
     df = pd.read_sql_query(
         "SELECT id, symbol, entry_date, exit_date, shares, pnl, mode "
-        "FROM overnight_trades WHERE status='CLOSED' AND exit_date IS NOT NULL "
+        f"FROM {table} WHERE status='CLOSED' AND exit_date IS NOT NULL "
         "AND (ref_pnl IS NULL)", con)
     if df.empty:
-        print('nothing to backfill'); con.close(); return
+        print(f'{table}: nothing to backfill'); con.close(); return
     op, cl = prints(list(df.entry_date) + list(df.exit_date))
     m = (df.merge(cl.rename(columns={'d': 'entry_date', 'c': 'ref_entry'}),
                   on=['symbol', 'entry_date'], how='left')
@@ -75,17 +89,17 @@ def main():
     m = m.dropna(subset=['ref_entry', 'ref_exit'])
     m['ref_pnl'] = (m.ref_exit - m.ref_entry) * m.shares - m.shares.apply(equity_commission)
     m['exec_drag'] = m.ref_pnl - m.pnl
-    con.executemany('UPDATE overnight_trades SET ref_entry=?, ref_exit=?, ref_pnl=?, exec_drag=? WHERE id=?',
+    con.executemany(f'UPDATE {table} SET ref_entry=?, ref_exit=?, ref_pnl=?, exec_drag=? WHERE id=?',
                     m[['ref_entry', 'ref_exit', 'ref_pnl', 'exec_drag', 'id']].values.tolist())
     con.commit()
-    print(f'backfilled {len(m)} of {len(df)} rows')
+    print(f'{table}: backfilled {len(m)} of {len(df)} rows')
 
     full = pd.read_sql_query(
         "SELECT mode, COUNT(*) n, ROUND(SUM(pnl),2) actual, ROUND(SUM(ref_pnl),2) strategy, "
-        "ROUND(SUM(exec_drag),2) exec_drag FROM overnight_trades "
+        f"ROUND(SUM(exec_drag),2) exec_drag FROM {table} "
         "WHERE ref_pnl IS NOT NULL GROUP BY mode", con)
     con.close()
-    print('\n=== strategy vs execution, all recorded Clockwork trades ===')
+    print(f'\n=== strategy vs execution, all recorded {table} ===')
     print(full.to_string(index=False))
     print('\n  actual    = what the broker filled us at')
     print('  strategy  = the same trades at the official close and open, net of the modelled fee')

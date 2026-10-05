@@ -79,6 +79,46 @@
   </div>
 
   <div class="card section">
+    <div class="section-title">THE EQUITY BOOKS — five books, one real (paper) account</div>
+    <p class="subtle">Each book keeps its own table and its own positions, and sells only the shares it bought — two
+      books can hold the same symbol and IBKR shows the blend. The colour bar next to a book's name is the same
+      everywhere on the dashboard.</p>
+    <table class="positions-table glossary-table">
+      <thead><tr><th>Book</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
+      <tbody>
+        <tr><td><span class="eng-name" data-eng="Day Trader"><span class="eng-bar"></span>Day Trader</span></td><td>In by morning, out by the close</td>
+          <td>The original intraday book (<code>auto_trader.py</code>): catalyst and momentum names graded A+/A, entered
+          after 09:30, flat by 15:45 except a small overnight hold for strong closers.</td>
+          <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><span class="eng-name" data-eng="Wave Rider"><span class="eng-bar"></span>Wave Rider</span></td><td>Rides a stock already moving</td>
+          <td>Swing book: buys WILD names that popped, holds 3 days, 8% stop.</td>
+          <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><span class="eng-name" data-eng="Contrarian"><span class="eng-bar"></span>Contrarian</span></td><td>Buys what just fell hardest</td>
+          <td>Mean reversion: buys the biggest 3-day fallers, holds 5 days, 15% stop. Long-only, so judge it on alpha
+          vs the tide, not raw P&amp;L.</td>
+          <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><span class="eng-name" data-eng="Clockwork"><span class="eng-bar"></span>Clockwork</span></td><td>Buys the close, sells the open</td>
+          <td>Overnight book: ranks WILD names by how consistently they gapped up over the last 30 nights, buys the top 3
+          (~$3,333 each) at the closing auction, sells at the next opening auction.</td>
+          <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><span class="eng-name" data-eng="Night Owl"><span class="eng-bar"></span>Night Owl</span></td><td>A learned model picks who sleeps well</td>
+          <td>Second overnight book (live Oct 5 2026). Same window as Clockwork, a different chooser: a machine-learned
+          model (gradient-boosted trees, ~90 daily inputs, trained on ~11 years) scores every name at ~09:35 for
+          tonight's close→open move; near the close it buys its top 3 WILD names (~$3,333 each, own $10k), skipping
+          Clockwork's picks and anyone reporting earnings, and sells at the next open. Re-trained monthly. Out of
+          sample 2018→2026 its top 3 beat the average WILD name by ~18bp a night (positive in 7 of 9 years; 2019 and
+          2023 slightly negative), with deep multi-month drawdowns along the way.</td>
+          <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><strong>Ref P&amp;L</strong> (Clockwork, Night Owl)</td><td>Marking to the official scoreboard</td>
+          <td>The same overnight trades re-priced at the session's official close and open from our own bars. The IBKR
+          paper simulator invents auction fills, so ref P&amp;L is the honest read on these two books; P&amp;L is the read
+          on the plumbing.</td>
+          <td class="watches">Watches only — written each evening at 17:05, places no orders.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card section">
     <div class="section-title">SYSTEM HEALTH — BOOKS &amp; FUNNELS</div>
     <table class="positions-table glossary-table">
       <thead><tr><th>Term</th><th>Analogy</th><th>Meaning</th><th>Decides or watches?</th></tr></thead>
@@ -93,7 +133,7 @@
           gate rejected the rest. Pure count — doesn't judge whether the rejections were correct
           (that's the Bouncer Report Card's job, run nightly, not shown live on this page).</td>
           <td class="watches">Watches only — a readout of what the live gates already decided.</td></tr>
-        <tr><td><strong>Fish Finder</strong></td><td>Try every lure</td>
+        <tr><td><strong>Fish Finder</strong> <span class="subtle">(decommissioned Aug 15 2026)</span></td><td>Try every lure</td>
           <td>Tests every symbol against all 3 regime templates (ADX Trend / Keltner Revert /
           RSI Revert) every scan on its own signals, instead of one market-wide regime picking a
           single template for all 241 symbols. Highest-conviction template per symbol wins.</td>

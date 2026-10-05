@@ -2392,6 +2392,7 @@ CONTROL_TARGETS = {
     'wave_rider',    # factory/live/wave_rider.py         — drained by its own one-shot
     'contrarian',    # factory/live/contrarian.py         — drained by its own one-shot
     'clockwork',     # factory/live/overnight.py          — drained by its own one-shot
+    'night_owl',     # factory/live/night_owl.py          — drained by its own one-shot (Oct 5 2026)
     'options',       # options/options_trader.py          — drained by options_trader
     'futures_ny',    # futures/{futures,tc}_trader.py     — drained per account_mode
     'london',        # futures/london_trader.py           — drained by run_monitor

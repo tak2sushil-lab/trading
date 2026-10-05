@@ -1395,9 +1395,9 @@ def _book_exit_fill(tid, sym, order_id, side_code, booked_px):
 
 
 def _other_book_symbols():
-    """Symbols legitimately held right now by the OTHER three live equity books — Wave Rider,
-    Contrarian, Clockwork — all of which trade the same real IBKR account through their own
-    separate tables (wave_trades / contrarian_trades / overnight_trades), invisible to
+    """Symbols legitimately held right now by the OTHER live equity books — Wave Rider,
+    Contrarian, Clockwork, Night Owl — all of which trade the same real IBKR account through their own
+    separate tables (wave_trades / contrarian_trades / overnight_trades / night_owl_trades), invisible to
     get_open_trades() which only ever reads `trades`.
 
     Sep 2026: this gap was latent and harmless for months because none of those three engines
@@ -1411,7 +1411,9 @@ def _other_book_symbols():
         c = conn.cursor()
         for tbl, statuses in (('wave_trades', ('OPEN',)),
                                ('contrarian_trades', ('OPEN',)),
-                               ('overnight_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'))):
+                               ('overnight_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT')),
+                               # Oct 5 2026: Night Owl, the second overnight book — same reason
+                               ('night_owl_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'))):
             try:
                 q = f"SELECT symbol FROM {tbl} WHERE mode='LIVE' AND status IN ({','.join('?'*len(statuses))})"
                 c.execute(q, statuses)

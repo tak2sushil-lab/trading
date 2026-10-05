@@ -64,7 +64,7 @@ function showCal(view) {
 // equity account; FUTURES is the NY book plus London, which is a separate book with
 // its own exits (FUT CLOSE does not cover it).
 const BOOK_GROUPS = {
-  EQUITY:  ['Day Trader', 'Wave Rider', 'Contrarian', 'Clockwork'],
+  EQUITY:  ['Day Trader', 'Wave Rider', 'Contrarian', 'Clockwork', 'Night Owl'],
   FUTURES: ['Futures NY', 'London'],
 };
 
@@ -241,7 +241,7 @@ function wireCloseControls() {
 
   const bulk = [
     ['closeall-equity', 'equity', null, 'Close the whole Day Trader book?',
-     'Only the <strong>Day Trader</strong> book. Wave Rider, Contrarian and Clockwork are separate books and are <strong>not</strong> touched — close those from their own rows.'],
+     'Only the <strong>Day Trader</strong> book. Wave Rider, Contrarian, Clockwork and Night Owl are separate books and are <strong>not</strong> touched — close those from their own rows.'],
     ['closeall-options', 'options', null, 'Close every options position?',
      'Every open options position, closed through options_trader\'s own two-leg path.'],
     ['closeall-fut-ibkr', 'futures_ny', 'IBKR', 'Flatten NY futures on IBKR?',
@@ -543,7 +543,7 @@ function renderScorecard(rows) {
     <tbody>${rows.map(r => {
       if (!r.n) return `<tr><td>${r.book}</td><td>0</td><td colspan="5" class="muted-text">no closed trades</td></tr>`;
       return `<tr>
-        <td>${['Day Trader','Wave Rider','Contrarian','Clockwork'].includes(r.book)
+        <td>${['Day Trader','Wave Rider','Contrarian','Clockwork','Night Owl'].includes(r.book)
               ? engBadge(r.book) : `<strong>${r.book}</strong>`}</td>
         <td>${r.n}</td>
         <td>${r.wr}%</td>
@@ -731,7 +731,7 @@ function renderTotals(t, fmt) {
   put('eq-total', `<span class="tot-label">To date</span>${fmt(eq.total)}<span class="tot-since">since ${mon(eq.since)}</span>`,
       'Realized P&L to date, closed trades, LIVE rows only:\n' +
       (eq.books || []).map(b => `${b.name}: ${money(b.total)} (${b.trades} trades since ${b.since || '—'})`).join('\n') +
-      '\n\nClockwork is booked at IBKR paper auction fills, which the paper simulator fabricates; ' +
+      '\n\nClockwork and Night Owl are booked at IBKR paper auction fills, which the paper simulator fabricates; ' +
       'its honest measure is the reference-price P&L (ref_pnl).');
   const o = t.options || {};
   put('opt-total', `<span class="tot-label">To date</span>${fmt(o.total)}<span class="tot-since">since ${mon(o.since)}</span>`,

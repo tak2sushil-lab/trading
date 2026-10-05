@@ -51,6 +51,7 @@ SERVICES = [
     ('wave_rider',   'com.sushil.trading.wave_rider',     'scheduled', 'last scan errored', 'Books', 'wave_rider.log', 24, 'Swing book — buys names already moving hard, holds 3 days, 8% stop. PLACES REAL ORDERS.'),
     ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books', 'contrarian.log', 24, 'Mean-reversion book — buys the biggest 3-day fallers, holds 5 days, 15% stop. Long-only, so judge it on alpha vs the tide, not raw P&L. PLACES REAL ORDERS.'),
     ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books', 'clockwork.log', 24, "Overnight book — buys at the closing auction, sells at the next opening auction, 3 names. This is the book that trades the overnight window where 91% of the universe's return actually accrues. PLACES REAL ORDERS."),
+    ('night_owl',    'com.sushil.trading.night_owl',      'scheduled', 'last pass errored', 'Books', 'night_owl.log', 24, "Second overnight book (Oct 5 2026) — a machine-learned ranking model scores the universe each morning; buys its top 3 at the closing auction and sells at the next opening auction. Skips Clockwork's names. PLACES REAL ORDERS."),
     ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books', None, None, 'The options book — spread entries, the calculator and the OPT commands. PLACES REAL ORDERS.'),
     ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books', None, None, 'Monitors open options positions every 15 min and runs their exits (targets, stops, two-leg closes). PLACES REAL ORDERS.'),
     ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books', None, None, 'MNQ futures on IBKR — the NY session plus London threaded inside it. PLACES REAL ORDERS.'),
@@ -62,7 +63,8 @@ SERVICES = [
     ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data', 'market_context.log', 96, 'Pre-market market-context brief at 09:15 — trend, S/R levels, macro dates, plus one Claude call for a stance. LOG-ONLY: no trader reads it.'),
     # ── instrumentation: silent failure here costs evidence, not money ──
     ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments', 'scan_forward_label.log', 96, 'Writes the forward outcome label (what each graded signal actually went on to do) onto scan_log each evening. This is the answer key for the grader — without it we record the guesses and never the answers. Places no orders.'),
-    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96, "Marks Clockwork twice a night: once at the broker's fill, once at the session's OFFICIAL close and open from our own bars. IBKR paper fabricates auction fills, so ref_pnl is the honest read on the strategy and pnl is the read on the plumbing. Places no orders."),
+    ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96, "Marks Clockwork and Night Owl twice a night: once at the broker's fill, once at the session's OFFICIAL close and open from our own bars. IBKR paper fabricates auction fills, so ref_pnl is the honest read on the strategy and pnl is the read on the plumbing. Places no orders."),
+    ('night_owl_prep', 'com.sushil.trading.night_owl_prep', 'scheduled', 'cache refresh / retrain failed', 'Instruments', 'night_owl_prep.log', 96, "Refreshes Night Owl's daily price cache after the close and re-trains its model on the first run of each month. The morning score also refreshes, so one missed run is not fatal. Places no orders."),
     ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments', 'turbo.log', 24, 'Asks, for each Wave Rider pick, whether an options structure would beat simply holding the shares. So far the answer is almost always no (5 passes in 45, and those lost 51pp vs shares). SHADOW ONLY — places no orders.'),
     # ── watchdogs. parity_check exits 1 when it FINDS a divergence — that is its
     #    designed signal, not a crash, so amber here means "read the report". ──
@@ -519,6 +521,7 @@ def get_equity_positions():
         ('Wave Rider', 'wave_trades',        'momentum swing · 3-day hold · 8% stop'),
         ('Contrarian', 'contrarian_trades',  'mean reversion · 5-day hold · 15% stop'),
         ('Clockwork',  'overnight_trades',   'overnight gap · sells at the next open'),
+        ('Night Owl',  'night_owl_trades',   'ML overnight · sells at the next open'),
     )
     try:
         with _db() as c:
@@ -855,7 +858,7 @@ def get_totals():
                           "WHERE exit_date IS NOT NULL AND setup_type != 'RECONCILED'").fetchone()
             books = [{'name': 'Day Trader', 'total': round(r[0], 2), 'since': r[1], 'trades': r[2]}]
             for name, tbl in (('Wave Rider', 'wave_trades'), ('Contrarian', 'contrarian_trades'),
-                              ('Clockwork', 'overnight_trades')):
+                              ('Clockwork', 'overnight_trades'), ('Night Owl', 'night_owl_trades')):
                 try:
                     cols = {x[1] for x in c.execute(f'PRAGMA table_info({tbl})')}
                     if not cols:
@@ -941,7 +944,8 @@ def get_today_summary():
             # missing from this number without it being visible on the card itself.
             for _name, _tbl in (('Wave Rider', 'wave_trades'),
                                 ('Contrarian', 'contrarian_trades'),
-                                ('Clockwork',  'overnight_trades')):
+                                ('Clockwork',  'overnight_trades'),
+                                ('Night Owl',  'night_owl_trades')):
                 try:
                     _cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
                     if not _cols:
@@ -1024,7 +1028,7 @@ def get_pnl_by_book(sessions=15):
             # Today card. Folded into 'equity' rather than given their own series:
             # this chart is P&L per VERTICAL, and per-engine detail already lives
             # in the ENGINES scoreboard.
-            for _tbl in ('wave_trades', 'contrarian_trades', 'overnight_trades'):
+            for _tbl in ('wave_trades', 'contrarian_trades', 'overnight_trades', 'night_owl_trades'):
                 try:
                     _cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
                     if not _cols:
@@ -1096,6 +1100,9 @@ def get_scorecard(since_date=None, days=21):
                           "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
                           "AND pnl IS NOT NULL"),
         ('Clockwork',     "SELECT exit_date, pnl FROM overnight_trades "
+                          "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
+                          "AND pnl IS NOT NULL"),
+        ('Night Owl',     "SELECT exit_date, pnl FROM night_owl_trades "
                           "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
                           "AND pnl IS NOT NULL"),
         ('Options',       "SELECT exit_date, " + OPT_PNL_SQL + " FROM options_trades "
@@ -1318,7 +1325,8 @@ def get_activity(sessions=5):
             # Wave Rider exit could land in the day total with no matching line.
             for _book, _tbl in (('Wave Rider', 'wave_trades'),
                                 ('Contrarian', 'contrarian_trades'),
-                                ('Clockwork',  'overnight_trades')):
+                                ('Clockwork',  'overnight_trades'),
+                                ('Night Owl',  'night_owl_trades')):
                 try:
                     _cols = {r[1] for r in c.execute('PRAGMA table_info(' + _tbl + ')')}
                     if not _cols:
@@ -1691,6 +1699,8 @@ def get_system_health():
                     ('Wave Rider', 'wave_trades', 10000.0, "status='OPEN'"),
                     ('Contrarian', 'contrarian_trades', 10000.0, "status='OPEN'"),
                     ('Clockwork', 'overnight_trades', 10000.0,
+                     "status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')"),
+                    ('Night Owl', 'night_owl_trades', 10000.0,
                      "status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')")):
                 try:
                     _cols = {r[1] for r in c.execute('PRAGMA table_info(' + _tbl + ')')}
@@ -1985,8 +1995,12 @@ ENGINE_SPECS = [
      'Mean reversion — buys the biggest 3-day fallers, holds 5 days, 15% stop. Long-only, so '
      'judge it on alpha vs the tide rather than raw P&L.'),
     ('Clockwork',    'buys the close, sells the open',        'overnight_trades',  True,
-     'Overnight gap book — ranks names by how consistently they gap up, buys the top 10 at the '
+     'Overnight gap book — ranks names by how consistently they gap up, buys the top 3 at the '
      'closing auction, sells at the next opening auction.'),
+    ('Night Owl',    'a learned model picks who sleeps well', 'night_owl_trades',  True,
+     'ML overnight book (Oct 5 2026) — a gradient-boosted model trained on ~11 years of daily data '
+     'ranks every name each morning; buys its top 3 WILD names at the closing auction, sells at the '
+     'next opening auction. Judge it on ref_pnl (official prints), not pnl.'),
 ]
 
 
@@ -2113,6 +2127,53 @@ def get_factory_state():
                                        "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls))}
     except Exception:
         pass
+    # Night Owl (Oct 5 2026) — the machine-learned overnight book. Same shape as Clockwork's panel,
+    # plus the morning ranking (night_owl_scores) and which model version made it.
+    state["owl"] = {"open": [], "closed": [], "scan": None, "candidates": [], "ranking": [],
+                    "mode": "LIVE", "summary": None, "model": None}
+    try:
+        try:
+            _mj = sorted(f for f in os.listdir(os.path.join(BASE_DIR, 'factory', 'cache', 'night_owl'))
+                         if f.startswith('model_') and f.endswith('.json'))
+            if _mj:
+                with open(os.path.join(BASE_DIR, 'factory', 'cache', 'night_owl', _mj[-1])) as fh:
+                    _m = json.load(fh)
+                state["owl"]["model"] = {k: _m.get(k) for k in
+                                         ('version', 'trained_through', 'n_rows', 'n_symbols', 'first_date')}
+        except Exception:
+            pass
+        conn = sqlite3.connect(TRADES_DB); conn.row_factory = sqlite3.Row
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(night_owl_trades)")}
+        if cols:
+            state["owl"]["open"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM night_owl_trades WHERE status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT') "
+                "AND mode='LIVE' ORDER BY entry_date DESC")]
+            state["owl"]["closed"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM night_owl_trades WHERE status='CLOSED' AND mode='LIVE' "
+                "ORDER BY exit_date DESC, id DESC LIMIT 15")]
+            row = conn.execute("SELECT scan_ts, detail FROM night_owl_scan_log WHERE kind='SUMMARY' "
+                               "ORDER BY id DESC LIMIT 1").fetchone()
+            if row:
+                state["owl"]["scan"] = {"ts": row["scan_ts"], "funnel": json.loads(row["detail"])}
+                state["owl"]["candidates"] = [dict(r) for r in conn.execute(
+                    "SELECT symbol, score, verdict FROM night_owl_scan_log "
+                    "WHERE kind='CANDIDATE' AND scan_ts=? ORDER BY score DESC", (row["scan_ts"],))]
+            d = conn.execute("SELECT MAX(score_date) FROM night_owl_scores").fetchone()[0]
+            if d:
+                state["owl"]["ranking"] = [dict(r) for r in conn.execute(
+                    "SELECT score_date, symbol, score, wild_rank, gap, model_version FROM night_owl_scores "
+                    "WHERE score_date=? AND wild=1 ORDER BY wild_rank LIMIT 8", (d,))]
+            cl = state["owl"]["closed"]
+            if cl:
+                pnls = [c["pnl"] or 0 for c in cl]
+                refs = [c["ref_pnl"] for c in cl if c.get("ref_pnl") is not None]
+                state["owl"]["summary"] = {"n": len(pnls), "pnl": round(sum(pnls), 2),
+                                           "win": round(100 * sum(1 for p in pnls if p > 0) / len(pnls)),
+                                           "ref_pnl": round(sum(refs), 2) if refs else None,
+                                           "ref_n": len(refs)}
+        conn.close()
+    except Exception:
+        pass
     # Contrarian — the mean-reversion sleeve (buys the biggest 3-day fallers). Was missing from
     # this page entirely until Sep 11 2026 despite trading live since Sep 9, so its activity was
     # invisible anywhere in the dashboard.
@@ -2209,12 +2270,14 @@ _ENGINE_TARGETS = {
     'wave_rider': ('Wave Rider', 'com.sushil.trading.wave_rider',  'factory.live.wave_rider'),
     'contrarian': ('Contrarian', 'com.sushil.trading.contrarian',  'factory.live.contrarian'),
     'clockwork':  ('Clockwork',  'com.sushil.trading.clockwork',   'factory.live.overnight'),
+    'night_owl':  ('Night Owl',  'com.sushil.trading.night_owl',   'factory.live.night_owl'),
 }
 
 # book label (as get_equity_positions stamps it) -> control target
 _BOOK_TARGET = {
     'Day Trader': 'equity', 'Wave Rider': 'wave_rider',
     'Contrarian': 'contrarian', 'Clockwork': 'clockwork',
+    'Night Owl': 'night_owl',
 }
 
 

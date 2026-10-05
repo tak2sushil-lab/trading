@@ -51,6 +51,21 @@ chronological log (useful for "why did we do X"); this one is always current for
 - ⚠️ **Backtests start no earlier than 2026-08-04** — bars_5m volume before that is the DataBento backfill
   (~2–5% of consolidated). See the Sep 30 section at the bottom.
 
+**🦉 NIGHT OWL — machine-learned overnight book, LIVE on paper since Mon Oct 5 2026 (user decision):**
+- Same window as Clockwork (buy the closing auction, sell the next opening auction), different chooser: a
+  gradient-boosted model on ~90 daily inputs (all ≥1 session old) + today's opening gap scores the universe at
+  ~09:35; 15:41-15:49 it buys its top 3 WILD names × ~$3,333 (own $10k), after waiting for Clockwork until
+  15:46 and skipping any name another book holds or that reports earnings within a day. Re-trained monthly.
+- Code: `factory/live/night_owl.py` (engine) · `factory/night_owl_model.py` (prep/train/validate/score) ·
+  `factory/features_daily.py` (shared inputs). launchd `com.sushil.trading.night_owl` (every 60s, `NIGHT_OWL_MODE=LIVE`)
+  + `com.sushil.trading.night_owl_prep` (17:30, cache refresh + monthly re-train). Tables `night_owl_trades` /
+  `night_owl_scores` / `night_owl_scan_log`. Revert = `NIGHT_OWL_MODE=SHADOW` in the plist + reload.
+- Evidence (production walk-forward 2018 → Oct 2026): IC +0.045 (t 9.4) positive every year; top-3 excess
+  +18.3bp/night (t 5.1), negative (slightly) in 2019 and 2023; long-only overnight WILD books drew down ~−60%
+  in 2021-23. **Judge on `ref_pnl` (official prints), over months — not on `pnl` (paper auction fills are fake).**
+- Tests: `venv/bin/python -m factory.tests.test_night_owl` (parity, no look-ahead, engine rules).
+  Dry-scan any day: `venv/bin/python -m factory.live.night_owl --dryscan YYYY-MM-DD`.
+
 **🟢 FUTURES — CURRENT STATE (Sep 30 2026, read first for futures):**
 - TC = TopStep **$100K** paper combine (`prop_rules.TC_ACCOUNT_SIZE`), started **Sep 30**: 4 MNQ per long, shorts 1,
   200pt stop, target $6,000 / MLL $3,000 / DLL $2,000. Day 1: **+$303.08**. IBKR unchanged (2c).
@@ -5890,3 +5905,64 @@ blow-ups: KEEP** · no_cat_priv −$245 (−$103) but maxDD −$287 / hard stops
 −$237 (noise, 12 days differ). ⇒ **No entry-timing or exit variant changes the sign; the intraday book has
 no edge in this data. Change nothing in its logic; the open decision is strategic (size/churn vs the
 overnight window).**
+
+**OCT 4 2026 — RESEARCH PROGRAMME: learned overnight model "Night Owl" PASSES the Proving Ground.**
+Record: `docs/RESEARCH_REGISTRY.md` (every hypothesis ever tested, with verdicts). Nightly `learner.py`
+audited: a win-rate thermostat on 5 grader multipliers (2 never move, 1 never read, all sectors WEAK) —
+not a model. Factory data now follows the calendar (`factory/data.py _DATA_END`, was frozen at the
+Aug 14 build). Built `research_ml_panel.py` (84 causal daily features, split-adjusted; ⚠️ load_bars volume
+switches scale on **Jun 1 2026**, not Aug 4) and `research_ml_model.py` (walk-forward gradient boosting,
+monthly re-fit, purged, market-neutral). 420 single-indicator tests: classic oscillators/candles/Fibonacci ≈ 0
+at every horizon; Fibonacci retracement engine 12/12 configs FAIL the gate. Intraday and 1-day: no edge
+again. **Overnight:** the model on 16:00 data was ~30% inflated (look-ahead + shared closing print); rebuilt
+on 15:40 information (`research_ml_overnight_1540.py`) it ranks WILD names with IC +0.050 (t 4.3, 4/4
+half-years) vs Clockwork's +0.019. As an engine (`factory/research/ml_overnight_engine.py`) the long-only
+WILD top-5 **passes all 8 checks** (t 4.90, walk-forward 8/8, +0.11%/night after the 0.20% cost); the
+long-short sleeve fails cost. It picks DIFFERENT names than Clockwork (overlap 0.2/3, excess corr 0.00);
+both books together: Sharpe 2.22 vs 1.94/2.02. Caveats: survivorship universe, one mostly-bull regime,
+WILD class from full history, latest half −4bp, paper auction fills are fabricated (judge on ref_pnl).
+Next: Night Owl as a SHADOW overnight book beside Clockwork (needs a 15:40 scorer + monthly re-fit).
+Clockwork's live rule validated as-is (+17.5bp/night excess, 6/6 half-years); 15:40 closing-strength overlay ❌.
+**Oct 4 2026 (pm) — hunt #2 results + a futures tracking bug.** Night Owl's ranking power: today's 15:40
+shape 38%, sector 20%, yesterday's intraday shape 19%, volatility 16%, overnight persistence (Clockwork's
+family) only 11% → same trade as Clockwork, different evidence (rank corr +0.18). At 3-5 days the model and
+blends LOSE to Contrarian's simple 3-day reversal (top-5 +1.40%/5d, all half-years + — Contrarian re-validated).
+Earnings with real dates/surprises (`research_earnings.py`, 9,327 events 2015-26): PEAD ❌ (sign flips by year),
+pre-earnings premium 🟡 (+21bp/5d, 7/12 years), lead: typical reporter lags the universe −50…−105bp over the
+next 20 sessions. Industry momentum ❌. ⚠️ **Futures H5 Fibonacci flag was dead since Jun 17**: commit 59bff9d
+moved `feature_study.py`/`fib_deep.py` to `futures/research/`; `hero_score.py`'s try/except hid the ImportError,
+so H5 read False on every trade. No trading effect (H5 is in no weight and the silver→gold boost was never
+coded) — only the tracking. Fixed import paths; `fib_deep.py` now imports sim_replay lazily (hero_score runs
+inside the live traders). Takes effect at the next futures restart — no behaviour change. Re-eval: H5 trades
++$26/contract vs +$12, better 4/6 years — tracked flag only. All in `docs/RESEARCH_REGISTRY.md` §F-H.
+**Oct 4 2026 (night) — Night Owl is robust across 9 years; ⚠️ overnight WILD books carry bear-market tail risk.**
+`research_ml_longrun.py`: daily-only Night Owl (lagged daily features + today's gap, trained from 2015 on
+yfinance official prints) walk-forward OOS 2018-01 → 2026-10: WILD IC +0.044 (t 9.7) and top-3 excess
++18.7bp/night (t 5.0), **positive in every year and all three bears**; Clockwork's signal +15.7bp, negative in
+2018-Q4 and 2026. Daily-only ≈ the 15:40 intraday model, so the shadow engine can use official daily prints
+only (no 15:40 snapshot; Databento intraday history $61.81 for May 2018-Dec 2023 is now optional).
+⚠️ Over 9 years the long-only overnight WILD book drew down ~−50-60% summed (Clockwork −51%, Nov 2021 →
+Jun 2023); the 2024-26-only figure (−14%) understated it. SPY 200d gate makes Clockwork worse; a WILD-basket
+trend gate trims Night Owl to −41% but not Clockwork. Decision for the user: overnight book size / name
+count / bear plan — this applies to LIVE Clockwork capital today.
+
+**OCT 5 2026 — NIGHT OWL BUILT AND LIVE ON PAPER (user: "don't run in shadow… let's see if it proves it").**
+Built from the Oct 4 research (registry §F, rows F4-F12). Feature code moved to `factory/features_daily.py` so
+research, training and live scoring share one implementation (`research_ml_panel.py` re-exports it). Model
+library caches official yfinance daily prints (`factory/cache/night_owl/daily.parquet`, refetches a symbol's
+full history when overlapping closes move > 0.05% — split/dividend adjustment), trains on ~576k rows from 2015,
+refuses < 100k rows, checks the scikit-learn version on load. **Look-ahead discipline:** every stock input is
+lagged one session BEFORE the universe filter (filter = yesterday's close ≥ $5), then ranked within the day;
+only today's opening gap is same-day. Production walk-forward reproduces the research (IC +0.045 t 9.4,
+top-3 +18.3bp t 5.1) but 2019/2023 top-3 come out −1bp each — the research claim "positive every year" for
+top-3 is corrected. Engine mirrors Clockwork's audited order path verbatim (MOC/MOO by orderId, stale sweep,
+MARKET fallback after 09:45, mode isolation, cap counts unconfirmed sells). Wired: auto_trader
+`_other_book_symbols` (reconcile never treats its shares as orphans; autotrader restarted 00:20 while flat),
+`backfill_overnight_reference.py` marks both overnight tables, CONTROL_TARGETS `night_owl` (dashboard Sell
+buttons), dashboard everywhere (services Books + Instruments rows, positions, Today/To-date, 15-day chart and
+scorecard, engines scoreboard, fleet $10k, activity filter, pink #f778ba), /factory card (morning ranking,
+close-scan funnel, held, closed with ref P&L) and /glossary + GLOSSARY.md rows. Verified: 33 engine/model
+tests pass, end-to-end morning scoring on a scratch DB (69s, picks = dry-scan), dashboard render test passes,
+factory + reconcile suites pass. Clockwork does NOT exclude Night Owl's names (it enters first; overlap only if
+Clockwork enters after 15:46) — safe because each book sells only its own recorded shares.
+**First live day: score ~09:35 (Telegram picks) → MOC 15:41-15:49 → fills 16:00-16:40 → MOO Tue 09:00-09:27.**
