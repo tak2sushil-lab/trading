@@ -24,6 +24,13 @@ chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
 **🟡 EQUITY DAY TRADER — current state (Oct 2 2026, read first for equity):**
+- **Oct 5 (night): ML for the day trader ❌ and "know tonight who gaps tomorrow" ❌ — see the Oct 5 entry at the
+  bottom.** A 9-year learned model's intraday edge lives in the opening print (09:35 entry: +6.5bp, below cost);
+  per-stock models are worse than pooled; buying the morning's top gappers loses −108bp (5,637 stocks, every year).
+  Open: throttled after-hours study after a close (`research_gappers_ah.py`).
+- **Oct 6: SHORTING the morning gappers ❌ (registry §K7-K10).** 8 years of 1-min bars, realistic fills: at 09:35 the
+  model's top-5 shorts make +34bp/day (t 2.5, 7/13 half-years) and the best 5% of days are 190% of the profit; worst
+  stretch −$20k on a $10k book. The edge is real only in the opening auction. Do not build.
 - **Oct 2 live watch — read the Oct 2 entry at the bottom first.** No entry input or batting order picks
   batsmen (2y, 25+ features, max |corr| 0.04); the T+5 check fires on ~83% of trades by design; holding our
   actual picks longer is WORSE. Replay `oct2ab`: no T+5/confirm/sector/catalyst variant changes the sign
@@ -55,14 +62,18 @@ chronological log (useful for "why did we do X"); this one is always current for
 - Same window as Clockwork (buy the closing auction, sell the next opening auction), different chooser: a
   gradient-boosted model on ~90 daily inputs (all ≥1 session old) + today's opening gap scores the universe at
   ~09:35; 15:41-15:49 it buys its top 3 WILD names × ~$3,333 (own $10k), after waiting for Clockwork until
-  15:46 and skipping any name another book holds or that reports earnings within a day. Re-trained monthly.
+  15:46 and skipping names the day trader / Wave Rider / Contrarian hold or that report earnings within a day.
+  **Since Oct 6 it MAY share a name with Clockwork (max $6,667 a name across both), and both overnight books take
+  no entries while the Basket Tide is OFF** (`factory/live/basket_tide.py`). Re-trained monthly.
 - Code: `factory/live/night_owl.py` (engine) · `factory/night_owl_model.py` (prep/train/validate/score) ·
   `factory/features_daily.py` (shared inputs). launchd `com.sushil.trading.night_owl` (every 60s, `NIGHT_OWL_MODE=LIVE`)
   + `com.sushil.trading.night_owl_prep` (17:30, cache refresh + monthly re-train). Tables `night_owl_trades` /
   `night_owl_scores` / `night_owl_scan_log`. Revert = `NIGHT_OWL_MODE=SHADOW` in the plist + reload.
 - Evidence (production walk-forward 2018 → Oct 2026): IC +0.045 (t 9.4) positive every year; top-3 excess
   +18.3bp/night (t 5.1), negative (slightly) in 2019 and 2023; long-only overnight WILD books drew down ~−60%
-  in 2021-23. **Judge on `ref_pnl` (official prints), over months — not on `pnl` (paper auction fills are fake).**
+  in 2021-23. ⚖️ **Not better than Clockwork:** on the same names and nights Clockwork's one-line rule scores
+  +19.2bp (Sharpe 2.63, DD −22%) vs Night Owl +18.3bp (1.96, −38%) — registry F13. Night Owl is a second overnight
+  book with partly different picks, not an upgrade. **Judge on `ref_pnl` (official prints), over months — not on `pnl` (paper auction fills are fake).**
 - Tests: `venv/bin/python -m factory.tests.test_night_owl` (parity, no look-ahead, engine rules).
   Dry-scan any day: `venv/bin/python -m factory.live.night_owl --dryscan YYYY-MM-DD`.
 
@@ -106,7 +117,7 @@ year — it was never a strategy problem.
 2. **15:40-15:49** — first MOC under the new config: expect **3 names at ~$3,333**, not 10.
    Dry-scan on Sep 20 picked CENX / NUTX / P. Watch for `EARNINGS_BLACKOUT` skips in the log.
 3. **16:00-16:40** — entry fills confirm.
-4. **17:05 daily** — `com.sushil.trading.overnight_reference` writes `ref_entry` / `ref_exit` /
+4. **22:00 daily** (was 17:05 until Oct 6 2026 — ran before the 21:30 bar collector, so every night was marked a day late) — `com.sushil.trading.overnight_reference` writes `ref_entry` / `ref_exit` /
    `ref_pnl` / `exec_drag`. ⭐ **`ref_pnl` IS THE HONEST READ ON THIS BOOK; `pnl` IS NOT** —
    IBKR paper fabricates auction fills (Sep 18: PI filled 179.00 when the 09:30 bar was
    open=high=low=182.29). Judge the strategy on `ref_pnl`, the plumbing on `exec_drag`.
@@ -5966,3 +5977,150 @@ tests pass, end-to-end morning scoring on a scratch DB (69s, picks = dry-scan), 
 factory + reconcile suites pass. Clockwork does NOT exclude Night Owl's names (it enters first; overlap only if
 Clockwork enters after 15:46) — safe because each book sells only its own recorded shares.
 **First live day: score ~09:35 (Telegram picks) → MOC 15:41-15:49 → fills 16:00-16:40 → MOO Tue 09:00-09:27.**
+
+---
+
+## Oct 5 2026 (night) — ML for the day trader + "can we know tonight who gaps tomorrow?" — both answered, nothing wired
+
+Registry §I and §J (`docs/RESEARCH_REGISTRY.md`). Scripts: `research_ml_dayowl.py`, `research_dayowl_delay.py`,
+`research_gappers_data.py` (broad universe download), `research_gappers.py`, `research_gappers_lag.py`,
+`research_gappers_ah.py` (not yet run — see ④). Outputs in `research_out/` (`dayowl_*`, `gappers_*`, `broad_daily_2024.parquet`).
+Day of: day trader −$73.70 (6 trades, all T+5 scratches); the three morning gappers the user named went
+SDEV −59% / XRPN −12% / IBRX −4% from the open; Night Owl entered SMTC/MRVL/SITM; Clockwork CENX/PI/ACLS.
+
+**① "Day Owl" (Night Owl's pipeline, target = today's open→close, 9 years) — the edge is the opening print.**
+Measured from the official open: top-3 +35bp/day, IC +0.044 every year. Entering at **09:35 instead: +6.5bp (t 0.7)**;
+10:00 +7bp. The gap input and the open→close target share one print, so its noise looks like "gap-ups fade". After the
+open the ranking is real but ~5-8bp/day — below cost. At the official open it is a MOO→MOC auction-reversal that was
++30…+57bp/yr 2018-25 and **≈0 in 2023 and 2026**. ⚠️ **Rule: any intraday target measured from the open must be
+re-measured from a later, independently-sourced price before it is believed.**
+
+**② "Train on a few stocks" is worse, measured.** 20 long-history names, same days: a model per stock works on 12/20
+(coin flip) vs pooled 18/20; on the overnight target, where pooled is proven, per-stock finds nothing (top-3 −0.0bp vs
+pooled IC +0.035). ~2,000 days per stock is not enough data for this noise. Pool across names.
+
+**③ Tomorrow's top gainers are NOT knowable tonight, and buying them in the morning loses.** Broad universe, 5,637 US
+common stocks, 2024-26: buying each morning's top-10 gappers at the open = **−108bp open→close, negative every year**
+(gaps ≥+20%: −218bp). An evening model puts only 1.7% of its picks in the next morning's top-10. Evening data predicts
+the SIZE of tomorrow's move (volatility/volume names: 11-19× the base rate of a ≥10% gap), not its direction.
+What it does find, honestly built (all inputs lagged, no shared closing print): a top-10 group that gaps **+24bp
+gross / +19bp over the universe (t 3.0)** and then gives it back after the open (−26bp). That is another overnight
+tilt like Clockwork/Night Owl, in small caps, not a gapper-catcher. Built with day-t close inputs it showed +68bp —
+the shared closing print inflated it ~65% (the F3 lesson, larger here).
+⭐ Our own entries: since Sep 30 the average day-trader entry was up 5.7% on the day when bought, ~3.0 points of it
+the overnight gap; 71% had gapped ≥2%. The day trader is structurally buying moves that already happened overnight.
+
+**④ ⚠️ OPS: the bulk research download got this Mac rate-limited by Yahoo (~22:14-22:24 ET).** Even a single SPY
+request failed; live books share that IP (04:30/08:15 pre-market scans, Night Owl's 09:35 scoring). Recovered in ~10
+min, verified. Memory [[feedback-yfinance-bulk-ratelimit]]: throttle, run right after the close, never in the 6 hours
+before the open, stop at the first `Rate limited`. The after-hours study (`research_gappers_ah.py`) was stopped at 60 of
+3,548 names and is the open item.
+
+**OPEN / NEXT.** (a) After-hours study, throttled, after a close: does the 20:00 price show the gap and is anything
+left after it? The same hourly pull gives a 15:30 price, which allows (b) the 15:40-honest version of the broad
+overnight model — the true edge lies between +24bp (lagged) and +68bp (shared print). Only then decide whether a
+broad small-cap overnight book is worth a Proving Ground run (survivorship and small-cap auction costs both unmeasured).
+(c) Do NOT build an ML day-trader model — §I says the leg it trades has ~5-8bp of predictable content after the open.
+
+**⑤ Follow-up same night — SHORT the morning's top gappers (registry §K, `research_gapper_short.py`).** Shorting each
+morning's top-10 gappers at the open and covering at the close: **+110bp/day gross (t 5.2), positive 2024/25/26**;
++66bp with a +20% stop and 30bp cost. A model trained only on gappers picks better shorts (IC +0.12 even with every
+open-based input removed; top-5 +241bp/day). 5-min check on 115 recent events: the official open is a real trade, so
+this is not a bad-print artefact, BUT the fade is front-loaded — the 10% of gappers whose open is the day's high carry
+most of it (+1,093bp vs +23bp for the rest), and from 09:35 / 10:00 the edge shrinks to roughly half / a quarter.
+SDEV and XRPN were NOT borrowable at IBKR tonight. Not wired. Needs: full-history 09:35 entries (DataBento 1-min,
+approval), gap-morning borrow snapshots, squeeze/halt sizing. Paper cannot test it (fabricated auction fills).
+
+**⑥ Oct 6 (~00:50 ET) — the PROPER short test, 8 years of 1-min bars: FAILS (registry §K7-K10).** User approved
+DataBento (quote ≈ $8.90 of their ~$45; 1-min bars for 51,172 gapper days, May 2018 → Oct 2026, kept in
+`research_out/gapper_1m/`). Fills one minute AFTER the decision, stops checked minute by minute, 30bp cost. No model:
+the 10 biggest gaps shorted at 09:35 with a +20% stop make −5.7bp/day (7/18 half-years); only the opening auction
+pays (+55bp net). Walk-forward model (pre-registered bar t≥3, ≥75% halves, survives 10bp/day borrow, beats random and
+rules): 09:35 top-5 +34bp/day, t 2.47, 7/13 halves, +24bp with borrow ⇒ FAILS. It ranks real (IC +0.08, every year)
+but it is mostly "short the most volatile gappers" — a one-line rule gets ~85% of it. 2023 negative in every variant.
+Tail on a $10k book: best 5% of days = 190% of profit, 44 days worse than −$1,000, worst stretch −$20,363, a single
+short −186% (halt reopened through the stop). 09:31 decisions look better (+54bp, t 3.7) but were not pre-registered
+and first-minute small-cap spreads are unmeasured. ⚠️ Also: the 2018 daily pull rate-limited Yahoo AGAIN (~22:58-
+23:15 ET); restored 23:15, verified. 2018-2023 data covers tickers A→OGG only. `build_lean` (one stock at a time,
+exact parity with `build`) fixed an out-of-memory kill.
+
+**⑦ Oct 6 — "hand-pick stocks that respect textbook patterns" tested and rejected (registry §L,
+`research_pattern_persistence.py`).** 2,428 liquid stocks, 2018 → Sep 2026, 610k mechanically-defined events (breakouts,
+52w high, NR7, gap-and-go, 50/200d MA bounce, Fibonacci 50-65%, FVG retest, order-block retest, RSI(2), Bollinger),
+entry at the next open, 5-day hold, market-neutral, each stock's own drift removed. No pattern earns money; breakouts
+and gap-and-go LOSE (−15…−48bp per 5 days, t −2.7…−3.6). "Respecting patterns" is not a trait: per-stock pattern alpha
+2018-22 vs 2022-26 correlates −0.01 (support patterns) / +0.02 (continuation). Picking last 2 years' best respecters
+adds +3bp per trade. The stocks that look like they respect patterns are the stocks that went up.
+
+**⑧ Oct 6 — the fleet replayed together (registry §M, `research_portfolio_lab.py`).** (1) **Contrarian's edge is a
+survivorship artifact**: on ~2,400 unselected stocks its rule loses −36%/yr (every 3-day faller −20bp/day vs market,
+t −2.3, negative 2021-25) while the same rule on our hand-picked 237 makes +51bp/trade. (2) **Clockwork's rule survives
+on unselected stocks** (+38%/yr, Sharpe 1.23 vs 0.98 for every WILD name). (3) **Bear plan: flat when the WILD basket is
+below its 200d average** — fleet maxDD −83% → −23%, 2021-11→2023-06 −$18.6k → −$1.2k, plateau 200-250d; on unselected
+stocks Clockwork maxDD −53% → −29%. Vol targeting, a drawdown brake and a Russell futures hedge all lower Sharpe. Gate
+is ON today. (4) **Macro nights are the BEST nights, not the riskiest**: 21% of nights carry 78% of 2021-26 overnight
+return; pre-FOMC replicates out of sample 2018-20 (+32bp, t 2.2). Never skip them. (5) Earnings report nights: 10.9%
+worse than −10% vs 0.2% — keep the blackout. (6) Night Owl's skip-Clockwork rule costs Sharpe (1.79 vs 1.68).
+Nothing shipped. Proposals pending: gate live, drop the skip rule, pause Contrarian, retrain Night Owl on a broad universe.
+
+**⑨ Oct 6 (evening) — macro calendar BUILT + broad-universe research (registry §M4 corrected, §M9-M10).**
+- **`macro_calendar.py` + trades.db `macro_calendar` + launchd `com.sushil.trading.macro_calendar` (19:00 weekdays).**
+  Nasdaq economic-calendar feed (⚠️ one day behind — fetch_day() asks for D+1), Fed FOMC schedule (through 2027),
+  rule-based expected payrolls beyond the feed's ~3-week horizon. Dashboard calendar card and the 09:15 Field Report
+  now read it (hand-typed lists = holidays + fallback only). **The hand-typed lists had the next FOMC WRONG (Nov 4; it
+  is Oct 28).** History backfill 2018 → 2026 runs resumable (`--backfill`). ⚠️ Writes go to the LIVE trades.db — one
+  short transaction per day; never hold the write lock across a network call (caught a 20-30s hold in the first version).
+- **Gate warm-up bug fixed** (2018 was counted "off" for lack of a 200d history): fleet Sharpe 1.87 → 2.06, maxDD −83% →
+  −23%. 2026: off 1 session, −$391. Today ON (hand-picked basket +16.6%; broad basket only +5.7%).
+- **Survivorship-free check (every stock incl. delisted, Jul 2024 → Oct 2026, $10.54):** Clockwork Sharpe 1.76 (not
+  inflated by survivorship); Contrarian Sharpe 0.20 with maxDD −183%.
+- **Night Owl retrained broad (1,800 stocks):** equal to Clockwork's rule on average (+40% vs +43%/yr) but positive
+  every year incl. 2022 (+34% vs −36%), corr +0.39 — both books with overlap + gate: Sharpe 1.54, maxDD −22%.
+- Skip rule: on 46% of nights NO's own top-3 contains a CW pick; shared names +39.6bp vs the replacements +23.0bp.
+- DataBento spend Oct 5-6 ≈ $23.25 of the user's ~$45 ($8.90 gapper 1-min, $3.81 ES 2018-20, $10.54 EQUS daily).
+- **⚠️ M7 RETRACTED in part (registry M7b):** on TRUE release dates (calendar backfill 2018-2026) only the night
+  BEFORE an FOMC decision is reliably better (+31 vs +6bp, t 2.6; 2018-20 +41, t 2.1). The "CPI nights +44bp" came from
+  tagging mornings by their 08:30 futures-volume spike = look-ahead (the reaction is inside the hold). CPI +18 (t 0.7).
+  Release nights overall: 24% of nights, 44% of the return — never skip them, but only pre-FOMC is actionable.
+- Fed page lists "notation votes" (e.g. 2025-08-22) under meetings — `fed_schedule()` now skips them.
+
+**⑩ Oct 6 (night) — SHIPPED (user-approved): Basket Tide on Clockwork + Night Owl; Night Owl may share Clockwork's names.**
+- **`factory/live/basket_tide.py`** — bear switch (registry §M4): equal-weight WILD basket of our universe (prev close
+  ≥ $5, 20d median $vol ≥ $20M, top third by 60d vol) vs its 200-session average at the LAST COMPLETED close. OFF ⇒
+  `overnight.py` and `night_owl.py` `scan_and_enter()` return before picking (logged + `blocked: basket_tide_off` scan
+  row). Exits never gated. Fails OPEN when `factory/cache/night_owl/daily.parquet` is missing or > 3 sessions old.
+  State `factory/cache/basket_tide.json`; Telegram only when it FLIPS (first engine run tomorrow sends one "is live: ON").
+  Today: ON, basket +16.6% above its average (a ~14% fall turns it OFF). Off 19% of sessions since 2015 (all of 2022).
+  Dashboard: SYSTEM HEALTH row + an alert when OFF or failing open. Tests `factory/tests/test_basket_tide.py`
+  (100% parity with research_out/gate_200d.parquet over 2,161 sessions; a crash on the decision day cannot flip it).
+- **Night Owl ↔ Clockwork overlap allowed** (registry §M2/§M10): `other_book_symbols()` no longer includes
+  overnight_trades; `MAX_NAME_USD = 2 × PER_NAME` ($6,667) across both books via `clockwork_usd()` (errs to a full slot
+  on a DB error). Still waits for Clockwork until 15:46 so the cap sees its orders. Fills are matched by order ID in both
+  books, so a shared name cannot confuse either book's exits. `test_night_owl` updated (+cap, +tide-OFF checks), all pass.
+- Contrarian left running unchanged (user, Oct 6) despite registry §M6/§M9.
+- **First live use: Wed Oct 7 15:40.** Tonight's entries (CW CLS/AXTI/CENX, NO UUUU/SMTC/MRVL) were on the old code.
+- **DataBento — two accounts, automatic switch (`databento_keys.py`).** `.env` `DATABENTO_API_KEY` (primary, usable
+  through 2026-12-31) then `DATABENTO_API_KEY_2` (reserve, $125, through 2027-04-27). `historical()` is a drop-in
+  `databento.Historical` that spends the primary first and moves to the reserve only when the primary is past its date
+  or refused for an ACCOUNT reason (401/402, or a 403 about credits/payment); bad requests (400/422/license 403) and
+  5xx are raised, never retried on the reserve. A refused key is skipped 24h then retried (a top-up comes back by
+  itself); one Telegram per key per day; state `logs/databento_keys.json`. Used by `collect_bars.py`,
+  `futures/collect_bars.py` (the only automatic spender, cents a day) and `research_gapper_intraday.py`.
+  Status: `venv/bin/python databento_keys.py` · tests `venv/bin/python tests_databento_keys.py` (free calls only).
+  Both keys validated Oct 6: 29 datasets, GLBX.MDP3 / XNAS.ITCH / EQUS.SUMMARY all visible. The API does not report
+  remaining credit — the balance is only on databento.com.
+- **Night Owl retrain rule fixed (Oct 6 night):** `model_is_current` said "current through the month after the one it
+  was trained through", but prep trains on the first weekday of a month, so `trained_through` already sits in the new
+  month — the Oct 5 model would not have re-trained until Dec 1 (every other month, not the validated monthly re-fit).
+  Now: current during the calendar month it was TRAINED in → next re-train Mon Nov 2 17:30. The 09:35 scorer gets one
+  month of grace so the 1st morning of a month (before that evening's re-train) does not log a false warning. Tests added.
+  It learns from every universe name's official daily prices, NOT from its own trades.
+- **Official-price marks moved 17:05 → 22:00** (`com.sushil.trading.overnight_reference`): the bar collector runs at
+  21:30, so at 17:05 the night that just ended could never be marked — every `ref_pnl` landed a day late, and the newest
+  night always looked blank. Same lag exists for `scan_forward_label` (17:15), left as is (labels only).
+- DataBento: two SEPARATE accounts and balances (not merged — the API has no pooling); primary $22.28 on Oct 6.
+- **Bug sweep before commit (Oct 6 night):** tide/key state files now use per-process temp names (Clockwork and Night
+  Owl can write at the same moment); a tide-OFF scan records a full funnel and the /factory cards say "Basket Tide OFF —
+  no entries tonight" instead of blank numbers (rendered and checked). All suites pass. Day summary with the analogy:
+  `docs/DAY_SUMMARY_2026-10-06.md`.
+

@@ -93,6 +93,11 @@ def test_artifact(art, daily):
     check("model feature list matches the code", list(X.columns) == art['features'], f"{len(art['features'])} inputs")
     check("model trained on enough history", art['n_rows'] > 300_000 and art['first_date'] < '2016-01-01',
           f"{art['n_rows']:,} rows from {art['first_date']}")
+    a = {'created': '2026-10-05T00:09:26-04:00', 'trained_through': '2026-10-01'}
+    rule = [M.model_is_current(a, d) for d in ('2026-10-30', '2026-11-02', '2026-12-01')]
+    grace = [M.model_is_current(a, d, grace_months=1) for d in ('2026-11-02', '2026-12-01')]
+    check("re-trains every calendar month (prep): current Oct, stale Nov 2", rule == [True, False, False], str(rule))
+    check("scorer grace: last month's model OK on the 1st, warns a month later", grace == [True, False], str(grace))
 
 
 def test_engine_rules():
@@ -104,7 +109,7 @@ def test_engine_rules():
     dst = sqlite3.connect(db)
     src.backup(dst); src.close(); dst.close()
     saved = dict(DB=E.DB, MODE=E.MODE, bridge_quote=E.bridge_quote, days_to_earnings=E.days_to_earnings,
-                 score_today=E.score_today, now_et=E.now_et, send_telegram=E.send_telegram)
+                 score_today=E.score_today, now_et=E.now_et, send_telegram=E.send_telegram, tide_ok=E.tide_ok)
     try:
         E.DB, E.MODE = db, 'SHADOW'
         E.init_db()
@@ -131,12 +136,37 @@ def test_engine_rules():
         E.days_to_earnings = lambda s: 0 if s == 'CCC' else 30                                  # CCC reports tonight
         E.score_today = lambda force=False: True
         E.send_telegram = lambda m: None
+        E.tide_ok = lambda: False                                                               # bear switch OFF
+        E.scan_and_enter()
+        n = E._q("SELECT COUNT(*) FROM night_owl_trades WHERE entry_date=?", (today,))[0][0]
+        check("Basket Tide OFF blocks every new entry", n == 0, f"{n} rows")
+        E.tide_ok = lambda: True
         E.scan_and_enter()
         got = [r['symbol'] for r in E._q("SELECT symbol FROM night_owl_trades WHERE entry_date=? ORDER BY id", (today,), True)]
-        check("engine skips other books' names + earnings, buys the next best", got == ['AAA', 'EEE', 'FFF'],
-              f"entered {got} (expected AAA, EEE, FFF: BBB Clockwork, CCC earnings, DDD Wave Rider)")
+        check("engine shares Clockwork's name, skips Wave Rider's + earnings", got == ['AAA', 'BBB', 'EEE'],
+              f"entered {got} (expected AAA, BBB, EEE: BBB is Clockwork's (allowed), CCC earnings, DDD Wave Rider)")
         sh = E._q("SELECT shares FROM night_owl_trades WHERE symbol='AAA'")[0][0]
         check("sizing = $3,333 a name", sh == int(E.PER_NAME / 50.0), f"{sh} shares at $50")
+        sh = E._q("SELECT shares FROM night_owl_trades WHERE symbol='BBB'")[0][0]
+        check("shared name: full slot when Clockwork has $3,000 in it (cap $6,667)", sh == int(E.PER_NAME / 50.0), f"{sh} shares")
+        # the combined cap binds when Clockwork carries more than one slot (e.g. a failed morning sell + tonight)
+        c = sqlite3.connect(db)
+        c.execute("DELETE FROM night_owl_trades WHERE entry_date=?", (today,))
+        c.execute("INSERT INTO overnight_trades(symbol,entry_date,entry_time,entry_price,shares,status,mode) "
+                  "VALUES('AAA','2026-10-02','15:42:00',50,100,'OPEN','LIVE')")                    # $5,000 in AAA
+        c.execute("INSERT INTO overnight_trades(symbol,entry_date,entry_time,entry_price,shares,status,mode) "
+                  "VALUES('EEE',?,'15:42:00',50,134,'PENDING_ENTRY','LIVE')", (today,))           # $6,700 in EEE
+        c.commit(); c.close()
+        E.scan_and_enter()
+        rows = dict(E._q("SELECT symbol, shares FROM night_owl_trades WHERE entry_date=?", (today,)))
+        check("cap: $5,000 Clockwork → Night Owl gets the remaining $1,667", rows.get('AAA') == int((E.MAX_NAME_USD - 5000) / 50.0),
+              f"AAA {rows.get('AAA')} shares")
+        check("cap: a name already at the cap is skipped, next best taken", 'EEE' not in rows and 'FFF' in rows, f"{sorted(rows)}")
+        c = sqlite3.connect(db)
+        c.execute("DELETE FROM overnight_trades WHERE symbol IN ('AAA','EEE') AND mode='LIVE' AND shares IN (100,134)")
+        c.execute("DELETE FROM night_owl_trades WHERE entry_date=?", (today,))
+        c.commit(); c.close()
+        E.scan_and_enter()
         E.scan_and_enter()
         n = E._q("SELECT COUNT(*) FROM night_owl_trades WHERE entry_date=?", (today,))[0][0]
         check("second pass does not enter again", n == 3, f"{n} rows")

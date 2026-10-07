@@ -411,6 +411,11 @@ html, body {
 .cal-cat.NFP     { background: rgba(63,185,80,0.1); color: var(--green-bright); }
 .cal-cat.PCE     { background: rgba(210,153,34,0.1); color: var(--yellow-bright); }
 .cal-cat.HOLIDAY { background: rgba(248,81,73,0.08); color: var(--red-bright); }
+/* Oct 6 2026 — categories from macro_calendar.py */
+.cal-cat.FED       { background: rgba(56,139,253,0.1); color: var(--blue-bright); }
+.cal-cat.INFLATION { background: rgba(137,87,229,0.1); color: var(--purple-bright); }
+.cal-cat.JOBS      { background: rgba(63,185,80,0.1); color: var(--green-bright); }
+.cal-cat.CONSUMER, .cal-cat.GROWTH, .cal-cat.MULTI { background: rgba(210,153,34,0.1); color: var(--yellow-bright); }
 
 .cal-detail { font-size: 11px; color: var(--muted); margin-top: 3px; padding-left: 78px; }
 .cal-link   { color: var(--blue-bright); text-decoration: none; font-size: 10px; }

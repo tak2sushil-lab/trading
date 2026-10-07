@@ -311,12 +311,18 @@ def load_model():
     return art
 
 
-def model_is_current(art, today=None) -> bool:
-    """A model is current for the month after the one it was trained through (re-train monthly)."""
-    today = pd.Timestamp(today or _now().date())
-    tt = pd.Timestamp(art['trained_through'])
-    return (tt.year, tt.month) == (today.year, today.month) or \
-           (tt + pd.offsets.MonthBegin(1)).to_period('M') == today.to_period('M')
+def model_is_current(art, today=None, grace_months=0) -> bool:
+    """Re-train once per calendar month: a model is current during the month it was TRAINED in.
+
+    Oct 6 2026 fix: the old rule ("current through the month after the one it was trained through") skipped every
+    other month — prep trains on the first weekday of a month, so `trained_through` already falls IN the new month and
+    the model stayed "current" for two months (the Oct 5 model would not have re-trained until Dec 1). The research
+    walk-forward that validated Night Owl re-fit monthly. `grace_months=1` lets the 09:35 scorer use last month's
+    model on the first morning of a month without a false warning; the 17:30 prep re-trains that evening."""
+    today = pd.Timestamp(today or _now().date()).to_period('M')
+    made = pd.Timestamp(art.get('created') or art['trained_through'])
+    made = made.tz_localize(None) if made.tzinfo else made
+    return made.to_period('M') >= today - grace_months
 
 
 # ─────────────────────────── scoring ───────────────────────────

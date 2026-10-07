@@ -320,6 +320,7 @@
       <span class="kpi"><b>{{ f.ovn.scan.funnel.wild_scanned }}</b><span>WILD ranked</span></span>
       <span class="kpi"><b>{{ f.ovn.scan.funnel.top_n }}</b><span>target</span></span>
       <span class="kpi"><b>{{ f.ovn.scan.funnel.entered }}</b><span>entered</span></span>
+      {% if f.ovn.scan.funnel.blocked is defined %}<span class="kpi"><b style="color:#d29922">blocked</b><span>{{ 'Basket Tide OFF — no entries tonight' if f.ovn.scan.funnel.blocked == 'basket_tide_off' else ("last night's sells not cleared" if f.ovn.scan.funnel.blocked == 'positions_still_open' else f.ovn.scan.funnel.blocked) }}</span></span>{% endif %}
     </div>
     {% if f.ovn.candidates %}
     <table class="positions-table glossary-table">
@@ -383,6 +384,7 @@
       <span class="kpi"><b>{{ f.owl.scan.funnel.wild_ranked if f.owl.scan.funnel.wild_ranked is defined else '—' }}</b><span>WILD ranked</span></span>
       <span class="kpi"><b>{{ f.owl.scan.funnel.top_n if f.owl.scan.funnel.top_n is defined else '—' }}</b><span>target</span></span>
       <span class="kpi"><b>{{ f.owl.scan.funnel.entered if f.owl.scan.funnel.entered is defined else 0 }}</b><span>entered</span></span>
+      {% if f.owl.scan.funnel.blocked is defined %}<span class="kpi"><b style="color:#d29922">blocked</b><span>{{ 'Basket Tide OFF — no entries tonight' if f.owl.scan.funnel.blocked == 'basket_tide_off' else ("last night's sells not cleared" if f.owl.scan.funnel.blocked == 'positions_still_open' else f.owl.scan.funnel.blocked) }}</span></span>{% endif %}
     </div>
     {% if f.owl.candidates %}
     <table class="positions-table glossary-table">

@@ -16,8 +16,10 @@ DAY CYCLE (launchd every 60s, self-gating; stateless between runs — state live
   09:35-15:49  SCORE once: refresh daily data, read today's opening prices, score every name, store the
                ranking in night_owl_scores and post tonight's picks to Telegram. Features use only
                yesterday's close and earlier plus today's open, so the scores are final from the open on.
-  15:41-15:49  ENTER: wait for Clockwork's picks (until 15:46), skip any name another book holds or is
-               buying tonight, skip earnings tonight/tomorrow, submit MOC BUY for the top 3 WILD names
+  15:41-15:49  ENTER: no entries while the Basket Tide is OFF (WILD basket below its 200-session average);
+               wait for Clockwork's picks (until 15:46); skip names the day trader / Wave Rider / Contrarian
+               hold; Clockwork's names ARE allowed (Oct 6 2026), capped at MAX_NAME_USD across both books;
+               skip earnings tonight/tomorrow; submit MOC BUY for the top 3 WILD names
   16:00-16:40  confirm the closing-auction fills
 Fills are confirmed by ORDER ID from IBKR's execution records — never inferred from the shared net
 position (the Sep 10-11 2026 oversell). Judge the strategy on ref_pnl (official prints), not pnl: the
@@ -32,6 +34,7 @@ import requests
 import pandas as pd
 sys.path.insert(0, "/Users/sushil/trading")
 from factory.live._fills import place_verified, fill_by_order_id  # noqa: E402
+from factory.live import basket_tide  # noqa: E402
 
 EARNINGS_BLACKOUT_DAYS = 1     # skip a name reporting tonight or tomorrow morning (Clockwork's rule)
 _earn_cache: dict = {}
@@ -82,10 +85,15 @@ except Exception:
 CAPITAL = 10_000.0         # this book's own budget (paper), separate from every other book
 TOP_N = 3                  # matches Clockwork and the research test (3 x $3,333)
 PER_NAME = CAPITAL / TOP_N
+# Oct 6 2026 — overlap with Clockwork ALLOWED (user-approved). Skipping its names cost money: on our 237 names
+# 2018-2026 the two books together ran Sharpe 1.79 with overlap vs 1.68 with the skip, and lost less in the
+# 2021-23 bear (RESEARCH_REGISTRY §M2, §M10). A name both books buy carries two slots at most; this cap enforces
+# that even if a Clockwork position from a failed morning sell is still on the books.
+MAX_NAME_USD = 2 * PER_NAME                                   # $6,667 per name across Clockwork + Night Owl
 PRICE_LO, PRICE_HI = 5.0, 800.0
 SCORE_START = dt.time(9, 35)                                  # opening prints are in by now
 ENTRY_START, ENTRY_END = dt.time(15, 41), dt.time(15, 49)    # submit MOC BUY (cutoff ~15:50)
-WAIT_FOR_CLOCKWORK_UNTIL = dt.time(15, 46)                    # let Clockwork pick first, then avoid its names
+WAIT_FOR_CLOCKWORK_UNTIL = dt.time(15, 46)                    # let Clockwork pick first so the cap sees its orders
 ENTRY_CONFIRM_START, ENTRY_CONFIRM_END = dt.time(16, 0), dt.time(16, 40)
 EXIT_START, EXIT_END = dt.time(9, 0), dt.time(9, 27)          # submit MOO SELL
 EXIT_CONFIRM_START, EXIT_CONFIRM_END = dt.time(9, 31), dt.time(9, 59)
@@ -297,7 +305,7 @@ def score_today(force=False) -> bool:
         if len(opens) < 100:
             raise RuntimeError(f"only {len(opens)} opening prices for {today} — data not in yet")
         art = M.load_model()
-        if not M.model_is_current(art, day):
+        if not M.model_is_current(art, day, grace_months=1):
             log(f"⚠️ model {art['version']} is from an earlier month — the 17:30 prep job should have "
                 f"re-trained it; scoring with it anyway")
         s = M.score_day(day, cache, opens, art)
@@ -329,19 +337,21 @@ def score_today(force=False) -> bool:
     send_telegram("🦉 Night Owl — tonight's picks (buys at the close, sells at tomorrow's open)\n" +
                   "\n".join(f"{i + 1}. {r.symbol}  gap {r.gap * 100:+.1f}%" for i, r in enumerate(s[s.wild].head(TOP_N).itertuples())) +
                   f"\nnext in line: {', '.join(s[s.wild].iloc[TOP_N:TOP_N + 3].symbol)}"
-                  f"\nmodel {art['version']} · names another book holds tonight are skipped at 15:46")
+                  f"\nmodel {art['version']} · names the day trader / Wave Rider / Contrarian hold are skipped; "
+                  f"Clockwork's are allowed (max ${MAX_NAME_USD:,.0f} a name across both)" + _tide_line())
     return True
 
 
 # ─────────────────────────── entry ───────────────────────────
 def other_book_symbols(today: str) -> set:
-    """Names any other live book holds right now or is buying tonight — Night Owl never doubles up."""
+    """Names the day trader, Wave Rider or Contrarian hold right now — Night Owl does not double up on those.
+    Clockwork is deliberately NOT here (Oct 6 2026): the two overnight books may share a name, sized by
+    clockwork_usd() + MAX_NAME_USD instead."""
     syms = set()
     queries = (
         ("SELECT symbol FROM trades WHERE status='OPEN' AND setup_type!='RECONCILED'", ()),
         ("SELECT symbol FROM wave_trades WHERE mode='LIVE' AND status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')", ()),
         ("SELECT symbol FROM contrarian_trades WHERE mode='LIVE' AND status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')", ()),
-        ("SELECT symbol FROM overnight_trades WHERE mode='LIVE' AND (status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT') OR entry_date=?)", (today,)),
     )
     for sql, params in queries:
         try:
@@ -349,6 +359,40 @@ def other_book_symbols(today: str) -> set:
         except Exception as e:
             log(f"other-book check failed ({sql.split()[3]}): {e}")
     return syms
+
+
+def clockwork_usd(sym: str) -> float:
+    """Dollars Clockwork has in this name right now (open, or being bought / sold). On error assume a full
+    slot, so the cap errs toward a smaller Night Owl position, never a larger one."""
+    try:
+        v = _q("SELECT COALESCE(SUM(shares*entry_price),0) FROM overnight_trades WHERE mode='LIVE' AND symbol=? "
+               "AND status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')", (sym,))[0][0]
+        return float(v or 0)
+    except Exception as e:
+        log(f"Clockwork size check failed for {sym}: {e} — assuming a full slot")
+        return PER_NAME
+
+
+def _tide_line() -> str:
+    try:
+        st = basket_tide.status()
+        return "" if st.get("on", True) else f"\n🌊 Basket Tide OFF — no entries tonight ({st.get('reason')})"
+    except Exception:
+        return ""
+
+
+def tide_ok() -> bool:
+    """Basket Tide (factory/live/basket_tide.py, Oct 6 2026): False = the WILD basket closed below its
+    200-session average last session, so this book takes no new entries. Exits are never gated. Fails OPEN."""
+    try:
+        st = basket_tide.status()
+        if st.get("stale"):
+            log(f"Basket Tide {st.get('reason')}")
+        basket_tide.announce(log)
+        return bool(st.get("on", True))
+    except Exception as e:
+        log(f"Basket Tide check failed ({e}) — failing OPEN, entries allowed")
+        return True
 
 
 def clockwork_has_entered(today: str) -> bool:
@@ -369,8 +413,12 @@ def scan_and_enter():
         log(f"{already} position(s) still open/pending (>= TOP_N {TOP_N}) — no new entries; "
             f"last night's exits have not cleared")
         record_scan({"blocked": "positions_still_open", "mode": MODE}, []); return
+    if not tide_ok():
+        log(f"Basket Tide OFF — no new entries tonight ({basket_tide.status().get('reason')})")
+        record_scan({"wild_ranked": 0, "top_n": TOP_N, "entered": 0, "mode": MODE,
+                     "blocked": "basket_tide_off"}, []); return
     if now_et().time() < WAIT_FOR_CLOCKWORK_UNTIL and not clockwork_has_entered(today):
-        log("waiting for Clockwork's picks (until 15:46) so the two books never buy the same name")
+        log("waiting for Clockwork's picks (until 15:46) so the per-name cap can see them")
         return
     if not score_today():
         log("no scores for today — cannot enter (see SCORE_FAIL above)"); return
@@ -383,7 +431,7 @@ def scan_and_enter():
         if entered >= room:
             picks.append((sym, r["score"], "RANKED_BELOW_CUT")); break
         if sym in avoid:
-            log(f"SKIP {sym} (rank {r['wild_rank']}) — held or being bought tonight by another book")
+            log(f"SKIP {sym} (rank {r['wild_rank']}) — held by the day trader, Wave Rider or Contrarian")
             picks.append((sym, r["score"], "OTHER_BOOK")); continue
         dte = days_to_earnings(sym)
         if dte is not None and 0 <= dte <= EARNINGS_BLACKOUT_DAYS:
@@ -393,7 +441,14 @@ def scan_and_enter():
         if price is None or not (PRICE_LO <= float(price) <= PRICE_HI):
             picks.append((sym, r["score"], "NO_PRICE")); continue
         price = float(price)
-        shares = max(1, int(PER_NAME / price))
+        cw = clockwork_usd(sym)
+        budget = min(PER_NAME, MAX_NAME_USD - cw)
+        shares = int(budget / price)
+        if shares < 1:
+            log(f"SKIP {sym} — Clockwork already has ${cw:,.0f} in it (cap ${MAX_NAME_USD:,.0f} a name)")
+            picks.append((sym, r["score"], "NAME_CAP")); continue
+        if cw:
+            log(f"{sym} is also Clockwork's tonight (${cw:,.0f}) — shared name, combined ${cw + shares * price:,.0f}")
         if MODE == "LIVE":
             ok, _fill, oid = place_paper_order(sym, shares, "BUY", order_type="MOC")
             if not ok:
@@ -404,13 +459,15 @@ def scan_and_enter():
         entered += 1
         picks.append((sym, r["score"], "ENTERED"))
         log(f"ENTER {sym} x{shares} @ ~${price:.2f}  model rank {r['wild_rank']} score {r['score']:+.4f} (holds overnight)")
-    record_scan({"wild_ranked": len(ranked), "avoided": sorted(avoid), "top_n": TOP_N,
+    shared = sorted(p[0] for p in picks if p[2] == "ENTERED" and clockwork_usd(p[0]) > 0)
+    record_scan({"wild_ranked": len(ranked), "avoided": sorted(avoid), "shared_with_clockwork": shared, "top_n": TOP_N,
                  "entered": entered, "mode": MODE}, picks)
     log(f"entry scan: {len(ranked)} WILD ranked → {entered} entered @ close")
     if entered:
         names = [p[0] for p in picks if p[2] == "ENTERED"]
-        skipped = [f"{p[0]} ({p[2].lower()})" for p in picks if p[2] in ("OTHER_BOOK", "EARNINGS_BLACKOUT", "NO_PRICE", "ORDER_FAILED")]
+        skipped = [f"{p[0]} ({p[2].lower()})" for p in picks if p[2] in ("OTHER_BOOK", "NAME_CAP", "EARNINGS_BLACKOUT", "NO_PRICE", "ORDER_FAILED")]
         send_telegram(f"🦉 Night Owl {'MOC orders sent' if MODE == 'LIVE' else 'shadow entries'}: {', '.join(names)}"
+                      + (f"\nalso Clockwork's tonight: {', '.join(shared)}" if shared else "")
                       + (f"\nskipped: {', '.join(skipped)}" if skipped else ""))
 
 

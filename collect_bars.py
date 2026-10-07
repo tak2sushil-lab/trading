@@ -449,9 +449,8 @@ def fetch_databento_batch(symbols: list[str], start: str, end: str) -> dict[str,
     Fetch 1-min OHLCV from EQUS.MINI for a batch of equity symbols.
     Returns {symbol: DataFrame(open,high,low,close,volume, UTC index)}.
     """
-    import databento as db
-    key = os.getenv('DATABENTO_API_KEY')
-    client = db.Historical(key=key)
+    from databento_keys import historical   # primary key first, reserve account when it is refused/expired
+    client = historical()
 
     data = client.timeseries.get_range(
         dataset=DATABENTO_DATASET,
@@ -492,10 +491,10 @@ def collect_databento(symbols: list[str], start: str = DATABENTO_START) -> None:
     Resamples 1-min → 5-min and stores both. Processes in batches of 20 symbols.
     Cost: ~$33 for 163 symbols × 2yr.
     """
-    import os as _os
-    key = _os.getenv('DATABENTO_API_KEY')
-    if not key:
-        log.error('DATABENTO_API_KEY not set in .env — cannot run Databento bootstrap')
+    from databento_keys import usable_keys
+    if not usable_keys():
+        log.error('no usable DataBento key (DATABENTO_API_KEY / _2 in .env) — cannot run Databento bootstrap; '
+                  'run venv/bin/python databento_keys.py')
         return
 
     try:

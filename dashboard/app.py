@@ -61,6 +61,7 @@ SERVICES = [
     ('futures_bars', 'com.sushil.trading.futures_collect_bars', 'scheduled', 'last collection failed', 'Data', 'futures_collect_bars.log', 96, 'The same collector for MNQ/ES/RTY futures bars.'),
     ('news_engine',  'com.sushil.trading.news_engine',    'daemon',    '', 'Data', None, None, 'Scans headlines every 30 min via Groq/Llama and writes the catalyst calendar. Log-only for trading since Jul 19 2026 — it feeds the Ghost Ledger, never an entry.'),
     ('field_report', 'com.sushil.trading.market_context', 'scheduled', 'pre-market brief failed', 'Data', 'market_context.log', 96, 'Pre-market market-context brief at 09:15 — trend, S/R levels, macro dates, plus one Claude call for a stance. LOG-ONLY: no trader reads it.'),
+    ('macro_cal',    'com.sushil.trading.macro_calendar', 'scheduled', 'macro calendar refresh failed', 'Data', 'macro_calendar.log', 96, 'Refreshes the macro calendar every weekday at 19:00 — Nasdaq economic calendar (CPI, payrolls, PPI, retail, GDP, PCE) + the Fed FOMC schedule. Feeds the calendar card and the Field Report. Overnight books earn most of their return on these nights (registry M7).'),
     # ── instrumentation: silent failure here costs evidence, not money ──
     ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments', 'scan_forward_label.log', 96, 'Writes the forward outcome label (what each graded signal actually went on to do) onto scan_log each evening. This is the answer key for the grader — without it we record the guesses and never the answers. Places no orders.'),
     ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96, "Marks Clockwork and Night Owl twice a night: once at the broker's fill, once at the session's OFFICIAL close and open from our own bars. IBKR paper fabricates auction fills, so ref_pnl is the honest read on the strategy and pnl is the read on the plumbing. Places no orders."),
@@ -1228,6 +1229,13 @@ def get_alerts(eq_pos, opt_pos, health=None, services=None):
             add('HIGH', 'NO_HEARTBEAT', 'FUTURES', b['name'],
                 f"{b['name']} has not written a heartbeat for {b['age_s'] // 60}m — "
                 f"its scan loop has stopped")
+    # Basket Tide — OFF stops two books' entries; stale means it is failing OPEN on old data
+    bt = h.get('basket_tide') or {}
+    if bt.get('stale'):
+        add('WARN', 'BASKET_TIDE', 'EQUITY', '—', f"Basket Tide is failing OPEN — {bt.get('reason')}")
+    elif bt.get('on') is False:
+        add('WARN', 'BASKET_TIDE', 'EQUITY', '—',
+            f"Basket Tide OFF — Clockwork and Night Owl take no new entries ({bt.get('reason')})")
     # Trade Cop verdict
     par = h.get('parity') or {}
     if par.get('status') and par['status'] != 'OK':
@@ -1473,8 +1481,29 @@ def get_calendar(opt_pos, eq_pos):
     # while four real events sat in the list. Show the next few regardless of
     # distance; "nothing for six weeks" is itself worth knowing, and an empty card
     # does not say that.
+    # Oct 6 2026: macro dates now come from macro_calendar (trades.db, refreshed every evening from Nasdaq's
+    # economic calendar + the Fed's FOMC schedule). The hand-typed MACRO_EVENTS list held 4 future dates and the
+    # WRONG next FOMC decision (Nov 4; the Fed says Oct 28). It now supplies only market holidays, and is the
+    # fallback if the table is empty, so the card can never go blank.
     macro = []
+    try:
+        import macro_calendar as MC
+        by_day = {}
+        for e in MC.upcoming(days=45, min_importance='HIGH'):
+            by_day.setdefault(e['event_date'], []).append(e)
+        for d, es in by_day.items():
+            ed = datetime.strptime(d, '%Y-%m-%d').date()
+            cats = sorted({e['category'] for e in es})
+            names = ' · '.join(dict.fromkeys(e['event'] for e in es))
+            macro.append({'date': d, 'event': f"{names} ({min(e['time_et'] for e in es)} ET)", 'type': 'HIGH',
+                          'category': cats[0] if len(cats) == 1 else 'MULTI',
+                          'link': 'https://www.nasdaq.com/market-activity/economic-calendar',
+                          'days_to': (ed - today).days})
+    except Exception:
+        macro = []
     for evt in MACRO_EVENTS:
+        if macro and evt.get('type') != 'HOLIDAY':
+            continue
         try:
             ed = datetime.strptime(evt['date'], '%Y-%m-%d').date()
             if ed >= today:
@@ -1482,7 +1511,7 @@ def get_calendar(opt_pos, eq_pos):
         except Exception:
             pass
     macro.sort(key=lambda x: x['date'])
-    macro = macro[:4]
+    macro = macro[:6]
 
     # If nothing dated is pending for the symbols we actually hold, fall back to the
     # next catalysts anywhere in the universe rather than rendering a blank card.
@@ -1843,6 +1872,15 @@ def get_system_health():
             # Fish Finder DECOMMISSIONED Aug 15 2026 (failed the Alpha Factory tests). Its
             # System Health block was removed to stop showing stale/dead data. Its validated
             # replacement, Wave Rider, has its own live view on the /factory page.
+            # Basket Tide (Oct 6 2026) — the overnight books' bear switch. Reads the state file the
+            # engines write; never recomputes inside a request (series() reads a ~600k-row parquet).
+            try:
+                with open(os.path.join(BASE_DIR, 'factory', 'cache', 'basket_tide.json')) as _f:
+                    _bt = json.load(_f)
+                out['basket_tide'] = {k: _bt.get(k) for k in ('date', 'on', 'stale', 'asof', 'ratio',
+                                                              'fall_to_off', 'n_wild', 'reason')}
+            except Exception:
+                pass
             # Field Report (market_context.py) — log-only pre-market brief
             try:
                 r = c.execute(

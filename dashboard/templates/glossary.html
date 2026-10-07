@@ -105,15 +105,23 @@
           <td>Second overnight book (live Oct 5 2026). Same window as Clockwork, a different chooser: a machine-learned
           model (gradient-boosted trees, ~90 daily inputs, trained on ~11 years) scores every name at ~09:35 for
           tonight's close→open move; near the close it buys its top 3 WILD names (~$3,333 each, own $10k), skipping
-          Clockwork's picks and anyone reporting earnings, and sells at the next open. Re-trained monthly. Out of
+          names the day trader / Wave Rider / Contrarian hold and anyone reporting earnings, and sells at the next open.
+          Since Oct 6 2026 it may share a name with Clockwork (at most $6,667 a name across both). Re-trained monthly. Out of
           sample 2018→2026 its top 3 beat the average WILD name by ~18bp a night (positive in 7 of 9 years; 2019 and
           2023 slightly negative), with deep multi-month drawdowns along the way.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><strong>Basket Tide</strong> (Clockwork, Night Owl)</td><td>The tide gauge for the night shift</td>
+          <td>Bear switch (live Oct 6 2026). If our most volatile liquid names, as one equal-weight basket, closed below
+          their 200-session average last session, the two overnight books take no new entries until it closes back
+          above. Exits are never affected. In replays 2018→2026 it cut the worst drawdown from −83% to −23% for ~5% of
+          the return; it costs money in sharp rebounds (2020) and saves it in long bears (2022). If its data is stale it
+          lets the books trade (fails open). Shown in SYSTEM HEALTH.</td>
+          <td class="decides">Decides — blocks overnight entries while OFF.</td></tr>
         <tr><td><strong>Ref P&amp;L</strong> (Clockwork, Night Owl)</td><td>Marking to the official scoreboard</td>
           <td>The same overnight trades re-priced at the session's official close and open from our own bars. The IBKR
           paper simulator invents auction fills, so ref P&amp;L is the honest read on these two books; P&amp;L is the read
           on the plumbing.</td>
-          <td class="watches">Watches only — written each evening at 17:05, places no orders.</td></tr>
+          <td class="watches">Watches only — written each evening at 22:00 (after the day's bars land), places no orders.</td></tr>
       </tbody>
     </table>
   </div>

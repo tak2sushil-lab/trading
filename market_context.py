@@ -180,7 +180,22 @@ def _mnq_state() -> dict:
 def _events_today_and_upcoming() -> dict:
     today = date.today()
     out = {'today': [], 'next_3_days': []}
-    for dstr, name in MACRO_DATES.items():
+    # Oct 6 2026: read the macro_calendar table (Nasdaq economic calendar + Fed FOMC schedule, refreshed nightly).
+    # The hand-typed MACRO_DATES below had the wrong next FOMC (Nov 4; the Fed says Oct 28) — it is only the
+    # fallback if the table cannot be read.
+    try:
+        import macro_calendar as MC
+        evs = MC.events(today.isoformat(), (today + timedelta(days=3)).isoformat(), 'HIGH')
+    except Exception:
+        evs = []
+    if evs:
+        for e in evs:
+            label = f"{e['event']} {e['time_et']} ET" + (f" (consensus {e['consensus']})" if e['consensus'] else '')
+            if e['event_date'] == today.isoformat():
+                out['today'].append(label)
+            else:
+                out['next_3_days'].append(f"{label} ({e['event_date']})")
+    for dstr, name in (MACRO_DATES.items() if not evs else []):
         d = date.fromisoformat(dstr)
         if d == today:
             out['today'].append(name)

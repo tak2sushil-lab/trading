@@ -155,12 +155,11 @@ def fetch_yf(symbol: str, yf_sym: str, interval: str, period: str) -> list[dict]
 # ── Databento ─────────────────────────────────────────────────────────────────
 
 def estimate_cost(symbols: list[str] | None = None, start: str = DATABENTO_START) -> None:
-    key = os.getenv('DATABENTO_API_KEY')
-    if not key:
-        print('❌ DATABENTO_API_KEY not set in .env')
+    from databento_keys import historical, usable_keys
+    if not usable_keys():
+        print('❌ no usable DataBento key (DATABENTO_API_KEY / _2 in .env) — run venv/bin/python databento_keys.py')
         return
-    import databento as db
-    client = db.Historical(key=key)
+    client = historical()
     targets = symbols or list(FUTURES_SYMBOLS)
     # Databento end is exclusive — use today so yesterday's full session is included.
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -182,9 +181,9 @@ def fetch_databento(symbol: str, start: str = DATABENTO_START,
     Fetch 1-min OHLCV for one symbol from Databento.
     Returns (rows_1m, rows_5m).
     """
-    key = os.getenv('DATABENTO_API_KEY')
-    if not key:
-        print('[databento] DATABENTO_API_KEY not set — skipping')
+    from databento_keys import historical, usable_keys
+    if not usable_keys():
+        print('[databento] no usable DataBento key (DATABENTO_API_KEY / _2) — skipping')
         return [], []
 
     db_sym = FUTURES_SYMBOLS[symbol][0]
@@ -193,8 +192,7 @@ def fetch_databento(symbol: str, start: str = DATABENTO_START,
 
     print(f'[databento] {symbol} ({db_sym}) {start} → {end_str}...')
     try:
-        import databento as db
-        client = db.Historical(key=key)
+        client = historical()   # primary key first, reserve account when it is refused/expired
         data = client.timeseries.get_range(
             dataset=DATABENTO_DATASET, symbols=[db_sym], stype_in='continuous',
             schema='ohlcv-1m', start=start, end=end_str,

@@ -27,6 +27,7 @@ sys.path.insert(0, "/Users/sushil/trading")
 from collect_bars import load_bars  # noqa: E402
 from factory.live._fills import (place_verified, position_qty, last_fill_price,  # noqa: E402
                                    fill_by_order_id)
+from factory.live import basket_tide  # noqa: E402
 
 # ── Earnings blackout ────────────────────────────────────────────────────────────
 # Added Sep 20 2026. This book holds a name through exactly one overnight gap, which is
@@ -318,9 +319,27 @@ def place_paper_order(sym, shares, side, order_type="MARKET"):
 
 
 # ─────────────────────────── entry / exit ───────────────────────────
+def tide_ok() -> bool:
+    """Basket Tide (factory/live/basket_tide.py, Oct 6 2026): False = the WILD basket closed below its
+    200-session average last session, so this book takes no new entries. Exits are never gated. Fails OPEN."""
+    try:
+        st = basket_tide.status()
+        if st.get("stale"):
+            log(f"Basket Tide {st.get('reason')}")
+        basket_tide.announce(log)
+        return bool(st.get("on", True))
+    except Exception as e:
+        log(f"Basket Tide check failed ({e}) — failing OPEN, entries allowed")
+        return True
+
+
 def scan_and_enter():
     if entered_today():
         log("already entered today — skipping"); return
+    if not tide_ok():
+        log(f"Basket Tide OFF — no new entries tonight ({basket_tide.status().get('reason')})")
+        record_scan({"wild_scanned": 0, "top_n": TOP_N, "entered": 0, "mode": MODE,
+                     "blocked": "basket_tide_off"}, []); return
     sig = consistency_signal()
     ranked = sorted(sig.items(), key=lambda x: -x[1])
     funnel = {"wild_scanned": len(sig), "top_n": TOP_N, "entered": 0, "mode": MODE}

@@ -391,6 +391,7 @@ function renderSystemHealth(h) {
     ${renderFeed(h.feed)}
     ${renderProp(h.prop)}
     ${renderFleet(h.fleet)}
+    ${renderBasketTide(h.basket_tide)}
     ${renderScoring(h.scoring)}
     ${renderOptionsHealth(h.options)}
     ${renderFieldReport(h.field_report)}`;
@@ -475,6 +476,23 @@ function renderScoring(sc) {
 // Fish Finder health row removed Sep 22 2026 — the engine was decommissioned
 // Aug 15 2026 (Alpha Factory pivot) and this renderer had no call site since.
 
+
+// ── Basket Tide row (Oct 6 2026) — bear switch for Clockwork + Night Owl ────
+function renderBasketTide(bt) {
+  if (!bt) return '';
+  const pct = v => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
+  const cls = bt.stale ? 'warn' : (bt.on ? 'pos' : 'neg');
+  const state = bt.stale ? 'FAIL-OPEN' : (bt.on ? 'ON' : 'OFF');
+  const detail = bt.stale ? (bt.reason || '')
+    : `WILD basket ${pct(bt.ratio)} vs its 200-session average at the ${bt.asof} close`
+      + (bt.on && bt.fall_to_off != null ? ` · a ${(bt.fall_to_off * 100).toFixed(0)}% fall turns it OFF` : ' · Clockwork + Night Owl stand aside');
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Bear switch for the two overnight books. OFF when the equal-weight basket of our most volatile liquid names closed below its 200-session average — then Clockwork and Night Owl take no new entries (exits unaffected). Replayed 2018-2026: fleet max drawdown -83% to -23%, Sharpe 1.87 to 2.06. Fails OPEN if its data is stale.">Basket Tide</span>
+      <span class="health-chip ${cls}" title="${bt.reason || ''}">${state}</span>
+      <span class="health-detail-inline">${detail}</span>
+    </div>`;
+}
 
 // ── Field Report row (market_context.py — log-only pre-market brief) ────
 function renderFieldReport(fr) {
@@ -1128,7 +1146,7 @@ function renderCalendar(earnings, macro) {
   }
 
   if (!macro || macro.length === 0) {
-    macEl.innerHTML = '<div class="empty-state">No macro events in next 30 days</div>';
+    macEl.innerHTML = '<div class="empty-state">No high-importance macro events in the next 45 days</div>';
   } else {
     macEl.innerHTML = macro.map(m => {
       const link = m.link ? `<a class="cal-link" href="${m.link}" target="_blank">Source ↗</a>` : '';
