@@ -310,6 +310,22 @@ L3_SKIP_RIDE = False
 #   pipeline (late entries, same exits). REJECTED.
 CONFIRM_ENTRY_PCT  = None
 CONFIRM_WINDOW_MIN = 15
+# ENTRY PRICE BAND (Oct 9 2026, RESEARCH_REGISTRY §R4) — the "ordering gap". Entries used to go in as MARKET orders
+#   30-60s after the price they were graded at. On REAL fills since May 29 2026 (before that the fill was recorded
+#   as the signal price), split by where the fill landed vs the signal price:
+#     > +0.25% above it ("chased")       62 trades  -1.40%/trade vs the volatile basket (t -3.2, every month)
+#     already below it (price reversed)   38 trades  -0.82%/trade (t -2.5, every month)
+#     within -0.05% .. +0.25%            100 trades  booked +$271   (the other 100 booked -$2,039)
+#   Every band width tried beat no band (kept trades -$1,283 .. +$271 vs -$1,768 for all 200); +$271 is the best
+#   cell, so expect less. It stops most of the bleed; it does NOT create an edge.
+#   Rule: re-quote just before ordering; skip if the ASK is above the band (chasing) or below it (falling); otherwise
+#   send a LIMIT order capped at the top of the band, never a market order. A skipped name is not marked traded —
+#   it is re-graded next scan with a fresh signal price and can be bought if it settles. Every check is logged to
+#   trades.db entry_band_log so the rule can be scored. Revert: ENTRY_PRICE_BAND = False.
+ENTRY_PRICE_BAND   = True
+ENTRY_BAND_LO_PCT  = -0.05
+ENTRY_BAND_HI_PCT  = 0.25
+ENTRY_BAND_MAX_CHECKS = 12    # each re-quote takes ~3s at the bridge — cap the checks per scan so skips can't stall it
 # MAX_NEW_PER_SECTOR_PER_SCAN: None = live (only MAX_PER_SECTOR=5 open positions, OTHER uncapped).
 #   N = at most N new entries per sector in one scan (OTHER included). Live since Jun 1: names bought
 #   with a same-sector name in the same scan -0.88%/trade (61) vs -0.40/-0.45% otherwise; 72% of those
@@ -2976,6 +2992,71 @@ def grade_bear_setup(sig, regime, sl, target, price, rr, symbol=None):
 # ─────────────────────────────────────────────────────────
 # PLACE TRADE
 # ─────────────────────────────────────────────────────────
+def _entry_band_check(symbol, signal_px):
+    """ENTRY_PRICE_BAND: returns (ok, limit_price, info). info = dict for entry_band_log.
+    Uses the live ASK (what a buy pays); falls back to get_live_price() when the bridge quote is unavailable —
+    equity_replay patches that to the stored bar, so historical replays pass the band at the signal price."""
+    info = {'signal_px': signal_px, 'bid': None, 'ask': None, 'ref_px': None, 'source': None}
+    try:
+        q = requests.get(f"{BRIDGE}/quote/{symbol}", timeout=8).json()
+        info['bid'], info['ask'] = q.get('bid'), q.get('ask')
+        ref = q.get('ask') or q.get('last') or q.get('best_price')
+        if ref:
+            info['ref_px'], info['source'] = float(ref), ('ask' if q.get('ask') else 'last')
+    except Exception:
+        pass
+    if info['ref_px'] is None:
+        lp = get_live_price(symbol)
+        if lp:
+            info['ref_px'], info['source'] = float(lp), 'fallback'
+    if not info['ref_px'] or not signal_px:
+        info['verdict'], info['dev_pct'] = 'NO_QUOTE', None
+        return False, None, info
+    dev = (info['ref_px'] / signal_px - 1) * 100
+    info['dev_pct'] = round(dev, 4)
+    if dev > ENTRY_BAND_HI_PCT:
+        info['verdict'] = 'CHASE_SKIP'
+        return False, None, info
+    if dev < ENTRY_BAND_LO_PCT:
+        info['verdict'] = 'FALLING_SKIP'
+        return False, None, info
+    info['verdict'] = 'PASS'
+    limit = round(signal_px * (1 + ENTRY_BAND_HI_PCT / 100), 2)
+    if limit < info['ref_px']:                      # cent rounding must never leave the limit below the ask
+        limit = round(info['ref_px'], 2) if round(info['ref_px'], 2) >= info['ref_px'] else round(info['ref_px'] + 0.01, 2)
+    info['limit_px'] = limit
+    return True, limit, info
+
+
+def _log_entry_band(symbol, info, trade_id=None, row_id=None):
+    """Write (or, with row_id, finish) one entry_band_log row. Never raises — logging must not block an entry."""
+    import sqlite3 as _sq
+    try:
+        c = _sq.connect(os.path.join(_DIR, 'trades.db'), timeout=10)
+        try:
+            c.execute("""CREATE TABLE IF NOT EXISTS entry_band_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT,
+                         date TEXT, symbol TEXT, signal_px REAL, bid REAL, ask REAL, ref_px REAL, source TEXT,
+                         dev_pct REAL, verdict TEXT, limit_px REAL, trade_id INTEGER)""")
+            if row_id is not None:
+                c.execute("UPDATE entry_band_log SET verdict=?, trade_id=? WHERE id=?",
+                          (info.get('verdict'), trade_id, row_id))
+                c.commit()
+                return row_id
+            now = datetime.now(ET)
+            cur = c.execute("""INSERT INTO entry_band_log (ts, date, symbol, signal_px, bid, ask, ref_px, source, dev_pct,
+                               verdict, limit_px, trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (now.strftime('%H:%M:%S'), now.strftime('%Y-%m-%d'), symbol, info.get('signal_px'),
+                             info.get('bid'), info.get('ask'), info.get('ref_px'), info.get('source'),
+                             info.get('dev_pct'), info.get('verdict'), info.get('limit_px'), trade_id))
+            c.commit()
+            return cur.lastrowid
+        finally:
+            c.close()
+    except Exception as e:
+        log(f"  entry_band_log write failed ({e})")
+        return None
+
+
 def place_trade(symbol, price, shares, sl, target, strategy, grade,
                 rsi=0, vol_ratio=0, confidence=75, sector='OTHER', side='LONG',
                 limit_price=None, outside_rth=False):
@@ -3075,6 +3156,29 @@ def place_trade(symbol, price, shares, sl, target, strategy, grade,
                         break
                     log(f"  {symbol}: Order {order_id} {d['status']} — not recording")
                     return None
+            except Exception:
+                pass
+        if not filled and limit_price:
+            # Oct 9 2026: an unfilled LIMIT order used to be left WORKING at IBKR after we gave up here — if it
+            # filled later the position belonged to no book (orphan -> reconcile churn, the May/Sep incident class).
+            # Cancel it, give IBKR a moment, and ask once more: a fill that landed before the cancel is recorded
+            # below (order status first, then the portfolio delta), never dropped.
+            try:
+                requests.post(f"{BRIDGE}/order/{order_id}/cancel", json={}, timeout=5)
+                log(f"  {symbol}: limit ${limit_price} not filled in {poll_attempts * 2}s — order {order_id} cancelled")
+            except Exception as _ce:
+                log(f"  {symbol}: ⚠️ cancel of unfilled limit order {order_id} FAILED ({_ce}) — check IBKR")
+                send_telegram(f"⚠️ {symbol}: could not cancel unfilled limit order {order_id} — check IBKR")
+            time.sleep(2)
+            try:
+                d = requests.get(f"{BRIDGE}/order/{order_id}/status", timeout=5).json()
+                if d.get('status') == 'Filled' and d.get('filled'):
+                    _fq, _fp = int(d.get('filled')), d.get('avgFillPrice')
+                    shares = min(shares, _fq) if _fq > 0 else shares
+                    price = float(_fp) if (_fp is not None and float(_fp) > 0) else (
+                        _last_fill_price(symbol, 'BOT' if side == 'LONG' else 'SLD') or price)
+                    filled = True
+                    log(f"  {symbol}: limit order {order_id} filled just before the cancel — recording {shares} sh @ ${price}")
             except Exception:
                 pass
         if not filled:
@@ -5700,6 +5804,7 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
         log("📖 LONG book OFF (trailing signal drift ≤ 0) — graded candidates logged, no new entries")
 
     _new_by_sector = {}   # MAX_NEW_PER_SECTOR_PER_SCAN (Oct 2 2026 A/B)
+    _band_checks = 0      # ENTRY_PRICE_BAND re-quotes this scan (capped by ENTRY_BAND_MAX_CHECKS)
     for pick in (candidates if _long_book_on else []):
         if open_count + attempted >= MAX_OPEN_TRADES:   # Oct 1 2026: entries were counted twice
             break
@@ -5784,13 +5889,39 @@ def _scan_and_enter(regime, spy_chg, open_trades, confirmed_scans=1, observe_onl
             _confirm_watch.pop(sym, None)
             log(f"  ✅ CONFIRMED {sym} ${price} vs watch ${_w['px']} ({(price / _w['px'] - 1) * 100:+.2f}%)")
 
+        # ENTRY PRICE BAND (Oct 9 2026) — see the constant's comment. A skip here is NOT an attempt and does not
+        # mark the name traded: it is re-graded next scan with a fresh signal price.
+        _band_limit, _band_row = None, None
+        if ENTRY_PRICE_BAND:
+            if _band_checks >= ENTRY_BAND_MAX_CHECKS:
+                log(f"  🧭 BAND: {_band_checks} price checks this scan — stopping, the rest are re-graded next scan")
+                break
+            _band_checks += 1
+            _band_ok, _band_limit, _band_info = _entry_band_check(sym, price)
+            _band_row = _log_entry_band(sym, _band_info)
+            if not _band_ok:
+                _v, _dv = _band_info.get('verdict'), _band_info.get('dev_pct')
+                if _v == 'CHASE_SKIP':
+                    _why = f"ask ${_band_info['ref_px']} is {_dv:+.2f}% past the signal ${price} — not chasing"
+                elif _v == 'FALLING_SKIP':
+                    _why = f"ask ${_band_info['ref_px']} is {_dv:+.2f}% under the signal ${price} — already reversing"
+                else:
+                    _why = 'no live quote — not ordering blind'
+                log(f"  🧭 BAND SKIP {sym} — {_why} (re-graded next scan)")
+                continue
+            log(f"  🧭 BAND OK {sym} — {_band_info['source']} {_band_info['dev_pct']:+.2f}% vs signal ${price}; "
+                f"LIMIT ${_band_limit} (not market)")
+
         attempted += 1  # count this slot before we know fill outcome
         trade_id = place_trade(
             sym, price, shares, pick['sl'], pick['target'],
             strategy, pick['grade'],
             rsi=pick['rsi'], vol_ratio=pick['vol_ratio'],
             confidence=pick['score'], sector=sector,
+            limit_price=_band_limit,
         )
+        if _band_row:
+            _log_entry_band(sym, {'verdict': 'FILLED' if trade_id else 'NO_FILL'}, trade_id=trade_id, row_id=_band_row)
 
         if trade_id:
             traded_today.add(sym)

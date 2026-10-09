@@ -60,6 +60,7 @@ for all six types interchangeably. When speaking, pick the type word above.
 |---|---|---|---|
 | **Entry Score** | L1, `grade_setup()` A+/A | Score + Gate | Points-based setup grading (patterns, sector grade, DNA modifiers, burst timing). |
 | **Fitness Gate** | L2 (HOD×3, RUN×4, VWAP>2.5×), HALF-sizing | Gate | Pre-entry fitness screen; marginal passes get half size. |
+| **Entry Price Band** | `ENTRY_PRICE_BAND`, `_entry_band_check()`, table `entry_band_log` | Gate | Just before ordering, re-quote the ask: skip if it is more than +0.25% above the price the stock was graded at (chasing) or more than 0.05% below it (already reversing); otherwise buy with a LIMIT capped at +0.25%, never a market order. A skipped name is re-graded next scan. Built Oct 9 2026 from real fills since May 29: chased entries −1.40%/trade vs the volatile basket (t −3.2), in-band trades +$271 vs −$2,039 outside (RESEARCH_REGISTRY §R4). Stops most of the bleed; not an edge. |
 | **Probation Exit** | L3, T+5 confirmation | Exit rule | New trade is on probation for 5 bars; ejected if it doesn't confirm. |
 | **Book Health Selector** | `book_is_on()` / `compute_book_health()` | Gate | Hot-hand rule: each direction (LONG/SHORT book) only trades while its trailing-10d signal drift is positive. Measures the SIGNAL's edge, not our execution. |
 | **Stock Personality** | DNA clusters: HIGH_VOL / INSTITUTIONAL / MOMENTUM, `dna_analysis.py` | Score modifier | Per-stock archetype adjusting entry points and exit style. Re-cluster quarterly. |

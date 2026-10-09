@@ -38,7 +38,9 @@ chronological log (useful for "why did we do X"); this one is always current for
   — thresholds checked: round on purpose, tuned ones did worse), sector/dollar moves, the morning gap label, a shadow Fear
   Rebound basket, and outcomes; first close snapshot Fri Oct 9 18:15, first auction-imbalance probe Mon Oct 12 15:52.
   Clockwork ties now broken by Night Owl's score (live Mon 15:40). Day trader: chased entries (>+0.25% past the signal)
-  lose −1.40%/trade (t −3.2) — an order-time price band is PROPOSED (needs approval). Fear Rebound live book: proposed.
+  lost −1.40%/trade (t −3.2) — **ENTRY_PRICE_BAND SHIPPED** (live Mon Oct 12): re-quote, buy only within −0.05%..+0.25%
+  of the signal via a LIMIT order; unfilled limits are now cancelled. Score it from `entry_band_log` after ~2 weeks.
+  Fear Rebound live book: proposed, not built.
 - **Oct 6: SHORTING the morning gappers ❌ (registry §K7-K10).** 8 years of 1-min bars, realistic fills: at 09:35 the
   model's top-5 shorts make +34bp/day (t 2.5, 7/13 half-years) and the best 5% of days are 190% of the profit; worst
   stretch −$20k on a $10k book. The edge is real only in the opening auction. Do not build.
@@ -6211,6 +6213,20 @@ stretched name first.
 - **Clockwork tie-break FIXED** (`factory/live/overnight.py: rank_candidates`): consistency first, then Night Owl's score,
   then a date-seeded shuffle — never the A-Z order of the WILD list. Tests `factory/tests/test_clockwork_tiebreak.py`.
 - **Fear-day thresholds derived:** VIX jump carries the effect; simplified to VIX ≥+5% & universe ≤−0.5%; do not tune.
-- **Day trader execution (proposed):** re-quote at order time; buy only within −0.05%..+0.25% of the signal price with a
-  limit order. On real fills since May 29 the outside-band trades lost −$2,039 vs +$271 inside (every band tried helps).
-- Not committed (user has not asked).
+- **Day trader ENTRY PRICE BAND — SHIPPED** (`auto_trader.py`: `ENTRY_PRICE_BAND`, `_entry_band_check`,
+  `_log_entry_band`; table `entry_band_log`; tests `tests_entry_band.py`). Just before ordering it re-quotes the ASK; skips
+  if > +0.25% above the signal (chasing) or < −0.05% (already reversing) — a skip is NOT an attempt and the name is
+  re-graded next scan; otherwise sends a LIMIT capped at signal +0.25% (never a market order). Max 12 checks/scan (each
+  quote ~3s). Evidence: real fills since May 29, outside-band trades −$2,039 vs +$271 inside; every band tried helped.
+  Replays are unaffected (bridge quote unavailable -> `get_live_price` = stored bar -> PASS; FillSimulator ignores the
+  limit). Revert: `ENTRY_PRICE_BAND = False`.
+- **place_trade: unfilled LIMIT orders are now CANCELLED** (were left working at IBKR → orphan risk). After the cancel it
+  asks the order status once more and then checks the position delta, so a fill that landed just before the cancel is
+  still recorded. Also affects the pre-market scanner's limit orders (intent was an immediate fill).
+- Two bug sweeps: found and fixed a crash in the band's skip message (None formatted as a number), a cross-asset
+  partial-download crash and a missing-table crash in market_state.py, and nightly re-selection of unscoreable history.
+  Tests: `tests_entry_band.py`, `tests_market_state.py`, `factory/tests/test_clockwork_tiebreak.py` (all pass), plus
+  tests_reconcile_guards / test_basket_tide / dashboard render; one-day replay smoke (Oct 6) clean.
+- **Monday Oct 12 watch:** 09:26 morning label; 09:35+ `🧭 BAND` lines in auto_trader.log (if the LONG book is ON);
+  15:40 Clockwork's tie-broken picks; 15:52 auction probe (does the account get non-zero imbalance data?); 18:15
+  market-state Telegram.

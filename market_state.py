@@ -210,14 +210,23 @@ def close_values(day: pd.Timestamp, f: pd.DataFrame, ex: dict, xa: pd.DataFrame)
     v = {k: r[k] for k in ['n_elig', 'n_wild', 'mkt_ret', 'breadth_up', 'wild_ret', 'wild_on', 'wild_id', 'semi_ret',
                            'wild_r5', 'wild_r20', 'tide_ratio', 'eff10', 'disp']}
     # market days only — bitcoin trades on weekends, which would make Monday's "previous close" a Sunday (no VIX)
-    xa = xa[(xa.index <= day)].dropna(subset=['vix'])
+    xa = xa[(xa.index <= day)].dropna(subset=['vix']) if 'vix' in xa.columns else xa.iloc[0:0]
     if len(xa) >= 2 and xa.index[-1] == day:
         last, prev = xa.iloc[-1], xa.iloc[-2]
-        v['vix'], v['vix_chg'] = last.get('vix'), last.get('vix') / prev.get('vix') - 1
-        v['vix_term'] = last.get('vix') / last.get('vix3m')
-        v['tnx'], v['tnx_chg'] = last.get('tnx'), last.get('tnx') - prev.get('tnx')
+
+        def num(row, k):                          # a ticker Yahoo dropped or left blank -> None, never a crash
+            x = row.get(k)
+            return None if x is None or pd.isna(x) else float(x)
+        lv, pv = num(last, 'vix'), num(prev, 'vix')
+        v['vix'] = lv
+        v['vix_chg'] = lv / pv - 1 if lv and pv else None
+        l3 = num(last, 'vix3m')
+        v['vix_term'] = lv / l3 if lv and l3 else None
+        lt, pt = num(last, 'tnx'), num(prev, 'tnx')
+        v['tnx'], v['tnx_chg'] = lt, (lt - pt if lt is not None and pt is not None else None)
         for k in ('spy', 'qqq', 'iwm', 'smh', 'arkk', 'hyg', 'tlt', 'uup', 'btc'):
-            v[f'{k}_ret'] = last.get(k) / prev.get(k) - 1
+            a_, b_ = num(last, k), num(prev, k)
+            v[f'{k}_ret'] = a_ / b_ - 1 if a_ and b_ else None
     mkt, br, vj = v['mkt_ret'], v['breadth_up'], v.get('vix_chg')
     v['weather'] = ('STORMY' if (mkt <= FEAR_MKT_DROP and br < STORM_BREADTH) else
                     'SUNNY' if (mkt >= -FEAR_MKT_DROP and br > SUNNY_BREADTH) else 'CLOUDY')
@@ -248,10 +257,12 @@ def _bridge_0940_to_close(symbols: list[str], day: str) -> float | None:
     return float(np.mean(rets)) if len(rets) >= max(3, len(symbols) // 2) else None
 
 
-def fill_outcomes(f: pd.DataFrame, ex: dict, use_bridge: bool = True):
-    """Fill next-session outcomes for rows that can now be scored."""
-    st = rows('next_on_wild IS NULL OR next_id_wild IS NULL OR (fear=1 AND (rebound_official IS NULL OR rebound_0940 IS NULL)) '
-              'OR (fear=1 AND books_ref_pnl IS NULL)')
+def fill_outcomes(f: pd.DataFrame, ex: dict, use_bridge: bool = True, since: str | None = None):
+    """Fill next-session outcomes for rows that can now be scored. Nightly runs look back two weeks only: history
+    can never get a 09:40 bridge price or a live-book P&L, so it would otherwise be re-selected every night."""
+    since = since or (now_et().date() - dt.timedelta(days=14)).isoformat()
+    st = rows('date >= ? AND (next_on_wild IS NULL OR next_id_wild IS NULL OR (fear=1 AND (rebound_official IS NULL '
+              'OR rebound_0940 IS NULL)) OR (fear=1 AND books_ref_pnl IS NULL))', (since,))
     if st.empty:
         return
     dates = list(f.index)
@@ -291,8 +302,14 @@ def close_snapshot(day: dt.date | None = None, telegram: bool = True) -> bool:
     if t not in f.index or pd.isna(f.at[t, 'mkt_ret']):
         log(f'no completed daily bar for {day} in the cache yet — nothing recorded (night_owl_prep refreshes at 17:30)')
         return False
-    xa = xasset((t - pd.Timedelta(days=15)).strftime('%Y-%m-%d'))
+    try:
+        xa = xasset((t - pd.Timedelta(days=15)).strftime('%Y-%m-%d'))
+    except Exception as e:                       # record the market itself even when the cross-asset pull fails
+        log(f'cross-asset download failed ({type(e).__name__}: {e}) — recording without VIX/sector data; FEAR flag unknown')
+        xa = pd.DataFrame()
     v = close_values(t, f, ex, xa)
+    if v.get('vix') is None:
+        log('⚠️ no VIX close for today — the FEAR flag is 0 by default; rerun with --close later to fill it')
     upsert(day.isoformat(), v)
     fill_outcomes(f, ex)
     log(f"{day} {v['weather']} universe {v['mkt_ret']*100:+.2f}% breadth {v['breadth_up']:.0%} WILD {v['wild_ret']*100:+.2f}% "
@@ -365,8 +382,11 @@ def auction_probe():
     syms = sorted(set(pe[pe['cluster'] == 'WILD']['symbol']))
     c = sqlite3.connect(DB)
     try:
-        for t in ('overnight_trades', 'night_owl_trades'):
-            syms += [r[0] for r in c.execute(f"SELECT symbol FROM {t} WHERE entry_date=?", (day,))]
+        for t in ('overnight_trades', 'night_owl_trades'):         # tonight's overnight picks, if those tables exist
+            try:
+                syms += [r[0] for r in c.execute(f"SELECT symbol FROM {t} WHERE entry_date=?", (day,))]
+            except sqlite3.Error:
+                pass
     finally:
         c.close()
     syms = sorted(set(syms))
@@ -387,7 +407,7 @@ def auction_probe():
             ts = now_et().strftime('%H:%M:%S')
             for k, tk in zip(batch, tks):
                 vals = [_clean(x) for x in (tk.auctionVolume, tk.auctionPrice, tk.auctionImbalance, tk.regulatoryImbalance, tk.last, tk.close)]
-                if any(x is not None for x in vals[:4]):
+                if any(x for x in vals[:4]):                   # 0.0 is IBKR's "no auction data yet"
                     got += 1
                 out.append((day, ts, k.symbol, *vals))
             for k in batch:
@@ -401,8 +421,8 @@ def auction_probe():
         c.commit()
     finally:
         c.close()
-    log(f'auction probe: {len(out)} names queried, {got} returned auction fields'
-        + ('' if got else ' — this account may not receive closing-auction data (check the IBKR market-data subscription)'))
+    log(f'auction probe: {len(out)} names queried, {got} returned non-zero auction data'
+        + ('' if got else ' — none: either no imbalance published yet or this account lacks the closing-auction feed'))
 
 
 # ─────────────────────────── backfill ───────────────────────────
@@ -442,7 +462,7 @@ def backfill(start: str):
             v.update({'am_ts': 'backfill', 'am_es_gap': fg.at[t, 'es'], 'am_nq_gap': fg.at[t, 'nq'], 'am_rty_gap': rty, 'am_label': lab})
         prev_term, prev_w5 = v.get('vix_term'), v.get('wild_r5')
         upsert(t.strftime('%Y-%m-%d'), v)
-    fill_outcomes(f, ex, use_bridge=False)
+    fill_outcomes(f, ex, use_bridge=False, since='1900-01-01')
     log(f'backfilled {len(days)} sessions from {start}')
 
 
