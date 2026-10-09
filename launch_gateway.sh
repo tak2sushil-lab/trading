@@ -26,7 +26,7 @@ fi
 # ── Pass credentials to IBC via env vars ──────────────────
 export TWSUSERID="$IBKR_USERNAME"
 export TWSPASSWORD="$IBKR_PASSWORD"
-export TWS_MAJOR_VRSN="10.45"
+export TWS_MAJOR_VRSN="10.50"
 export IBC_INI="$IBC_DIR/config.ini"
 export IBC_PATH="$IBC_DIR"
 export TWS_PATH="$HOME/Applications"

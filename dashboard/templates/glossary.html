@@ -98,8 +98,9 @@
           vs the tide, not raw P&amp;L.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
         <tr><td><span class="eng-name" data-eng="Clockwork"><span class="eng-bar"></span>Clockwork</span></td><td>Buys the close, sells the open</td>
-          <td>Overnight book: ranks WILD names by how consistently they gapped up over the last 30 nights, buys the top 3
-          (~$3,333 each) at the closing auction, sells at the next opening auction.</td>
+          <td>Overnight book: ranks WILD names by how consistently they gapped up over the last 30 nights (ties broken by
+          Night Owl's score since Oct 9 2026, never alphabetically), buys the top 3 (~$3,333 each) at the closing auction,
+          sells at the next opening auction. Its $10k also funds <b>Fear Rebound</b>'s day shift.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
         <tr><td><span class="eng-name" data-eng="Night Owl"><span class="eng-bar"></span>Night Owl</span></td><td>A learned model picks who sleeps well</td>
           <td>Second overnight book (live Oct 5 2026). Same window as Clockwork, a different chooser: a machine-learned
@@ -109,6 +110,13 @@
           Since Oct 6 2026 it may share a name with Clockwork (at most $6,667 a name across both). Re-trained monthly. Out of
           sample 2018→2026 its top 3 beat the average WILD name by ~18bp a night (positive in 7 of 9 years; 2019 and
           2023 slightly negative), with deep multi-month drawdowns along the way.</td>
+          <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><span class="eng-name" data-eng="Fear Rebound"><span class="eng-bar"></span>Fear Rebound</span></td><td>The day shift after a fear day</td>
+          <td>Day shift of Clockwork's $10k pool (Oct 9 2026). On a <b>fear day</b> — VIX closed up ≥5% and our universe fell
+          ≥0.5% — the 18:15 Market State Record lists the volatile names that fell hardest; the next morning at ~09:40 it buys
+          the 3 hardest-hit (~$3,333 each, skipping names another book holds) and sells them at 15:30, before Clockwork buys
+          at the close. −10% disaster stop. Idle on every other day (~40 trading days a year). A down day where VIX does
+          <i>not</i> jump (a calm storm, like Oct 7–8 2026) is not traded — those have not rebounded.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
         <tr><td><strong>Basket Tide</strong> (Clockwork, Night Owl)</td><td>The tide gauge for the night shift</td>
           <td>Bear switch (live Oct 6 2026). If our most volatile liquid names, as one equal-weight basket, closed below

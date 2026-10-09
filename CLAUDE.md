@@ -23,6 +23,18 @@ Last updated: Sep 25 2026 (futures deep review)
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
+**⚡ FEAR REBOUND — the overnight pool's day shift, LIVE on paper from Mon Oct 12 (built Oct 9 2026):**
+- The morning after a FEAR day (VIX up ≥5% AND our universe down ≥0.5% — `market_state.fear`, 18:15) it buys the 3
+  volatile names that fell hardest (`market_state.rebound_basket`) at ~09:40 and sells them at 15:30; −10% disaster stop.
+  NO capital of its own: Clockwork's $10k (idle 09:30-15:40), 3 × $3,333; Clockwork counts its open positions before the
+  15:40 MOC (`overnight.fear_rebound_open()`). Code `factory/live/fear_rebound.py`, tests `factory/tests/test_fear_rebound.py`,
+  launchd `com.sushil.trading.fear_rebound` (60s, `FEAR_REBOUND_MODE=LIVE`). Evidence registry §P12-§R6 (09:40→15:30 bars
+  2024-26 +93bp/day, t 2.2; ⚠️ ≈0 on unselected stocks 2018-23). ~40 trading days a year — judge over many fear days.
+  Dry-scan: `venv/bin/python -m factory.live.fear_rebound --dryscan YYYY-MM-DD` (the fear day).
+- Also Oct 9: IB Gateway 10.45 → **10.50 stable** + IBC 3.23.0 → **3.24.2** (10.48+ needs IBC 3.24.2). Rollback: `~/ibc-3.23.0-backup`,
+  `~/Applications/IB Gateway 10.45`, set TWS_MAJOR_VRSN back to 10.45 in launch_gateway*.sh + ~/ibc/gatewaystartmacos.sh.
+  The live (prod) gateway got its own `IB Gateway 10.50 Live` copy + pin (~/trading-prod, not a git repo; not running).
+
 **🟡 EQUITY DAY TRADER — current state (Oct 2 2026, read first for equity):**
 - **Oct 5 (night): ML for the day trader ❌ and "know tonight who gaps tomorrow" ❌ — see the Oct 5 entry at the
   bottom.** A 9-year learned model's intraday edge lives in the opening print (09:35 entry: +6.5bp, below cost);
@@ -6230,3 +6242,21 @@ stretched name first.
 - **Monday Oct 12 watch:** 09:26 morning label; 09:35+ `🧭 BAND` lines in auto_trader.log (if the LONG book is ON);
   15:40 Clockwork's tie-broken picks; 15:52 auction probe (does the account get non-zero imbalance data?); 18:15
   market-state Telegram.
+
+### Oct 9 2026 (night) — Fear Rebound book LIVE, dashboard rows, IB Gateway 10.50 / IBC 3.24.2
+- **IB Gateway upgrade** (IBKR warned 10.45 loses support after Dec): installed 10.50 stable next to 10.45 (paper/TC via
+  `~/Applications-paper` symlink, live via `~/Applications-live` → `IB Gateway 10.50 Live`), IBC 3.24.2 fresh with our
+  config*.ini + start-script customisations (IBC release notes: Gateway 10.48+ requires 3.24.2). Both gateways logged in
+  unattended (IBC accepted the standard warning), both bridges auto-reconnected, portfolio/quotes/heartbeats verified.
+- **Fear Rebound** (registry §R6): Clockwork's pool works a day shift after FEAR days — 3 hardest-hit names, 09:40 → 15:30.
+  Wired: Clockwork room counts it, Night Owl avoids its names, auto_trader `_other_book_symbols` owns them (reconcile would
+  otherwise sell them as orphans). Bug sweeps caught: a double-buy risk on ambiguous fills (now: an unconfirmed BUY is
+  never retried that day and its slot stays used; outright rejections move on), a never-firing "pool busy" branch, and
+  no exit path for a position left open overnight (now: "overdue" sell next morning). 27 tests.
+- **Dashboard**: System Health rows "Market weather" (weather, FEAR flag + tomorrow's basket, 09:26 gap label, auction-data
+  status) and "Entry price band" (today's checks / skips / fills); Fear Rebound in positions, Today, To-date, 15-day chart,
+  scorecard, activity, engines board, manual close, filter + orange colour; its open positions count inside Clockwork's
+  fleet chip (shared pool). Glossary (GLOSSARY.md + /glossary page) updated: Fear Rebound row in §8, Clockwork/Market
+  State/Fear day rows, nightly schedule.
+- **Mon Oct 12 watch**: 09:26 first live morning label; 09:40 Fear Rebound acts only if Fri Oct 9 was a fear day (it was not
+  — VIX −3.7%), so expect "no trade" in logs/fear_rebound.log; 15:52 auction probe (non-zero imbalance?); dashboard rows.

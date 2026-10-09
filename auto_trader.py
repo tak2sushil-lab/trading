@@ -1429,7 +1429,9 @@ def _other_book_symbols():
                                ('contrarian_trades', ('OPEN',)),
                                ('overnight_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT')),
                                # Oct 5 2026: Night Owl, the second overnight book — same reason
-                               ('night_owl_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'))):
+                               ('night_owl_trades', ('OPEN', 'PENDING_ENTRY', 'PENDING_EXIT')),
+                               # Oct 9 2026: Fear Rebound, the day shift of Clockwork's pool — same reason
+                               ('fear_rebound_trades', ('OPEN',))):
             try:
                 q = f"SELECT symbol FROM {tbl} WHERE mode='LIVE' AND status IN ({','.join('?'*len(statuses))})"
                 c.execute(q, statuses)

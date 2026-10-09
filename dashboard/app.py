@@ -52,6 +52,7 @@ SERVICES = [
     ('contrarian',   'com.sushil.trading.contrarian',     'scheduled', 'last scan errored', 'Books', 'contrarian.log', 24, 'Mean-reversion book — buys the biggest 3-day fallers, holds 5 days, 15% stop. Long-only, so judge it on alpha vs the tide, not raw P&L. PLACES REAL ORDERS.'),
     ('clockwork',    'com.sushil.trading.clockwork',      'scheduled', 'last scan errored', 'Books', 'clockwork.log', 24, "Overnight book — buys at the closing auction, sells at the next opening auction, 3 names. This is the book that trades the overnight window where 91% of the universe's return actually accrues. PLACES REAL ORDERS."),
     ('night_owl',    'com.sushil.trading.night_owl',      'scheduled', 'last pass errored', 'Books', 'night_owl.log', 24, "Second overnight book (Oct 5 2026) — a machine-learned ranking model scores the universe each morning; buys its top 3 at the closing auction and sells at the next opening auction. Skips Clockwork's names. PLACES REAL ORDERS."),
+    ('fear_rebound', 'com.sushil.trading.fear_rebound',   'scheduled', 'last pass errored', 'Books', 'fear_rebound.log', 24, "Day shift of Clockwork's $10k pool (Oct 9 2026): the morning after a FEAR day it buys the 3 volatile names that fell hardest at ~09:40 and sells them at 15:30 (−10% disaster stop). Idle on every other day — logs a line each hour. LIVE on the paper account."),
     ('options',      'com.sushil.trading.options_trader', 'daemon',    '', 'Books', None, None, 'The options book — spread entries, the calculator and the OPT commands. PLACES REAL ORDERS.'),
     ('watchman',     'com.sushil.trading.watchman',       'daemon',    '', 'Books', None, None, 'Monitors open options positions every 15 min and runs their exits (targets, stops, two-leg closes). PLACES REAL ORDERS.'),
     ('futures_ibkr', 'com.sushil.trading.futures_personal', 'daemon',  '', 'Books', None, None, 'MNQ futures on IBKR — the NY session plus London threaded inside it. PLACES REAL ORDERS.'),
@@ -524,6 +525,7 @@ def get_equity_positions():
         ('Contrarian', 'contrarian_trades',  'mean reversion · 5-day hold · 15% stop'),
         ('Clockwork',  'overnight_trades',   'overnight gap · sells at the next open'),
         ('Night Owl',  'night_owl_trades',   'ML overnight · sells at the next open'),
+        ('Fear Rebound', 'fear_rebound_trades', "day shift after a FEAR day · Clockwork's pool · sells 15:30"),
     )
     try:
         with _db() as c:
@@ -860,7 +862,8 @@ def get_totals():
                           "WHERE exit_date IS NOT NULL AND setup_type != 'RECONCILED'").fetchone()
             books = [{'name': 'Day Trader', 'total': round(r[0], 2), 'since': r[1], 'trades': r[2]}]
             for name, tbl in (('Wave Rider', 'wave_trades'), ('Contrarian', 'contrarian_trades'),
-                              ('Clockwork', 'overnight_trades'), ('Night Owl', 'night_owl_trades')):
+                              ('Clockwork', 'overnight_trades'), ('Night Owl', 'night_owl_trades'),
+                              ('Fear Rebound', 'fear_rebound_trades')):
                 try:
                     cols = {x[1] for x in c.execute(f'PRAGMA table_info({tbl})')}
                     if not cols:
@@ -947,7 +950,8 @@ def get_today_summary():
             for _name, _tbl in (('Wave Rider', 'wave_trades'),
                                 ('Contrarian', 'contrarian_trades'),
                                 ('Clockwork',  'overnight_trades'),
-                                ('Night Owl',  'night_owl_trades')):
+                                ('Night Owl',  'night_owl_trades'),
+                                ('Fear Rebound', 'fear_rebound_trades')):
                 try:
                     _cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
                     if not _cols:
@@ -1030,7 +1034,8 @@ def get_pnl_by_book(sessions=15):
             # Today card. Folded into 'equity' rather than given their own series:
             # this chart is P&L per VERTICAL, and per-engine detail already lives
             # in the ENGINES scoreboard.
-            for _tbl in ('wave_trades', 'contrarian_trades', 'overnight_trades', 'night_owl_trades'):
+            for _tbl in ('wave_trades', 'contrarian_trades', 'overnight_trades', 'night_owl_trades',
+                         'fear_rebound_trades'):
                 try:
                     _cols = {r[1] for r in c.execute(f'PRAGMA table_info({_tbl})')}
                     if not _cols:
@@ -1105,6 +1110,9 @@ def get_scorecard(since_date=None, days=21):
                           "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
                           "AND pnl IS NOT NULL"),
         ('Night Owl',     "SELECT exit_date, pnl FROM night_owl_trades "
+                          "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
+                          "AND pnl IS NOT NULL"),
+        ('Fear Rebound',  "SELECT exit_date, pnl FROM fear_rebound_trades "
                           "WHERE exit_date>=? AND status='CLOSED' AND mode='LIVE' "
                           "AND pnl IS NOT NULL"),
         ('Options',       "SELECT exit_date, " + OPT_PNL_SQL + " FROM options_trades "
@@ -1335,7 +1343,8 @@ def get_activity(sessions=5):
             for _book, _tbl in (('Wave Rider', 'wave_trades'),
                                 ('Contrarian', 'contrarian_trades'),
                                 ('Clockwork',  'overnight_trades'),
-                                ('Night Owl',  'night_owl_trades')):
+                                ('Night Owl',  'night_owl_trades'),
+                                ('Fear Rebound', 'fear_rebound_trades')):
                 try:
                     _cols = {r[1] for r in c.execute('PRAGMA table_info(' + _tbl + ')')}
                     if not _cols:
@@ -1743,6 +1752,19 @@ def get_system_health():
                                   'deployed': round(float(_r[1] or 0), 0), 'alloc': _alloc})
                 except Exception:
                     continue
+            # Fear Rebound (Oct 9 2026) has no allocation of its own — it is the day shift of Clockwork's
+            # $10,000 — so its open positions count inside Clockwork's chip, never as a separate $0 book.
+            try:
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='fear_rebound_trades'").fetchone():
+                    _fr = c.execute("SELECT COUNT(*), COALESCE(SUM(shares*entry_price),0) FROM fear_rebound_trades "
+                                    "WHERE status='OPEN' AND mode='LIVE'").fetchone()
+                    for _f in fleet:
+                        if _f['name'] == 'Clockwork' and (_fr[0] or 0):
+                            _f['n'] += _fr[0]
+                            _f['deployed'] = round(_f['deployed'] + float(_fr[1] or 0), 0)
+                            _f['shared'] = f"incl. Fear Rebound (day shift) {_fr[0]} position(s) ${float(_fr[1] or 0):,.0f}"
+            except Exception:
+                pass
             out['fleet'] = {'books': fleet,
                             'deployed': round(sum(f['deployed'] for f in fleet), 0),
                             'alloc': round(sum(f['alloc'] for f in fleet), 0)}
@@ -1880,6 +1902,50 @@ def get_system_health():
                     _bt = json.load(_f)
                 out['basket_tide'] = {k: _bt.get(k) for k in ('date', 'on', 'stale', 'asof', 'ratio',
                                                               'fall_to_off', 'n_wild', 'reason')}
+            except Exception:
+                pass
+            # Market State Record (Oct 9 2026, market_state.py) — the latest close snapshot (weather, FEAR flag,
+            # tomorrow's Fear Rebound basket), this morning's futures-gap label, and whether the closing-auction
+            # imbalance feed is delivering anything. Log-only data; Fear Rebound is the one book that reads it.
+            try:
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='market_state'").fetchone():
+                    r = c.execute("""SELECT date, weather, fear, mkt_ret, breadth_up, wild_ret, vix, vix_chg, tide_ratio,
+                                            rebound_basket FROM market_state WHERE weather IS NOT NULL
+                                     ORDER BY date DESC LIMIT 1""").fetchone()
+                    am = c.execute("""SELECT date, am_label, am_rty_gap, am_ts FROM market_state
+                                      WHERE am_label IS NOT NULL AND am_ts != 'backfill'
+                                      ORDER BY date DESC LIMIT 1""").fetchone()
+                    au = None
+                    if c.execute("SELECT 1 FROM sqlite_master WHERE name='auction_imbalance'").fetchone():
+                        au = c.execute("""SELECT date, COUNT(*), SUM(CASE WHEN COALESCE(auction_imbalance,0) != 0
+                                                OR COALESCE(auction_volume,0) != 0 THEN 1 ELSE 0 END)
+                                          FROM auction_imbalance GROUP BY date ORDER BY date DESC LIMIT 1""").fetchone()
+                    ms = {}
+                    if r:
+                        ms.update({'date': r[0], 'weather': r[1], 'fear': bool(r[2]), 'mkt_ret': r[3],
+                                   'breadth': r[4], 'wild_ret': r[5], 'vix': r[6], 'vix_chg': r[7],
+                                   'tide_ratio': r[8], 'basket': json.loads(r[9])[:3] if r[9] else []})
+                    if am:
+                        ms['am'] = {'date': am[0], 'label': am[1], 'rty_gap': am[2], 'ts': am[3],
+                                    'today': am[0] == today}
+                    if au:
+                        ms['auction'] = {'date': au[0], 'names': au[1], 'nonzero': au[2] or 0}
+                    out['market_state'] = ms
+            except Exception:
+                pass
+            # Entry Price Band (Oct 9 2026, auto_trader.ENTRY_PRICE_BAND) — the day trader's pre-order price check
+            try:
+                band = {'date': today, 'checks': 0}
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='entry_band_log'").fetchone():
+                    for v, n in c.execute("SELECT verdict, COUNT(*) FROM entry_band_log WHERE date=? GROUP BY verdict",
+                                          (today,)).fetchall():
+                        band[v] = n
+                        band['checks'] += n
+                    tot = c.execute("SELECT COUNT(*), SUM(verdict IN ('CHASE_SKIP','FALLING_SKIP')), "
+                                    "SUM(verdict='FILLED'), MIN(date) FROM entry_band_log").fetchone()
+                    band['all'] = {'checks': tot[0] or 0, 'skipped': tot[1] or 0, 'filled': tot[2] or 0,
+                                   'since': tot[3]}
+                out['entry_band'] = band
             except Exception:
                 pass
             # Field Report (market_context.py) — log-only pre-market brief
@@ -2040,6 +2106,10 @@ ENGINE_SPECS = [
      'ML overnight book (Oct 5 2026) — a gradient-boosted model trained on ~11 years of daily data '
      'ranks every name each morning; buys its top 3 WILD names at the closing auction, sells at the '
      'next opening auction. Judge it on ref_pnl (official prints), not pnl.'),
+    ('Fear Rebound', 'the day shift after a fear day',     'fear_rebound_trades', True,
+     "Day shift of Clockwork's $10k pool (Oct 9 2026) — the morning after a FEAR day (VIX up ≥5% and our "
+     'universe down ≥0.5%) it buys the 3 volatile names that fell hardest at ~09:40 and sells them at 15:30. '
+     'Idle on every other day (~40 trading days a year).'),
 ]
 
 
@@ -2310,13 +2380,14 @@ _ENGINE_TARGETS = {
     'contrarian': ('Contrarian', 'com.sushil.trading.contrarian',  'factory.live.contrarian'),
     'clockwork':  ('Clockwork',  'com.sushil.trading.clockwork',   'factory.live.overnight'),
     'night_owl':  ('Night Owl',  'com.sushil.trading.night_owl',   'factory.live.night_owl'),
+    'fear_rebound': ('Fear Rebound', 'com.sushil.trading.fear_rebound', 'factory.live.fear_rebound'),
 }
 
 # book label (as get_equity_positions stamps it) -> control target
 _BOOK_TARGET = {
     'Day Trader': 'equity', 'Wave Rider': 'wave_rider',
     'Contrarian': 'contrarian', 'Clockwork': 'clockwork',
-    'Night Owl': 'night_owl',
+    'Night Owl': 'night_owl', 'Fear Rebound': 'fear_rebound',
 }
 
 

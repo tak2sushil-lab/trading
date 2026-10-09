@@ -296,6 +296,20 @@ def consistency_signal() -> dict[str, float]:
     return out
 
 
+def fear_rebound_open() -> int:
+    """Fear Rebound (factory/live/fear_rebound.py, Oct 9 2026) trades THIS book's $10,000 in the daytime — the day
+    after a FEAR day it buys 3 names at ~09:40 and sells them at 15:30. It is normally flat before this book buys at
+    15:40; if one of its sells has not cleared, that money is still in use, so it counts against TOP_N here."""
+    try:
+        c = sqlite3.connect(DB)
+        try:
+            return c.execute("SELECT COUNT(*) FROM fear_rebound_trades WHERE mode='LIVE' AND status='OPEN'").fetchone()[0]
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return 0                                   # table not created yet = the day shift has never traded
+
+
 def nightowl_scores(day: str) -> dict[str, float]:
     """Night Owl's model score per symbol for `day` (night_owl_scores, written ~09:35). {} if absent."""
     try:
@@ -382,7 +396,7 @@ def scan_and_enter():
     # entered_today(), so if the morning MOO sells had failed (gateway down at 09:00, say)
     # the book would hold yesterday's names AND buy a full new set on top -- committing well
     # over its $10,000 budget with no cap anywhere in the path. Found in the Sep 20 audit.
-    already = len(get_open())
+    already = len(get_open()) + fear_rebound_open()      # Fear Rebound borrows this pool in the daytime
     if already >= TOP_N:
         log(f"{already} position(s) still open (>= TOP_N {TOP_N}) — no new entries; "
             f"yesterday's exits have not cleared")

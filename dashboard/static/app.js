@@ -64,7 +64,7 @@ function showCal(view) {
 // equity account; FUTURES is the NY book plus London, which is a separate book with
 // its own exits (FUT CLOSE does not cover it).
 const BOOK_GROUPS = {
-  EQUITY:  ['Day Trader', 'Wave Rider', 'Contrarian', 'Clockwork', 'Night Owl'],
+  EQUITY:  ['Day Trader', 'Wave Rider', 'Contrarian', 'Clockwork', 'Night Owl', 'Fear Rebound'],
   FUTURES: ['Futures NY', 'London'],
 };
 
@@ -241,7 +241,7 @@ function wireCloseControls() {
 
   const bulk = [
     ['closeall-equity', 'equity', null, 'Close the whole Day Trader book?',
-     'Only the <strong>Day Trader</strong> book. Wave Rider, Contrarian, Clockwork and Night Owl are separate books and are <strong>not</strong> touched — close those from their own rows.'],
+     'Only the <strong>Day Trader</strong> book. Wave Rider, Contrarian, Clockwork, Night Owl and Fear Rebound are separate books and are <strong>not</strong> touched — close those from their own rows.'],
     ['closeall-options', 'options', null, 'Close every options position?',
      'Every open options position, closed through options_trader\'s own two-leg path.'],
     ['closeall-fut-ibkr', 'futures_ny', 'IBKR', 'Flatten NY futures on IBKR?',
@@ -392,6 +392,8 @@ function renderSystemHealth(h) {
     ${renderProp(h.prop)}
     ${renderFleet(h.fleet)}
     ${renderBasketTide(h.basket_tide)}
+    ${renderMarketState(h.market_state)}
+    ${renderEntryBand(h.entry_band)}
     ${renderScoring(h.scoring)}
     ${renderOptionsHealth(h.options)}
     ${renderFieldReport(h.field_report)}`;
@@ -445,7 +447,7 @@ function renderFleet(fl) {
   const pct = fl.alloc ? (fl.deployed / fl.alloc * 100) : 0;
   const parts = fl.books.map(b => {
     const cls = b.deployed > b.alloc ? 'neg' : '';
-    return `<span class="gate-chip ${cls}" title="${b.name}: ${b.n} open position(s), $${Math.round(b.deployed).toLocaleString()} at cost against a $${Math.round(b.alloc).toLocaleString()} allocation">`
+    return `<span class="gate-chip ${cls}" title="${b.name}: ${b.n} open position(s), $${Math.round(b.deployed).toLocaleString()}${b.shared ? ' (' + b.shared + ')' : ''} at cost against a $${Math.round(b.alloc).toLocaleString()} allocation">`
          + `<span class="eng-dot" data-eng="${b.name}"></span>${b.name} $${Math.round(b.deployed).toLocaleString()}</span>`;
   }).join(' ');
   return `
@@ -491,6 +493,47 @@ function renderBasketTide(bt) {
       <span class="health-label" title="Bear switch for the two overnight books. OFF when the equal-weight basket of our most volatile liquid names closed below its 200-session average — then Clockwork and Night Owl take no new entries (exits unaffected). Replayed 2018-2026: fleet max drawdown -83% to -23%, Sharpe 1.87 to 2.06. Fails OPEN if its data is stale.">Basket Tide</span>
       <span class="health-chip ${cls}" title="${bt.reason || ''}">${state}</span>
       <span class="health-detail-inline">${detail}</span>
+    </div>`;
+}
+
+// ── Market State row (Oct 9 2026, market_state.py) — the day's weather, FEAR flag, morning gap label ────
+function renderMarketState(ms) {
+  if (!ms || !ms.date) return '';
+  const pct = (v, d = 1) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(d)}%`);
+  const wcls = ms.fear ? 'neg' : (ms.weather === 'SUNNY' ? 'pos' : (ms.weather === 'STORMY' ? 'warn' : ''));
+  const label = ms.fear ? `FEAR · ${ms.weather}` : ms.weather;
+  let detail = `${ms.date}: universe ${pct(ms.mkt_ret, 2)}, ${ms.breadth != null ? Math.round(ms.breadth * 100) : '—'}% of names up, `
+    + `volatile basket ${pct(ms.wild_ret, 2)} · VIX ${ms.vix != null ? ms.vix.toFixed(1) : '—'} (${pct(ms.vix_chg)})`;
+  if (ms.fear && ms.basket && ms.basket.length) detail += ` · Fear Rebound buys ${ms.basket.join(', ')} next morning`;
+  let am = '';
+  if (ms.am) {
+    const acls = ms.am.label === 'PANIC_GAPDOWN' ? 'warn' : (ms.am.label === 'CALM_GAPDOWN' ? 'neg' : '');
+    am = ` <span class="health-chip ${acls}" title="Overnight futures gap at 09:26 (${ms.am.date}). PANIC gap-down (fear up + names already beaten down) has rebounded during the day; CALM gap-down has not — selling at the open is right there.">${ms.am.today ? '' : ms.am.date.slice(5) + ' '}${(ms.am.label || '').replace('_', ' ')} ${pct(ms.am.rty_gap)}</span>`;
+  }
+  let au = '';
+  if (ms.auction) au = ` <span class="subtle" title="Closing-auction imbalance probe (15:52, separate read-only IBKR connection). New feed with no history anywhere — collected so its value can be measured.">auction data ${ms.auction.date.slice(5)}: ${ms.auction.nonzero}/${ms.auction.names} names</span>`;
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Market State Record (market_state.py, 18:15 weekdays). FEAR day = VIX closed up ≥5% AND our universe fell ≥0.5% — after one, the overnight books have earned ≈0 and the next day's hardest-hit volatile names have rebounded (registry §P-§R). A CALM storm (market down, VIX not jumping) has not rebounded. Log-only except for Fear Rebound, which trades the FEAR days.">Market weather</span>
+      <span class="health-chip ${wcls}">${label}</span>${am}
+      <span class="health-detail-inline">${detail}${au}</span>
+    </div>`;
+}
+
+// ── Entry Price Band row (Oct 9 2026) — the day trader's pre-order price check ────
+function renderEntryBand(b) {
+  if (!b) return '';
+  const n = k => b[k] || 0;
+  const today = b.checks
+    ? `today ${b.checks} check${b.checks === 1 ? '' : 's'}: ${n('FILLED')} filled · ${n('CHASE_SKIP')} skipped (price ran away) · `
+      + `${n('FALLING_SKIP')} skipped (already falling) · ${n('NO_FILL') + n('NO_QUOTE')} no fill / no quote`
+    : 'no entries checked today (the LONG book may be off, or nothing qualified)';
+  const all = b.all && b.all.checks ? ` · since ${b.all.since}: ${b.all.checks} checks, ${b.all.skipped} skipped, ${b.all.filled} filled` : '';
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Day trader's pre-order price check (Oct 9 2026). Just before ordering it re-quotes the ask: skips if it already ran more than +0.25% past the signal price, or slipped more than 0.05% under it; otherwise buys with a LIMIT capped at +0.25% (never a market order). On real fills since May 29 the trades outside that band lost $2,039 and the ones inside made $271.">Entry price band</span>
+      <span class="health-chip ${b.checks ? 'pos' : ''}">${b.checks ? 'ACTIVE' : 'idle'}</span>
+      <span class="health-detail-inline">${today}${all}</span>
     </div>`;
 }
 
@@ -561,7 +604,7 @@ function renderScorecard(rows) {
     <tbody>${rows.map(r => {
       if (!r.n) return `<tr><td>${r.book}</td><td>0</td><td colspan="5" class="muted-text">no closed trades</td></tr>`;
       return `<tr>
-        <td>${['Day Trader','Wave Rider','Contrarian','Clockwork','Night Owl'].includes(r.book)
+        <td>${['Day Trader','Wave Rider','Contrarian','Clockwork','Night Owl','Fear Rebound'].includes(r.book)
               ? engBadge(r.book) : `<strong>${r.book}</strong>`}</td>
         <td>${r.n}</td>
         <td>${r.wr}%</td>

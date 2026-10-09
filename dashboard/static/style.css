@@ -240,11 +240,13 @@ html, body {
 [data-eng="Contrarian"] .eng-bar, .eng-dot[data-eng="Contrarian"] { background:#e3b341; }
 [data-eng="Clockwork"]  .eng-bar, .eng-dot[data-eng="Clockwork"]  { background:#a371f7; }
 [data-eng="Night Owl"]  .eng-bar, .eng-dot[data-eng="Night Owl"]  { background:#f778ba; }
+[data-eng="Fear Rebound"] .eng-bar, .eng-dot[data-eng="Fear Rebound"] { background:#f0883e; }
 [data-eng="Day Trader"] { color:#7ee18b; }
 [data-eng="Wave Rider"] { color:#84bdfa; }
 [data-eng="Contrarian"] { color:#f0cf74; }
 [data-eng="Clockwork"]  { color:#c4a2f9; }
 [data-eng="Night Owl"]  { color:#fbb6d5; }
+[data-eng="Fear Rebound"] { color:#f5b47a; }
 
 /* a reading that is no longer describing the market now */
 .stale-flag { font-size:9px; font-weight:700; letter-spacing:.4px; padding:1px 5px;
@@ -684,6 +686,7 @@ html, body {
 [data-eng="Contrarian"].act-book, .act-book:has([data-eng="Contrarian"]) { color:#f0cf74; }
 [data-eng="Clockwork"].act-book,  .act-book:has([data-eng="Clockwork"])  { color:#c4a2f9; }
 [data-eng="Night Owl"].act-book,  .act-book:has([data-eng="Night Owl"])  { color:#fbb6d5; }
+[data-eng="Fear Rebound"].act-book, .act-book:has([data-eng="Fear Rebound"]) { color:#f5b47a; }
 
 /* Per-book figures on the summary card double as links into the filtered feed. */
 .book-link { display:inline-flex; align-items:center; gap:4px; text-decoration:none;

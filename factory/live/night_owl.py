@@ -352,6 +352,9 @@ def other_book_symbols(today: str) -> set:
         ("SELECT symbol FROM trades WHERE status='OPEN' AND setup_type!='RECONCILED'", ()),
         ("SELECT symbol FROM wave_trades WHERE mode='LIVE' AND status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')", ()),
         ("SELECT symbol FROM contrarian_trades WHERE mode='LIVE' AND status IN ('OPEN','PENDING_ENTRY','PENDING_EXIT')", ()),
+        # Oct 9 2026: Fear Rebound (the day shift of Clockwork's pool) is flat by 15:38 — this only bites if one of its
+        # 15:30 sells has not cleared
+        ("SELECT symbol FROM fear_rebound_trades WHERE mode='LIVE' AND status='OPEN'", ()),
     )
     for sql, params in queries:
         try:
