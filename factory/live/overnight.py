@@ -296,6 +296,39 @@ def consistency_signal() -> dict[str, float]:
     return out
 
 
+def nightowl_scores(day: str) -> dict[str, float]:
+    """Night Owl's model score per symbol for `day` (night_owl_scores, written ~09:35). {} if absent."""
+    try:
+        c = sqlite3.connect(DB)
+        try:
+            return {s: float(v) for s, v in c.execute(
+                "SELECT symbol, score FROM night_owl_scores WHERE score_date=?", (day,)) if v is not None}
+        finally:
+            c.close()
+    except Exception as e:
+        log(f"Night Owl scores unavailable for the tie-break ({e}) — using the date-seeded shuffle")
+        return {}
+
+
+def _shuffle_key(sym: str, day: str) -> int:
+    """Reproducible pseudo-random order for a day — unrelated to the alphabet."""
+    import hashlib
+    return int(hashlib.md5(f"{day}:{sym}".encode()).hexdigest()[:12], 16)
+
+
+def rank_candidates(sig: dict[str, float], day: str) -> list[tuple[str, float]]:
+    """Rank by consistency (the signal), breaking ties by Night Owl's score, then a date-seeded shuffle.
+
+    Oct 9 2026 (RESEARCH_REGISTRY §Q6): consistency is a count out of 30, so 3-7 names usually share the cut
+    score. The old `sorted(key=-consistency)` was stable, so ties fell back to the WILD list's A-Z order:
+    an alphabetical tie decided a pick on 14 of 14 live nights and 62% of picks started with A-C against 29%
+    of the list (why CENX was held every night). Replayed 2018-2026 on the live list, changing ONLY the
+    tie-break: alphabetical +33.5bp/night Sharpe 2.73 · random +35.3 / 2.98 · Night Owl score +35.8 / 2.97.
+    Names Night Owl did not score sort after scored names within a tie."""
+    nos = nightowl_scores(day)
+    return sorted(sig.items(), key=lambda x: (-x[1], -nos.get(x[0], float("-inf")), _shuffle_key(x[0], day)))
+
+
 def bridge_quote(sym: str):
     try:
         r = requests.get(f"{BRIDGE}/quote/{sym}", timeout=5)
@@ -341,7 +374,7 @@ def scan_and_enter():
         record_scan({"wild_scanned": 0, "top_n": TOP_N, "entered": 0, "mode": MODE,
                      "blocked": "basket_tide_off"}, []); return
     sig = consistency_signal()
-    ranked = sorted(sig.items(), key=lambda x: -x[1])
+    ranked = rank_candidates(sig, now_et().date().isoformat())
     funnel = {"wild_scanned": len(sig), "top_n": TOP_N, "entered": 0, "mode": MODE}
     picks_log = []
     entered = 0
@@ -586,12 +619,16 @@ def run_once():
 def dryscan():
     init_db()
     sig = consistency_signal()
-    ranked = sorted(sig.items(), key=lambda x: -x[1])
-    print(f"\nClockwork dry-scan — {len(sig)} WILD names ranked by {LOOKBACK}d up-night consistency")
+    day = now_et().date().isoformat()
+    ranked = rank_candidates(sig, day)
+    nos = nightowl_scores(day)
+    print(f"\nClockwork dry-scan — {len(sig)} WILD names ranked by {LOOKBACK}d up-night consistency "
+          f"(ties broken by Night Owl's score{'' if nos else ' — none for today yet, date-seeded shuffle'})")
     print(f"Top {TOP_N} (would BUY at close, sell at next open):")
     for i, (sym, cons) in enumerate(ranked[:TOP_N + 5]):
         flag = "  <-- WOULD ENTER" if i < TOP_N else ""
-        print(f"  {sym:6} consistency {cons:.0%}{flag}")
+        nsc = f"  Night Owl {nos[sym]:+.4f}" if sym in nos else ""
+        print(f"  {sym:6} consistency {cons:.0%}{nsc}{flag}")
 
 
 if __name__ == "__main__":

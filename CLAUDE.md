@@ -28,6 +28,17 @@ chronological log (useful for "why did we do X"); this one is always current for
   bottom.** A 9-year learned model's intraday edge lives in the opening print (09:35 entry: +6.5bp, below cost);
   per-stock models are worse than pooled; buying the morning's top gappers loses −108bp (5,637 stocks, every year).
   Open: throttled after-hours study after a close (`research_gappers_ah.py`).
+- **Oct 8: losing week reviewed — NOT a wrong-side problem (registry §N, Oct 8 entry at the bottom).** Fleet −$2,199
+  MTM, 93% on two gap-down mornings (Wed/Thu) that hit every long WILD book at once. Flipping the overnight books loses
+  (the night after the worst night is the best, 9/9 yrs); a rates gate lowers Sharpe; day trader's candidate pool is a
+  coin flip over 2 yrs. Book Health shut the day trader Oct 7-8 correctly. User REJECTED pausing any paper book (paper =
+  learning). Next: the morning Gap-Down Protocol (registry §O) — awaiting approval to build.
+- **Oct 9 (evening): BUILT the Market State Record + FIXED Clockwork's tie-break (registry §R).** `market_state.py`
+  (launchd 09:26/15:52/18:15, log-only, backfilled 2018) records weather, the Fear-day flag (VIX ≥+5% & universe ≤−0.5%
+  — thresholds checked: round on purpose, tuned ones did worse), sector/dollar moves, the morning gap label, a shadow Fear
+  Rebound basket, and outcomes; first close snapshot Fri Oct 9 18:15, first auction-imbalance probe Mon Oct 12 15:52.
+  Clockwork ties now broken by Night Owl's score (live Mon 15:40). Day trader: chased entries (>+0.25% past the signal)
+  lose −1.40%/trade (t −3.2) — an order-time price band is PROPOSED (needs approval). Fear Rebound live book: proposed.
 - **Oct 6: SHORTING the morning gappers ❌ (registry §K7-K10).** 8 years of 1-min bars, realistic fills: at 09:35 the
   model's top-5 shorts make +34bp/day (t 2.5, 7/13 half-years) and the best 5% of days are 190% of the profit; worst
   stretch −$20k on a $10k book. The edge is real only in the opening auction. Do not build.
@@ -6124,3 +6135,82 @@ Nothing shipped. Proposals pending: gate live, drop the skip rule, pause Contrar
   no entries tonight" instead of blank numbers (rendered and checked). All suites pass. Day summary with the analogy:
   `docs/DAY_SUMMARY_2026-10-06.md`.
 
+
+---
+
+## Oct 8 2026 — losing-week review: the fleet is one bet, not a wrong-side bet (registry §N)
+
+User: "losing every day, we must be on the wrong side — flip it." Measured, no code changed.
+- **Where the money went (fleet MTM at fills, Oct 5-8 −$2,199):** Mon −82 · Tue −71 · Wed −992 · Thu −1,054. Two gap-down
+  mornings (WILD basket overnight −235 / −156bp, Russell futures −111 / −52bp) on a fleet holding ~$37-40k long, 0 short,
+  ~$17k semis. By book: Clockwork −570 · Night Owl −619 · Contrarian −560 (RIOT −$772 through its 15% stop) · Wave −406 ·
+  day trader −43 (**Book Health shut it Oct 7 (−0.02%) and Oct 8 (−0.72%) — Oct 7's A+ longs fell −5.17%**). Backdrop:
+  Treasury auctions ~45-60bp above a month earlier (10-yr 5.30%). Field Report said RISK_ON both mornings.
+- **Flip test (N1-N4):** overnight books — after the worst night the next is the best (+52 vs +23bp, 9/9 yrs); always-short
+  −30bp/night; nothing ex-ante (8 signals, incl. 10-yr yield change N2) says flip or stand aside. This week ≈ 2nd-percentile
+  2-night loss, ~6×/yr, followed historically by +3.2% over the next 5 nights. Day trader — mirroring its own trades won
+  5/5 months since June (+$2,372) but lost −$1,532 in May; the 2-yr candidate pool is a coin flip; its A+ SHORT signals
+  ≈ 0 (Oct 7: +0.67% against us). The bleed is selection + exits on a no-edge pool, not direction.
+- **Perception (N7):** Clockwork is red on 14 of 19 nights at paper fills but 8 of 19 at official prices (−$1,442 vs +$33).
+  The IBKR paper simulator's MOO fills, not the strategy, make it look like a daily loser.
+- **Clockwork parity (N6):** live picks match its own rule on official prints only 1-2 of 3 — x/30 score, 3-7 names tie at
+  the cut, ties break alphabetically (known F7). Noise-sized (12 nights −461 vs tied group −262bp).
+- **Decisions:** pausing Contrarian / Wave Rider was proposed and REJECTED by the user (paper books stay running for
+  learning — Wave: 36 live trades −$507, stops realize −9.45% on an 8% stop, corr +0.53 with Clockwork). Open: (3) overnight size = the only
+  lever that shrinks a −5.5% two-night loss without lowering Sharpe; (4) dashboard: show overnight books at official prices
+  beside fills. Track the day-trader mirror monthly — do not trade it.
+
+### Oct 8 2026 (night) — gap-down protocol research (registry §O) — PROPOSED, nothing built
+User rejected pausing ("paper, no money at risk — learn, don't stop") and asked how to handle weeks like this.
+- **Prediction at 15:40 is dead:** 15+ timing inputs (prior nights, tape, MAs, 10-yr yields, VIX level/term/change,
+  overnight futures path) do not predict the next night's direction; "skip after VIX jumps" failed out of sample (O9).
+  Night Owl cannot help here by design — it ranks stocks against each other, not the market.
+- **Reaction at 09:25 works:** Russell futures 15:55→09:25 track the WILD basket gap (corr 0.81). Gap-down mornings
+  split into PANIC (VIX/VIX3M ≥ 0.90 yesterday AND WILD 5-day ≤ −1.07%, thresholds from 2021-23) — rebound +99bp
+  open→close (test 2024-26 +187bp, t 2.3; bars-only +166bp buying at 09:35) — and CALM — drift −15bp. Oct 7/8 were CALM.
+- **Proposed "Gap-Down Protocol"** (needs approval): on PANIC mornings Clockwork/Night Owl skip the MOO sell and sell MOC;
+  a small rebound book buys the WILD names at the open/09:35 and sells at the close. CALM/normal: unchanged (sell at the
+  open is already best — later exits lose 6-14bp). ~13 PANIC mornings/yr; it would not have changed this week.
+- ⚠️ **Data trap:** Night Owl daily cache = ADJUSTED prices; bars_5m = RAW. Never mix them in one comparison (O-header).
+
+---
+
+## Oct 9 2026 — "a >60% model": direction is unpredictable; the FEAR STATE decides where the edge is (registry §P)
+
+User asked for a model calling tomorrow at >60% from 2026 weather, news, earnings, macro. Code read first (all 5 engines):
+every book is long-only; the only market-aware inputs are the Basket Tide (200d, overnight books) and Book Health (day
+trader); `get_regime` reads today's SPY only (no memory, no view of the WILD/semis names held); Night Owl's target is the
+within-night RANK (`y_on_rk`) so it is structurally blind to market-wide gaps; day trader / Wave Rider buy the most
+stretched name first.
+- **Direction: no.** 88-measure walk-forward models, a strict-15:40 model, k-NN lookalike days, weather persistence, 49k
+  AI-tagged news items, sector earnings: all at or below "always guess up" (57.8%). Only move SIZE is predictable (AUC 0.6).
+  Even Night Owl's top-5% picks gap up 55% — its edge is size (+33bp vs +5bp), not hit rate.
+- **2026 weather:** H2 is the worst daytime tape in 3 yrs (WILD intraday −32bp/day, 37% stormy days) but nights are fine
+  (+19bp). **Root cause of 2026's loss is SELECTION, not weather:** day trader same-minute P&L −$1,596 = market +$1,391 +
+  picks −$2,987; the first 15 min after entry cost −0.64% vs the basket (buying local tops); no timing skill either.
+- ⭐ **FEAR vs CALM storms** (stormy close; did VIX jump ≥5% that day?): after FEAR the overnight rule earns −4bp (vs +30)
+  and the next day's WILD basket rebounds +33bp official / +70-76bp bought 09:35-09:45 (bars, t 2.5-2.9), 8/9 yrs, 2026
+  +0.80%/day up 60% (~+$2,100 on $10k). After CALM (Oct 7/8): no rebound. Plateau over 36 threshold cells. Same structure
+  as the 09:25 PANIC/CALM gap-down split (§O).
+- **Proposed (needs approval):** a Fear Gauge classifier (close + 09:25) → (1) day trader "Fear Rebound" mode, (2)
+  overnight stand-aside on FEAR nights (shadow first — cost in 2026), (3) hold-to-close on PANIC gap-down mornings.
+  ⚠️ Backtests read 16:00 closes; verify the 15:45 reading before going live.
+- **Oct 9 (pm) follow-ups (registry §Q):** fear rebound is market-wide only since 2025 (unselected stocks 2018-23 +6bp,
+  2024-26 +55bp); biggest storm-day losers / morning gap-downs rebound most. No shortable cell anywhere (state × regime ×
+  window), stormy mornings don't continue (corr 0.00) — equity bear retirement stands; the fleet's bear leg is the futures
+  Daily Tide short side. Clockwork: alphabetical ties decided a pick on 14/14 live nights (62% A-C picks, why CENX repeats)
+  — break ties by Night Owl score (+2bp, Sharpe 2.73 → 2.97); Night Owl repeats are genuine. Nothing built (user: dig first).
+
+### Oct 9 2026 (evening) — builds (registry §R)
+- **Market State Record** (`market_state.py`, tables `market_state` / `auction_imbalance`, launchd `market_state`): 09:26 overnight
+  futures gap + PANIC/CALM gap-down label (yfinance ES/NQ/RTY=F), 15:52 closing-auction imbalance via a SEPARATE read-only
+  IBKR connection (clientId 77; bridge uses 10-19), 18:15 close state after night_owl_prep's 17:30 refresh (WILD basket =
+  the Basket Tide's own definition; `tide_ratio` reads `basket_tide.series()` so it always matches the live switch). One
+  Telegram per close, plus one on gap-down mornings. Upserts touch only their own columns. `--status`, `--backfill`.
+  Bugs caught before shipping: Monday VIX change was blank (bitcoin's weekend rows) and the tide ratio differed by 0.2pt.
+- **Clockwork tie-break FIXED** (`factory/live/overnight.py: rank_candidates`): consistency first, then Night Owl's score,
+  then a date-seeded shuffle — never the A-Z order of the WILD list. Tests `factory/tests/test_clockwork_tiebreak.py`.
+- **Fear-day thresholds derived:** VIX jump carries the effect; simplified to VIX ≥+5% & universe ≤−0.5%; do not tune.
+- **Day trader execution (proposed):** re-quote at order time; buy only within −0.05%..+0.25% of the signal price with a
+  limit order. On real fills since May 29 the outside-band trades lost −$2,039 vs +$271 inside (every band tried helps).
+- Not committed (user has not asked).
