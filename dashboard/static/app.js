@@ -393,6 +393,7 @@ function renderSystemHealth(h) {
     ${renderFleet(h.fleet)}
     ${renderBasketTide(h.basket_tide)}
     ${renderMarketState(h.market_state)}
+    ${renderGapProtocol(h.gap_protocol)}
     ${renderEntryBand(h.entry_band)}
     ${renderScoring(h.scoring)}
     ${renderOptionsHealth(h.options)}
@@ -517,6 +518,38 @@ function renderMarketState(ms) {
       <span class="health-label" title="Market State Record (market_state.py, 18:15 weekdays). FEAR day = VIX closed up ≥5% AND our universe fell ≥0.5% — after one, the overnight books have earned ≈0 and the next day's hardest-hit volatile names have rebounded (registry §P-§R). A CALM storm (market down, VIX not jumping) has not rebounded. Log-only except for Fear Rebound, which trades the FEAR days.">Market weather</span>
       <span class="health-chip ${wcls}">${label}</span>${am}
       <span class="health-detail-inline">${detail}${au}</span>
+    </div>`;
+}
+
+// ── Gap-Down Protocol row (Oct 12 2026, factory/live/gap_protocol.py) — the overnight books' morning exit rule ────
+function renderGapProtocol(g) {
+  if (!g) return '';
+  const pct = v => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(2)}%`);
+  const label = (g.label || '').replace(/_/g, ' ').toLowerCase();
+  let chip, cls, detail;
+  if (!g.date) {
+    chip = 'decides 09:05'; cls = '';
+    detail = 'no decision yet — the first one is made at 09:05 on the next market morning';
+  } else if (!g.today) {
+    chip = 'decides 09:05'; cls = '';
+    detail = `last decision ${g.date}: ${label}${g.action === 'HOLD_TO_1530' ? ' — held to 15:30' : ' — sold at the open'}`;
+  } else if (g.action === 'HOLD_TO_1530') {
+    chip = 'HOLDING · PANIC'; cls = 'warn';
+    const held = (g.held || []).length ? `holding ${g.held.join(', ')} — sells 15:30` : '';
+    const sold = (g.sold || []).length
+      ? 'sold ' + g.sold.map(x => `${x.sym} ${x.pnl == null ? '' : money(x.pnl)}`).join(', ') : '';
+    detail = `${g.decided_at}: Russell ${pct(g.rty_gap)} — ${[held, sold].filter(Boolean).join(' · ') || 'nothing was held overnight'}`;
+  } else {
+    const bad = ['unknown', 'no decision', 'gapdown unconfirmed'].includes(label);
+    chip = bad ? 'NO CALL · sells at open' : 'sells at open'; cls = bad ? 'neg' : '';
+    detail = `${g.decided_at}: ${label} — ${g.reason || ''}`;
+  }
+  const score = g.hold_days ? ` · ${g.hold_days} hold day${g.hold_days === 1 ? '' : 's'} so far, holding vs selling at the open ${money(g.hold_gain_total || 0)}` : '';
+  return `
+    <div class="health-row">
+      <span class="health-label" title="Gap-Down Protocol (Oct 12 2026). At 09:05, before any opening-auction sell, it reads Russell futures against yesterday's 16:00 price. PANIC gap-down (down ≥0.5%, and yesterday closed with fear high — VIX/VIX3M ≥ 0.901 — and the volatile basket down ≥1.07% over 5 days): Clockwork and Night Owl HOLD last night's positions and sell them at 15:30 (−15% stop below the open). Every other morning they sell at the open as before. Evidence: on our real overnight picks 2021-26, PANIC mornings open→close +107bp (t 2.0, 5 of 6 years); calm gap-downs ≈0. Lumpy — ~13 mornings a year; judge it on the hold-vs-open score over many of them.">Gap-Down Protocol</span>
+      <span class="health-chip ${cls}">${chip}</span>
+      <span class="health-detail-inline">${detail}${score}</span>
     </div>`;
 }
 

@@ -65,7 +65,7 @@ SERVICES = [
     ('macro_cal',    'com.sushil.trading.macro_calendar', 'scheduled', 'macro calendar refresh failed', 'Data', 'macro_calendar.log', 96, 'Refreshes the macro calendar every weekday at 19:00 — Nasdaq economic calendar (CPI, payrolls, PPI, retail, GDP, PCE) + the Fed FOMC schedule. Feeds the calendar card and the Field Report. Overnight books earn most of their return on these nights (registry M7).'),
     # ── instrumentation: silent failure here costs evidence, not money ──
     ('scoring',      'com.sushil.trading.scan_forward_label', 'scheduled', 'forward label not written', 'Instruments', 'scan_forward_label.log', 96, 'Writes the forward outcome label (what each graded signal actually went on to do) onto scan_log each evening. This is the answer key for the grader — without it we record the guesses and never the answers. Places no orders.'),
-    ('mkt_state',    'com.sushil.trading.market_state', 'scheduled', 'market-state snapshot failed', 'Instruments', 'market_state.log', 96, "Market State Record (Oct 9 2026): 09:26 overnight futures gap + gap-down label, 15:52 closing-auction imbalance probe, 18:15 the day's weather, FEAR flag (VIX up ≥5% and the universe down ≥0.5%), shadow Fear Rebound basket, and what actually happened next. Log-only — no book reads it yet. Places no orders."),
+    ('mkt_state',    'com.sushil.trading.market_state', 'scheduled', 'market-state snapshot failed', 'Instruments', 'market_state.log', 96, "Market State Record (Oct 9 2026): 09:26 overnight futures gap + gap-down label, 15:52 closing-auction imbalance probe, 18:15 the day's weather, FEAR flag (VIX up ≥5% and the universe down ≥0.5%), shadow Fear Rebound basket, and what actually happened next. Fear Rebound reads its FEAR flag and the Gap-Down Protocol reads its close state (VIX/VIX3M, 5-day basket). Places no orders."),
     ('ref_prices',   'com.sushil.trading.overnight_reference', 'scheduled', 'reference marks not written', 'Instruments', 'overnight_reference.log', 96, "Marks Clockwork and Night Owl twice a night: once at the broker's fill, once at the session's OFFICIAL close and open from our own bars. IBKR paper fabricates auction fills, so ref_pnl is the honest read on the strategy and pnl is the read on the plumbing. Places no orders."),
     ('night_owl_prep', 'com.sushil.trading.night_owl_prep', 'scheduled', 'cache refresh / retrain failed', 'Instruments', 'night_owl_prep.log', 96, "Refreshes Night Owl's daily price cache after the close and re-trains its model on the first run of each month. The morning score also refreshes, so one missed run is not fatal. Places no orders."),
     ('turbo',        'com.sushil.trading.turbo',          'scheduled', 'shadow pass errored', 'Instruments', 'turbo.log', 24, 'Asks, for each Wave Rider pick, whether an options structure would beat simply holding the shares. So far the answer is almost always no (5 passes in 45, and those lost 51pp vs shares). SHADOW ONLY — places no orders.'),
@@ -552,6 +552,11 @@ def get_equity_positions():
                         plan = (f"{_desc} · exits {exit_on[5:].replace('-', '/')}"
                                 if exit_on else _desc)
                         stop = row['stop_price'] if 'stop_price' in cols else None
+                        # Oct 12 2026: held through a PANIC gap-down by the Gap-Down Protocol — sells 15:30, not the open
+                        if 'gap_hold_date' in cols and row['gap_hold_date'] == datetime.now(tz=ET).strftime('%Y-%m-%d'):
+                            stop = row['gap_hold_stop']
+                            plan = ("Gap-Down Protocol: held through a PANIC gap-down · sells 15:30"
+                                    + (f" · stop ${stop:.2f} (−15% below the open)" if stop else " · stop set after the open"))
                         st = 'OK'
                         if stop and ep and cp:
                             buf = (cp - stop) / ep * 100
@@ -1245,6 +1250,14 @@ def get_alerts(eq_pos, opt_pos, health=None, services=None):
     elif bt.get('on') is False:
         add('WARN', 'BASKET_TIDE', 'EQUITY', '—',
             f"Basket Tide OFF — Clockwork and Night Owl take no new entries ({bt.get('reason')})")
+    # Gap-Down Protocol (Oct 12 2026): a failed morning decision, or held positions not sold by 15:50
+    gp = h.get('gap_protocol') or {}
+    if gp.get('today') and gp.get('label') in ('UNKNOWN', 'NO_DECISION', 'GAPDOWN_UNCONFIRMED'):
+        add('WARN', 'GAP_PROTOCOL', 'EQUITY', '—',
+            f"Gap-Down Protocol could not judge this morning ({gp.get('reason')}) — the overnight books sold at the open")
+    if gp.get('today') and gp.get('held') and hhmm >= '15:50':
+        add('HIGH', 'GAP_PROTOCOL', 'EQUITY', '—',
+            f"Gap-Down Protocol still holds {', '.join(gp['held'])} after 15:50 — its 15:30 sells have not confirmed")
     # Trade Cop verdict
     par = h.get('parity') or {}
     if par.get('status') and par['status'] != 'OK':
@@ -1931,6 +1944,37 @@ def get_system_health():
                     if au:
                         ms['auction'] = {'date': au[0], 'names': au[1], 'nonzero': au[2] or 0}
                     out['market_state'] = ms
+            except Exception:
+                pass
+            # Gap-Down Protocol (Oct 12 2026, factory/live/gap_protocol.py) — today's 09:05 decision and what it holds
+            try:
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='gap_protocol'").fetchone():
+                    d = c.execute("SELECT date, decided_at, label, action, rty_gap, reason FROM gap_protocol "
+                                  "ORDER BY date DESC LIMIT 1").fetchone()
+                    gp = {}
+                    if d:
+                        gp = {'date': d[0], 'decided_at': d[1], 'label': d[2], 'action': d[3], 'rty_gap': d[4],
+                              'reason': d[5], 'today': d[0] == today, 'held': [], 'sold': []}
+                        for _b, _t in (('Clockwork', 'overnight_trades'), ('Night Owl', 'night_owl_trades')):
+                            try:
+                                for sym, st, pnl in c.execute(f"SELECT symbol, status, pnl FROM {_t} WHERE mode='LIVE' "
+                                                              f"AND gap_hold_date=?", (d[0],)).fetchall():
+                                    if st == 'OPEN':
+                                        gp['held'].append(f"{sym} ({_b})")
+                                    else:
+                                        gp['sold'].append({'sym': sym, 'book': _b, 'pnl': pnl})
+                            except Exception:
+                                pass
+                    n_hold = c.execute("SELECT COUNT(*) FROM gap_protocol WHERE action='HOLD_TO_1530'").fetchone()[0]
+                    tot = 0.0
+                    for _t in ('overnight_trades', 'night_owl_trades'):
+                        try:
+                            tot += c.execute(f"SELECT COALESCE(SUM(hold_gain),0) FROM {_t} WHERE mode='LIVE' "
+                                             f"AND hold_gain IS NOT NULL").fetchone()[0] or 0
+                        except Exception:
+                            pass
+                    gp['hold_days'], gp['hold_gain_total'] = n_hold, round(tot, 2)
+                    out['gap_protocol'] = gp
             except Exception:
                 pass
             # Entry Price Band (Oct 9 2026, auto_trader.ENTRY_PRICE_BAND) — the day trader's pre-order price check

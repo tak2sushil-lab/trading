@@ -1,5 +1,7 @@
 """Market State Record — one row per session describing the market's 'weather', scored against what came next.
-Built Oct 9 2026. LOG-ONLY: no book reads this table yet; it places no orders.
+Built Oct 9 2026. Places no orders. Read by two books: Fear Rebound (the FEAR flag + rebound basket) and, from Oct 12
+2026, the Gap-Down Protocol (factory/live/gap_protocol.py — yesterday's VIX/VIX3M and 5-day basket move, plus the
+PANIC_* thresholds below, decide whether the overnight books hold through a gap-down open).
 
 WHY. Every equity book is long-only and the only market-aware inputs anywhere are the Basket Tide (200-day trend, the
 overnight books) and Book Health (the day trader). The research of Oct 8-9 (docs/RESEARCH_REGISTRY.md §N-§Q) found
@@ -20,7 +22,9 @@ WHAT IT RECORDS (trades.db `market_state`, primary key = session date):
       shadow actions for FEAR days: the 10 hardest-hit WILD names as tomorrow's Fear Rebound basket, and
       "the overnight books would stand aside tonight"
   morning (~09:26)  Russell/Nasdaq/S&P futures gap since the prior 15:55 + label PANIC / CALM gap-down / GAP-UP / NORMAL
-                    (registry §O5: gap-down ≤ −0.5% with VIX/VIX3M ≥ 0.901 and the WILD basket ≤ −1.07% over 5 days)
+                    (registry §O5: gap-down ≤ −0.5% with VIX/VIX3M ≥ 0.901 and the WILD basket ≤ −1.07% over 5 days).
+                    A RECORD only — the actionable call is the Gap-Down Protocol's own 09:05 decision (table
+                    gap_protocol), which can differ slightly because the gap moves between 09:05 and 09:26.
   outcomes (filled on later runs) next night / next day for the WILD basket, the Fear Rebound basket (official open
                     →close and 09:40→close), and the overnight books' actual official-price P&L that night
   auction (~15:52)  closing-auction imbalance for the WILD names (table `auction_imbalance`) — a NEW feed with no
@@ -366,11 +370,19 @@ def morning_snapshot(telegram: bool = True):
     upsert(day.isoformat(), {'am_ts': now_et().strftime('%H:%M:%S'), 'am_es_gap': g.get('es'), 'am_nq_gap': g.get('nq'),
                              'am_rty_gap': rty, 'am_label': label})
     log(f'morning {label}: RTY {rty*100:+.2f}% NQ {g.get("nq", float("nan"))*100:+.2f}% ES {g.get("es", float("nan"))*100:+.2f}%')
-    if telegram and label.endswith('GAPDOWN'):
-        what = ('PANIC gap-down — in the backtests the overnight positions did better held to the close (+1.8%); '
-                'shadow only, the books still sell at the open' if label == 'PANIC_GAPDOWN' else
-                'CALM gap-down — selling at the open is the better choice here (no rebound expected)')
-        send_telegram(f"🌅 {day:%a %b %d} 09:26 — Russell futures {rty*100:+.1f}% since yesterday's close: {what}.")
+    if telegram and label == 'CALM_GAPDOWN':
+        # Oct 12 2026: PANIC mornings are announced by the Gap-Down Protocol itself at 09:05 (with what it holds), so
+        # only the calm case is reported here — and against the protocol's own call, which is the one that acts.
+        try:
+            from factory.live import gap_protocol
+            dec = gap_protocol.today_decision(day.isoformat())
+        except Exception:
+            dec = None
+        act = ('the overnight books sell in the 09:30 opening auction as usual'
+               if not dec or dec.get('action') != 'HOLD_TO_1530'
+               else 'note: the 09:05 Gap-Down Protocol read was PANIC and is holding the overnight positions to 15:30')
+        send_telegram(f"🌅 {day:%a %b %d} 09:26 — Russell futures {rty*100:+.1f}% since yesterday's close: CALM gap-down "
+                      f"(no rebound expected); {act}.")
 
 
 def auction_probe():

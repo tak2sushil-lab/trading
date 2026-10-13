@@ -9,7 +9,9 @@ VIX not jumping — Oct 7/8 2026) do not rebound, so they are not traded.
 THE MONEY. No new capital. Clockwork's $10,000 pool is idle in the daytime — Clockwork sells at the 09:30 opening
 auction and buys again at the 15:40-15:49 closing auction — so this book borrows it for the day: 3 names × $3,333,
 exactly Clockwork's slots. Room = 3 − Clockwork positions still open or pending (a morning sell that has not cleared
-still holds its money) − this book's own open positions. Clockwork in turn counts this book's open positions before
+still holds its money) − this book's own open positions. On a PANIC gap-down morning the Gap-Down Protocol
+(factory/live/gap_protocol.py, Oct 12 2026) holds Clockwork's overnight names until 15:30, so the pool stays busy and
+this book takes only whatever room is left (usually none). Clockwork in turn counts this book's open positions before
 it buys at 15:40 (factory/live/overnight.py: fear_rebound_open()), and this book is flat by 15:38, so the two never
 use the same dollars at once and never meet the same name in the closing auction.
 
@@ -53,6 +55,7 @@ ROOT = "/Users/sushil/trading"
 sys.path.insert(0, ROOT)
 from factory.live._fills import place_verified  # noqa: E402
 from factory.live import overnight as CW  # noqa: E402  (the pool's owner: CAPITAL, TOP_N)
+from factory.live import gap_protocol  # noqa: E402
 
 LOCK = "/tmp/fear_rebound.lock"
 LOCK_TTL = 600
@@ -283,7 +286,17 @@ def scan_and_enter():
             record_scan("SUMMARY", {"traded": False, "reason": sig["reason"], "mode": MODE}, [])
         return
     room = pool_room()
+    # Oct 12 2026: on a PANIC gap-down morning the Gap-Down Protocol holds Clockwork's overnight names until 15:30,
+    # so their slots stay busy all day — say so plainly, and do not sit waiting for room that will not free up.
+    clockwork_holding = gap_protocol.holding_today(today.isoformat())
     if room <= 0:
+        if clockwork_holding:
+            if not scanned_today("SUMMARY"):
+                log(f"{sig['reason']} — but Clockwork's pool is holding its overnight positions to 15:30 "
+                    f"(Gap-Down Protocol, PANIC gap-down): no room, no trade today")
+                record_scan("SUMMARY", {"traded": False, "reason": "pool held by the Gap-Down Protocol",
+                                        "signal": sig["date"], "mode": MODE}, [])
+            return
         if now_et().time() < dt.time(9, 58):
             log(f"{sig['reason']} — waiting: Clockwork's pool is still busy ({clockwork_busy()} position(s) "
                 f"open/pending), will retry until {ENTRY_END:%H:%M}")
@@ -291,7 +304,7 @@ def scan_and_enter():
         log("Clockwork's pool never freed up this morning — no trade today")
         record_scan("SUMMARY", {"traded": False, "reason": "pool busy", "signal": sig["date"], "mode": MODE}, [])
         return
-    if room < TOP_N and now_et().time() < dt.time(9, 55) and not unconfirmed_today():
+    if room < TOP_N and not clockwork_holding and now_et().time() < dt.time(9, 55) and not unconfirmed_today():
         log(f"only {room} of {TOP_N} slots free (Clockwork exits pending) — waiting a few minutes for the rest")
         return
     unconfirmed = unconfirmed_today()

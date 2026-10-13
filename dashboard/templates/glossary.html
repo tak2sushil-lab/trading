@@ -100,7 +100,8 @@
         <tr><td><span class="eng-name" data-eng="Clockwork"><span class="eng-bar"></span>Clockwork</span></td><td>Buys the close, sells the open</td>
           <td>Overnight book: ranks WILD names by how consistently they gapped up over the last 30 nights (ties broken by
           Night Owl's score since Oct 9 2026, never alphabetically), buys the top 3 (~$3,333 each) at the closing auction,
-          sells at the next opening auction. Its $10k also funds <b>Fear Rebound</b>'s day shift.</td>
+          sells at the next opening auction — except on a PANIC gap-down morning, when the <b>Gap-Down Protocol</b> holds
+          the positions to 15:30. Its $10k also funds <b>Fear Rebound</b>'s day shift.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
         <tr><td><span class="eng-name" data-eng="Night Owl"><span class="eng-bar"></span>Night Owl</span></td><td>A learned model picks who sleeps well</td>
           <td>Second overnight book (live Oct 5 2026). Same window as Clockwork, a different chooser: a machine-learned
@@ -109,7 +110,8 @@
           names the day trader / Wave Rider / Contrarian hold and anyone reporting earnings, and sells at the next open.
           Since Oct 6 2026 it may share a name with Clockwork (at most $6,667 a name across both). Re-trained monthly. Out of
           sample 2018→2026 its top 3 beat the average WILD name by ~18bp a night (positive in 7 of 9 years; 2019 and
-          2023 slightly negative), with deep multi-month drawdowns along the way.</td>
+          2023 slightly negative), with deep multi-month drawdowns along the way. Follows the <b>Gap-Down Protocol</b>
+          like Clockwork.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
         <tr><td><span class="eng-name" data-eng="Fear Rebound"><span class="eng-bar"></span>Fear Rebound</span></td><td>The day shift after a fear day</td>
           <td>Day shift of Clockwork's $10k pool (Oct 9 2026). On a <b>fear day</b> — VIX closed up ≥5% and our universe fell
@@ -118,6 +120,16 @@
           at the close. −10% disaster stop. Idle on every other day (~40 trading days a year). A down day where VIX does
           <i>not</i> jump (a calm storm, like Oct 7–8 2026) is not traded — those have not rebounded.</td>
           <td class="decides">Decides — places real paper orders.</td></tr>
+        <tr><td><strong>Gap-Down Protocol</strong> (Clockwork, Night Owl)</td><td>Don't sell into a panic at the open</td>
+          <td>The overnight books' morning exit rule (live Oct 12 2026). At 09:05, before any opening-auction sell, it
+          compares Russell 2000 futures with yesterday's 16:00 price. A <b>PANIC gap-down</b> — down at least 0.5%, after a
+          day that closed with fear high (VIX/VIX3M ≥ 0.901) and our volatile names already down over 1% in 5 days — means
+          forced selling is overshooting: both books HOLD last night's positions through the open and sell them at 15:30
+          (−15% stop below the open). Any other morning, including a calm gap-down, they sell at the open as before; if
+          the decision cannot be made, they sell at the open too. On our real overnight picks 2021-26, PANIC mornings
+          gained ~1.1% from the open to the close (5 of 6 years); calm gap-downs ≈0. Only ~13 mornings a year and lumpy —
+          scored nightly as <i>holding vs selling at the open</i>.</td>
+          <td class="decides">Decides — changes when the overnight books sell.</td></tr>
         <tr><td><strong>Basket Tide</strong> (Clockwork, Night Owl)</td><td>The tide gauge for the night shift</td>
           <td>Bear switch (live Oct 6 2026). If our most volatile liquid names, as one equal-weight basket, closed below
           their 200-session average last session, the two overnight books take no new entries until it closes back

@@ -11,7 +11,9 @@ learned its own blend of ~80, where that clue carries ~11%. Evidence: docs/RESEA
 factory Proving Ground 8/8). ⚠️ Tail risk: ~-60% summed drawdown in the 2021-23 speculative-stock bear.
 
 DAY CYCLE (launchd every 60s, self-gating; stateless between runs — state lives in trades.db):
-  09:00-09:27  submit MOO SELL for last night's positions        (exact Clockwork exit path)
+  09:05-09:27  submit MOO SELL for last night's positions        (exact Clockwork exit path) — after the
+               Gap-Down Protocol's 09:05 decision; on a PANIC gap-down morning they are HELD instead and sold
+               at 15:30 (−15% stop below the open) by gap_protocol.monitor_holds() (Oct 12 2026)
   09:31-09:59  confirm the MOO fills; MARKET fallback after 09:45
   09:35-15:49  SCORE once: refresh daily data, read today's opening prices, score every name, store the
                ranking in night_owl_scores and post tonight's picks to Telegram. Features use only
@@ -35,6 +37,7 @@ import pandas as pd
 sys.path.insert(0, "/Users/sushil/trading")
 from factory.live._fills import place_verified, fill_by_order_id  # noqa: E402
 from factory.live import basket_tide  # noqa: E402
+from factory.live import gap_protocol  # noqa: E402
 
 EARNINGS_BLACKOUT_DAYS = 1     # skip a name reporting tonight or tomorrow morning (Clockwork's rule)
 _earn_cache: dict = {}
@@ -95,7 +98,9 @@ SCORE_START = dt.time(9, 35)                                  # opening prints a
 ENTRY_START, ENTRY_END = dt.time(15, 41), dt.time(15, 49)    # submit MOC BUY (cutoff ~15:50)
 WAIT_FOR_CLOCKWORK_UNTIL = dt.time(15, 46)                    # let Clockwork pick first so the cap sees its orders
 ENTRY_CONFIRM_START, ENTRY_CONFIRM_END = dt.time(16, 0), dt.time(16, 40)
-EXIT_START, EXIT_END = dt.time(9, 0), dt.time(9, 27)          # submit MOO SELL
+# Oct 12 2026: MOO submission waits for the Gap-Down Protocol's 09:05 decision (factory/live/gap_protocol.py);
+# on a PANIC gap-down morning the positions are held and sold at 15:30 instead.
+EXIT_START, EXIT_END = gap_protocol.DECIDE_FROM, dt.time(9, 27)   # submit MOO SELL
 EXIT_CONFIRM_START, EXIT_CONFIRM_END = dt.time(9, 31), dt.time(9, 59)
 EXIT_FALLBACK_AFTER = dt.time(9, 45)
 SCORE_RETRY_S = 900        # a failed scoring attempt is retried at most every 15 min
@@ -150,6 +155,7 @@ def init_db():
         c.commit()
     finally:
         c.close()
+    gap_protocol.init_db(DB)          # Oct 12 2026: decision table + the hold columns on this table
 
 
 def _q(sql, params=(), row_factory=False):
@@ -427,6 +433,7 @@ def scan_and_enter():
         log("no scores for today — cannot enter (see SCORE_FAIL above)"); return
     ranked = [r for r in scores_for(today) if r["wild"]]
     avoid = other_book_symbols(today)
+    unsold = gap_protocol.unsold_holds(today)    # still being sold under the Gap-Down Protocol (either book)
     room = TOP_N - already
     entered, picks = 0, []
     for r in ranked:
@@ -436,6 +443,9 @@ def scan_and_enter():
         if sym in avoid:
             log(f"SKIP {sym} (rank {r['wild_rank']}) — held by the day trader, Wave Rider or Contrarian")
             picks.append((sym, r["score"], "OTHER_BOOK")); continue
+        if sym in unsold:
+            log(f"SKIP {sym} (rank {r['wild_rank']}) — still being sold under the Gap-Down Protocol")
+            picks.append((sym, r["score"], "HELD_UNSOLD")); continue
         dte = days_to_earnings(sym)
         if dte is not None and 0 <= dte <= EARNINGS_BLACKOUT_DAYS:
             log(f"SKIP {sym} — earnings in {dte}d, not holding it through the print")
@@ -476,7 +486,17 @@ def scan_and_enter():
 
 # ─────────────────────────── exit + fills (Clockwork's path, unchanged) ───────────────────────────
 def exit_at_open():
+    """Clockwork's exit, including the Oct 12 2026 Gap-Down Protocol: nothing is sold before today's 09:05 decision;
+    on a PANIC gap-down morning last night's positions are held and sold at 15:30 (gap_protocol.monitor_holds)."""
+    act = gap_protocol.morning_action(log)
+    if act == gap_protocol.WAIT:
+        log("waiting for the Gap-Down Protocol decision before submitting the MOO sells"); return
+    today = now_et().date().isoformat()
     for t in get_open():
+        if t.get("gap_hold_date") == today:
+            continue                                 # held this morning — monitor_holds() sells it at 15:30
+        if act == gap_protocol.HOLD and t["entry_date"] < today:
+            gap_protocol.mark_held("night_owl_trades", t, today, log, DB); continue
         if MODE == "LIVE":
             ok, _, oid = place_paper_order(t["symbol"], t["shares"], "SELL", order_type="MOO")
             if not ok:
@@ -626,7 +646,7 @@ def run_once():
     t = n.time()
     active = (EXIT_START <= t <= EXIT_CONFIRM_END) or (SCORE_START <= t <= ENTRY_END) or \
              (ENTRY_CONFIRM_START <= t <= ENTRY_CONFIRM_END) or rows_with_status("PENDING_ENTRY") or \
-             rows_with_status("PENDING_EXIT")
+             rows_with_status("PENDING_EXIT") or gap_protocol.has_holds("night_owl_trades", MODE, n.date().isoformat())
     if not active:
         return                                   # nothing to do outside the windows — stay silent
     if not _take_lock():
@@ -636,6 +656,8 @@ def run_once():
         if (MODE == "LIVE" and EXIT_START <= t <= EXIT_END) or \
            (MODE != "LIVE" and EXIT_CONFIRM_START <= t <= EXIT_CONFIRM_END):
             exit_at_open()
+        # Oct 12 2026: positions held through a PANIC gap-down — disaster stop, then sold 15:30 (before entries)
+        gap_protocol.monitor_holds(sys.modules[__name__], "night_owl_trades")
         if SCORE_START <= t <= ENTRY_END:
             score_today()
         if ENTRY_START <= t <= ENTRY_END:

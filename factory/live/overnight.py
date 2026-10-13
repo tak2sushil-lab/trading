@@ -14,7 +14,8 @@ SAFETY / ON-RAMP (identical doctrine to wave_rider.py):
     plist after a clean SHADOW day. One env var.
 
 Fires every 5 min via launchd; self-gates to the entry window (near close) and exit window
-(the open). Stateless between runs (state in overnight_trades). Signal is computed FRESH from
+(the open). Oct 12 2026: the exit asks the Gap-Down Protocol first (factory/live/gap_protocol.py) — on a PANIC
+gap-down morning last night's positions are held through the open and sold at 15:30 instead. Stateless between runs (state in overnight_trades). Signal is computed FRESH from
 market_data.db each run (not the static factory cache), so it always sees yesterday's data.
   Dry-scan a day's picks (no writes):  python -m factory.live.overnight --dryscan
 """
@@ -28,6 +29,7 @@ from collect_bars import load_bars  # noqa: E402
 from factory.live._fills import (place_verified, position_qty, last_fill_price,  # noqa: E402
                                    fill_by_order_id)
 from factory.live import basket_tide  # noqa: E402
+from factory.live import gap_protocol  # noqa: E402
 
 # ── Earnings blackout ────────────────────────────────────────────────────────────
 # Added Sep 20 2026. This book holds a name through exactly one overnight gap, which is
@@ -112,7 +114,10 @@ PRICE_LO, PRICE_HI = 5.0, 800.0
 # submit, then confirm the fill once the auction has run.
 ENTRY_START, ENTRY_END = dt.time(15, 40), dt.time(15, 49)   # submit MOC BUY
 ENTRY_CONFIRM_START, ENTRY_CONFIRM_END = dt.time(16, 0), dt.time(16, 40)
-EXIT_START, EXIT_END = dt.time(9, 0), dt.time(9, 27)        # submit MOO SELL
+# Oct 12 2026: MOO submission now waits for the Gap-Down Protocol's 09:05 decision (factory/live/gap_protocol.py) —
+# on a PANIC gap-down morning the positions are held and sold at 15:30 instead. 09:05-09:27 still gives a 5-minute
+# engine 4+ passes before the 09:28 cutoff.
+EXIT_START, EXIT_END = gap_protocol.DECIDE_FROM, dt.time(9, 27)   # submit MOO SELL
 EXIT_CONFIRM_START, EXIT_CONFIRM_END = dt.time(9, 31), dt.time(9, 59)
 EXIT_FALLBACK_AFTER = dt.time(9, 45)   # MOO never filled -> cross with a MARKET order
 US_HOLIDAYS = {"2026-09-07", "2026-11-26", "2026-12-25"}
@@ -151,6 +156,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, scan_ts TEXT, kind TEXT,
         symbol TEXT, consistency REAL, verdict TEXT, detail TEXT)""")
     c.commit(); c.close()
+    gap_protocol.init_db(DB)          # Oct 12 2026: decision table + the hold columns on this table
 
 
 def get_open() -> list[dict]:
@@ -405,9 +411,14 @@ def scan_and_enter():
     if already:
         log(f"{already} position(s) still open — entering only {room} to stay within TOP_N")
 
+    # a name either overnight book is still selling under the Gap-Down Protocol gets no closing-auction BUY on top
+    unsold = gap_protocol.unsold_holds(now_et().date().isoformat())
     for sym, cons in ranked:
         if entered >= room:
             picks_log.append((sym, cons, "RANKED_BELOW_CUT")); break
+        if sym in unsold:
+            log(f"SKIP {sym} — still being sold under the Gap-Down Protocol")
+            picks_log.append((sym, cons, "HELD_UNSOLD")); continue
         dte = days_to_earnings(sym)
         if dte is not None and 0 <= dte <= EARNINGS_BLACKOUT_DAYS:
             log(f"SKIP {sym} — earnings in {dte}d, not holding it through the print")
@@ -434,8 +445,20 @@ def scan_and_enter():
 
 
 def exit_at_open():
-    """SHADOW: mark out at the open price. LIVE: submit MOO before the 09:28 cutoff."""
+    """SHADOW: mark out at the open price. LIVE: submit MOO before the 09:28 cutoff.
+
+    Oct 12 2026 — asks the Gap-Down Protocol first (factory/live/gap_protocol.py). Nothing is sold until today's
+    decision exists (09:05). On a PANIC gap-down morning last night's positions are marked held and sold at 15:30 by
+    gap_protocol.monitor_holds(); on every other morning — or if the decision fails — this sells at the open as before."""
+    act = gap_protocol.morning_action(log)
+    if act == gap_protocol.WAIT:
+        log("waiting for the Gap-Down Protocol decision before submitting the MOO sells"); return
+    today = now_et().date().isoformat()
     for t in get_open():
+        if t.get("gap_hold_date") == today:
+            continue                                 # held this morning — monitor_holds() sells it at 15:30
+        if act == gap_protocol.HOLD and t["entry_date"] < today:
+            gap_protocol.mark_held("overnight_trades", t, today, log, DB); continue
         if MODE == "LIVE":
             ok, _, oid = place_paper_order(t["symbol"], t["shares"], "SELL", order_type="MOO")
             if not ok:
@@ -620,6 +643,8 @@ def run_once():
         if (MODE == "LIVE" and EXIT_START <= n.time() <= EXIT_END) or \
            (MODE != "LIVE" and EXIT_CONFIRM_START <= n.time() <= EXIT_CONFIRM_END):
             exit_at_open()
+        # Oct 12 2026: positions held through a PANIC gap-down — disaster stop, then sold 15:30 (before entries)
+        gap_protocol.monitor_holds(sys.modules[__name__], "overnight_trades")
         if ENTRY_START <= n.time() <= ENTRY_END:
             scan_and_enter()                       # submit MOC before the 15:50 cutoff
         log(f"pass complete — {len(get_open())} overnight position(s) held")

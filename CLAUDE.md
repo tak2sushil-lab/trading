@@ -23,6 +23,22 @@ Last updated: Sep 25 2026 (futures deep review)
 chronological log (useful for "why did we do X"); this one is always current for
 "what's shipped, what's running, what's still open." Last refreshed: Sep 20 2026.
 
+**🌅 GAP-DOWN PROTOCOL — the overnight books' morning exit rule, LIVE on paper from Tue Oct 13 (built Oct 12 2026):**
+- At **09:05**, before any MOO sell, `factory/live/gap_protocol.py` compares Russell futures (IBKR live; Yahoo fallback)
+  with yesterday's 16:00 price and decides ONCE (table `gap_protocol`). **PANIC gap-down** (≤ −0.5% AND yesterday
+  VIX/VIX3M ≥ 0.901 AND volatile basket ≤ −1.07% over 5 days — `market_state.PANIC_*`): Clockwork + Night Owl HOLD last
+  night's positions and sell them at **15:30** (−15% stop below the opening print). Anything else, or no decision by
+  09:15: sell at the open exactly as before. MOO window is now 09:05-09:27 in both engines (`EXIT_START`).
+- Held rows stay `OPEN` with `gap_hold_date`; the 15:30 sell's order id (`gap_sell_oid`) is checked against IBKR's
+  execution record before any retry (cancel first at 15:30+). Neither book buys at 15:40 a name still being sold.
+  Fear Rebound stands down when the pool is held. Dashboard: System Health "Gap-Down Protocol" row + alerts.
+- Evidence (registry §O, §T): on last night's real CW+NO picks 2021-26, PANIC mornings open→close **+107bp (t 2.0, 5/6
+  yrs)**, ex-best-morning +89bp; calm gap-downs ≈ −2bp. ~13 mornings/yr, lumpy. **Judge on `hold_gain`** (held exit vs
+  the official open, nightly by `backfill_overnight_reference.py`) over many PANIC mornings:
+  `venv/bin/python -m factory.live.gap_protocol --status` · tomorrow's read now: `--preview`.
+- Tests: `venv/bin/python -m factory.tests.test_gap_protocol`. Revert: set `DECIDE_FROM`/`EXIT_START` back to 09:00 and
+  make `classify()` never return PANIC (or `git revert` the commit) — engines are launchd one-shots, no restart needed.
+
 **⚡ FEAR REBOUND — the overnight pool's day shift, LIVE on paper from Mon Oct 12 (built Oct 9 2026):**
 - The morning after a FEAR day (VIX up ≥5% AND our universe down ≥0.5% — `market_state.fear`, 18:15) it buys the 3
   volatile names that fell hardest (`market_state.rebound_basket`) at ~09:40 and sells them at 15:30; −10% disaster stop.
@@ -6260,3 +6276,29 @@ stretched name first.
   State/Fear day rows, nightly schedule.
 - **Mon Oct 12 watch**: 09:26 first live morning label; 09:40 Fear Rebound acts only if Fri Oct 9 was a fear day (it was not
   — VIX −3.7%), so expect "no trade" in logs/fear_rebound.log; 15:52 auction probe (non-zero imbalance?); dashboard rows.
+
+---
+
+## Oct 12 2026 — Gap-Down Protocol BUILT + LIVE (registry §S-§T)
+
+Mon Oct 12 review first (see Active Work Board): "both books OFF" was the day trader's Book Health only; the overnight
+books lost −$488 booked / −$289 at official prices on a third calm storm in four sessions; since Sep 21 the fleet is
+≈ −$118 at official prices (booked −$1,195 — the rest is paper auction fills). Debated "pick names that won't fall" and
+"pick tomorrow's top gainers" (registry §S1-§S4: both fail — falling less = rising less; models find movers, not
+direction) and "predict the 09:30 direction" (§S5-§S7: needs ≥60% accuracy just to break even; 15 calendar facts
+known at 15:40 — none). What survives is REACTING at 09:05, when the gap is visible — so the PANIC/CALM gap-down
+protocol (researched Oct 8, §O) was built and shipped live on the user's instruction.
+
+**Built:** `factory/live/gap_protocol.py` (decision, holds, monitor, CLI) · wired into `overnight.py` + `night_owl.py`
+(exit_at_open waits for the decision; `monitor_holds` each pass; no 15:40 buy of a name still being sold) ·
+`fear_rebound.py` (stands down on a held pool) · `backfill_overnight_reference.py` (held rows: `ref_exit` = official
+price at our exit time, `ref_open`, `hold_gain`) · `market_state.py` (09:26 message no longer says "shadow only") ·
+dashboard (positions label + stop, System Health row, alerts) · GLOSSARY.md + /glossary.
+**Validated at build (§T):** decide at 09:05 = 96.7% agreement with the research label, same outcome; 15:30 exit ≈ close;
+−15% stop costs ~3bp (−10% cost 8bp). Live dry run Oct 12 21:30: IBKR RTY real-time, prior 16:00 from
+`futures_bars_5m`, opening print from the bridge — all wired. Oct 13's state (VIX/VIX3M 0.848) cannot make PANIC.
+**Two bug sweeps:** guarded `monitor_holds`/`mark_held` so a protocol failure can never block the engines' 15:40
+entries; ALTERs only for missing columns (Night Owl runs every minute); never price a sell from another book's fill;
+cancel-then-recheck before re-sending an unconfirmed 15:30 sell; 09:26 wording; dashboard "undefined" state.
+Tests: test_gap_protocol (all pass) + fear_rebound, night_owl, clockwork_tiebreak, basket_tide, reconcile_guards,
+entry_band, market_state suites, dashboard render test — all pass.
